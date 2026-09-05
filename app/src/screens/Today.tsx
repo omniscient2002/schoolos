@@ -559,14 +559,14 @@ export default function Today() {
         <div className="u-col" style={{ gap: 16 }}>
           <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Zap size={14} /> Live activity</span>} pad>
             {domain.events.length === 0 ? (
-              <Empty icon={<Icon.Offline size={20} />} title="No live events yet" sub="Simulation Mode emits events as you trigger demo steps — they stream here in real time." />
+              <Empty icon={<Icon.Offline size={20} />} title="No live events yet" sub="Operational events from across the school stream here in real time." />
             ) : (
               <div className="scroll-thin" style={{ maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
                 {domain.events.slice(0, 12).map(e => <EventLine key={e.id} e={e} />)}
               </div>
             )}
             <div className="u-xs u-faint" style={{ marginTop: 10, lineHeight: 1.5 }}>
-              Simulation Mode emits events — run a step from the demo bar to watch it land here, each with severity and a reference record.
+              Events appear as records change — attendance runs, payments reconcile, transport GPS updates, maintenance SLAs tick — each with severity and a reference record.
             </div>
           </Card>
 

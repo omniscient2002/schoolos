@@ -205,7 +205,7 @@ export default function Maintenance() {
               </Card>
               <Card head="Live activity" sub="Maintenance events as they happen">
                 {events.length === 0 && liveEvents.length === 0 && (
-                  <Empty icon={<Icon.Sunrise size={20} />} title="Quiet right now" sub="Run a simulation from the demo bar to see the system react." />
+                  <Empty icon={<Icon.Sunrise size={20} />} title="Quiet right now" sub="New work orders and SLA movements will appear here as they happen." />
                 )}
                 <div className="u-col" style={{ gap: 8 }}>
                   {[...events, ...liveEvents].slice(0, 8).map(e => (

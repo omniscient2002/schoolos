@@ -57,7 +57,7 @@ const API_KEYS = [
 
 const FLAGS = [
   { id: 'offline-mode', label: 'Offline mode', desc: 'Attendance and messages queue locally when the network drops, then sync.' },
-  { id: 'simulation-mode', label: 'Simulation mode', desc: 'Demo scenario events (bus breakdown, payment dip) emit into the live stream.' },
+  { id: 'live-events', label: 'Live event stream', desc: 'Operational events (attendance, payments, transport, maintenance) emit into the live stream.' },
   { id: 'ai-shield', label: 'AI Shield — strict', desc: 'Block AI proposals that touch HUMAN-ONLY policies instead of escalating them.' },
   { id: 'parent-digest', label: 'Parent digest v2', desc: 'Nightly batched WhatsApp digest per guardian; replaces per-event pings.' },
   { id: 'transport-leniency', label: 'Transport attendance leniency', desc: 'Students on verified-delayed routes are marked present until 09:30.' },
@@ -72,7 +72,7 @@ export default function ItAdmin() {
   const [revoked, setRevoked] = useState<Set<string>>(new Set());
   const [rotating, setRotating] = useState<typeof API_KEYS[number] | null>(null);
   const [flags, setFlags] = useState<Record<string, boolean>>({
-    'offline-mode': true, 'simulation-mode': true, 'ai-shield': true, 'parent-digest': true, 'transport-leniency': true,
+    'offline-mode': true, 'live-events': true, 'ai-shield': true, 'parent-digest': true, 'transport-leniency': true,
   });
 
   const sessions = useMemo(() => SESSION_ROWS.filter(s => !revoked.has(s.id)), [revoked]);

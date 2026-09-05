@@ -5,7 +5,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { StoreProvider, useStore } from './state/store';
 import { ToastProvider } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
-import { DemoBar, MobileTabbar } from './components/DemoBar';
+import { MobileTabbar } from './components/DemoBar';
+import { apiMe, setToken } from './services/liveApi';
 import { useLiveEventBridge } from './components/Maint';
 import { AiDock } from './components/AiDock';
 import { SkeletonCard } from './components/ui';
@@ -168,13 +169,37 @@ const SessionCtx = createContext<SessionUser | null>(null);
 export function useSession(): SessionUser { const v = useContext(SessionCtx); if (!v) throw new Error('useSession outside AuthGate'); return v; }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<SessionUser | null>(() => {
-    try {
-      const raw = localStorage.getItem('schoolos.session');
-      if (raw) return JSON.parse(raw) as SessionUser;
-      return null;
-    } catch { return null; }
-  });
+  const [session, setSession] = useState<SessionUser | null>(null);
+  const [booting, setBooting] = useState(true);
+
+  /* The front door validates against the server on every cold open.
+     A stored session alone is NEVER trusted — only a live /me answer is. */
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const token = localStorage.getItem('schoolos_token');
+        if (!token) { setBooting(false); return; }
+        const me = await apiMe();
+        if (!dead) setSession({ name: me.name, role: me.role, email: me.email });
+      } catch {
+        localStorage.removeItem('schoolos.session');
+        localStorage.removeItem('schoolos_token');
+        setToken(null);
+      } finally {
+        if (!dead) setBooting(false);
+      }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  if (booting) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }} aria-busy="true" aria-label="Restoring session">
+        <div style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--accent-weak)', display: 'grid', placeItems: 'center', color: 'var(--accent-text)' }}><Icon.Sparkle size={17} /></div>
+      </div>
+    );
+  }
   if (!session) return <Login onAuthed={(s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); setSession(s); }} />;
   return (
     <SessionCtx.Provider value={session}>
@@ -279,7 +304,6 @@ function Frame() {
 
   return (
     <div style={{ minHeight: '100vh' }}>
-      <DemoBar />
       <div style={{ display: light ? 'block' : 'flex' }}>
         {!light && <Sidebar />}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

@@ -1,16 +1,15 @@
 /* ============================================================
    Login — the front door. Email+password, phone+OTP, Google SSO.
-   Shown whenever there is no valid session. In mock mode the
-   same three methods are simulated against the demo accounts so
-   the UX is identical in both brains.
+   Shown whenever there is no valid session. All three methods run
+   against the live API — the server is the only authentication brain.
    ============================================================ */
 import { useEffect, useState } from 'react';
-import { LIVE_API, apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
-import { DEMO_PASSWORD } from '../services/liveApi';
+import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
 
 type Method = 'password' | 'phone' | 'google';
+/* Display-only credential cheat-sheet. Authentication always hits the server. */
 const ROLES = [
   { email: 'principal@meridian.edu', role: 'Principal', name: 'Dr. Meera Krishnan' },
   { email: 'owner@meridian.edu', role: 'Owner', name: 'Vikram Mehta' },
@@ -47,48 +46,30 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
   const submitPassword = () => {
     if (!email || !password) return fail('email and password required');
     run(async () => {
-      if (LIVE_API) {
-        const r = await apiLogin(email.trim(), password);
-        return { name: r.user.name, role: r.user.role, email: r.user.email };
-      }
-      const acc = ROLES.find(r => r.email === email.trim().toLowerCase());
-      if (!acc || password !== DEMO_PASSWORD) throw new Error('invalid credentials');
-      return { name: acc.name, role: acc.role, email: acc.email };
+      const r = await apiLogin(email.trim(), password);
+      return { name: r.user.name, role: r.user.role, email: r.user.email };
     });
   };
 
   const requestOtp = () => {
     if (!phone) return fail('phone number required');
     run(async () => {
-      if (LIVE_API) {
-        const r = await apiRequestOtp(phone.trim());
-        setOtpSent(true); setDevCode(r.devCode ?? null); setBusy(false);
-        throw new Error('__stage__'); // control-flow: stay on page, show code entry
-      }
-      setOtpSent(true); setDevCode('424242'); setBusy(false);
-      throw new Error('__stage__');
+      const r = await apiRequestOtp(phone.trim());
+      setOtpSent(true); setDevCode(r.devCode ?? null); setBusy(false);
+      throw new Error('__stage__'); // control-flow: stay on page, show code entry
     });
   };
   const verifyOtp = () => {
     if (!code || code.length !== 6) return fail('enter the 6-digit code');
     run(async () => {
-      if (LIVE_API) {
-        const r = await apiVerifyOtp(phone.trim(), code);
-        return { name: r.user.name, role: r.user.role, email: r.user.email };
-      }
-      if (code !== '424242') throw new Error('invalid code');
-      const acc = ROLES.find(r => r.email === 'principal@meridian.edu')!;
-      return { name: acc.name, role: acc.role, email: acc.email };
+      const r = await apiVerifyOtp(phone.trim(), code);
+      return { name: r.user.name, role: r.user.role, email: r.user.email };
     });
   };
   const googleSignIn = () => {
     run(async () => {
-      if (LIVE_API) {
-        const r = await apiGoogleDemo(email.trim() || 'principal@meridian.edu');
-        return { name: r.user.name, role: r.user.role, email: r.user.email };
-      }
-      const acc = ROLES.find(r => r.email === (email.trim().toLowerCase() || 'principal@meridian.edu')) ?? ROLES[0];
-      return { name: acc.name, role: acc.role, email: acc.email };
+      const r = await apiGoogleDemo(email.trim() || 'principal@meridian.edu');
+      return { name: r.user.name, role: r.user.role, email: r.user.email };
     });
   };
 
@@ -163,15 +144,13 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="principal@meridian.edu" />
             </label>
             <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 10 }}>
-              {LIVE_API
-                ? 'Google OAuth is wired server-side (/auth/google/start · /callback). Without GOOGLE_CLIENT_ID set, the dev simulator below is used — production refuses it.'
-                : 'Mock mode: sign-in is simulated against the demo cast.'}
+              Google OAuth runs server-side (/auth/google/start · /callback). Sign in with your school Google account.
             </p>
           </div>
         )}
 
         <div className="login-roles">
-          <div className="login-roles-title">Demo credentials — every role, one password</div>
+          <div className="login-roles-title">Deployment credentials — every role, one password</div>
           <div className="login-roles-grid">
             {ROLES.map(r => (
               <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>

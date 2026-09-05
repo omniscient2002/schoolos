@@ -257,7 +257,7 @@ export default function Transport() {
         tone: 'info',
       });
     } catch {
-      toast({ title: 'Simulation failed', sub: 'The transport service did not accept the drill. Try again.', tone: 'error' });
+      toast({ title: 'Drill could not start', sub: 'The transport service did not accept the drill. Try again.', tone: 'error' });
     } finally {
       setSimulating(false);
     }
