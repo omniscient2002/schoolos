@@ -1,0 +1,213 @@
+/* ============================================================
+   Login — the front door. Email+password, phone+OTP, Google SSO.
+   Shown whenever there is no valid session. In mock mode the
+   same three methods are simulated against the demo accounts so
+   the UX is identical in both brains.
+   ============================================================ */
+import { useEffect, useState } from 'react';
+import { LIVE_API, apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
+import { DEMO_PASSWORD } from '../services/liveApi';
+import { Icon } from '../components/Icon';
+import { Badge } from '../components/ui';
+
+type Method = 'password' | 'phone' | 'google';
+const ROLES = [
+  { email: 'principal@meridian.edu', role: 'Principal', name: 'Dr. Meera Krishnan' },
+  { email: 'owner@meridian.edu', role: 'Owner', name: 'Vikram Mehta' },
+  { email: 'itadmin@meridian.edu', role: 'IT Admin', name: 'Sam Dsouza' },
+  { email: 'teacher@meridian.edu', role: 'Teacher', name: 'Priya Iyer' },
+  { email: 'coordinator@meridian.edu', role: 'Coordinator', name: 'Rahul Verma' },
+  { email: 'finance@meridian.edu', role: 'Finance', name: 'Ms. Rao' },
+  { email: 'admissions@meridian.edu', role: 'Admissions', name: 'Sneha Kulkarni' },
+  { email: 'transport@meridian.edu', role: 'Transport', name: 'Rajeev Nair' },
+  { email: 'facilities@meridian.edu', role: 'Facilities', name: 'Vikram Joshi' },
+  { email: 'technician@meridian.edu', role: 'Technician', name: 'Arif Shaikh' },
+  { email: 'parent@meridian.edu', role: 'Parent', name: 'Kavita Sharma' },
+  { email: 'student@meridian.edu', role: 'Student', name: 'Aarav Sharma' },
+];
+
+export interface SessionUser { name: string; role: string; email: string }
+export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) => void }) {
+  const [method, setMethod] = useState<Method>('password');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [devCode, setDevCode] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fail = (m: string) => { setError(m); setBusy(false); };
+  const run = async (fn: () => Promise<{ name: string; role: string; email: string }>) => {
+    setBusy(true); setError(null);
+    try { onAuthed(await fn()); } catch (e: unknown) { fail((e as Error).message || 'sign-in failed'); }
+  };
+
+  const submitPassword = () => {
+    if (!email || !password) return fail('email and password required');
+    run(async () => {
+      if (LIVE_API) {
+        const r = await apiLogin(email.trim(), password);
+        return { name: r.user.name, role: r.user.role, email: r.user.email };
+      }
+      const acc = ROLES.find(r => r.email === email.trim().toLowerCase());
+      if (!acc || password !== DEMO_PASSWORD) throw new Error('invalid credentials');
+      return { name: acc.name, role: acc.role, email: acc.email };
+    });
+  };
+
+  const requestOtp = () => {
+    if (!phone) return fail('phone number required');
+    run(async () => {
+      if (LIVE_API) {
+        const r = await apiRequestOtp(phone.trim());
+        setOtpSent(true); setDevCode(r.devCode ?? null); setBusy(false);
+        throw new Error('__stage__'); // control-flow: stay on page, show code entry
+      }
+      setOtpSent(true); setDevCode('424242'); setBusy(false);
+      throw new Error('__stage__');
+    });
+  };
+  const verifyOtp = () => {
+    if (!code || code.length !== 6) return fail('enter the 6-digit code');
+    run(async () => {
+      if (LIVE_API) {
+        const r = await apiVerifyOtp(phone.trim(), code);
+        return { name: r.user.name, role: r.user.role, email: r.user.email };
+      }
+      if (code !== '424242') throw new Error('invalid code');
+      const acc = ROLES.find(r => r.email === 'principal@meridian.edu')!;
+      return { name: acc.name, role: acc.role, email: acc.email };
+    });
+  };
+  const googleSignIn = () => {
+    run(async () => {
+      if (LIVE_API) {
+        const r = await apiGoogleDemo(email.trim() || 'principal@meridian.edu');
+        return { name: r.user.name, role: r.user.role, email: r.user.email };
+      }
+      const acc = ROLES.find(r => r.email === (email.trim().toLowerCase() || 'principal@meridian.edu')) ?? ROLES[0];
+      return { name: acc.name, role: acc.role, email: acc.email };
+    });
+  };
+
+  useEffect(() => { setError(null); setOtpSent(false); setCode(''); }, [method]);
+
+  return (
+    <div className="login-wrap">
+      <div className="login-card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <div className="logo-mark">S</div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: '-0.02em' }}>SchoolOS</div>
+            <div style={{ color: 'var(--text-2)', fontSize: 12.5 }}>Meridian International Academy</div>
+          </div>
+        </div>
+        <p style={{ color: 'var(--text-2)', fontSize: 13.5, margin: '10px 0 18px' }}>
+          The intelligent operating system for schools. Sign in to continue.
+        </p>
+
+        <div className="seg" role="tablist" aria-label="Sign-in method">
+          <button className={method === 'password' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('password')}>Email</button>
+          <button className={method === 'phone' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('phone')}>Phone</button>
+          <button className={method === 'google' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('google')}>Google</button>
+        </div>
+
+        {error && error !== '__stage__' && (
+          <div className="login-error" role="alert"><Icon.Alert size={13} /> {error}</div>
+        )}
+
+        {method === 'password' && (
+          <form className="login-form" onSubmit={e => { e.preventDefault(); submitPassword(); }}>
+            <label>Email
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@school.edu" autoFocus />
+            </label>
+            <label>Password
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+            </label>
+            <button className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+              {busy ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+        )}
+
+        {method === 'phone' && (
+          <form className="login-form" onSubmit={e => { e.preventDefault(); otpSent ? verifyOtp() : requestOtp(); }}>
+            <label>Phone number
+              <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98450 00101" disabled={otpSent} autoFocus={!otpSent} />
+            </label>
+            {otpSent && (
+              <>
+                <label>6-digit code <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· expires in 5 min</span>
+                  <input inputMode="numeric" maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} placeholder="••••••" autoFocus />
+                </label>
+                {devCode && <div className="login-devcode"><Badge tone="warning">dev mode</Badge> SMS provider not wired — code: <b>{devCode}</b></div>}
+                <button type="button" className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }} onClick={() => { setOtpSent(false); setCode(''); setDevCode(null); }}>
+                  Change number / resend
+                </button>
+              </>
+            )}
+            <button className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+              {busy ? 'Working…' : otpSent ? 'Verify & sign in' : 'Send code'}
+            </button>
+          </form>
+        )}
+
+        {method === 'google' && (
+          <div className="login-form">
+            <button className="btn google-btn" disabled={busy} onClick={googleSignIn} style={{ width: '100%', justifyContent: 'center' }}>
+              <GoogleG /> Continue with Google
+            </button>
+            <label style={{ marginTop: 10 }}>School email <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· must match your SchoolOS account</span>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="principal@meridian.edu" />
+            </label>
+            <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 10 }}>
+              {LIVE_API
+                ? 'Google OAuth is wired server-side (/auth/google/start · /callback). Without GOOGLE_CLIENT_ID set, the dev simulator below is used — production refuses it.'
+                : 'Mock mode: sign-in is simulated against the demo cast.'}
+            </p>
+          </div>
+        )}
+
+        <div className="login-roles">
+          <div className="login-roles-title">Demo credentials — every role, one password</div>
+          <div className="login-roles-grid">
+            {ROLES.map(r => (
+              <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>
+                <b>{r.role}</b><span>{r.name}</span>
+                <code>{r.email}</code>
+              </button>
+            ))}
+          </div>
+          <div className="login-hint">Password for all: <code>schoolos-demo</code> · phone logins use the numbers below</div>
+          <details className="login-phones">
+            <summary>Phone numbers (OTP method)</summary>
+            <div className="login-phones-grid">
+              {[['Principal', '+919845000101'], ['Coordinator', '+919845000102'], ['Finance', '+919845000103'], ['Admissions', '+919845000104'], ['Transport', '+919845000105'], ['Facilities', '+919845000106'], ['Technician', '+919845000107'], ['Teacher', '+919845000108'], ['IT Admin', '+919845000109'], ['Parent', '+919845000201'], ['Student', '+919845000202'], ['Owner', '+919845000301']].map(([r, p]) => (
+                <button key={p} className="login-role" onClick={() => { setMethod('phone'); setPhone(p); }}>
+                  <b>{r}</b><code>{p}</code>
+                </button>
+              ))}
+            </div>
+          </details>
+        </div>
+
+        <div className="login-foot">
+          <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit ledger
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoogleG() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.7-.4-3.9z"/>
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+      <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.1 5.7l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.7-.4-3.9z"/>
+    </svg>
+  );
+}

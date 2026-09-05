@@ -1,0 +1,33 @@
+# SchoolOS — full stack (db + api). For local/staging use.
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: schoolos
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-schoolos_dev_pw}
+      POSTGRES_DB: schoolos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U schoolos -d schoolos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports: ["127.0.0.1:5432:5432"]
+
+  api:
+    build: .
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      PORT: "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ["8080:8080"]
+    # one-shot provisioning then serve:
+    command: sh -c "node scripts/migrate.js && node scripts/bootstrap.js && node scripts/seed.js && node src/index.js"
+
+volumes:
+  pgdata:

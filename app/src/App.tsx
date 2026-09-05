@@ -1,0 +1,318 @@
+import { Suspense, lazy, useEffect, useState, createContext, useContext } from 'react';
+import { KernelProvider, KernelGate } from './plugins/useKernel';
+import './plugins/registerWidgets';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { StoreProvider, useStore } from './state/store';
+import { ToastProvider } from './components/ui';
+import { Sidebar, Topbar, CommandPalette } from './components/Shell';
+import { DemoBar, MobileTabbar } from './components/DemoBar';
+import { useLiveEventBridge } from './components/Maint';
+import { AiDock } from './components/AiDock';
+import { SkeletonCard } from './components/ui';
+import { Icon } from './components/Icon';
+
+/* ---------- lazy screens ---------- */
+const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
+
+const Login = lazy(() => import('./screens/Login'));
+const Today = F(() => import('./screens/Today'));
+const Attention = F(() => import('./screens/Attention'));
+const Ask = F(() => import('./screens/Ask'));
+const Next = F(() => import('./screens/Next'));
+const People = F(() => import('./screens/People'));
+const PersonDetail = F(() => import('./screens/PersonDetail'));
+const Learning = F(() => import('./screens/Learning'));
+const Attendance = F(() => import('./screens/Attendance'));
+const Operations = F(() => import('./screens/Operations'));
+const Fees = F(() => import('./screens/Fees'));
+const Admissions = F(() => import('./screens/Admissions'));
+const Transport = F(() => import('./screens/Transport'));
+const Documents = F(() => import('./screens/Documents'));
+const Maintenance = F(() => import('./screens/Maintenance'));
+const WorkOrders = F(() => import('./screens/WorkOrders'));
+const WorkOrderDetail = F(() => import('./screens/WorkOrderDetail'));
+const TechnicianWorkspace = F(() => import('./screens/TechnicianWorkspace'));
+const Assets = F(() => import('./screens/Assets'));
+const AssetDetail = F(() => import('./screens/AssetDetail'));
+const Preventive = F(() => import('./screens/Preventive'));
+const Inspections = F(() => import('./screens/Inspections'));
+const MaintInventory = F(() => import('./screens/MaintInventory'));
+const MaintVendors = F(() => import('./screens/MaintVendors'));
+const MaintIntelligence = F(() => import('./screens/MaintIntelligence'));
+const MaintMap = F(() => import('./screens/MaintMap'));
+const Reception = F(() => import('./screens/Reception'));
+const Migration = F(() => import('./screens/Migration'));
+const Demo = F(() => import('./screens/Demo'));
+const DemoDay = F(() => import('./screens/DemoDay'));
+const DemoParent = F(() => import('./screens/DemoParent'));
+const DemoSummary = F(() => import('./screens/DemoSummary'));
+const LiveMode = F(() => import('./screens/LiveMode'));
+const PluginsScreen = F(() => import('./screens/Plugins'));
+const Library = F(() => import('./screens/Library'));
+const ReportIssue = F(() => import('./screens/ReportIssue'));
+const HR = F(() => import('./screens/HR'));
+const CalendarScreen = F(() => import('./screens/CalendarScreen'));
+const Cases = F(() => import('./screens/Cases'));
+const CaseDetail = F(() => import('./screens/CaseDetail'));
+const Incidents = F(() => import('./screens/Incidents'));
+const Insights = F(() => import('./screens/Insights'));
+const Automation = F(() => import('./screens/Automation'));
+const Constitution = F(() => import('./screens/Constitution'));
+const Memory = F(() => import('./screens/Memory'));
+const DataHealth = F(() => import('./screens/DataHealth'));
+const ActionCenter = F(() => import('./screens/ActionCenter'));
+const Audit = F(() => import('./screens/Audit'));
+const AiGovernance = F(() => import('./screens/AiGovernance'));
+const AiUsage = F(() => import('./screens/AiUsage'));
+const Settings = F(() => import('./screens/Settings'));
+const Group = F(() => import('./screens/Group'));
+const ItAdmin = F(() => import('./screens/ItAdmin'));
+const ParentHome = F(() => import('./screens/ParentHome'));
+const ParentChat = F(() => import('./screens/ParentChat'));
+const ParentFees = F(() => import('./screens/ParentFees'));
+const ParentAsk = F(() => import('./screens/ParentAsk'));
+const StudentHome = F(() => import('./screens/StudentHome'));
+const StudentLearning = F(() => import('./screens/StudentLearning'));
+const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
+const StudentAsk = F(() => import('./screens/StudentAsk'));
+const NotFound = F(() => import('./screens/NotFound'));
+
+/* ---------- shared page frame ---------- */
+function PageShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="page">
+      {children}
+      <div style={{ height: 40 }} />
+    </div>
+  );
+}
+
+/* ---------- boot gate: simulated first-load fetch ---------- */
+function BootGate({ children }: { children: React.ReactNode }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setReady(true), 420); return () => clearTimeout(t); }, []);
+  if (!ready) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <div className="u-col" style={{ gap: 14, alignItems: 'center', animation: 'fadeIn 300ms var(--ease-out)' }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--accent)', display: 'grid', placeItems: 'center', color: '#fff', fontWeight: 700, fontSize: 20 }}>M</div>
+          <div style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>Meridian International Academy</div>
+          <div className="u-flex u-small u-faint" style={{ gap: 8 }}><span className="spinner" style={{ width: 12, height: 12 }} /> Opening your school…</div>
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
+/* ---------- offline / sync banner ---------- */
+function SyncBanner() {
+  const { domain } = useStore();
+  const [online, setOnline] = useState(true);
+  useEffect(() => {
+    const on = () => setOnline(true), off = () => setOnline(false);
+    window.addEventListener('online', on); window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+  if (!online || domain.offlineQueue > 0) {
+    return (
+      <div className="u-flex" style={{ gap: 8, padding: '7px 20px', background: 'var(--warning-weak)', borderBottom: '1px solid var(--warning-weak-2)', fontSize: 'var(--text-sm)' }}>
+        <Icon.Offline size={14} style={{ color: 'var(--warning)' }} />
+        <span style={{ flex: 1 }}>
+          {online ? `${domain.offlineQueue} offline changes queued (attendance, notes, messages) — syncing…` : 'You are offline. Attendance and messages are queued on this device and will sync automatically.'}
+        </span>
+        {online && <button className="btn btn-secondary btn-sm" onClick={() => dispatchFlush()}>Sync now</button>}
+      </div>
+    );
+  }
+  return null;
+}
+function dispatchFlush() { window.dispatchEvent(new CustomEvent('schoolos:flush-sync')); }
+
+/* ---------- role screen guard ---------- */
+function Guard({ children }: { children: React.ReactNode }) {
+  const { session } = useStore();
+  const { pathname } = useLocation();
+  const light = ['parent', 'student'].includes(session.roleId);
+  const staffOnly = ['/fees', '/admissions', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
+  if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
+    return (
+      <PageShell>
+        <div className="empty" style={{ padding: '80px 0' }}>
+          <Icon.Lock size={28} />
+          <h3>Not available on this account</h3>
+          <p>Parent and Student views are deliberately calm surfaces. Switch to a staff demo role from the avatar menu (top right) to see the full operating console.</p>
+        </div>
+      </PageShell>
+    );
+  }
+  return <>{children}</>;
+}
+
+function S({ children }: { children: React.ReactNode }) {
+  return (
+    <Guard>
+      <PageShell>
+        <Suspense fallback={<div className="grid grid-2"><SkeletonCard /><SkeletonCard /></div>}>
+          {children}
+        </Suspense>
+      </PageShell>
+    </Guard>
+  );
+}
+
+/** Session gate — the front door. No valid session → the Login screen,
+ * whatever the URL. Session persists in localStorage; sign-out clears it. */
+export interface SessionUser { name: string; role: string; email: string }
+const SessionCtx = createContext<SessionUser | null>(null);
+export function useSession(): SessionUser { const v = useContext(SessionCtx); if (!v) throw new Error('useSession outside AuthGate'); return v; }
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const [session, setSession] = useState<SessionUser | null>(() => {
+    try {
+      const raw = localStorage.getItem('schoolos.session');
+      if (raw) return JSON.parse(raw) as SessionUser;
+      return null;
+    } catch { return null; }
+  });
+  if (!session) return <Login onAuthed={(s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); setSession(s); }} />;
+  return (
+    <SessionCtx.Provider value={session}>
+      {children}
+    </SessionCtx.Provider>
+  );
+}
+
+function AppRoutes() {
+  const { pathname } = useLocation();
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/today" replace />} />
+      <Route path="/today" element={<S><Today /></S>} />
+      <Route path="/attention" element={<S><Attention /></S>} />
+      <Route path="/ask" element={<S><Ask /></S>} />
+      <Route path="/next" element={<S><Next /></S>} />
+      <Route path="/people" element={<S><People /></S>} />
+      <Route path="/people/:id" element={<S><PersonDetail /></S>} />
+      <Route path="/learning" element={<S><Learning /></S>} />
+      <Route path="/attendance" element={<S><Attendance /></S>} />
+      <Route path="/operations" element={<S><Operations /></S>} />
+      <Route path="/fees" element={<S><Fees /></S>} />
+      <Route path="/admissions" element={<S><Admissions /></S>} />
+      <Route path="/transport" element={<S><Transport /></S>} />
+      <Route path="/documents" element={<S><Documents /></S>} />
+      <Route path="/maintenance" element={<S><Maintenance /></S>} />
+      <Route path="/maintenance/work-orders" element={<S><WorkOrders /></S>} />
+      <Route path="/facilities" element={<Navigate to="/maintenance" replace />} />
+      <Route path="/maintenance/work-orders/:id" element={<S><WorkOrderDetail /></S>} />
+      <Route path="/maintenance/technician" element={<S><TechnicianWorkspace /></S>} />
+      <Route path="/maintenance/assets" element={<S><Assets /></S>} />
+      <Route path="/maintenance/assets/:id" element={<S><AssetDetail /></S>} />
+      <Route path="/maintenance/preventive" element={<S><Preventive /></S>} />
+      <Route path="/maintenance/inspections" element={<S><Inspections /></S>} />
+      <Route path="/maintenance/inventory" element={<S><MaintInventory /></S>} />
+      <Route path="/maintenance/vendors" element={<S><MaintVendors /></S>} />
+      <Route path="/maintenance/intelligence" element={<S><MaintIntelligence /></S>} />
+      <Route path="/maintenance/map" element={<S><MaintMap /></S>} />
+      <Route path="/reception" element={<S><Reception /></S>} />
+      <Route path="/migration" element={<S><Migration /></S>} />
+      <Route path="/demo" element={<Demo />} />
+      <Route path="/demo/day" element={<DemoDay />} />
+      <Route path="/demo/parent" element={<DemoParent />} />
+      <Route path="/demo/summary" element={<DemoSummary />} />
+      <Route path="/live" element={<LiveMode />} />
+      <Route path="/plugins" element={<S><PluginsScreen /></S>} />
+      <Route path="/library" element={<S><KernelGate plugin="library"><Library /></KernelGate></S>} />
+      <Route path="/maintenance/report" element={<S><ReportIssue /></S>} />
+      <Route path="/operations/hr" element={<S><HR /></S>} />
+      <Route path="/calendar" element={<S><CalendarScreen /></S>} />
+      <Route path="/cases" element={<S><Cases /></S>} />
+      <Route path="/cases/:id" element={<S><CaseDetail /></S>} />
+      <Route path="/incidents" element={<S><Incidents /></S>} />
+      <Route path="/insights" element={<S><Insights /></S>} />
+      <Route path="/automation" element={<S><Automation /></S>} />
+      <Route path="/constitution" element={<S><Constitution /></S>} />
+      <Route path="/memory" element={<S><Memory /></S>} />
+      <Route path="/data-health" element={<S><DataHealth /></S>} />
+      <Route path="/action-center" element={<S><ActionCenter /></S>} />
+      <Route path="/audit" element={<S><Audit /></S>} />
+      <Route path="/ai-governance" element={<S><AiGovernance /></S>} />
+      <Route path="/ai-usage" element={<S><AiUsage /></S>} />
+      <Route path="/group" element={<S><Group /></S>} />
+      <Route path="/it" element={<S><ItAdmin /></S>} />
+      <Route path="/settings" element={<S><Settings /></S>} />
+      <Route path="/parent" element={<S><ParentHome /></S>} />
+      <Route path="/parent/chat" element={<S><ParentChat /></S>} />
+      <Route path="/parent/fees" element={<S><ParentFees /></S>} />
+      <Route path="/parent/ask" element={<S><ParentAsk /></S>} />
+      <Route path="/student" element={<S><StudentHome /></S>} />
+      <Route path="/student/learning" element={<S><StudentLearning /></S>} />
+      <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
+      <Route path="/student/ask" element={<S><StudentAsk /></S>} />
+      <Route path="*" element={<S><NotFound /></S>} />
+    </Routes>
+  );
+}
+
+/* ---------- app frame ---------- */
+function Frame() {
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { session, dispatch } = useStore();
+  const light = ['parent', 'student'].includes(session.roleId);
+  useLiveEventBridge(dispatch);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(o => !o); }
+      if (e.key === '?' && e.shiftKey && !/input|textarea/i.test((e.target as HTMLElement)?.tagName ?? '')) {
+        window.alert('SchoolOS keyboard shortcuts\n\n⌘K / Ctrl+K — search & command menu\n? — this help\nEsc — close panels');
+      }
+    };
+    const onFlush = () => dispatch({ type: 'sync/flush' });
+    const onOpenPalette = () => setPaletteOpen(true);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('schoolos:flush-sync', onFlush);
+    window.addEventListener('schoolos:open-palette', onOpenPalette);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('schoolos:flush-sync', onFlush); window.removeEventListener('schoolos:open-palette', onOpenPalette); };
+  }, [dispatch]);
+
+  return (
+    <div style={{ minHeight: '100vh' }}>
+      <DemoBar />
+      <div style={{ display: light ? 'block' : 'flex' }}>
+        {!light && <Sidebar />}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <Topbar onOpenPalette={() => setPaletteOpen(true)} />
+          <SyncBanner />
+          <div style={{ display: 'flex', flex: 1, minWidth: 0 }}>
+            <main style={{ flex: 1, minWidth: 0 }}>
+              <AppRoutes />
+            </main>
+            {!light && <AiDock />}
+          </div>
+        </div>
+      </div>
+      <MobileTabbar />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <KernelProvider>
+        <StoreProvider>
+          <ToastProvider>
+            <BootGate>
+              <AuthGate>
+                <Frame />
+              </AuthGate>
+            </BootGate>
+          </ToastProvider>
+        </StoreProvider>
+      </KernelProvider>
+    </BrowserRouter>
+  );
+}

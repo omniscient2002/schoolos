@@ -1,0 +1,31 @@
+# — secrets & env
+.env
+**/.env
+*.pem
+
+# deps & build output
+node_modules/
+dist/
+server/logs/
+logs/
+*.log
+
+# QA artifacts & local tooling
+shots/
+*.png
+*.mjs.patch
+
+# OS / editor
+.DS_Store
+
+# browser profiles / qa temp / agent dirs
+.chrome-profile/
+.chrome-profile2/
+.qa-relcert2-tmp/
+.claude/
+
+.qa-relcert-tmp/
+.research/
+uk*.xml
+
+research/
