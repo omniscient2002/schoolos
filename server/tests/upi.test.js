@@ -111,6 +111,13 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     assert.equal(staleR.statusCode, 400);
     assert.match(staleR.json().error, /stale/);
 
+    // FRESHNESS, future-dated (cycle-4 P2-A): +1h signed event → 400, not 200
+    const future = payloadFor(paymentId, 'pay_U2_future', Math.floor(Date.now() / 1000) + 3600);
+    const futureR = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: future, headers: { 'x-razorpay-signature': sigOf(future) } });
+    assert.equal(futureR.statusCode, 400, 'future-dated events rejected (negative age is not an acceptance path)');
+    assert.match(futureR.json().error, /stale/);
+
     // valid fresh HMAC → fact recorded, verified
     const wh = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });

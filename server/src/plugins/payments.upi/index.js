@@ -107,12 +107,16 @@ export function register(app, kernel) {
       if (!pl || !['enabled', 'active', 'degraded'].includes(pl.status)) {
         return reply.code(409).send({ error: 'payments.upi is not enabled for this tenant' });
       }
-      // ── Gate 5: freshness (redteam P1-1) — stale replay defense, settings-overridable
+      // ── Gate 5: freshness (redteam P1-1; P2-A/P2-B closed cycle-4) — replay
+      // defense, settings-overridable. Boundary semantics (P2-B, documented):
+      // events are accepted ONLY within ±fresh_mins of now — strictly-older is
+      // rejected AND future-dated beyond the same window is rejected (negative age
+      // is not an acceptance path). Timestamps are compared in seconds.
       const ts = body?.payload?.payment?.entity?.created_at ?? body?.timestamp;
       if (ts != null) {
         const ageMins = (Date.now() / 1000 - Number(ts)) / 60;
-        if (!Number.isFinite(ageMins) || ageMins > Number(pl.fresh_mins)) {
-          return reply.code(400).send({ error: `stale event rejected (older than ${pl.fresh_mins} min)` });
+        if (!Number.isFinite(ageMins) || Math.abs(ageMins) > Number(pl.fresh_mins)) {
+          return reply.code(400).send({ error: `stale event rejected (outside ±${pl.fresh_mins} min window)` });
         }
       }
       // ── Gate 6: dedupe EVERYTHING on one insert — the row landing is the ticket for
