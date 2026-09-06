@@ -39,8 +39,12 @@ export function register(app, kernel) {
     const sig = req.headers['x-razorpay-signature'];
     const secret = process.env.UPI_WEBHOOK_SECRET;
     const raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? {});
+    // HMAC is REQUIRED when UPI_WEBHOOK_SECRET is set (Fees §4.2 posture): an unsigned
+    // request is rejected before any fact is read. Dev-unsigned mode exists only when
+    // the secret is absent (ephemeral test boots / pre-provisioning demo).
     let verified = false;
-    if (secret && sig) {
+    if (secret) {
+      if (!sig) return reply.code(401).send({ error: 'signature required' });
       const mac = createHmac('sha256', secret).update(raw).digest();
       try { verified = timingSafeEqual(mac, Buffer.from(String(sig), 'hex')); } catch { verified = false; }
       if (!verified) return reply.code(401).send({ error: 'invalid signature' });

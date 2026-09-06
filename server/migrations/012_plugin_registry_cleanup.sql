@@ -6,17 +6,15 @@
 --   "../../kernel" (the P1-1 traversal repro row), com.rtprobe.test (runtime-created,
 --   never seeded; purged per orchestrator directive — see handoff alert).
 --
--- PROVENANCE NOTE (orchestrator P2-2 ruling vs ledger evidence, 2026-09-06):
---   RULING: treat com.rtprobe.test as a known fixture from the original 002/003 seeds.
---   EVIDENCE: grep of ALL migrations (incl. git show of the original commit) finds zero
---   rtprobe references in 002/003 or anywhere else; the audit ledger records enabled/
---   disabled/re-enabled 2026-09-05 17:10–18:23 IST via authenticated owner-token API
---   sessions (actor "A. Meridian") — i.e., enabled by something other than any seed
---   script. Per the ruling's own conditional ("if enabled by someone other than the
---   seed script, alert me immediately") this was escalated. The row is purged by this
---   migration; the ledger keeps the full trail (append-only). FINAL classification
---   (fixture vs intrusion) rests with the orchestrator; if it is ever re-declared a
---   legitimate fixture, re-register it via a numbered migration — never re-insert by hand.
+-- PROVENANCE NOTE (P2-2, RESOLVED 2026-09-06):
+--   com.rtprobe.test = RTR-001 RT-015 evidence from the PREVIOUS red-team run
+--   ("Plugin enable accepts arbitrary client-supplied class/manifest/permissions" —
+--   PoC row enabled class D on 2026-09-05; docs/red-team/RTR-001.md:260). Ledger
+--   timestamps match that run; actor "A. Meridian" is the shared demo owner
+--   credential every lane uses. Orchestrator ruling: KNOWN FIXTURE, NOT AN
+--   INTRUSION; credential rotation not required. The row is purged by this
+--   migration (residue verified 0 in the live DB); the ledger keeps the full
+--   trail append-only.
 --
 -- Idempotent: deleting already-absent rows is a no-op; safe to replay on any environment.
 -- NOT added to seed.js replay: seed TRUNCATEs app.tenants CASCADE (all plugin rows die

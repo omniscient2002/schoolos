@@ -8,6 +8,10 @@ import { setupTestDb, loginAs } from './helpers.js';
 let app;
 
 before(async () => {
+  // dev-unsigned webhook mode requires the secret to be ABSENT (Fees §4.2 posture).
+  // Pre-set to '' BEFORE importing app.js: dotenv never overrides existing vars, so
+  // config.js sees '' (falsy) and the webhook accepts unsigned dev facts.
+  process.env.UPI_WEBHOOK_SECRET = '';
   await setupTestDb();
   const { buildApp } = await import('../src/app.js');
   app = await buildApp({ logger: false });
