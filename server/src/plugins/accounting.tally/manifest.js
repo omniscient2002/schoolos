@@ -1,0 +1,30 @@
+// accounting.tally — plugin manifest (drop-in factory, docs/11 §2.2; mirrors 009 row)
+export default {
+  id: 'accounting.tally',
+  name: 'Tally Reconciliation',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'Tally reconciliation rails: daily voucher export from the kernel fee ledger, ledger-mapping settings, Tally-importable output. Read-only on money — the ledger is kernel-owned; the plugin exports, it never posts.',
+  permissions: ['fees.read', 'events.emit', 'audit.request'],
+  events: { subscribe: ['payment.captured'], publish: ['tally.export.completed'] },
+  slots: ['settings', 'reports'],
+  routes: [],
+  widgets: [],
+  settings_schema: {
+    type: 'object',
+    properties: {
+      tally_url: { type: 'string', description: 'Tally XML endpoint (ODBC/HTTP), if push mode is ever enabled' },
+      company_name: { type: 'string', description: 'Tally company name stamped on vouchers' },
+      export_hour: { type: 'integer', minimum: 0, maximum: 23, default: 20, description: 'Scheduled daily export hour (declared kernel scheduler job, capped)' },
+      ledger_mapping: { type: 'object', description: 'Fee head to Tally ledger name map (kernel fee heads, read-only)' },
+    },
+    required: ['tally_url', 'company_name'],
+  },
+  data: { schema: 'plugin_tally (export history rides the kernel audit ledger)', core_refs: ['fee_obligations.id'], retention: { on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'rails', metered: ['vouchers_exported'] },
+  dependencies: [],
+  policy_refs: ['Platform §5.2 (artifacts)', 'Fees §4.2'],
+};
