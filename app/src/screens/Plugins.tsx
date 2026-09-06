@@ -7,12 +7,16 @@ import { PageHead, Card, Badge, Button, Empty, useToast, KeyValue } from '../com
 import { Icon } from '../components/Icon';
 import { useKernel } from '../plugins/useKernel';
 import { CLASS_INFO, PERMISSION_INFO } from '../plugins/pluginTypes';
+import { BUILT_IN_CAPABILITIES } from '../plugins/pluginRegistry';
 import { LIVE_API, apiEnablePlugin, apiDisablePlugin } from '../services/liveApi';
 
 export default function Plugins() {
   const { all, enabled, enable, disable, configured } = useKernel();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
+  // intersect: a stale mirror (or retired ids in localStorage) must not
+  // make the badge claim more enabled plugins than exist
+  const enabledCount = all.filter(p => enabled.has(p.id)).length;
 
   const toggle = async (id: string, on: boolean) => {
     setBusy(id);
@@ -39,8 +43,8 @@ export default function Plugins() {
     <div style={{ maxWidth: 980, margin: '0 auto' }}>
       <PageHead
         title="Plugin Manager"
-        sub="Everything the school runs beyond the kernel is a switch — not a feature request"
-        actions={<Badge tone="outline" dot>{enabled.size} of {all.length} enabled</Badge>}
+        sub="Every plugin the school runs is a switch — not a feature request · core capabilities live below"
+        actions={<Badge tone="outline" dot>{enabledCount} of {all.length} enabled</Badge>}
       />
 
       <Card head="What the kernel always runs" sub="These are not pluggable — a school without them is not a school" style={{ marginBottom: 'var(--s-4)' }}>
@@ -91,6 +95,28 @@ export default function Plugins() {
           );
         })}
       </div>
+
+      {/* Built-in core capabilities — ruling 2026-09-06: the plugin grid shows
+          ONLY server-registered plugins; core lives here, static, no switches. */}
+      <Card head="Built into the school core" sub="Core capabilities — always on, not pluggable, no server registration" style={{ marginTop: 'var(--s-4)' }}>
+        <div className="u-col" style={{ gap: 12 }}>
+          {BUILT_IN_CAPABILITIES.map(c => {
+            const I = Icon[c.icon as keyof typeof Icon] ?? Icon.Database;
+            return (
+              <div key={c.id} className="u-between" style={{ gap: 12, flexWrap: 'wrap', borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10 }}>
+                <div className="u-inline" style={{ gap: 10, minWidth: 0 }}>
+                  <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface-3)', color: 'var(--text-3)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={16} /></span>
+                  <div className="u-col" style={{ gap: 2 }}>
+                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                    <span className="u-xs u-faint" style={{ lineHeight: 1.5, maxWidth: 640 }}>{c.description}</span>
+                  </div>
+                </div>
+                <Badge tone="outline">built-in</Badge>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
 
       <Card head="Third-party extensions (class E)" sub="Not yet open — and that is deliberate" style={{ marginTop: 'var(--s-4)' }}>
         <Empty

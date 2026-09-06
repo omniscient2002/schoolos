@@ -24,6 +24,13 @@ AUDIT (attempt 1, TOTAL_ISSUES=0, CONSOLE_ERRORS=0)
 - tsc 0 errors (re-verified after cleanup); VITE_LIVE_API=1 build success (564ms); preview per pkill law; scratch scripts cleaned.
 - One audit-method note: login redirect means a second role login in the same context needs localStorage.clear() first (AuthGate bounces /login while authed) — documented for future multi-role runs.
 
+CATALOG CLEANUP ADDENDUM (ruling executed, same unit)
+- pluginRegistry.ts: 'transport', 'maintenance', 'exams' RETIRED from FIRST_PARTY_PLUGINS (grid now = 5 server-registered cards: library + 4 wave-1). New export BUILT_IN_CAPABILITIES carries the three as core (transport's description updated to note the GPS rail duplicate; exams notes the wave-3 exams.assessment return).
+- Plugins.tsx: new "Built into the school core" section between the grid and the class-E empty card — 3 static rows (icon, name, description, "built-in" badge), NO enable buttons, NO class/version vocabulary, no server dependency; plugins and core cannot be confused. Header badge now counts enabled∩cards (stale mirror ids from earlier sessions can't claim "6 of 5").
+- Consumer sweep before surgery: registerWidgets.ts registers ONLY library.overdue (transport/maintenance widget entries had no components — zero functional loss); useKernelNav/pluginForPath loses /transport,/maintenance,/exams route ownership → core items become ungated (library stays gated); Shell sidebar groups never rendered /transport or /maintenance for any role (command-palette/URL access by design) — verified no gating regression.
+- Audit (attempt 1, 0 issues, 0 console errors): exactly 5 plugin cards, badge "5 of 5 enabled" (server truth: 4 wave-1 + library all enabled), 0 retired-as-plugin-cards, 3 built-in rows, /transport+/maintenance+/today+/attention render by direct URL with no error states, /plugins overflow-clean ×3 widths. tsc 0 errors, build 491ms.
+- The session note: owner@meridian.edu currently logs into a principal-shaped session ("Principal — Group") in this deployment — flagging in case that's not intended (may be demo identity mapping; not a UI concern).
+
 FOR UNIT 6
 - Your call needed: shell surfaces for ops.timetable grid (289 slots) + transport.gps positions (attention-slot widgets are the natural vehicle) — currently headless-by-rule, no consumer.
 - Principal `configured` flag: routes.js:525 computes it but the deployed build doesn't return it — server-side follow-up for whoever owns that deploy.

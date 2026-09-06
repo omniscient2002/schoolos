@@ -1,42 +1,15 @@
 /* ============================================================
    Plugin registry — first-party manifests.
-   The kernel treats these exactly like third-party modules;
-   they ship enabled because Indian schools expect them.
+   Plugin grid shows ONLY server-registered plugins (ruling
+   2026-09-06): the server's app.plugins table is the truth of
+   record (docs/11 §8); defaultEnabled mirrors rows landing as
+   'registered' and real enablement comes from resync.
    ============================================================ */
 import type { PluginManifest } from './pluginTypes';
 
 export const KERNEL_VERSION = '1.0.0';
 
 export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
-  {
-    id: 'transport',
-    name: 'Transport',
-    version: '1.4.0',
-    class: 'B',
-    description: 'Routes, buses, riders, GPS delays. Raises approval-required guardian notices via the kernel action spine (Transport §3.1).',
-    icon: 'Bus',
-    kernel: '>=1.0.0 <2.0.0',
-    permissions: ['students.read', 'events.emit', 'actions.raise', 'comms.send', 'audit.request'],
-    slots: ['nav', 'route', 'attention'],
-    routes: [{ path: '/transport', label: 'Transport' }],
-    widgets: [{ slot: 'attention', id: 'transport.delay', title: 'Bus delays in the last 24h' }],
-    eventSubscriptions: [],
-    defaultEnabled: true,
-  },
-  {
-    id: 'maintenance',
-    name: 'Maintenance & Facilities',
-    version: '2.1.0',
-    class: 'B',
-    description: 'Assets, work orders, SLA governance, technician dispatch. SLA breaches escalate through the kernel action spine (Facilities §1.2).',
-    icon: 'Wrench',
-    kernel: '>=1.0.0 <2.0.0',
-    permissions: ['students.read', 'events.emit', 'actions.raise', 'comms.send', 'memory.write', 'audit.request'],
-    slots: ['nav', 'route', 'attention', 'today'],
-    routes: [{ path: '/maintenance', label: 'Maintenance' }],
-    widgets: [{ slot: 'attention', id: 'maintenance.sla', title: 'SLA clocks closing' }],
-    defaultEnabled: true,
-  },
   {
     id: 'library',
     name: 'Library',
@@ -49,19 +22,6 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     slots: ['nav', 'route', 'attention'],
     routes: [{ path: '/library', label: 'Library' }],
     widgets: [{ slot: 'attention', id: 'library.overdue', title: 'Overdue library books' }],
-    defaultEnabled: false,
-  },
-  {
-    id: 'exams',
-    name: 'Examinations',
-    version: '0.9.0',
-    class: 'C',
-    description: 'Exam mode, halls, invigilation, marks entry primitives. Planned: marks feed the Learning primitives.',
-    icon: 'Award',
-    kernel: '>=1.0.0 <2.0.0',
-    permissions: ['students.read', 'events.emit', 'audit.request'],
-    slots: ['nav', 'route'],
-    routes: [{ path: '/exams', label: 'Exams' }],
     defaultEnabled: false,
   },
   /* ── Wave 1 rails & primitives (mirror server/src/plugins/<id>/index.js) ──
@@ -120,3 +80,40 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);
+
+/* ============================================================
+   Built-in capabilities — core, NOT plugins (ruling 2026-09-06).
+   Shown on the Plugin Manager as a separate, clearly-labeled
+   static section: no enable buttons, no server dependency, no
+   class/version governance vocabulary. They must not look like
+   plugin cards.
+   - transport: retired from the grid — capability duplicates the
+     transport.gps rail (one plugin, one card); the /transport
+     screen stays core.
+   - maintenance: core capability, never was a plugin.
+   - exams: core until exams.assessment registers in wave 3 —
+     when plugin-agent registers it, the card returns with the
+     real server id.
+   ============================================================ */
+export interface BuiltInCapability { id: string; name: string; description: string; icon: string }
+
+export const BUILT_IN_CAPABILITIES: BuiltInCapability[] = [
+  {
+    id: 'transport',
+    name: 'Transport',
+    description: 'Routes, buses, riders, GPS delays. Raises approval-required guardian notices via the kernel action spine (Transport §3.1). GPS ingestion is the transport.gps rail.',
+    icon: 'Bus',
+  },
+  {
+    id: 'maintenance',
+    name: 'Maintenance & Facilities',
+    description: 'Assets, work orders, SLA governance, technician dispatch. SLA breaches escalate through the kernel action spine (Facilities §1.2).',
+    icon: 'Wrench',
+  },
+  {
+    id: 'exams',
+    name: 'Examinations',
+    description: 'Exam mode, halls, invigilation, marks entry primitives. Planned: marks feed the Learning primitives. Returns as the exams.assessment plugin in wave 3.',
+    icon: 'Award',
+  },
+];
