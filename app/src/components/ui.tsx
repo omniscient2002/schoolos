@@ -34,15 +34,16 @@ export function Avatar({ name, size = 'md', square }: { name: string; size?: 'sm
 }
 
 /* ============ Card ============ */
-export function Card({ children, className = '', pad, head, sub, actions, onClick, style }: {
+export function Card({ children, className = '', pad, head, sub, actions, onClick, style, headAs = 'h3' }: {
   children?: ReactNode; className?: string; pad?: boolean;
-  head?: ReactNode; sub?: ReactNode; actions?: ReactNode; onClick?: () => void; style?: CSSProperties;
+  head?: ReactNode; sub?: ReactNode; actions?: ReactNode; onClick?: () => void; style?: CSSProperties; headAs?: 'h2' | 'h3' | 'h4';
 }) {
+  const HeadTag = headAs;
   return (
     <div className={`card ${onClick ? 'card-click' : ''} ${className}`} style={style} onClick={onClick} role={onClick ? 'button' : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
       tabIndex={onClick ? 0 : undefined}>
-      {head && <div className="card-head"><div><h3>{head}</h3>{sub && <div className="u-small u-muted" style={{ marginTop: 2 }}>{sub}</div>}</div>{actions}</div>}
+      {head && <div className="card-head"><div><HeadTag>{head}</HeadTag>{sub && <div className="u-small u-muted" style={{ marginTop: 2 }}>{sub}</div>}</div>{actions}</div>}
       <div className={pad ? 'card-body' : ''}>{children}</div>
     </div>
   );
@@ -272,7 +273,7 @@ export function PageHead({ title, sub, actions, back }: { title: ReactNode; sub?
   return (
     <div className="page-head">
       <div style={{ minWidth: 0 }}>
-        {back && <div style={{ marginBottom: 6 }}><Link to={back.to} className="u-small u-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon.ChevronLeft size={13} /> {back.label}</Link></div>}
+        {back && <div style={{ marginBottom: 6 }}><Link to={back.to} className="u-small u-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 32, padding: '0 4px' }}><Icon.ChevronLeft size={13} /> {back.label}</Link></div>}
         <h1>{title}</h1>
         {sub && <div className="sub">{sub}</div>}
       </div>

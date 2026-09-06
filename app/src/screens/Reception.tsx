@@ -92,7 +92,7 @@ export default function Reception() {
       <div className="maint-grid">
         <div className="u-col" style={{ gap: 'var(--s-4)' }}>
           <Card
-            head={tab === 'calls' ? 'Today\u2019s calls' : tab === 'visitors' ? 'Visitor register' : 'Gate passes'}
+            headAs="h2" head={tab === 'calls' ? 'Today\u2019s calls' : tab === 'visitors' ? 'Visitor register' : 'Gate passes'}
             actions={
               <div className="u-inline" style={{ gap: 4 }}>
                 {([['calls', 'Calls'], ['visitors', 'Visitors'], ['passes', 'Gate passes']] as const).map(([id, label]) => (
@@ -170,7 +170,7 @@ export default function Reception() {
             )}
           </Card>
 
-          <Card head="What the desk answers" sub="Intent mix today — and what resolves without a human">
+          <Card headAs="h2" head="What the desk answers" sub="Intent mix today — and what resolves without a human">
             <div className="u-col" style={{ gap: 9 }}>
               {d.deskIntents.map(i => (
                 <div key={i.id} className="u-col" style={{ gap: 3 }}>
@@ -189,7 +189,7 @@ export default function Reception() {
         </div>
 
         <div className="u-col" style={{ gap: 'var(--s-4)' }}>
-          <Card head="How this desk works" sub="Grounded, consented, hand-off ready">
+          <Card headAs="h2" head="How this desk works" sub="Grounded, consented, hand-off ready">
             <KeyValue items={[
               { k: 'Answers from', v: 'Calendar · transport GPS · fee ledger · attendance · documents · asset records' },
               { k: 'Languages', v: d.deskSettings.languages.join(' · ') },
@@ -205,7 +205,7 @@ export default function Reception() {
             </div>
           </Card>
 
-          <Card head="Today's desk performance" sub="Recomputed from the call log">
+          <Card headAs="h2" head="Today's desk performance" sub="Recomputed from the call log">
             <KeyValue items={[
               { k: 'Handoff rate', v: `${a.handoffRate}% (target ≤ 15%)` },
               { k: 'Avg call', v: `${Math.round(a.avgDurationSec)}s` },
@@ -229,7 +229,7 @@ export default function Reception() {
             />
           </Card>
 
-          <Card head="Escalation ladder" sub="Who gets woken up, in order">
+          <Card headAs="h2" head="Escalation ladder" sub="Who gets woken up, in order">
             <EvidenceChain
               title="Front Desk §1.4"
               steps={[

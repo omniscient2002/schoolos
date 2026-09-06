@@ -653,3 +653,12 @@ table.data tbody tr.row-click { cursor: pointer; }
   padding-left: 9px;
   border-left: 3px solid var(--accent);
 }
+
+/* ---------- skip link (unit 7 batch 3) ---------- */
+.skip-link {
+  position: absolute; left: 12px; top: -48px; z-index: 200;
+  background: var(--accent); color: #fff; padding: 8px 14px;
+  border-radius: var(--r-md); font-size: var(--text-sm); font-weight: 600;
+  text-decoration: none; transition: top var(--t-fast) var(--ease);
+}
+.skip-link:focus { top: 12px; }

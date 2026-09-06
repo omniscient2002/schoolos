@@ -157,7 +157,7 @@ export default function Constitution() {
               className={`u-xs ${cat === c ? 'u-bold' : ''}`}
               style={{
                 border: '1px solid ' + (cat === c ? 'var(--accent)' : 'var(--border)'),
-                borderRadius: 999, padding: '4px 11px', cursor: 'pointer',
+                borderRadius: 999, padding: '4px 11px', cursor: 'pointer', minHeight: 32, display: 'inline-flex', alignItems: 'center',
                 background: cat === c ? 'var(--accent-weak)' : 'var(--surface)', color: cat === c ? 'var(--accent-text)' : 'var(--text-2)',
               }}
               onClick={() => setCat(c)}

@@ -318,13 +318,15 @@ function Frame() {
 
   return (
     <div style={{ minHeight: '100vh' }}>
+      {/* skip link: first focusable in the DOM — jumps past all chrome (unit 7 batch 3) */}
+      <a href="#main-content" className="skip-link">Skip to content</a>
       <div style={{ display: light ? 'block' : 'flex' }}>
         {!light && <Sidebar />}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Topbar onOpenPalette={() => setPaletteOpen(true)} />
           <SyncBanner />
           <div style={{ display: 'flex', flex: 1, minWidth: 0 }}>
-            <main style={{ flex: 1, minWidth: 0 }}>
+            <main id="main-content" tabIndex={-1} style={{ flex: 1, minWidth: 0 }}>
               <AppRoutes />
             </main>
             {!light && <AiDock />}
