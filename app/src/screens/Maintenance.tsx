@@ -138,7 +138,7 @@ export default function Maintenance() {
                     );
                   })()}
                 </Card>
-                <Card head="On shift now" sub="North campus technicians" actions={<Link to="/maintenance/map" className="u-small" style={{ color: 'var(--accent-text)' }}>Map</Link>}>
+                <Card head="On shift now" sub="North campus technicians" actions={<Link to="/maintenance/map" className="u-small" style={{ color: 'var(--accent-text)', display: 'inline-flex', alignItems: 'center', minHeight: 32, padding: '0 8px' }}>Map</Link>}>
                   <div className="u-col" style={{ gap: 9 }}>
                     {m.technicians.filter(t => t.campus === scope).map(t => (
                       <div key={t.id} className="u-inline" style={{ gap: 10, alignItems: 'center' }}>

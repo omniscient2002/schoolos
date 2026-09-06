@@ -298,7 +298,7 @@ export function ProfileMenu() {
   const account = demoAccounts.find(a => a.id === session.roleId)!;
   return (
     <Dropdown width={300} trigger={() => (
-      <button className="u-flex" style={{ gap: 8 }} aria-label="Account menu">
+      <button className="u-flex iconbtn" style={{ gap: 8, padding: '3px 6px' }} aria-label="Account menu">
         <Avatar name={actorName} size="sm" />
         <Icon.ChevronDown size={13} />
       </button>

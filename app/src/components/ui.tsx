@@ -189,24 +189,46 @@ export function Drawer({ open, onClose, title, sub, children, footer }: {
 export function Tabs({ tabs, active, onChange, pill }: {
   tabs: { id: string; label: ReactNode; count?: number }[]; active: string; onChange: (id: string) => void; pill?: boolean;
 }) {
+  /* WAI-ARIA tabs: arrow keys move selection, Home/End jump (unit 7 batch 1).
+     roving tabindex: the active tab is the only tab stop. */
+  const onTabKeyDown = (e: React.KeyboardEvent) => {
+    const ids = tabs.map(t => t.id);
+    const i = ids.indexOf(active);
+    let next: number | null = null;
+    if (e.key === 'ArrowRight') next = (i + 1) % ids.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + ids.length) % ids.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = ids.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    onChange(ids[next]);
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[role="tab"][data-tab-id="${ids[next]}"]`)?.focus());
+  };
+  const renderTab = (t: { id: string; label: ReactNode; count?: number }) => (
+    <button
+      key={t.id}
+      role="tab"
+      data-tab-id={t.id}
+      id={`tab-${t.id}`}
+      aria-selected={active === t.id}
+      tabIndex={active === t.id ? 0 : -1}
+      className={`tab ${active === t.id ? 'active' : ''}`}
+      onKeyDown={onTabKeyDown}
+      onClick={() => onChange(t.id)}
+    >
+      {t.label}{t.count !== undefined && <span className="u-faint" style={{ marginLeft: 5 }}>{t.count}</span>}
+    </button>
+  );
   if (pill) {
     return (
       <div className="tabs-pill" role="tablist">
-        {tabs.map(t => (
-          <button key={t.id} role="tab" aria-selected={active === t.id} className={`tab ${active === t.id ? 'active' : ''}`} onClick={() => onChange(t.id)}>
-            {t.label}{t.count !== undefined && <span className="u-faint" style={{ marginLeft: 5 }}>{t.count}</span>}
-          </button>
-        ))}
+        {tabs.map(renderTab)}
       </div>
-);
+    );
   }
   return (
     <div className="tabs" role="tablist">
-      {tabs.map(t => (
-        <button key={t.id} role="tab" aria-selected={active === t.id} className={`tab ${active === t.id ? 'active' : ''}`} onClick={() => onChange(t.id)}>
-          {t.label}{t.count !== undefined && <span className="u-faint" style={{ marginLeft: 5 }}>{t.count}</span>}
-        </button>
-      ))}
+      {tabs.map(renderTab)}
     </div>
   );
 }
@@ -221,11 +243,18 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty }: {
     <div className="table-wrap">
       <table className="data">
         <thead><tr>{columns.map(c => (
-          <th key={c.key} style={{ width: c.width, textAlign: c.align }}>{c.label}</th>
+          <th key={c.key} scope="col" style={{ width: c.width, textAlign: c.align }}>{c.label}</th>
         ))}</tr></thead>
         <tbody>
           {rows.map(row => (
-            <tr key={rowKey(row)} className={onRowClick ? 'row-click' : ''} onClick={() => onRowClick?.(row)}>
+            <tr
+              key={rowKey(row)}
+              className={onRowClick ? 'row-click' : ''}
+              onClick={() => onRowClick?.(row)}
+              /* keyboard parity for click-only rows (unit 7 batch 1) */
+              tabIndex={onRowClick ? 0 : undefined}
+              onKeyDown={onRowClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row); } } : undefined}
+            >
               {columns.map(c => (
                 <td key={c.key} style={{ textAlign: c.align }}>{c.render ? c.render(row) : (row as Record<string, unknown>)[c.key] as ReactNode}</td>
               ))}

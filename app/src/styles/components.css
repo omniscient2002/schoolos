@@ -47,7 +47,7 @@
 /* ---------- Icon button ---------- */
 .iconbtn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border-radius: var(--r-md); color: var(--text-2);
+  width: 32px; height: 32px; border-radius: var(--r-md); color: var(--text-2);
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .iconbtn:hover { background: var(--surface-3); color: var(--text); }
@@ -114,6 +114,8 @@
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 .badge-success { background: var(--success-weak); color: var(--success); }
 .badge-warning { background: var(--warning-weak); color: var(--warning); }
+/* unit 7 batch 1: AA text on warning tint (was 2.8:1) */
+.badge-warning { color: #92400E; }
 .badge-danger { background: var(--danger-weak); color: var(--danger); }
 .badge-info { background: var(--info-weak); color: var(--info); }
 .badge-ai { background: var(--ai-weak); color: var(--ai-text); }
@@ -174,6 +176,8 @@ table.data tbody tr.row-click { cursor: pointer; }
 .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tabs-pill { display: inline-flex; gap: 2px; background: var(--surface-3); padding: 3px; border-radius: var(--r-md); }
 .tabs-pill .tab { border: none; margin: 0; padding: 4px 10px; border-radius: 6px; font-size: var(--text-sm); }
+.tabs-pill .tab { min-height: 32px; display: inline-flex; align-items: center; }
+.tabs-pill .tab .u-faint { color: var(--text-2); } /* tab counts on tinted active bg (unit 7 batch 1) */
 .tabs-pill .tab.active { background: var(--surface); box-shadow: var(--shadow-xs); color: var(--text); }
 
 /* ---------- Sidebar ---------- */
@@ -192,6 +196,10 @@ table.data tbody tr.row-click { cursor: pointer; }
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .nav-item:hover { background: var(--surface-3); color: var(--text); }
+/* unit 7 batch 1: touch-target floor + keyboard row affordance */
+.nav-item { min-height: 32px; }
+.data tbody tr:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.row-click:focus-visible { background: var(--surface-3); }
 .nav-item.active { background: var(--accent-weak); color: var(--accent-text); font-weight: 570; }
 .nav-item .nav-badge { margin-left: auto; }
 .nav-item svg { flex-shrink: 0; opacity: .85; }

@@ -134,9 +134,13 @@ function dispatchFlush() { window.dispatchEvent(new CustomEvent('schoolos:flush-
 /* ---------- role screen guard ---------- */
 function Guard({ children }: { children: React.ReactNode }) {
   const { session } = useStore();
+  const live = useSession();
   const { pathname } = useLocation();
-  const light = ['parent', 'student'].includes(session.roleId);
-  const staffOnly = ['/fees', '/admissions', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
+  /* Light-role check uses BOTH the live authenticated role (a parent
+     sign-in must land on the calm surface) and the demo view switcher
+     (staff previewing a light role sees the same gates). */
+  const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
+  const staffOnly = ['/fees', '/admissions', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return (
       <PageShell>
@@ -287,7 +291,8 @@ function AppRoutes() {
 function Frame() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { session, dispatch } = useStore();
-  const light = ['parent', 'student'].includes(session.roleId);
+  const live = useSession();
+  const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
   useLiveEventBridge(dispatch);
 
   useEffect(() => {
