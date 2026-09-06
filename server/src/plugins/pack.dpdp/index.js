@@ -17,6 +17,15 @@ export function register(app, kernel) {
   const DPO = ['owner', 'principal', 'itadmin', 'coordinator']; // data-protection operators
   const lifecycleGate = makeLifecycleGate(kernel.q, ID);
   const PHONE = /^[\d+\-\s()]{6,15}$/;
+  // P2-1 (cycle 5): spaced vs compact phone must be ONE data principal. Normalize to
+  // digits-only E.164 at every door; the raw string rides in evidence for the audit trail.
+  const normPhone = (s) => {
+    const d = String(s).replace(/\D/g, '');
+    if (d.length === 10) return `+91${d}`;           // bare Indian subscriber number
+    if (d.length === 12 && d.startsWith('91')) return `+${d}`;
+    if (d.length === 13 && d.startsWith('091')) return `+${d.slice(1)}`;
+    return d.length > 0 ? `+${d}` : '';
+  };
 
   const slaStamp = (days) => `now() + make_interval(days => ${Math.max(1, Math.min(90, Number(days) || 30))})`;
   const validityStamp = (days) => `now() + make_interval(days => ${Math.max(1, Math.min(3650, Number(days) || 1095))})`;
@@ -34,9 +43,9 @@ export function register(app, kernel) {
       const r = await c.query(
         `INSERT INTO plugin_dpdp.consent (tenant_id, subject_ref, purpose, decision, basis, channel, actor, evidence, valid_until)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb, ${validityStamp(s.consent_validity_days)}) RETURNING id, valid_until`,
-        [req.user.tenant_id, String(subjectRef), String(purpose).slice(0, 80), decision,
+        [req.user.tenant_id, normPhone(subjectRef), String(purpose).slice(0, 80), decision,
           basis ? String(basis).slice(0, 40) : 'consent', channel ? String(channel).slice(0, 40) : 'walk-in',
-          req.user.email, JSON.stringify({ recordedBy: req.user.email, note: req.body?.note ?? null })]);
+          req.user.email, JSON.stringify({ recordedBy: req.user.email, note: req.body?.note ?? null, rawSubjectRef: String(subjectRef) })]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'dpdp', label: `consent ${decision} (${String(purpose).slice(0, 40)})`, ref: r.rows[0].id },
         'consent.recorded.v1', { consentId: r.rows[0].id, subjectRef: String(subjectRef), purpose, decision });
@@ -79,25 +88,28 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const open = (await c.query(
         `SELECT id FROM plugin_dpdp.sar WHERE tenant_id=$1 AND subject_ref=$2 AND kind=$3 AND status='open' LIMIT 1`,
-        [req.user.tenant_id, String(subjectRef), kind])).rows[0];
+        [req.user.tenant_id, normPhone(subjectRef), kind])).rows[0];
       if (open) return reply.code(409).send({ error: `an open ${kind} SAR already exists for this subject`, sarId: open.id });
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
       const sar = await c.query(
         `INSERT INTO plugin_dpdp.sar (tenant_id, kind, subject_ref, requested_by, sla_due_at)
          VALUES ($1,$2,$3,$4, ${slaStamp(s.dsr_sla_days)}) RETURNING id, sla_due_at`,
-        [req.user.tenant_id, kind, String(subjectRef), req.user.email]);
+        [req.user.tenant_id, kind, normPhone(subjectRef), req.user.email]);
       const sarId = sar.rows[0].id;
+      // P1-1 (cycle 5): action codes are UNIQUE (tenant_id, code) — the fixed
+      // `dpdp.dsr.${kind}` 500'd on the SECOND SAR of a kind (subject #2 could never
+      // raise erasure). Per-instance code, binding stays via sar.action_id.
       const act = await c.query(
         `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
          VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','DPDP Act 2023 · SAR',false,'sar.opened.v1',$6::jsonb) RETURNING id`,
-        [req.user.tenant_id, `dpdp.dsr.${kind}`,
+        [req.user.tenant_id, `dpdp.dsr.${kind}.${sarId}`,
           kind === 'export' ? `SAR export for ${String(subjectRef)}` : `SAR ERASURE for ${String(subjectRef)} — irreversible`,
           kind === 'export'
             ? `Bundle the consent artifacts and admissions PII held for this data principal (SLA ${sar.rows[0].sla_due_at?.toISOString?.() ?? sar.rows[0].sla_due_at}).`
             : `Redact the data principal's identity from the consent ledger and admissions funnel. Irreversible once executed.`,
           'Erasure touches the principal\'s data across plugin domains — kernel approval semantics; the pack executes only what it owns and never writes app.students.',
-          JSON.stringify({ sarId, subjectRef: String(subjectRef), dsrKind: kind, note: note ?? null, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
+          JSON.stringify({ sarId, subjectRef: normPhone(subjectRef), dsrKind: kind, note: note ?? null, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
       await c.query(`UPDATE plugin_dpdp.sar SET action_id=$1 WHERE id=$2`, [act.rows[0].id, sarId]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'dpdp', label: `SAR ${kind} opened for ${String(subjectRef)}`, ref: sarId },
