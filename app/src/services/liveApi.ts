@@ -125,3 +125,36 @@ export const apiFunnelMoveStage = (id: string, to: string) =>
 export const apiFunnelHistory = (id: string) =>
   call<{ history: { from_stage: string | null; to_stage: string; actor: string; at: string }[] }>(`/plugins/admissions.funnel/leads/${id}/history`);
 export const apiFunnelSummary = () => call<{ byStage: Record<string, number>; total: number }>(`/plugins/admissions.funnel/summary`);
+
+/* ---- ops.visitors (wave-2 #2; gate pass — DESK-gated doors, fail-closed release) ---- */
+export interface ApiVisitorVisit {
+  id: string; visitorName: string; visitorPhone: string | null; purpose: string; detail: string | null;
+  status: string; badge: string; studentName: string | null; verified: boolean; createdAt: string; updatedAt: string;
+}
+export const apiVisitorsList = (status?: string) =>
+  call<{ visits: ApiVisitorVisit[] }>(`/plugins/ops.visitors/visitors${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+export const apiVisitorLog = (body: { visitorName: string; visitorPhone?: string; purpose: string; detail?: string; studentId?: string }) =>
+  call<{ ok: boolean; visitId: string; badge: string; status: string }>(`/plugins/ops.visitors/visitors`, { method: 'POST', body: JSON.stringify(body) });
+export const apiVisitorCheckin = (id: string) =>
+  call<{ ok: boolean; status: string }>(`/plugins/ops.visitors/visitors/${id}/checkin`, { method: 'POST', body: '{}' });
+export const apiVisitorPickup = (id: string) =>
+  call<{ ok: boolean; status: string; ttlMinutes: number; devCode?: string }>(`/plugins/ops.visitors/visitors/${id}/pickup`, { method: 'POST', body: '{}' });
+/* verify door returns 401 for invalid/expired/consumed OTP — that is a DOOR error,
+   not session expiry. The global call() redirects any 401 to /login (auth convention),
+   which would log the desk out on a wrong guardian code. This wrapper performs the
+   same request without the 401 redirect — additive only; token handling untouched. */
+export const apiVisitorVerify = async (id: string, code: string) => {
+  const token = localStorage.getItem('schoolos_token');
+  const res = await fetch(`${LIVE_BASE}/plugins/ops.visitors/visitors/${id}/pickup/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ code }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  return body as { ok: boolean; status: string };
+};
+export const apiVisitorComplete = (id: string, override: boolean, note?: string) =>
+  call<{ ok: boolean; status: string; overrideUsed?: boolean }>(`/plugins/ops.visitors/visitors/${id}/complete`, { method: 'POST', body: JSON.stringify(override ? { override: true, note } : {}) });
+export const apiVisitorDeny = (id: string, note?: string) =>
+  call<{ ok: boolean; status: string }>(`/plugins/ops.visitors/visitors/${id}/deny`, { method: 'POST', body: JSON.stringify(note ? { note } : {}) });

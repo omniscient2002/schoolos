@@ -32,6 +32,7 @@ export function useNavItems(): NavItem[] {
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
         { to: '/automation', label: 'Automation', icon: 'Automation' },
         { to: '/memory', label: 'Memory', icon: 'Memory' },
@@ -61,6 +62,7 @@ export function useNavItems(): NavItem[] {
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
       ];
     case 'finance':
@@ -100,6 +102,7 @@ export function useNavItems(): NavItem[] {
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/migration', label: 'Migration', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
       ];
@@ -110,6 +113,7 @@ export function useNavItems(): NavItem[] {
         { to: '/attention', label: 'Attention', icon: 'Attention' },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/it', label: 'Platform', icon: 'Shield' },
         { to: '/memory', label: 'Memory', icon: 'Memory' },
         kernel,
@@ -159,7 +163,7 @@ export function Sidebar() {
   useEffect(() => { localStorage.setItem('schoolos.sidebarCollapsed', collapsed ? '1' : '0'); }, [collapsed]);
   const items = useNavItems();
   const groups = [
-    { label: 'Operating loop', items: items.filter(i => ['Today', 'Attention', 'Next', 'Ask', 'Group'].includes(i.label)) },
+    { label: 'Operating loop', items: items.filter(i => ['Today', 'Attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
     { label: 'Records', items: items.filter(i => ['People', 'Learning', 'Operations'].includes(i.label)) },
     { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'Memory', 'Platform'].includes(i.label)) },
     { label: 'Your space', items: items.filter(i => ['Home', 'Messages', 'Fees', 'My Day', 'Portfolio'].includes(i.label)) },

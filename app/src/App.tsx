@@ -3,7 +3,7 @@ import { KernelProvider, KernelGate, useKernel } from './plugins/useKernel';
 import './plugins/registerWidgets';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { StoreProvider, useStore } from './state/store';
-import { ToastProvider } from './components/ui';
+import { ToastProvider, Empty } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
 import { apiMe, setToken } from './services/liveApi';
@@ -30,6 +30,7 @@ const Operations = F(() => import('./screens/Operations'));
 const Fees = F(() => import('./screens/Fees'));
 const Admissions = F(() => import('./screens/Admissions'));
 const FunnelBoard = F(() => import('./screens/FunnelBoard'));
+const VisitorsBoard = F(() => import('./screens/VisitorsBoard'));
 const Transport = F(() => import('./screens/Transport'));
 const Documents = F(() => import('./screens/Documents'));
 const Maintenance = F(() => import('./screens/Maintenance'));
@@ -146,7 +147,7 @@ function Guard({ children }: { children: React.ReactNode }) {
      sign-in must land on the calm surface) and the demo view switcher
      (staff previewing a light role sees the same gates). */
   const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
-  const staffOnly = ['/fees', '/admissions', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return (
       <PageShell>
@@ -229,6 +230,17 @@ function AdmissionsHost() {
   return isEnabled('admissions.funnel') ? <FunnelBoard /> : <Admissions />;
 }
 
+/* unit 15: server flag wins — ops.visitors gate pass appears at /visitors while
+   the server flag is on; when off the route answers with an honest empty state. */
+function VisitorsHost() {
+  const { isEnabled } = useKernel();
+  return isEnabled('ops.visitors') ? <VisitorsBoard /> : (
+    <PageShell>
+      <Empty icon={<Icon.Shield size={22} />} title="Visitors gate pass is not enabled" sub="The ops.visitors plugin is disabled for this school — enable it in Plugins to use the gate-pass desk." />
+    </PageShell>
+  );
+}
+
 function AppRoutes() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
@@ -247,6 +259,7 @@ function AppRoutes() {
       <Route path="/operations" element={<S><Operations /></S>} />
       <Route path="/fees" element={<S><Fees /></S>} />
       <Route path="/admissions" element={<S><AdmissionsHost /></S>} />
+      <Route path="/visitors" element={<S><VisitorsHost /></S>} />
       <Route path="/transport" element={<S><Transport /></S>} />
       <Route path="/documents" element={<S><Documents /></S>} />
       <Route path="/maintenance" element={<S><Maintenance /></S>} />

@@ -98,6 +98,23 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     slots: ['settings', 'reports'],
     defaultEnabled: false,
   },
+  /* wave-2 #2 (unit 15): mirrors server/src/plugins/ops.visitors (migration 024).
+     Invariants: pickup_requires_guardian_otp · no_release_without_verification ·
+     otp_vault_kernel_pattern. Its UI is the /visitors gate-pass board (route
+     declared below so useKernelNav gates the nav item on the server flag). */
+  {
+    id: 'ops.visitors',
+    name: 'Visitors Gate Pass',
+    version: '1.0.0',
+    class: 'C',
+    description: 'Campus gate pass with guardian-verified student pickup: front-desk logging + badges, pickup raises an OTP to the primary guardian (kernel OTP-vault: scrypt-hashed, TTL + attempt-bounded, consumed on success); release is fail-closed without verification — audited owner/principal override with note is the only bypass.',
+    icon: 'Shield',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['events.emit', 'audit.request'],
+    slots: ['settings', 'reports'],
+    routes: [{ path: '/visitors', label: 'Visitors' }],
+    defaultEnabled: false,
+  },
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);
