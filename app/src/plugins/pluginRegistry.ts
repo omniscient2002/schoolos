@@ -10,22 +10,9 @@ import type { PluginManifest } from './pluginTypes';
 export const KERNEL_VERSION = '1.0.0';
 
 export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
-  {
-    id: 'library',
-    name: 'Library',
-    version: '1.0.0',
-    class: 'A',
-    description: 'Catalog, issue/return, overdue tracking. A proof plugin: lives entirely behind the manifest — enable it and nav, routes and the attention slot light up; disable it and it vanishes.',
-    icon: 'Book',
-    kernel: '>=1.0.0 <2.0.0',
-    permissions: ['students.read', 'events.emit', 'actions.raise', 'audit.request'],
-    slots: ['nav', 'route', 'attention'],
-    routes: [{ path: '/library', label: 'Library' }],
-    widgets: [{ slot: 'attention', id: 'library.overdue', title: 'Overdue library books' }],
-    defaultEnabled: false,
-  },
   /* ── Wave 1 rails & primitives (mirror server/src/plugins/<id>/index.js) ──
-     Headless by rule (docs/11 §2.3): settings/reports slots only, no routes.
+     Headless by rule (docs/11 §2.3): settings/reports slots only, no routes —
+     attention-slot widgets only SURFACE data that already exists on the spines.
      defaultEnabled=false mirrors server registry rows landing as 'registered';
      real enablement always comes from the server's `enabled` flag via resync. */
   {
@@ -62,7 +49,8 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     icon: 'Compass',
     kernel: '>=1.0.0 <2.0.0',
     permissions: ['events.emit', 'actions.raise', 'audit.request'],
-    slots: ['settings', 'reports'],
+    slots: ['settings', 'reports', 'attention'],
+    widgets: [{ slot: 'attention', id: 'gps.delay.approvals', title: 'GPS delay approvals open' }],
     defaultEnabled: false,
   },
   {
@@ -74,9 +62,26 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     icon: 'Grid',
     kernel: '>=1.0.0 <2.0.0',
     permissions: ['events.emit', 'audit.request', 'attendance.write'],
-    slots: ['settings', 'reports'],
+    slots: ['settings', 'reports', 'attention'],
+    widgets: [{ slot: 'attention', id: 'timetable.substitutions', title: 'Timetable substitutions feed' }],
     defaultEnabled: false,
   },
+  {
+    id: 'library',
+    name: 'Library',
+    version: '1.0.0',
+    class: 'A',
+    description: 'Catalog, issue/return, overdue tracking. A proof plugin: lives entirely behind the manifest — enable it and nav, routes and the attention slot light up; disable it and it vanishes.',
+    icon: 'Book',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['students.read', 'events.emit', 'actions.raise', 'audit.request'],
+    slots: ['nav', 'route', 'attention'],
+    routes: [{ path: '/library', label: 'Library' }],
+    widgets: [{ slot: 'attention', id: 'library.overdue', title: 'Overdue library books' }],
+    defaultEnabled: false,
+  },
+  /* library is the proof plugin and ranks LAST on slot surfaces: the docs/10 §6
+     ration (max 2 widgets per slot) is consumed by the production rails first */
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);

@@ -91,7 +91,7 @@ export default function Library() {
           { time: '08:20', label: 'Manifest declares slots: nav · route · attention', detail: 'pluginRegistry.ts → Library entry', kind: 'note' },
           { time: '08:21', label: 'Nav item appears only while enabled', detail: 'Shell filters through useKernelNav', kind: 'note' },
           { time: '08:22', label: 'Route gated by KernelGate', detail: 'App.tsx wraps /library — disabled shows the "not enabled" state, not a 404', kind: 'note' },
-          { time: '08:23', label: 'Attention widget renders in the principal list', detail: 'Slot name="attention" → library:overdue widget (max 2 plugin widgets allowed)', kind: 'note' },
+          { time: '08:23', label: 'Attention widget renders in the principal list', detail: 'Slot name="attention" → library:overdue widget (docs/10 §6 ration: max 2 per slot — rank by manifest order; the wave-1 rails outrank the proof widget)', kind: 'note' },
           { time: '08:25', label: 'Return writes: events.emit + audit.request', detail: 'This screen just dispatched both through the kernel store', kind: 'verify' },
         ]} />
       </Card>

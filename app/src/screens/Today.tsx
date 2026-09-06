@@ -13,6 +13,7 @@ import { transportService } from '../services';
 import { PageHead, Section, Card, Stat, Badge, Empty, ErrorState, Skeleton, SkeletonCard } from '../components/ui';
 import { EvidenceChain, AiTraceCard, EventLine } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
+import { Slot } from '../plugins/Slot';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort, fmtTime, weekday } from '../lib/format';
 import type { ActionRecord, BusRoute } from '../types/domain';
@@ -525,6 +526,9 @@ export default function Today() {
             />
           ))}
       </div>
+
+      {/* plugin widgets — attention-slot (docs/10 §6 ration: max 2, rank by manifest order) */}
+      <div style={{ marginBottom: 14 }}><Slot name="attention" /></div>
 
       <div className="today-cols">
         {/* left — bands */}
