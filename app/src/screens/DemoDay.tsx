@@ -218,7 +218,7 @@ export default function DemoDay() {
                 {editOpen && (
                   <div className="u-col" style={{ gap: 6 }}>
                     <span className="u-upper u-xs" style={{ fontWeight: 660, color: 'var(--text-3)', letterSpacing: '0.06em' }}>Draft — template TRANSPORT_DELAY (edit before approving)</span>
-                    <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={3}
+                    <textarea aria-label="Message draft — template TRANSPORT_DELAY, edit before approving" value={draft} onChange={e => setDraft(e.target.value)} rows={3}
                       style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--r-md)', border: '1px solid var(--border)', background: 'var(--surface-1)', color: 'var(--text-1)', font: 'inherit', resize: 'vertical' }} />
                     <span className="u-xs u-faint">Edits are yours — the audit entry records the approved text, not the template.</span>
                   </div>

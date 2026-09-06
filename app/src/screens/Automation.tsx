@@ -551,7 +551,7 @@ export default function Automation() {
               </button>
             );
           })}
-          {nodes.length === 0 && <div className="empty" style={{ padding: '60px 0' }}><h3>Canvas is empty</h3><p>Add a trigger node to begin.</p></div>}
+          {nodes.length === 0 && <Empty icon={<Icon.Workflow size={22} />} title="Canvas is empty" sub="Add a trigger node to begin." titleAs="h3" style={{ padding: '60px 0' }} />}
         </div>
       </Modal>
     </>

@@ -183,12 +183,14 @@ export default function CaseDetail() {
         actions={
           <>
             {nexts.length > 0 ? (
-              <Dropdown trigger={() => <Button variant="primary" icon={<Icon.ArrowRight size={13} />}>Advance status</Button>} align="left">
+              <Dropdown
+            label="Status advance" trigger={() => <Button variant="primary" icon={<Icon.ArrowRight size={13} />}>Advance status</Button>} align="left">
                 {close => (
                   <div className="u-col" style={{ padding: 4 }}>
                     {nexts.map(s => (
                       <button
                         key={s}
+                        role="menuitem"
                         className="u-small"
                         style={{ textAlign: 'left', padding: '7px 10px', borderRadius: 8, cursor: 'pointer', border: 'none', background: 'transparent' }}
                         onClick={() => { advance(s); close(); }}

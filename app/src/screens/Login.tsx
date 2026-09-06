@@ -138,16 +138,16 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         </div>
 
         {error && error !== '__stage__' && (
-          <div className="login-error" role="alert"><Icon.Alert size={13} /> {error}</div>
+          <div id="login-error" className="login-error" role="alert"><Icon.Alert size={13} /> {error}</div>
         )}
 
         {method === 'password' && (
           <form role="tabpanel" id="login-seg-panel-password" aria-labelledby="seg-tab-password" className="login-form" onSubmit={e => { e.preventDefault(); submitPassword(); }}>
             <label>Email
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@school.edu" autoFocus />
+              <input type="email" aria-invalid={!!error} aria-describedby={error ? 'login-error' : undefined} value={email} onChange={e => setEmail(e.target.value)} placeholder="you@school.edu" autoFocus />
             </label>
             <label>Password
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+              <input type="password" aria-invalid={!!error} aria-describedby={error ? 'login-error' : undefined} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
             </label>
             <button className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? 'Signing in…' : 'Sign in'}
@@ -158,12 +158,12 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         {method === 'phone' && (
           <form role="tabpanel" id="login-seg-panel-phone" aria-labelledby="seg-tab-phone" className="login-form" onSubmit={e => { e.preventDefault(); otpSent ? verifyOtp() : requestOtp(); }}>
             <label>Phone number
-              <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98450 00101" disabled={otpSent} autoFocus={!otpSent} />
+              <input type="tel" aria-invalid={!!error} aria-describedby={error ? 'login-error' : undefined} value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98450 00101" disabled={otpSent} autoFocus={!otpSent} />
             </label>
             {otpSent && (
               <>
                 <label>6-digit code <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· expires in 5 min</span>
-                  <input inputMode="numeric" maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} placeholder="••••••" autoFocus />
+                  <input inputMode="numeric" aria-invalid={!!error} aria-describedby={error ? 'login-error' : undefined} maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} placeholder="••••••" autoFocus />
                 </label>
                 {devCode && <div className="login-devcode"><Badge tone="warning">dev mode</Badge> SMS provider not wired — code: <b>{devCode}</b></div>}
                 <button type="button" className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }} onClick={() => { setOtpSent(false); setCode(''); setDevCode(null); }}>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 import { avatarHue, initials } from '../lib/format';
@@ -70,10 +70,10 @@ export function Stat({ label, value, delta, sub, spark, onClick, style }: {
 }
 
 /* ============ Empty / Error / Loading ============ */
-export function Empty({ icon, title, sub, action, titleAs = 'h3' }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode; titleAs?: 'h1' | 'h2' | 'h3' }) {
+export function Empty({ icon, title, sub, action, titleAs = 'h3', style }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode; titleAs?: 'h1' | 'h2' | 'h3'; style?: CSSProperties }) {
   const Tag = titleAs;
   return (
-    <div className="empty">
+    <div className="empty" style={style}>
       {icon}
       <Tag>{title}</Tag>
       {sub && <p>{sub}</p>}
@@ -106,24 +106,59 @@ export function SkeletonCard({ lines = 3 }: { lines?: number }) {
 }
 
 /* ============ Dropdown (click-outside aware) ============ */
-export function Dropdown({ trigger, children, align = 'right', width }: {
+export function Dropdown({ trigger, children, align = 'right', width, label }: {
   trigger: (open: boolean) => ReactNode; children: ReactNode | ((close: () => void) => ReactNode); align?: 'left' | 'right'; width?: number;
+  /* unit 10: popover-menu pattern — WAI-ARIA APG menu-button semantics.
+     The trigger must be a single <button>; we clone it to attach the toggle,
+     aria-expanded and aria-haspopup so state lands on the real button. */
+  label?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        /* focus returns to the trigger on Esc (APG menu-button) */
+        requestAnimationFrame(() => triggerRef.current?.focus());
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+      const items = [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+      if (!items.length) return;
+      e.preventDefault();
+      const idx = items.indexOf(document.activeElement as HTMLElement);
+      let next = e.key === 'ArrowDown' ? idx + 1 : e.key === 'ArrowUp' ? idx - 1 : e.key === 'Home' ? 0 : items.length - 1;
+      if (idx === -1) next = e.key === 'ArrowUp' ? items.length - 1 : 0;
+      else if (next < 0) next = items.length - 1;
+      else if (next >= items.length) next = 0;
+      items[next].focus();
+    };
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
   }, [open]);
   return (
     <div className="dropdown" ref={ref}>
-      <div onClick={() => setOpen(o => !o)} aria-expanded={open}>{trigger(open)}</div>
+      {(() => {
+        const el = trigger(open);
+        if (el && typeof el === 'object' && 'props' in el) {
+          try {
+            return cloneElement(el as React.ReactElement<Record<string, unknown>>, {
+              onClick: () => setOpen(o => !o),
+              'aria-expanded': open,
+              'aria-haspopup': 'menu',
+              ref: (n: HTMLElement | null) => { triggerRef.current = n; },
+            });
+          } catch { /* non-cloneable trigger — fall through to wrapper */ }
+        }
+        return <div onClick={() => setOpen(o => !o)} aria-expanded={open}>{el}</div>;
+      })()}
       {open && (
-        <div className="dropdown-menu" style={{ ...(align === 'left' ? { left: 0 } : { right: 0 }), ...(width ? { width, minWidth: width } : {}) }}>
+        <div className="dropdown-menu" role="menu" aria-label={label} style={{ ...(align === 'left' ? { left: 0 } : { right: 0 }), ...(width ? { width, minWidth: width } : {}) }}>
           {typeof children === 'function' ? children(() => setOpen(false)) : children}
         </div>
       )}
@@ -264,9 +299,11 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty, caption
               tabIndex={onRowClick ? 0 : undefined}
               onKeyDown={onRowClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row); } } : undefined}
             >
-              {columns.map(c => (
-                <td key={c.key} style={{ textAlign: c.align }}>{c.render ? c.render(row) : (row as Record<string, unknown>)[c.key] as ReactNode}</td>
-              ))}
+              {columns.map(c => {
+                /* unit 10: empty cells render an em-dash — one decision, every table */
+                const v = c.render ? c.render(row) : (row as Record<string, unknown>)[c.key] as ReactNode;
+                return <td key={c.key} style={{ textAlign: c.align }}>{v === undefined || v === null || v === '' ? <span className="u-faint">—</span> : v}</td>;
+              })}
             </tr>
           ))}
         </tbody>

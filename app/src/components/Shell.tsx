@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
 import { LIVE_API } from '../services/liveApi';
-import { Avatar, Dropdown } from './ui';
+import { Avatar, Dropdown, Empty } from './ui';
 import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
 import { fmtRelative } from '../lib/format';
@@ -227,7 +227,7 @@ export function CampusSwitcher() {
   const campus = seed.campuses.find(c => c.id === session.activeCampus)!;
   const scopedToAll = session.campusScope === 'all';
   return (
-    <Dropdown width={250} trigger={() => (
+    <Dropdown width={250} label="Campus switcher" trigger={() => (
       <button className="btn btn-ghost btn-sm" style={{ gap: 7 }}>
         <span style={{ width: 8, height: 8, borderRadius: 3, background: campus.hue }} />
         <span className="u-truncate" style={{ maxWidth: 100 }}>{campus.name}</span>
@@ -236,18 +236,18 @@ export function CampusSwitcher() {
     )}>
       {close => (
         <>
-          <div className="dropdown-label">Campuses</div>
+          <div role="none" className="dropdown-label">Campuses</div>
           {seed.campuses.map(c => (
-            <button key={c.id} className="dropdown-item" disabled={!scopedToAll && c.id !== session.campusScope}
+            <button key={c.id} role="menuitem" className="dropdown-item" disabled={!scopedToAll && c.id !== session.campusScope}
               onClick={() => { setActiveCampus(c.id); close(); }}>
               <span style={{ width: 8, height: 8, borderRadius: 3, background: c.hue }} />
               <span>{c.name}</span>
               <span className="dd-right u-xs mono">{c.students}</span>
             </button>
           ))}
-          {!scopedToAll && <div className="dropdown-label" style={{ color: 'var(--text-3)' }}>Your access is scoped to one campus</div>}
-          <div className="dropdown-sep" />
-          <button className="dropdown-item" disabled={!scopedToAll} onClick={() => { navigate('/group'); close(); }}>
+          {!scopedToAll && <div role="none" className="dropdown-label" style={{ color: 'var(--text-3)' }}>Your access is scoped to one campus</div>}
+          <div role="none" className="dropdown-sep" />
+          <button role="menuitem" className="dropdown-item" disabled={!scopedToAll} onClick={() => { navigate('/group'); close(); }}>
             <Icon.Grid size={14} /> Group overview
             <span className="dd-right badge badge-accent">3 campuses</span>
           </button>
@@ -263,7 +263,7 @@ export function NotificationsBell() {
   const navigate = useNavigate();
   const unread = domain.notifications.filter(n => !n.read).length;
   return (
-    <Dropdown width={350} trigger={() => (
+    <Dropdown width={350} label="Notifications" trigger={() => (
       <button className="iconbtn" aria-label={`Notifications, ${unread} unread`}>
         <Icon.Bell size={16} />
         {!!unread && <span style={{ position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 5, background: 'var(--danger)', border: '2px solid var(--surface)' }} />}
@@ -272,11 +272,11 @@ export function NotificationsBell() {
       {close => (
         <>
           <div className="u-between" style={{ padding: '8px 10px 6px' }}>
-            <div className="dropdown-label" style={{ padding: 0 }}>Notifications</div>
+            <div role="none" className="dropdown-label" style={{ padding: 0 }}>Notifications</div>
             <button className="u-xs u-muted" onClick={() => dispatch({ type: 'notification/read', all: true })}>Mark all read</button>
           </div>
           {domain.notifications.slice(0, 7).map(n => (
-            <button key={n.id} className="dropdown-item" style={{ alignItems: 'flex-start', gap: 10 }} onClick={() => { dispatch({ type: 'notification/read', id: n.id }); close(); navigate(n.ref ?? '/today'); }}>
+            <button key={n.id} role="menuitem" className="dropdown-item" style={{ alignItems: 'flex-start', gap: 10 }} onClick={() => { dispatch({ type: 'notification/read', id: n.id }); close(); navigate(n.ref ?? '/today'); }}>
               <span style={{ marginTop: 5, width: 7, height: 7, borderRadius: 4, background: n.read ? 'var(--border-strong)' : n.group === 'needs-you' ? 'var(--danger)' : n.group === 'approvals' ? 'var(--warning)' : 'var(--accent)', flexShrink: 0 }} />
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ display: 'block', fontWeight: n.read ? 480 : 600, fontSize: 'var(--text-md)' }}>{n.title}</span>
@@ -297,7 +297,7 @@ export function ProfileMenu() {
   const navigate = useNavigate();
   const account = demoAccounts.find(a => a.id === session.roleId)!;
   return (
-    <Dropdown width={300} trigger={() => (
+    <Dropdown width={300} label="Account menu" trigger={() => (
       <button className="u-flex iconbtn" style={{ gap: 8, padding: '3px 6px' }} aria-label="Account menu">
         <Avatar name={actorName} size="sm" />
         <Icon.ChevronDown size={13} />
@@ -310,20 +310,20 @@ export function ProfileMenu() {
             <div className="u-xs u-muted">{account.title}</div>
             <div className="u-xs u-faint">{account.email}</div>
           </div>
-          <div className="dropdown-sep" />
-          <button className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
-          <button className="dropdown-item" style={{ color: '#b91c1c' }} onClick={async () => {
+          <div role="none" className="dropdown-sep" />
+          <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
+          <button role="menuitem" className="dropdown-item" style={{ color: '#b91c1c' }} onClick={async () => {
             try { if (LIVE_API) await (await import('../services/liveApi')).apiLogoutAudit(); } catch { /* ledger best-effort */ }
             localStorage.removeItem('schoolos.session');
             (await import('../services/liveApi')).apiLogout();
             window.location.href = '/login';
           }}><Icon.Shield size={14} /> Sign out</button>
-          <button className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit ledger</button>
-          <div className="dropdown-sep" />
-          <div className="dropdown-label">Switch demo role</div>
+          <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit ledger</button>
+          <div role="none" className="dropdown-sep" />
+          <div role="none" className="dropdown-label">Switch demo role</div>
           <div className="scroll-thin" style={{ maxHeight: 260, overflowY: 'auto' }}>
             {demoAccounts.map(a => (
-              <button key={a.id} className="dropdown-item" style={a.id === session.roleId ? { background: 'var(--accent-weak)' } : undefined} onClick={() => { setRole(a.id); close(); }}>
+              <button key={a.id} role="menuitem" className="dropdown-item" style={a.id === session.roleId ? { background: 'var(--accent-weak)' } : undefined} onClick={() => { setRole(a.id); close(); }}>
                 <Avatar name={a.name} size="sm" />
                 <span className="u-truncate" style={{ flex: 1 }}>{a.title}</span>
                 {a.id === session.roleId && <Icon.Check size={13} />}
@@ -399,7 +399,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       <div className="modal" style={{ maxWidth: 620, padding: 0 }} role="dialog" aria-modal="true" aria-label="Command menu">
         <div className="searchbox" style={{ padding: '4px 6px 0' }}>
           <Icon.Search size={16} />
-          <input ref={inputRef} className="input" style={{ height: 44, border: 'none', fontSize: 'var(--text-lg)', boxShadow: 'none' }}
+          <input ref={inputRef} aria-label="Search people, records, actions — or type a command" className="input" style={{ height: 44, border: 'none', fontSize: 'var(--text-lg)', boxShadow: 'none' }}
             placeholder="Search people, records, actions — or type a command…" value={q}
             onChange={e => { setQ(e.target.value); setSel(0); }}
             onKeyDown={e => {
@@ -410,10 +410,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             }} />
         </div>
         <div className="scroll-thin" style={{ maxHeight: 380, overflowY: 'auto', padding: 6 }}>
-          {!filtered.length && <div className="empty" style={{ border: 'none' }}><h3>No matches</h3><p>Try a name, “fees”, “bus 14”, or “attendance”.</p></div>}
+          {!filtered.length && <Empty title="No matches" sub="Try a name, “fees”, “bus 14”, or “attendance”." style={{ border: 'none', padding: '18px 8px' }} />}
           {groups.map(g => (
             <div key={g}>
-              <div className="dropdown-label">{g}</div>
+              <div role="none" className="dropdown-label">{g}</div>
               {filtered.filter(i => i.group === g).map(item => {
                 flatIdx++;
                 const idx = flatIdx;

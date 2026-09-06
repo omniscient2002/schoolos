@@ -108,6 +108,7 @@ function LeadCard({ lead, onMove, dragging, busy, onDragStart, onDragEnd }: {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Avatar name={lead.owner} size="sm" />
           <Dropdown
+            label="Stage move"
             width={172}
             align="left"
             trigger={() => (
@@ -118,9 +119,9 @@ function LeadCard({ lead, onMove, dragging, busy, onDragStart, onDragEnd }: {
           >
             {close => (
               <div className="u-col" style={{ padding: 4 }}>
-                <div className="dropdown-label">Move to</div>
+                <div role="none" className="dropdown-label">Move to</div>
                 {ALL_STAGES.filter(s => s !== lead.stage).map(s => (
-                  <button key={s} className="dropdown-item" onClick={() => { close(); onMove(s); }}>
+                  <button key={s} role="menuitem" className="dropdown-item" onClick={() => { close(); onMove(s); }}>
                     {STAGES.find(x => x.id === s)?.label ?? s}
                   </button>
                 ))}

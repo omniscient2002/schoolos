@@ -202,6 +202,7 @@ export default function Incidents() {
         footer={selected && (
           <>
             <Dropdown
+            label="Status advance"
               trigger={() => <Button variant="primary" icon={<Icon.ArrowRight size={13} />}>Advance status</Button>}
               align="left"
             >
@@ -215,6 +216,7 @@ export default function Incidents() {
                       {nexts.map(s => (
                         <button
                           key={s}
+                          role="menuitem"
                           className="u-small"
                           style={{ textAlign: 'left', padding: '7px 10px', borderRadius: 8, cursor: 'pointer', border: 'none', background: 'transparent' }}
                           onClick={() => { advance(selected, s); close(); }}
