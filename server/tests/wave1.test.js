@@ -34,6 +34,10 @@ const sql = (text, params = []) => {
 };
 const H = (t) => ({ authorization: `Bearer ${t}` });
 
+// India-first: the school day is an IST day (UTC date lags 05:30 — past-midnight-IST
+// runs would otherwise disagree with the DB's current_date)
+const IST_TODAY = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+
 describe('wave-1 plugin runtimes', () => {
   test('ops.timetable: grid, substitution lifecycle (assign → overlay → suggest), audited', async () => {
     const c = await loginAs(app, 'coordinator@meridian.edu');
@@ -53,7 +57,7 @@ describe('wave-1 plugin runtimes', () => {
 
     // assign a substitution for the teacher's first Monday slot
     const slot = g.slots.find(s => s.day_of_week === 'Monday' && s.teacher_name === teacher);
-    const date = new Date().toISOString().slice(0, 10);
+    const date = IST_TODAY();
     const assign = await app.inject({ method: 'POST', url: '/plugins/ops.timetable/substitutions',
       payload: { slotId: slot.id, date, substitute: 'A. Sharma' }, headers: H(c.token) });
     assert.equal(assign.statusCode, 200);
@@ -88,7 +92,7 @@ describe('wave-1 plugin runtimes', () => {
     const before = (await sql(`SELECT count(*)::int n FROM app.attendance WHERE school_date=current_date`)).rows[0].n;
 
     const r1 = await app.inject({ method: 'POST', url: '/plugins/ops.timetable/attendance/autofill',
-      payload: { date: new Date().toISOString().slice(0, 10), grade: '8', section: 'B' }, headers: H(p.token) });
+      payload: { date: IST_TODAY(), grade: '8', section: 'B' }, headers: H(p.token) });
     assert.equal(r1.statusCode, 200);
     const { marked, alreadyMarked } = r1.json();
     assert.equal(marked + alreadyMarked > 0, true);
@@ -100,7 +104,7 @@ describe('wave-1 plugin runtimes', () => {
 
     // idempotent replay
     const r2 = await app.inject({ method: 'POST', url: '/plugins/ops.timetable/attendance/autofill',
-      payload: { date: new Date().toISOString().slice(0, 10), grade: '8', section: 'B' }, headers: H(p.token) });
+      payload: { date: IST_TODAY(), grade: '8', section: 'B' }, headers: H(p.token) });
     assert.equal(r2.json().marked, 0, 'replay marks nobody new');
     const after2 = (await sql(`SELECT count(*)::int n FROM app.attendance WHERE school_date=current_date`)).rows[0].n;
     assert.equal(after2, after1);

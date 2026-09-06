@@ -31,8 +31,11 @@ CREATE TABLE IF NOT EXISTS plugin_dpdp.consent (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS consent_subject_idx ON plugin_dpdp.consent (tenant_id, subject_ref, purpose, valid_from DESC);
--- no UPDATE/DELETE grants beyond DML the pack needs: append-only ledger, insert+select only
+-- immutable ledger: INSERT to append, SELECT to read; erasure may redact ONLY the
+-- subject identity columns (subject_ref, evidence) — decision/timestamps stay frozen
+-- (consent_immutable holds for the decision trail; DPDP erasure holds for the identity)
 GRANT SELECT, INSERT ON plugin_dpdp.consent TO schoolos_app;
+GRANT UPDATE (subject_ref, evidence) ON plugin_dpdp.consent TO schoolos_app;
 
 CREATE TABLE IF NOT EXISTS plugin_dpdp.sar (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),

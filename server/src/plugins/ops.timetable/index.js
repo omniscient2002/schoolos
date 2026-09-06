@@ -38,7 +38,9 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/substitutions`, { preHandler: [require('coordinator','principal','owner','itadmin'), lifecycleGate] }, async (req, reply) => {
     const { slotId, date, substitute, reason } = req.body ?? {};
     if (!slotId || !substitute) return reply.code(400).send({ error: 'slotId and substitute required' });
-    const day = date ?? new Date().toISOString().slice(0, 10);
+    // India-first: the school day is an IST day — a UTC date lags 05:30, so after
+    // midnight IST the default here would be "yesterday" for the school
+    const day = date ?? new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const slot = (await c.query(
         `SELECT s.id, s.subject, s.teacher_name, s.day_of_week, p.label, p.start_time, p.end_time

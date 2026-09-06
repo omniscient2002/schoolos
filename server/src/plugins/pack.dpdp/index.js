@@ -1,0 +1,198 @@
+// pack.dpdp — DPDP Act 2023 compliance pack (migration 023; contract dpdp.consent.ledger
+// locked in 009). Class C: consent ledger is IMMUTABLE (invariant consent_immutable —
+// withdrawal appends a superseding row, never updates a decision); SAR (subject-access
+// request) export/erasure ride the KERNEL APPROVAL spine (app.actions) — erasure touches
+// the data-principal's identity across domains, so it executes ONLY after kernel
+// approval; the pack never writes app.students (core lane). Retention hooks:
+// consent_validity_days (capture-time schedule) + dsr_sla_days (invariant
+// sar_sla_tracked). Events: consent.recorded.v1 · sar.opened.v1 · sar.fulfilled.v1.
+// All preHandlers async (Fastify 5 law).
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+
+const ID = 'pack.dpdp';
+
+export function register(app, kernel) {
+  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+
+  const DPO = ['owner', 'principal', 'itadmin', 'coordinator']; // data-protection operators
+  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const PHONE = /^[\d+\-\s()]{6,15}$/;
+
+  const slaStamp = (days) => `now() + make_interval(days => ${Math.max(1, Math.min(90, Number(days) || 30))})`;
+  const validityStamp = (days) => `now() + make_interval(days => ${Math.max(1, Math.min(3650, Number(days) || 1095))})`;
+
+  // ── record consent (append-only; withdrawal = superseding artifact) ──────────
+  app.post(`/plugins/${ID}/consent`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    const { subjectRef, purpose, decision, basis, channel } = req.body ?? {};
+    if (!subjectRef || !purpose || !['granted', 'withdrawn'].includes(decision)) {
+      return reply.code(400).send({ error: "subjectRef, purpose, decision ('granted'|'withdrawn') are required" });
+    }
+    if (!PHONE.test(String(subjectRef))) return reply.code(400).send({ error: 'subjectRef looks invalid (guardian phone)' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+        [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
+      const r = await c.query(
+        `INSERT INTO plugin_dpdp.consent (tenant_id, subject_ref, purpose, decision, basis, channel, actor, evidence, valid_until)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb, ${validityStamp(s.consent_validity_days)}) RETURNING id, valid_until`,
+        [req.user.tenant_id, String(subjectRef), String(purpose).slice(0, 80), decision,
+          basis ? String(basis).slice(0, 40) : 'consent', channel ? String(channel).slice(0, 40) : 'walk-in',
+          req.user.email, JSON.stringify({ recordedBy: req.user.email, note: req.body?.note ?? null })]);
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'dpdp', label: `consent ${decision} (${String(purpose).slice(0, 40)})`, ref: r.rows[0].id },
+        'consent.recorded.v1', { consentId: r.rows[0].id, subjectRef: String(subjectRef), purpose, decision });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: `consent ${decision}`, recordType: 'ConsentArtifact', recordRef: r.rows[0].id,
+        reason: 'DPDP consent ledger (append-only)', policyRef: 'DPDP Act 2023 · consent and retention', risk: 'low',
+        outcome: `artifact appended for ${purpose} · valid until ${r.rows[0].valid_until?.toISOString?.() ?? r.rows[0].valid_until}` });
+      return { ok: true, consentId: r.rows[0].id, decision, validUntil: r.rows[0].valid_until, immutable: true };
+    });
+  });
+
+  // ── consent state (computed from the latest artifact per subject+purpose) ────
+  app.get(`/plugins/${ID}/consent/state`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    const subjectRef = req.query.subjectRef ? String(req.query.subjectRef) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT DISTINCT ON (subject_ref, purpose) subject_ref, purpose, decision, valid_from, valid_until
+         FROM plugin_dpdp.consent WHERE tenant_id=$1 AND ($2::text IS NULL OR subject_ref=$2)
+         ORDER BY subject_ref, purpose, valid_from DESC, created_at DESC`, [req.user.tenant_id, subjectRef])).rows;
+      const now = Date.now();
+      const states = rows.map((r) => ({
+        subjectRef: r.subject_ref, purpose: r.purpose,
+        state: r.decision === 'withdrawn' ? 'withdrawn'
+          : (r.valid_until && r.valid_until.getTime() < now ? 'expired' : 'granted'),
+        lastArtifact: { decision: r.decision, validFrom: r.valid_from, validUntil: r.valid_until },
+      }));
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: 'consent state queried', recordType: 'ConsentArtifact', recordRef: subjectRef ?? 'all',
+        reason: 'compliance view', policyRef: 'DPDP Act 2023 · consent and retention', risk: 'low',
+        outcome: `${states.length} purpose-state(s) computed from ${states.length} latest artifacts` });
+      return { states };
+    });
+  });
+
+  // ── open SAR (export|erasure) → kernel approval action ───────────────────────
+  app.post(`/plugins/${ID}/dsr`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    const { kind, subjectRef, note } = req.body ?? {};
+    if (!['export', 'erasure'].includes(kind)) return reply.code(400).send({ error: "kind must be 'export' or 'erasure'" });
+    if (!subjectRef || !PHONE.test(String(subjectRef))) return reply.code(400).send({ error: 'subjectRef (guardian phone) required' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const open = (await c.query(
+        `SELECT id FROM plugin_dpdp.sar WHERE tenant_id=$1 AND subject_ref=$2 AND kind=$3 AND status='open' LIMIT 1`,
+        [req.user.tenant_id, String(subjectRef), kind])).rows[0];
+      if (open) return reply.code(409).send({ error: `an open ${kind} SAR already exists for this subject`, sarId: open.id });
+      const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+        [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
+      const sar = await c.query(
+        `INSERT INTO plugin_dpdp.sar (tenant_id, kind, subject_ref, requested_by, sla_due_at)
+         VALUES ($1,$2,$3,$4, ${slaStamp(s.dsr_sla_days)}) RETURNING id, sla_due_at`,
+        [req.user.tenant_id, kind, String(subjectRef), req.user.email]);
+      const sarId = sar.rows[0].id;
+      const act = await c.query(
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
+         VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','DPDP Act 2023 · SAR',false,'sar.opened.v1',$6::jsonb) RETURNING id`,
+        [req.user.tenant_id, `dpdp.dsr.${kind}`,
+          kind === 'export' ? `SAR export for ${String(subjectRef)}` : `SAR ERASURE for ${String(subjectRef)} — irreversible`,
+          kind === 'export'
+            ? `Bundle the consent artifacts and admissions PII held for this data principal (SLA ${sar.rows[0].sla_due_at?.toISOString?.() ?? sar.rows[0].sla_due_at}).`
+            : `Redact the data principal's identity from the consent ledger and admissions funnel. Irreversible once executed.`,
+          'Erasure touches the principal\'s data across plugin domains — kernel approval semantics; the pack executes only what it owns and never writes app.students.',
+          JSON.stringify({ sarId, subjectRef: String(subjectRef), dsrKind: kind, note: note ?? null, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
+      await c.query(`UPDATE plugin_dpdp.sar SET action_id=$1 WHERE id=$2`, [act.rows[0].id, sarId]);
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'dpdp', label: `SAR ${kind} opened for ${String(subjectRef)}`, ref: sarId },
+        'sar.opened.v1', { sarId, actionId: act.rows[0].id, kind, subjectRef: String(subjectRef) });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: `SAR ${kind} opened`, recordType: 'SAR', recordRef: sarId,
+        reason: 'data-principal request', policyRef: 'DPDP Act 2023 · SAR', risk: kind === 'erasure' ? 'high' : 'medium',
+        outcome: `kernel approval action raised (${act.rows[0].id}) · SLA ${sar.rows[0].sla_due_at?.toISOString?.() ?? sar.rows[0].sla_due_at}` });
+      return { ok: true, sarId, actionId: act.rows[0].id, slaDueAt: sar.rows[0].sla_due_at };
+    });
+  });
+
+  // ── SAR list + SLA tracking ──────────────────────────────────────────────────
+  app.get(`/plugins/${ID}/dsr`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT id, kind, subject_ref, status, action_id, sla_due_at, fulfilled_at, requested_by, created_at
+         FROM plugin_dpdp.sar WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 200`, [req.user.tenant_id])).rows;
+      return {
+        sars: rows.map((r) => ({
+          sarId: r.id, kind: r.kind, subjectRef: r.subject_ref, status: r.status, actionId: r.action_id,
+          slaDueAt: r.sla_due_at, overdue: r.status === 'open' && r.sla_due_at && r.sla_due_at.getTime() < Date.now(),
+          fulfilledAt: r.fulfilled_at, requestedBy: r.requested_by, createdAt: r.created_at,
+        })),
+      };
+    });
+  });
+
+  // ── export bundle (only after kernel approval + execution) ───────────────────
+  app.get(`/plugins/${ID}/dsr/:id/export`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!sar) return reply.code(404).send({ error: 'SAR not found' });
+      if (sar.kind !== 'export') return reply.code(400).send({ error: 'not an export SAR' });
+      if (sar.status !== 'fulfilled') return reply.code(409).send({ error: 'SAR not yet fulfilled (kernel approval + execute pending)' });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: 'SAR export bundle delivered', recordType: 'SAR', recordRef: sar.id,
+        reason: 'data-principal access fulfilment', policyRef: 'DPDP Act 2023 · SAR', risk: 'medium',
+        outcome: 'bundle delivered to DPO surface' });
+      return { sarId: sar.id, status: sar.status, bundle: sar.bundle };
+    });
+  });
+
+  // ── execute an APPROVED SAR (kernel-gated; this door never approves) ─────────
+  app.post(`/plugins/${ID}/dsr/:id/execute`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!sar) return reply.code(404).send({ error: 'SAR not found' });
+      if (sar.status !== 'open') return reply.code(409).send({ error: `SAR already ${sar.status}` });
+      if (!sar.action_id) return reply.code(409).send({ error: 'kernel approval action missing (raise failed mid-flight)' });
+      const act = (await c.query(`SELECT status, payload FROM app.actions WHERE id=$1 AND tenant_id=$2`, [sar.action_id, req.user.tenant_id])).rows[0];
+      if (!act || act.status === 'open') return reply.code(409).send({ error: 'kernel approval required — decide the action first (/actions/:id/decide)' });
+      if (act.status === 'dismissed') return reply.code(409).send({ error: 'kernel approval dismissed — SAR cannot execute' });
+      // defense in depth: the kernel blocks self-approval; the pack also refuses to
+      // execute for the proposer (segregation of duties)
+      if (act.payload?.proposed_by === req.user.id) {
+        return reply.code(403).send({ error: 'proposer may not execute their own SAR action (segregation of duties)' });
+      }
+      let bundle;
+      if (sar.kind === 'export') {
+        const consents = (await c.query(
+          `SELECT purpose, decision, basis, channel, valid_from, valid_until, created_at
+           FROM plugin_dpdp.consent WHERE tenant_id=$1 AND subject_ref=$2 ORDER BY valid_from ASC`,
+          [req.user.tenant_id, sar.subject_ref])).rows;
+        const leads = (await c.query(
+          `SELECT id, student_name, guardian_name, class_applied, source, stage, created_at
+           FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2`,
+          [req.user.tenant_id, sar.subject_ref])).rows;
+        bundle = { subjectRef: sar.subject_ref, generatedAt: new Date().toISOString(),
+          consentArtifacts: consents, admissionsLeads: leads,
+          scopeNote: 'consent ledger + admissions funnel PII (declared dependency). Core student records are office-lane.' };
+      } else {
+        const cr = await c.query(
+          `UPDATE plugin_dpdp.consent SET subject_ref='[erased:'||id||']', evidence=jsonb_build_object('erased',true,'erasedAt',to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+           WHERE tenant_id=$1 AND subject_ref=$2`, [req.user.tenant_id, sar.subject_ref]);
+        const lr = await c.query(
+          `UPDATE plugin_admissions.lead SET guardian_name=NULL, guardian_phone='[erased:'||id||']'
+           WHERE tenant_id=$1 AND guardian_phone=$2`, [req.user.tenant_id, sar.subject_ref]);
+        bundle = { subjectRef: sar.subject_ref, erasedAt: new Date().toISOString(),
+          consentRowsRedacted: cr.rowCount, admissionsLeadsRedacted: lr.rowCount,
+          decisionTrailPreserved: true,
+          scopeNote: 'identity redacted; consent decisions/timestamps retained for the compliance trail. Core student records are office-lane (kernel referral).' };
+      }
+      await c.query(`UPDATE plugin_dpdp.sar SET status='fulfilled', fulfilled_at=now(), bundle=$2::jsonb WHERE id=$1`,
+        [sar.id, JSON.stringify(bundle)]);
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'dpdp', label: `SAR ${sar.kind} fulfilled`, ref: sar.id },
+        'sar.fulfilled.v1', { sarId: sar.id, kind: sar.kind, actionId: sar.action_id });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: `SAR ${sar.kind} executed (kernel-approved)`, recordType: 'SAR', recordRef: sar.id,
+        reason: 'data-principal request fulfilment', policyRef: 'DPDP Act 2023 · SAR', risk: sar.kind === 'erasure' ? 'high' : 'medium',
+        outcome: sar.kind === 'export' ? 'bundle generated' : `erasure: ${bundle.consentRowsRedacted} consent rows + ${bundle.admissionsLeadsRedacted} leads redacted, decision trail preserved` });
+      return { ok: true, sarId: sar.id, status: 'fulfilled', bundle };
+    });
+  });
+}
