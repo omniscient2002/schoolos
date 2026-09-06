@@ -8,9 +8,9 @@ import { setupTestDb, loginAs } from './helpers.js';
 let app;
 
 before(async () => {
-  // dev-unsigned webhook mode requires the secret to be ABSENT (Fees §4.2 posture).
-  // Pre-set to '' BEFORE importing app.js: dotenv never overrides existing vars, so
-  // config.js sees '' (falsy) and the webhook accepts unsigned dev facts.
+  // fail-closed webhook posture (cycle-3 P0): the dev-unsigned mode is GONE — the
+  // route refuses entirely when the secret is absent. Force '' before importing
+  // app.js (dotenv never overrides existing vars) so this suite pins that posture.
   process.env.UPI_WEBHOOK_SECRET = '';
   await setupTestDb();
   const { buildApp } = await import('../src/app.js');
@@ -144,16 +144,14 @@ describe('wave-1 plugin runtimes', () => {
     const ob = await sql(`SELECT status, paid_cents FROM app.fee_obligations WHERE id=$1`, [o.id]);
     assert.notEqual(ob.rows[0].status, 'paid', 'link creation never settles');
 
-    // webhook: fact recorded idempotently; settlement still untouched; confirm still required
-    const wh = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+    // webhook (fail-closed posture, cycle-3 P0): with UPI_WEBHOOK_SECRET forced empty
+    // in before(), the route is OFF → unsigned is 403 'webhook not configured', never 200
+    const whOff = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: { event: 'payment.captured', payload: { payment: { entity: { id: 'pay_TEST1', notes: { paymentId } } } } } });
-    assert.equal(wh.statusCode, 200);
-    assert.equal(wh.json().outcome.includes('kernel-only'), true);
-    const wh2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
-      payload: { event: 'payment.captured', payload: { payment: { entity: { id: 'pay_TEST1', notes: { paymentId } } } } } });
-    assert.equal(wh2.statusCode, 200, 'replay is a no-op success');
-    const logN = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_TEST1'`);
-    assert.equal(logN.rows[0].n, 1, 'webhook idempotency by event id');
+    assert.equal(whOff.statusCode, 403, 'secret unset → webhook refused entirely');
+    assert.match(whOff.json().error, /not configured/);
+    const logOff = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_TEST1'`);
+    assert.equal(logOff.rows[0].n, 0, 'no facts recorded while unconfigured');
     const ob2 = await sql(`SELECT status FROM app.fee_obligations WHERE id=$1`, [o.id]);
     assert.notEqual(ob2.rows[0].status, 'paid', 'webhook never settles the ledger');
 

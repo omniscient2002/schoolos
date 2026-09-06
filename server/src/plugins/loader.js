@@ -11,8 +11,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // registry namespace: comms.whatsapp · pack.cbse · ops.timetable · com.vendor.thing
-// orchestrator-pinned cycle-2 pattern: digit-first allowed, underscore excluded.
-export const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
+// cycle-3 pattern: letter-first (digit-run ids like '9lives' are out), underscore excluded.
+export const PLUGIN_ID_RE = /^[a-z][a-z0-9.-]{2,63}$/;
 export const validPluginId = (id) => typeof id === 'string' && PLUGIN_ID_RE.test(id);
 
 export async function loadPlugins(app, kernel, { dir = dirname(fileURLToPath(import.meta.url)) } = {}) {

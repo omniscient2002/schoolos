@@ -495,12 +495,12 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ plugins (the switchboard) ============
-  // redteam cycle-2 P1-1: registry ids are namespaced strings — reject traversal-style
-  // ids at the door so no consumer ever inherits a malformed registry key.
-  // Orchestrator-pinned pattern (allows digit-first, excludes underscore).
+  // redteam cycle-3: registry ids are letter-first namespaced strings — digit-run ids
+  // ('9lives') walked the earlier digit-first pattern; underscore/traversal/uppercase
+  // all bounce. Same regex governs the drop-in loader.
   // NOTE: must be `async` — Fastify 5 stalls when an async preHandler is followed
   // by a sync one (empirically pinned: async guard → 200, sync guard → hung request).
-  const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
+  const PLUGIN_ID_RE = /^[a-z][a-z0-9.-]{2,63}$/;
   const pluginGuard = async (req, reply) => {
     if (!PLUGIN_ID_RE.test(req.params.id)) {
       return bad(reply, 'invalid plugin id');
@@ -540,8 +540,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     if (!pClass || !['A','B','C','D','E'].includes(pClass)) return bad(reply, 'class A–E required');
     // redteam P2-1: registry hygiene — semver-ish version, bounded manifest, bounded permission set
     if (version != null && !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) return bad(reply, 'version must be semver (e.g. 1.0.0)');
+    if (version != null && String(version).length > 32) return bad(reply, 'version too long (max 32 chars)');
     if (manifest != null && Buffer.byteLength(JSON.stringify(manifest)) > 65536) return bad(reply, 'manifest too large (max 64KB)', 413);
-    if (permissions != null && (!Array.isArray(permissions) || permissions.length > 32 || !permissions.every(p => typeof p === 'string'))) return bad(reply, 'permissions must be a string array (max 32)');
+    if (permissions != null && (!Array.isArray(permissions) || permissions.length > 32 || !permissions.every(p => typeof p === 'string' && p.length <= 128))) return bad(reply, 'permissions must be a string array (max 32, each ≤128 chars)');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // Catalog rows (009/010) carry the governance manifest server-side; a UI enable
       // with no manifest body must never blank it (docs/12: the registry is the truth).

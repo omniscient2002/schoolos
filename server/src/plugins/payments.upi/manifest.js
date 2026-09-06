@@ -17,6 +17,7 @@ export default {
       gateway: { type: 'string', enum: ['razorpay', 'cashfree', 'phonepe'], default: 'razorpay' },
       webhook_secret_configured: { type: 'boolean', description: 'set via UPI_WEBHOOK_SECRET env; never stored here' },
       default_vpa: { type: 'string', description: 'school VPA for upi:// intent links' },
+      webhook_freshness_mins: { type: 'integer', minimum: 1, maximum: 120, default: 15, description: 'reject webhook events older than this (stale-replay defense)' },
     },
     required: ['gateway'],
   },

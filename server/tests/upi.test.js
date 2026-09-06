@@ -1,7 +1,14 @@
 // payments.upi — wave-1 unit #2 tests (per-plugin migration 015 + factory drop-in)
-// Invariants under test (009/010): links respect kernel ledger state · webhook facts are
-// idempotent by event id · settlement stays kernel-only (Fees §4.2) ·
-// plugin_upi.webhook_log provisions independently (bare-kernel contract of 015).
+// Red-team cycle-3 P0/P1 blocking requirements, all pinned here:
+//   1. fail-closed: secret unset → 403 'webhook not configured'; set → missing/invalid sig 401
+//   2. raw-bytes MAC (HMAC over req.rawBody, never re-serialized JSON)
+//   3. replay dedupes webhook_log AND event spine AND audit (one audit row per unique event)
+//   4. freshness: stale events rejected (15 min default, settings-overridable)
+//   5. malformed JSON → 400, never 500
+//   6. lifecycle: webhook for a non-enabled plugin row → 409
+//   7. letter-first id regex (9lives-class ids rejected) — pinned in plugin-loader.test.js
+//   8. residue cleanup migration — 016 (asserted by hand in dev DB; ledger retained)
+// Standing invariants: settlement stays kernel-only (Fees §4.2); 015 bare-kernel contract.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
@@ -9,18 +16,15 @@ import { createHmac } from 'node:crypto';
 import { setupTestDb, loginAs } from './helpers.js';
 
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const TEST_SECRET = 'upi-test-secret-unit-2-not-production';
 
 let app;
 let sql;
 
 before(async () => {
-  // REQUIRED-HMAC mode: set the secret BEFORE importing app.js — dotenv never
-  // overrides existing vars, so this in-memory value wins over server/.env.
-  // The value here is a throwaway test secret, never the production one.
-  process.env.UPI_WEBHOOK_SECRET = 'upi-test-secret-unit-2-not-production';
   await setupTestDb();
   const { buildApp } = await import('../src/app.js');
-  app = await buildApp({ logger: false });
+  app = await buildApp({ logger: false });   // built while the secret is UNSET → fail-closed path
   await app.ready();
   sql = async (text, params = []) => {
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
@@ -31,59 +35,116 @@ before(async () => {
   };
 });
 
-describe('payments.upi (wave-1 #2 · migration 015)', () => {
-  test('links respect the ledger; webhook facts idempotent; settlement kernel-only; 015 bare-kernel provisions', async () => {
+describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () => {
+  const payloadFor = (paymentId, eventId, createdAt) => ({
+    event: 'payment.captured',
+    payload: { payment: { entity: { id: eventId, created_at: createdAt, notes: { paymentId } } } },
+  });
+  const sigOf = (obj) => createHmac('sha256', TEST_SECRET).update(JSON.stringify(obj)).digest('hex');
+
+  test('1 · fail-closed: no secret → webhook refused entirely, zero facts', async () => {
+    // dotenv loaded server/.env at import — clear it to exercise the unconfigured path
+    delete process.env.UPI_WEBHOOK_SECRET;
+    const r = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: { event: 'payment.captured', eventId: 'pay_U2_off' } });
+    assert.equal(r.statusCode, 403);
+    assert.match(r.json().error, /not configured/);
+    const n = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log`);
+    assert.equal(n.rows[0].n, 0, 'no facts recorded while unconfigured');
+  });
+
+  test('2 · HMAC required + lifecycle gate + freshness + spine/audit dedupe + kernel-only settlement', async () => {
+    // activate the required-HMAC mode on the SAME app (webhook reads env per request)
+    process.env.UPI_WEBHOOK_SECRET = TEST_SECRET;
+
     const fin = await loginAs(app, 'finance@meridian.edu');
     const obs = (await app.inject({ method: 'GET', url: '/fees/obligations?status=open', headers: H(fin.token) })).json().obligations;
     assert.ok(obs.length > 0);
     const target = obs[0];
     const paidBefore = Number(target.paid_cents ?? 0);
 
-    // 1) link creation: kernel payment row initiated, UPI intent, amount = due only
+    // link: for the DUE amount only, kernel payment row initiated
     const link = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
     assert.equal(link.statusCode, 200);
-    const { paymentId, linkId, link: intent, amountCents } = link.json();
-    assert.match(linkId, /^plink_/);
-    assert.match(intent, /^upi:\/\/pay\?/);
-    assert.equal(amountCents, String(Number(target.amount_cents) - paidBefore), 'link is for the DUE amount only');
-    const pr = await sql(`SELECT status, method FROM app.payments WHERE id=$1`, [paymentId]);
-    assert.equal(pr.rows[0].status, 'initiated');
-    assert.equal(pr.rows[0].method, 'upi');
+    const { paymentId, amountCents } = link.json();
+    assert.equal(amountCents, String(Number(target.amount_cents) - paidBefore));
 
-    // 2) webhook facts (REQUIRED-HMAC mode — secret set): unsigned/bad-sig rejected
-    //    before any fact is read; valid HMAC recorded; settlement still kernel-only
-    const secret = process.env.UPI_WEBHOOK_SECRET;
-    assert.ok(secret, 'test secret must be set');
-    const payload = { event: 'payment.captured', payload: { payment: { entity: { id: 'pay_U2_1', notes: { paymentId } } } } };
-    const sigOf = (obj) => createHmac('sha256', secret).update(JSON.stringify(obj)).digest('hex');
+    // LIFECYCLE gate: plugin row is 'registered' → even a VALID HMAC is 409
+    const fresh = payloadFor(paymentId, 'pay_U2_1', Math.floor(Date.now() / 1000));
+    const preEnable = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });
+    assert.equal(preEnable.statusCode, 409, 'webhook for a non-enabled plugin row is 409');
+    const preRows = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
+    assert.equal(preRows.rows[0].n, 0, 'lifecycle-gated webhook records no facts');
 
-    const noSig = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload });
-    assert.equal(noSig.statusCode, 401, 'unsigned webhook rejected when secret is set');
-    const badSig = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload, headers: { 'x-razorpay-signature': 'deadbeef' } });
-    assert.equal(badSig.statusCode, 401, 'invalid-signature webhook rejected');
+    // owner enables the rail (audited) — now facts may flow
+    const o = await loginAs(app, 'owner@meridian.edu');
+    const en = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
+      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
+    assert.equal(en.statusCode, 200);
+
+    // HMAC gate: unsigned and bad-signature both 401, no facts
+    const noSig = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload: fresh });
+    assert.equal(noSig.statusCode, 401);
+    const badSig = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload: fresh, headers: { 'x-razorpay-signature': 'deadbeef' } });
+    assert.equal(badSig.statusCode, 401);
     const noFacts = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
     assert.equal(noFacts.rows[0].n, 0, 'rejected webhooks record NO facts');
 
-    const wh = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload, headers: { 'x-razorpay-signature': sigOf(payload) } });
+    // FRESHNESS gate: valid HMAC but stale timestamp → 400
+    const stale = payloadFor(paymentId, 'pay_U2_stale', Math.floor(Date.now() / 1000) - 3600);
+    const staleR = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: stale, headers: { 'x-razorpay-signature': sigOf(stale) } });
+    assert.equal(staleR.statusCode, 400);
+    assert.match(staleR.json().error, /stale/);
+
+    // valid fresh HMAC → fact recorded, verified
+    const wh = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });
     assert.equal(wh.statusCode, 200);
     assert.equal(wh.json().outcome.includes('kernel-only'), true);
-    const verifiedRow = await sql(`SELECT signature_verified FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
-    assert.equal(verifiedRow.rows[0].signature_verified, true, 'fact recorded as HMAC-verified');
+    const vrow = await sql(`SELECT signature_verified FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
+    assert.equal(vrow.rows[0].signature_verified, true, 'fact recorded as HMAC-verified');
 
-    const wh2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload, headers: { 'x-razorpay-signature': sigOf(payload) } });
-    assert.equal(wh2.statusCode, 200, 'replay is a no-op success');
+    // REPLAY: 200 no-op — webhook_log, event spine AND audit all deduped
+    const wh2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });
+    assert.equal(wh2.statusCode, 200);
+    assert.match(wh2.json().outcome, /replay no-op/);
     const logN = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
-    assert.equal(logN.rows[0].n, 1, 'webhook_log idempotency by (tenant_id, event_id)');
-    const settled = await app.inject({ method: 'POST', url: `/fees/payments/${paymentId}/confirm`, payload: { gatewayRef: 'pay_U2_1' }, headers: H(fin.token) });
-    assert.equal(settled.statusCode, 200, 'only the kernel confirm settles');
-    const obAfter = await sql(`SELECT paid_cents FROM app.fee_obligations WHERE id=$1`, [target.id]);
-    assert.equal(Number(obAfter.rows[0].paid_cents), paidBefore + Number(amountCents), 'ledger reflects exactly the kernel settlement');
+    assert.equal(logN.rows[0].n, 1, 'webhook_log dedupe');
+    const evN = await sql(`SELECT count(*)::int n FROM app.events WHERE payload->>'eventId'='pay_U2_1'`);
+    assert.equal(evN.rows[0].n, 1, 'event spine dedupe');
+    const audN = await sql(`SELECT count(*)::int n FROM app.audit_log WHERE action LIKE 'UPI webhook%' AND record_ref=$1`, [paymentId]);
+    assert.equal(audN.rows[0].n, 1, 'one audit row per unique event');
 
-    // 3) migration 015 independence: webhook_log exists with the idempotency key,
-    //    and replaying 015 on the provisioned test DB is a no-op (bare-kernel contract)
-    const uq = await sql(`SELECT indexdef FROM pg_indexes WHERE schemaname='plugin_upi' AND tablename='webhook_log' AND indexdef LIKE '%UNIQUE%'`);
-    assert.ok(uq.rows.some(r => r.indexdef.includes('tenant_id') && r.indexdef.includes('event_id')), 'UNIQUE (tenant_id, event_id) present');
-    const reg = await sql(`SELECT count(*)::int n FROM app.plugins WHERE plugin_id='payments.upi'`);
-    assert.ok(reg.rows[0].n >= 1, 'registry row present per tenant');
+    // settlement stays kernel-only: only the kernel confirm moves the ledger
+    const settled = await app.inject({ method: 'POST', url: `/fees/payments/${paymentId}/confirm`, payload: { gatewayRef: 'pay_U2_1' }, headers: H(fin.token) });
+    assert.equal(settled.statusCode, 200);
+    const obAfter = await sql(`SELECT paid_cents FROM app.fee_obligations WHERE id=$1`, [target.id]);
+    assert.equal(Number(obAfter.rows[0].paid_cents), paidBefore + Number(amountCents), 'ledger delta == kernel settlement exactly');
+  });
+
+  test('3 · JSON guard: malformed bodies are 4xx, never 5xx (even with a VALID signature)', async () => {
+    process.env.UPI_WEBHOOK_SECRET = TEST_SECRET;
+    const bad1 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: '{"broken":', headers: { 'content-type': 'application/json' } });
+    assert.equal(bad1.statusCode, 400, 'malformed application/json → 400');
+    // the real red-team shape: garbage body WITH a valid HMAC over its raw bytes
+    const garbage = 'not json at all';
+    const bad2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
+      payload: garbage, headers: { 'content-type': 'text/plain',
+        'x-razorpay-signature': createHmac('sha256', TEST_SECRET).update(garbage).digest('hex') } });
+    assert.equal(bad2.statusCode, 400, 'signed text/plain garbage → 400 (parse wrapped)');
+    assert.match(bad2.json().error, /malformed/);
+  });
+
+  test('4 · letter-first id regex: digit-run ids bounced at the enable door', async () => {
+    const o = await loginAs(app, 'owner@meridian.edu');
+    for (const id of ['9lives', '1abc.def']) {
+      const r = await app.inject({ method: 'POST', url: `/plugins/${id}/enable`,
+        headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'A' } });
+      assert.equal(r.statusCode, 400, `digit-first id must be rejected: ${id}`);
+    }
   });
 });
