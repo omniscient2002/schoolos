@@ -57,11 +57,11 @@ export default function StudentHome() {
   const route = ME.busRoute ? seed.busRoutes.find(r => r.name === ME.busRoute) : undefined;
 
   /* ---- school life ---- */
-  const nextEvent = useMemo(() =>
+  const nextEvent =
     seed.calendarEvents
       .filter(e => (e.campus === ME.campus || e.campus === 'all') && (e.type === 'event' || e.type === 'trip') && e.on.getTime() > Date.now())
-      .sort((a, b) => a.on.getTime() - b.on.getTime())[0],
-  [ME.campus]);
+      .sort((a, b) => a.on.getTime() - b.on.getTime())[0];
+
 
   const firstName = ME.name.split(' ')[0];
 

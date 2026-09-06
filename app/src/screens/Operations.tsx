@@ -180,7 +180,7 @@ export default function Operations() {
     { key: 'cases', title: 'Cases', icon: Icon.Clipboard, to: '/cases', summary: `${live.casesInProgress} in progress · ${live.openCases} open overall`, count: live.openCases, countLabel: 'open', tone: live.openCases > 3 ? 'warning' : undefined },
     { key: 'incidents', title: 'Incidents', icon: Icon.Alert, to: '/incidents', summary: `${live.incidentsInProgress} being worked, ${live.openIncidents} unresolved`, count: live.openIncidents, countLabel: 'open', tone: live.openIncidents > 0 ? 'warning' : 'success' },
     { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · 5 vendor contracts on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined },
-  ], [campus, collectionPct, live]);
+  ], [campus, collectionPct, live, openMaint]);
 
   const openCard = (c: DomainCardDef) => {
     if (c.key === 'assets') {

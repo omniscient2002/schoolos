@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Dropdown,
 } from '../components/ui';
+import { fmtRelative } from '../lib/format';
 import { SegmentedBar } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import {
@@ -45,23 +46,15 @@ const stageBadgeTone = (stage: string): 'info' | 'accent' | 'ai' | 'success' | '
           : stage === 'enrolled' ? 'success'
             : stage === 'rejected' ? 'danger' : 'warning';
 
-const rel = (iso: string) => {
-  const d = new Date(iso).getTime();
-  const m = Math.round((Date.now() - d) / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-};
 
 export default function FunnelBoard() {
   const toast = useToast();
   const { session, actorName, dispatch } = useStore();
-  /* gate on the LIVE server role, not the demo view switcher: AuthGate restores
-     sessions without setRole, so store roleId can drift from the authenticated
-     identity. The ADMIN set mirrors the doors' require(...) preHandler; the
-     server 403s any mutation it disallows (UI mirrors, server decides). */
+  /* gate on the LIVE server role, not the demo view switcher: the store's roleId
+     could historically drift from the authenticated identity (AuthGate restore
+     path — unit 14 finding). Unit 16 (A1) restores parity at the AuthGate
+     source; the ADMIN set still mirrors the doors' require(...) preHandler, and
+     the server 403s any mutation it disallows (UI mirrors, server decides). */
   const live = useSession();
   const canTransition = ['owner', 'principal', 'itadmin', 'finance', 'coordinator'].includes(live.role);
 
@@ -218,7 +211,7 @@ export default function FunnelBoard() {
               },
               { key: 'source', label: 'Source', sortable: true, render: l => <span className="u-small u-muted">{l.source}</span> },
               { key: 'stage', label: 'Stage', sortable: true, render: l => <Badge tone={stageBadgeTone(l.stage)}>{stageLabel(l.stage)}</Badge> },
-              { key: 'updated', label: 'Updated', sortable: true, sortValue: l => new Date(l.updatedAt).getTime(), render: l => <span className="u-small">{rel(l.updatedAt)}</span> },
+              { key: 'updated', label: 'Updated', sortable: true, sortValue: l => new Date(l.updatedAt).getTime(), render: l => <span className="u-small">{fmtRelative(l.updatedAt)}</span> },
               {
                 key: 'actions', label: 'Actions', align: 'right',
                 render: l => {
@@ -284,7 +277,7 @@ export default function FunnelBoard() {
               {history.map((h, i) => (
                 <li key={i} className="u-small" style={{ padding: '3px 0' }}>
                   <span style={{ fontWeight: 570 }}>{stageLabel(h.from_stage)} → {stageLabel(h.to_stage)}</span>
-                  <span className="u-faint"> · {h.actor} · {rel(h.at)}</span>
+                  <span className="u-faint"> · {h.actor} · {fmtRelative(h.at)}</span>
                 </li>
               ))}
             </ol>

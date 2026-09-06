@@ -117,7 +117,7 @@ export default function MaintMap() {
   const [sel, setSel] = useState<{ kind: 'asset'; id: string } | { kind: 'building'; name: string } | null>(null);
 
   const { data, loading, error, retry } = useAsync(() => maintenanceService.assets(campus), [campus]);
-  const assets = data ?? [];
+  const assets = useMemo(() => data ?? [], [data]);
   const rects = LAYOUTS[campus];
 
   const campusWOs = domain.workOrders.filter(w => w.campus === campus);
@@ -424,7 +424,7 @@ export default function MaintMap() {
                     {roomAssets.map(a => {
                       const n = openWOs.filter(w => w.assetId === a.id).length;
                       return (
-                        <div key={a.id} className="u-inline" style={{ gap: 9, justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => openAsset(a.id)}>
+                        <div key={a.id} className="u-inline" style={{ gap: 9, justifyContent: 'space-between', cursor: 'pointer' }} role="button" tabIndex={0} onClick={() => openAsset(a.id)} onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); openAsset(a.id); } }}>
                           <span className="u-inline" style={{ gap: 8, minWidth: 0 }}>
                             <AssetTag id={a.id} />
                             <span className="u-small u-truncate">{a.name}</span>

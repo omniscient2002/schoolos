@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Card, Stat, Badge, Button, Empty, Skeleton, SkeletonCard, Drawer, useToast } from '../components/ui';
+import {PageHead, Card, Stat, Badge, Button, Empty, Skeleton, SkeletonCard, Drawer, useToast, ClickThrough} from '../components/ui';
 import { LineChart, BarChart, Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import type { Insight } from '../types/domain';
@@ -69,9 +69,9 @@ function InsightCard({ ins, highlighted, onOpen }: { ins: Insight; highlighted: 
           <Sparkline points={ins.chart.values} color={ins.dir === 'down' ? 'var(--danger)' : 'var(--accent)'} height={44} width={260} />
         )}
         <div className="u-small u-muted u-clamp2" style={{ lineHeight: 1.55 }}>{ins.explanation}</div>
-        <div onClick={e => e.stopPropagation()}>
+        <ClickThrough>
           <Button size="sm" variant="secondary" iconRight={<Icon.ArrowUpRight size={13} />} onClick={onOpen}>Open full analysis</Button>
-        </div>
+        </ClickThrough>
       </div>
     </Card>
   );
@@ -176,7 +176,7 @@ export default function Insights() {
     return { rate, failed, presence, flagged, wl };
   }, []);
 
-  const insights = data ?? [];
+  const insights = useMemo(() => data ?? [], [data]);
   const ordered = useMemo(() => {
     const mine = insights.filter(i => i.ownerRole === session.roleId);
     const rest = insights.filter(i => i.ownerRole !== session.roleId);

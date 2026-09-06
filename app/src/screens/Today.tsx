@@ -506,7 +506,7 @@ export default function Today() {
     const nowPct = pctAt(hm);
 
     return { bands, stats, headSub, wocSeries, woc, openCount, ribbon, nowPct };
-  }, [routesData, domain.actions, domain.cases, role, actorName, campusLabel]);
+  }, [routesData, domain.actions, domain.cases, domain.workOrders, role, actorName, campusLabel]);
 
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
   const isPrincipalish = !['teacher', 'finance', 'transport', 'itadmin'].includes(role);

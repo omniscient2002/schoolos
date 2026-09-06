@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, Progress } from '../components/ui';
+import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, Progress, ClickThrough} from '../components/ui';
 import { EvidenceChain, AiTraceCard, SuggestedActions } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import {  fmtTime } from '../lib/format';
@@ -92,7 +92,7 @@ function ActionCard({ a, onOpen, onApprove, onDismiss }: {
           <span style={{ fontWeight: 600, color: 'var(--text-3)', letterSpacing: '.04em', fontSize: 'var(--text-xs)', textTransform: 'uppercase', marginRight: 6 }}>Why it matters</span>
           {a.why}
         </div>
-        <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+        <ClickThrough className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
           {a.evidence.map((e, i) => (
             <button
               key={i}
@@ -104,8 +104,8 @@ function ActionCard({ a, onOpen, onApprove, onDismiss }: {
               <Icon.Eye size={11} /> {e.label}
             </button>
           ))}
-        </div>
-        <div className="u-col" style={{ gap: 6, marginTop: 2 }} onClick={e => e.stopPropagation()}>
+        </ClickThrough>
+        <ClickThrough className="u-col" style={{ gap: 6, marginTop: 2 }}>
           <div className="u-xs" style={{ fontWeight: 640, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-3)' }}>Suggested actions</div>
           {a.actions.slice(0, 2).map((s, i) => (
             <div key={i} className="u-between" style={{ gap: 10, padding: '8px 11px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: 'var(--surface)' }}>
@@ -121,8 +121,8 @@ function ActionCard({ a, onOpen, onApprove, onDismiss }: {
               </Button>
             </div>
           ))}
-        </div>
-        <div className="u-flex" style={{ gap: 8, marginTop: 4 }} onClick={e => e.stopPropagation()}>
+        </ClickThrough>
+        <ClickThrough className="u-flex" style={{ gap: 8, marginTop: 4 }}>
           <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} onClick={onApprove}>Approve</Button>
           <Button size="sm" variant="ghost" icon={<Icon.X size={13} />} onClick={onDismiss}>Dismiss</Button>
           {a.aiInvolved && (
@@ -130,7 +130,7 @@ function ActionCard({ a, onOpen, onApprove, onDismiss }: {
               <Icon.Info size={12} /> “Why did SchoolOS suggest this?” opens with the item
             </span>
           )}
-        </div>
+        </ClickThrough>
       </div>
     </Card>
   );

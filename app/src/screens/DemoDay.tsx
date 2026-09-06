@@ -233,7 +233,7 @@ export default function DemoDay() {
               <div className="u-col" style={{ gap: 12 }}>
                 <ActionChain steps={chain} />
                 <EventTimeline items={[
-                  true && { time: '09:03', label: 'Approval recorded', detail: `${actorName} · ${session.roleId} · reason + policy on the ledger entry`, kind: 'act' as const },
+                  { time: '09:03', label: 'Approval recorded', detail: `${actorName} · ${session.roleId} · reason + policy on the ledger entry`, kind: 'act' as const },
                   (approval === 'sent' || approval === 'delivered' || approval === 'closed') && { time: '09:03', label: 'Message queued → sent', detail: 'Communication orchestrator: dedup ✓ · quiet-hours ✓ · template ✓', kind: 'act' as const },
                   (approval === 'delivered' || approval === 'closed') && { time: '09:04', label: 'Message delivered — 38/38', detail: 'WhatsApp receipts · 3 replies auto-routed to the case', kind: 'verify' as const },
                   approval === 'closed' && { time: '09:05', label: 'All surfaces updated', detail: 'Briefing · Action Center · Transport · Case · Audit · Memory — one action, one truth', kind: 'close' as const },

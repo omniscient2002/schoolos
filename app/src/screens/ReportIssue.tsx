@@ -136,8 +136,7 @@ export default function ReportIssue() {
           <Card>
             <div className="report-bubble u-col" style={{ gap: 10 }}>
               <textarea
-                autoFocus
-                value={text}
+                                value={text}
                 onChange={e => setText(e.target.value)}
                 placeholder="Tell us what happened — e.g. “The projector in room 204 isn\u2019t turning on.”"
                 rows={3}

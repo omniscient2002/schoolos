@@ -196,8 +196,8 @@ export default function Learning() {
     return base.map(a => (closedIds.has(a.id) ? { ...a, status: 'closed' as const } : a)).sort((x, y) => x.dueOn.getTime() - y.dueOn.getTime());
   }, [extra, load.data, closedIds, scope]);
 
-  const assessments = load.data?.s ?? [];
-  const mastery = load.data?.m ?? [];
+  const assessments = useMemo(() => load.data?.s ?? [], [load.data]);
+  const mastery = useMemo(() => load.data?.m ?? [], [load.data]);
 
   const scopeSections = useMemo(
     () => seed.sections.filter(s => scope === 'all' || s.campus === scope).sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name) || a.campus.localeCompare(b.campus)),

@@ -117,7 +117,7 @@ export default function Attendance() {
     return { rows, markedToday: todayRecs.length > 0, lastMarkAt: todayRecs[0]?.date ?? null, markedBy };
   }, [sectionId]);
 
-  const rows = register.data?.rows ?? [];
+  const rows = useMemo(() => register.data?.rows ?? [], [register.data]);
   const rowById = useMemo(() => new Map(rows.map(r => [r.person.id, r])), [rows]);
 
   /* ---- draft marking state ---- */

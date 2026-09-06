@@ -55,8 +55,8 @@ export function Stat({ label, value, delta, sub, spark, onClick, style }: {
   sub?: ReactNode; spark?: ReactNode; onClick?: () => void; style?: CSSProperties;
 }) {
   return (
-    <div className={`card stat ${onClick ? 'card-click' : ''}`} style={style} onClick={onClick} tabIndex={onClick ? 0 : undefined}
-      onKeyDown={onClick ? (e) => { if (e.key === 'Enter') { e.preventDefault(); onClick(); } } : undefined}>
+    <div className={`card stat ${onClick ? 'card-click' : ''}`} style={style} role={onClick ? 'button' : undefined} onClick={onClick} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}>
       <div className="label">{label}</div>
       <div className="stat-value-row">
         <div className="value">{value}</div>
@@ -155,7 +155,10 @@ export function Dropdown({ trigger, children, align = 'right', width, label }: {
             });
           } catch { /* non-cloneable trigger — fall through to wrapper */ }
         }
-        return <div onClick={() => setOpen(o => !o)} aria-expanded={open}>{el}</div>;
+        return (
+          /* non-cloneable trigger fallback — carries the menu-button semantics itself */
+          <div role="button" tabIndex={-1} onClick={() => setOpen(o => !o)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o); } }} aria-expanded={open}>{el}</div>
+        );
       })()}
       {open && (
         <div className="dropdown-menu" role="menu" aria-label={label} style={{ ...(align === 'left' ? { left: 0 } : { right: 0 }), ...(width ? { width, minWidth: width } : {}) }}>
@@ -166,21 +169,73 @@ export function Dropdown({ trigger, children, align = 'right', width, label }: {
   );
 }
 
+/* ============ Dialog focus (APG, unit 16 C1) ============
+   Shared by Modal/Drawer: focus moves to the first focusable when the dialog
+   opens, Tab is trapped while open, Escape and scrim clicks dismiss, and focus
+   returns to the trigger on close (parity with the Dropdown primitive). */
+export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: () => void) {
+  const ref = useRef<T>(null);
+  /* keep the latest closer without re-running the effect (callers pass inline
+     arrows; a re-run would yank focus back to the first field mid-typing) */
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const root = ref.current;
+    const prev = document.activeElement as HTMLElement | null;
+    const target = root?.querySelector<HTMLElement>('[data-autofocus]')
+      ?? root?.querySelector<HTMLElement>('input, textarea, select')
+      ?? root?.querySelector<HTMLElement>('a[href], button, [tabindex]:not([tabindex="-1"])')
+      ?? root;
+    target?.focus();
+    const onDoc = (e: MouseEvent) => { if (root && e.target instanceof Node && !root.contains(e.target)) closeRef.current(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { closeRef.current(); return; }
+      if (e.key !== 'Tab' || !root) return;
+      const items = [...root.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+        .filter(el => el.getClientRects().length > 0);
+      if (!items.length) return;
+      const idx = items.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey ? (idx <= 0 ? items.length - 1 : idx - 1) : (idx === -1 || idx === items.length - 1 ? 0 : idx + 1);
+      e.preventDefault();
+      items[next].focus();
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+      requestAnimationFrame(() => prev?.focus?.());
+    };
+  }, [open]);
+  return ref;
+}
+
+/* ============ ClickThrough island ============
+   unit 16: a click-through island inside a clickable card — mouse clicks here
+   must not reach the parent row; the children (native buttons/links) own
+   keyboard interaction. */
+export function ClickThrough({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
+  return (
+    <div role="group" className={className} style={style} onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} /* eslint-disable-line jsx-a11y/no-noninteractive-element-interactions -- island idiom: grouping container, children own keyboard */ >
+      {children}
+    </div>
+  );
+}
+
 /* ============ Modal ============ */
 export function Modal({ open, onClose, title, sub, children, footer, size }: {
   open: boolean; onClose: () => void; title: string; sub?: string; children: ReactNode; footer?: ReactNode; size?: 'lg';
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [open, onClose]);
+  /* unit 16 (C1): APG dialog focus — initial focus, Tab trap, Esc + scrim
+     dismiss, focus restored to the trigger on close */
+  const dialogRef = useDialogFocus<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
-    <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`modal ${size === 'lg' ? 'modal-lg' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-overlay">
+      <div ref={dialogRef} tabIndex={-1} className={`modal ${size === 'lg' ? 'modal-lg' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
           <div><h2>{title}</h2>{sub && <div className="u-small u-muted" style={{ marginTop: 3 }}>{sub}</div>}</div>
           <button className="iconbtn" onClick={onClose} aria-label="Close"><Icon.X size={17} /></button>
@@ -196,18 +251,13 @@ export function Modal({ open, onClose, title, sub, children, footer, size }: {
 export function Drawer({ open, onClose, title, sub, children, footer }: {
   open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode; children: ReactNode; footer?: ReactNode;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [open, onClose]);
+  /* unit 16 (C1): APG dialog focus, same contract as Modal */
+  const dialogRef = useDialogFocus<HTMLElement>(open, onClose);
   if (!open) return null;
   return (
     <>
-      <div className="drawer-overlay" onMouseDown={onClose} />
-      <aside className="drawer" role="dialog" aria-modal="true">
+      <div className="drawer-overlay" />
+      <aside ref={dialogRef} tabIndex={-1} className="drawer" role="dialog" aria-modal="true">
         <div className="drawer-head">
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 640, fontSize: 'var(--text-lg)' }}>{title}</div>

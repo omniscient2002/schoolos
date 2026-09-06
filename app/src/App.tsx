@@ -195,7 +195,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         if (!token) { setBooting(false); return; }
         const me = await apiMe();
         await ensureDataset();
-        if (!dead) setSession({ name: me.name, role: me.role, email: me.email });
+        /* unit 16 (A1): the restore path mirrors the login path's setRole call —
+           without it the store's roleId stayed at its default and drifted from
+           the authenticated identity (unit-14 finding). Auth validation itself
+           is unchanged: only a live /me answer establishes a session, and token
+           handling (setToken/call) is untouched. */
+        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email }); }
       } catch {
         localStorage.removeItem('schoolos.session');
         localStorage.removeItem('schoolos_token');

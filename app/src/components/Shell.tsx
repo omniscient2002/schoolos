@@ -345,7 +345,6 @@ interface PaletteItem { id: string; label: string; hint?: string; group: string;
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
-  const { session } = useStore();
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -391,7 +390,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         list.unshift({ id: `dc${i}`, label: d.title, hint: 'Decision record', group: 'Memory', icon: 'Scale', action: go('/memory') }));
     }
     return list;
-  }, [q, session.roleId, navigate, onClose]);
+  }, [q, navigate, onClose]);
 
   const filtered = q.trim() ? items.filter(i => `${i.label} ${i.hint ?? ''} ${i.group}`.toLowerCase().includes(q.toLowerCase())) : items;
   const groups = [...new Set(filtered.map(i => i.group))];
@@ -399,6 +398,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null;
   return (
+    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- scrim: pointer convenience only; the dialog itself traps keys (unit 16) */
     <div className="modal-overlay" style={{ alignItems: 'flex-start', paddingTop: '12vh', zIndex: 600 }} onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" style={{ maxWidth: 620, padding: 0 }} role="dialog" aria-modal="true" aria-label="Command menu">
         <div className="searchbox" style={{ padding: '4px 6px 0' }}>

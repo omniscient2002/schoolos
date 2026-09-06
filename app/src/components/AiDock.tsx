@@ -36,9 +36,11 @@ export function AiDock() {
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  if (!staff) return null;
-
   useEffect(() => { scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' }); }, [turns, busy]);
+
+  /* early return AFTER every hook — a return above the third useEffect changed the
+     hook count when `staff` flipped (React #310 class, same bug family unit 15 hit) */
+  if (!staff) return null;
 
   const contextFor = (p: string): { role: string; page: string } => {
     const map: [RegExp, string][] = [

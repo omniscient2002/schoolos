@@ -255,15 +255,16 @@ export function useScriptedDay(mode: DayMode | null) {
   const [done, setDone] = useState(false);
   const timers = useRef<number[]>([]);
   useEffect(() => {
-    timers.current.forEach(t => window.clearTimeout(t));
+    const stack = timers.current; /* stable per effect run — cleanup clears what THIS run scheduled */
+    stack.forEach(t => window.clearTimeout(t));
     setLines([]); setDone(false);
     if (!mode) return;
     const ctx: LoopCtx = { dispatch, say: l => setLines(ls => [...ls, l]), tick: () => {} };
     for (const s of dayScriptFor(mode)) {
-      timers.current.push(window.setTimeout(() => s.do(ctx), s.afterMs));
+      stack.push(window.setTimeout(() => s.do(ctx), s.afterMs));
     }
-    timers.current.push(window.setTimeout(() => setDone(true), dayScriptFor(mode).reduce((a, s) => Math.max(a, s.afterMs), 0) + 800));
-    return () => timers.current.forEach(t => window.clearTimeout(t));
+    stack.push(window.setTimeout(() => setDone(true), dayScriptFor(mode).reduce((a, s) => Math.max(a, s.afterMs), 0) + 800));
+    return () => stack.forEach(t => window.clearTimeout(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
   return { lines, done };

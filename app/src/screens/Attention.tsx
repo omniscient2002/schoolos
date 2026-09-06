@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast } from '../components/ui';
+import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, ClickThrough} from '../components/ui';
 import { EvidenceChain, AiTraceCard, SuggestedActions } from '../components/Ai';
 import { Slot } from '../plugins/Slot';
 import type { AiTrace, WorkOrderRecord } from '../types/domain';
@@ -263,14 +263,14 @@ function AttentionCard({ sig, onApprove, onDismiss, onAck: _onAck, onOpen }: {
             </span>
           ))}
         </div>
-        <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', marginTop: 2 }} onClick={e => e.stopPropagation()}>
+        <ClickThrough className="u-flex" style={{ gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
           <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} onClick={onApprove}>Approve</Button>
           <Button size="sm" variant="ghost" icon={<Icon.X size={13} />} onClick={onDismiss}>Dismiss</Button>
           <Button size="sm" variant="secondary" icon={<Icon.Eye size={13} />} onClick={onOpen}>Evidence &amp; detail</Button>
           {!sig.derived && (
             <Button size="sm" variant="secondary" iconRight={<Icon.ArrowRight size={13} />} onClick={() => navigate(sig.to)}>Open record</Button>
           )}
-        </div>
+        </ClickThrough>
       </div>
     </Card>
   );
@@ -343,7 +343,6 @@ export default function Attention() {
     return { signals: deriveSignals(domain.workOrders), rankedAt: new Date() };
   }, [session.roleId, domain.workOrders.length]);
 
-  const signals = data?.signals ?? [];
 
   const items: Signal[] = useMemo(() => {
     const actionSignals: Signal[] = domain.actions
@@ -368,8 +367,9 @@ export default function Attention() {
         aiInvolved: a.aiInvolved,
         derived: false,
       }));
+    const signals = data?.signals ?? [];
     return [...actionSignals, ...signals].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9));
-  }, [domain.actions, signals]);
+  }, [domain.actions, data]);
 
   const kindCounts = useMemo(() => {
     const c: Record<string, number> = { all: items.length };

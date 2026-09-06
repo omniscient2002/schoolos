@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Modal, Dropdown,
 } from '../components/ui';
+import { fmtRelative } from '../lib/format';
 import { Icon } from '../components/Icon';
 import {
   LIVE_API, apiVisitorsList, apiVisitorLog, apiVisitorCheckin, apiVisitorPickup,
@@ -42,13 +43,6 @@ const STATUS_META: Record<string, { label: string; tone: 'info' | 'accent' | 'ai
 };
 const TERMINAL = new Set(['completed', 'denied']);
 
-const rel = (iso: string) => {
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
-};
 
 /** release-gate state per row — the fail-closed mirror of the server's law */
 function releaseState(v: ApiVisitorVisit): 'blocked' | 'authorized' | 'none' {
@@ -279,7 +273,7 @@ export default function VisitorsBoard() {
                 return <span className="u-faint u-small">gate pass</span>;
               },
             },
-            { key: 'updated', label: 'Updated', sortable: true, sortValue: v => new Date(v.updatedAt).getTime(), render: v => <span className="u-small">{rel(v.updatedAt)}</span> },
+            { key: 'updated', label: 'Updated', sortable: true, sortValue: v => new Date(v.updatedAt).getTime(), render: v => <span className="u-small">{fmtRelative(v.updatedAt)}</span> },
             {
               key: 'actions', label: 'Actions', align: 'right',
               render: v => {

@@ -255,8 +255,7 @@ export default function MaintInventory() {
                 value={restockQty}
                 onChange={e => setRestockQty(e.target.value)}
                 style={{ width: '100%' }}
-                autoFocus
-              />
+                              />
               <span className="u-small u-muted" style={{ display: 'block', marginTop: 6 }}>
                 Suggested: 2× threshold ({restockItem.threshold * 2} {restockItem.unit}) · est. {fmtMoney(restockItem.threshold * 2 * restockItem.unitCost)}
               </span>

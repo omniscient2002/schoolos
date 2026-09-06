@@ -10,7 +10,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
-import { PageHead, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, useToast, Drawer, DataTable, KeyValue } from '../components/ui';
+import {PageHead, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, useToast, Drawer, DataTable, KeyValue, ClickThrough} from '../components/ui';
 import { AssetTag } from '../components/Maint';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtDateTime } from '../lib/format';
@@ -107,10 +107,10 @@ export default function Inspections() {
       if (!raiseable(r)) return null;
       const existing = r.planId ? woForPlan(r.planId) : undefined;
       return (
-        <span className="u-inline" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+        <ClickThrough className="u-inline" style={{ gap: 8 }}>
           <Button size="sm" variant={existing ? 'secondary' : 'primary'} icon={<Icon.Zap size={12} />} onClick={() => raiseWO(r)}>Raise work order</Button>
           {existing && <Link to={`/maintenance/work-orders/${existing.id}`} className="u-mono u-small" style={{ color: 'var(--accent-text)' }}>{existing.id} →</Link>}
-        </span>
+        </ClickThrough>
       );
     } },
   ];

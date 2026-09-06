@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import * as seed from '../data/dataset';
 import { workflowService } from '../services';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, Drawer, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, useToast } from '../components/ui';
+import {Badge, Button, Card, Drawer, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, useToast, ClickThrough} from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDateTime, fmtNum, fmtRelative } from '../lib/format';
 import type { WorkflowDef, WorkflowRun, WorkflowStep } from '../types/domain';
@@ -45,7 +45,7 @@ const RUN_TONE: Record<WorkflowRun['status'], 'success' | 'warning' | 'danger' |
 
 function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (next: boolean) => void }) {
   return (
-    <label className="switch" onClick={e => e.stopPropagation()} title={on ? 'Enabled — click to pause' : 'Paused — click to enable'}>
+    <label className="switch" title={on ? 'Enabled — click to pause' : 'Paused — click to enable'}>
       <input type="checkbox" checked={on} onChange={e => onChange(e.target.checked)} aria-label={label} />
       <span className="track" />
     </label>
@@ -321,7 +321,7 @@ export default function Automation() {
                       </span>
                     </span>
                   </div>
-                  <span className="wf-toggle" onClick={e => e.stopPropagation()}><Toggle on={wf.enabled} label={`Toggle ${wf.name}`} onChange={next => void toggleWf(wf, next)} /></span>
+                  <ClickThrough className="wf-toggle"><Toggle on={wf.enabled} label={`Toggle ${wf.name}`} onChange={next => void toggleWf(wf, next)} /></ClickThrough>
                 </div>
                 <div className="u-small u-muted" style={{ marginBottom: 8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{wf.description}</div>
                 <div className="u-small" style={{ marginBottom: 3 }}>
@@ -513,15 +513,15 @@ export default function Automation() {
             {connectFrom ? 'Now click a second node to draw the connection.' : 'Connections run in the order drawn.'}
           </span>
         </div>
-        <div
+        <div /* eslint-disable-line jsx-a11y/no-noninteractive-element-interactions -- drawing canvas is role=application by design; pointer + Esc keyboard paths provided */
           style={{
             position: 'relative', height: 320, border: '1px solid var(--border)', borderRadius: 'var(--r-lg)', overflow: 'hidden',
             background: 'radial-gradient(var(--border-subtle) 1px, transparent 1px)', backgroundSize: '18px 18px', backgroundPosition: '9px 9px',
           }}
           onClick={() => setConnectFrom(null)}
+          onKeyDown={e => { if (e.key === 'Escape') setConnectFrom(null); }}
           role="application"
-          aria-label="Workflow builder canvas"
-        >
+          aria-label="Workflow builder canvas">
           <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} aria-hidden="true">
             {edges.map((e, i) => {
               const a = byId(e.from); const b = byId(e.to);

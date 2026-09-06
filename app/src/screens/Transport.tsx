@@ -348,7 +348,7 @@ export default function Transport() {
               {transportCases.map(c => {
                 const open = c.status !== 'resolved' && c.status !== 'closed';
                 return (
-                  <div key={c.id} className="u-between" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer' }} onClick={() => navigate(`/cases/${c.id}`)}>
+                  <div key={c.id} className="u-between" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer' }} role="button" tabIndex={0} onClick={() => navigate(`/cases/${c.id}`)} onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); navigate(`/cases/${c.id}`); } }}>
                     <div style={{ minWidth: 0 }}>
                       <div className="u-flex" style={{ gap: 8 }}>
                         <span style={{ fontWeight: 580 }}>{c.title}</span>

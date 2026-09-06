@@ -66,6 +66,7 @@ function StudentDetail({ person }: { person: Person }) {
   const [slot, setSlot] = useState<AttendanceRecord | null>(null);
 
   const rate = useMemo(() => seed.studentAttendanceRate(person.id), [person.id]);
+  /* eslint-disable-next-line react-hooks/exhaustive-deps -- feeTick is a deliberate recompute tick: seed fee state mutates in place on payment actions */
   const fees = useMemo(() => seed.studentFeeSummary(person.id), [person.id, feeTick]);
   const guardianRows = useMemo(() => seed.guardiansOfStudent(person.id), [person.id]);
   const docs = useMemo(() => seed.documents.filter(d => d.ownerType === 'student' && d.ownerId === person.id), [person.id]);
