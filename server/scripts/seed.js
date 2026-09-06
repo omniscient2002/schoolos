@@ -260,7 +260,7 @@ await client.query(
 // TRUNCATE above, so re-apply. The migration files are the single source of truth
 // and are idempotent by design (conflict guards + NOT EXISTS); the audit entries
 // they write chain onto the genesis row just inserted.
-for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql']) {
+for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql', '014_exams_assessment_registration.sql']) {
   const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', mig), 'utf8');
   await client.query(catalogSql);
 }

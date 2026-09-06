@@ -84,6 +84,12 @@ describe('plugin loader (drop-in factory)', () => {
     // registry stays clean — no malformed row was created
     const list = await app.inject({ method: 'GET', url: '/plugins', headers: H(o.token) });
     assert.equal(list.json().plugins.some(p => p.plugin_id.includes('..')), false);
+    // exams.assessment early registration (orchestrator decision): metadata-only row,
+    // registered (not enabled), class D — keeps the frontend 'exams' card mirror honest
+    const exams = list.json().plugins.find(p => p.plugin_id === 'exams.assessment');
+    assert.ok(exams, 'exams.assessment must be registered in the catalog');
+    assert.equal(exams.class, 'D');
+    assert.equal(exams.status, 'registered');
     // redteam P2-1: registry hygiene on the enable door
     const badV = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
       headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'C', version: 'not-semver' } });
