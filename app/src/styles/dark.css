@@ -23,7 +23,7 @@
     --text: #ECEAE3;
     --text-1: var(--text);
     --text-2: #B8B4AA;
-    --text-3: #908C82;   /* ≥4.6:1 on all dark surface tints */
+    --text-3: #9B968A;   /* ≥4.6:1 on all dark surface tints */
     --text-inverse: #161511;
     --border: #3B382F;
     --border-strong: #4C483D;
@@ -48,7 +48,7 @@
     --warning: #D9A441;
     --warning-weak: #33290F;
     --warning-weak-2: #463917;
-    --danger: #E0685C;
+    --danger: #E8796B;
     --danger-weak: #3B201C;
     --danger-weak-2: #4E2A24;
     --info: #6B9BD1;
@@ -66,17 +66,18 @@
     /* interaction ramps */
     --secondary-hover-border: #6B6656;
     --input-hover-border: #5A5648;
-    --danger-hover: #C4544A;
+    --danger-hover: #E06E5E;
     --danger-hover-text: #E8B54D;
     /* campus hue channel: server hex feeds --campus-hue; dark derives a
        legible display tone — light mode never defines the derived token */
+    --btn-ink: #161511; /* dark ink on light-teal filled buttons */
     --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0E7568) 68%, #ECEAE3);
     /* shadows — elevation reads via contrast, not glow, on dark */
     --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.55);
     --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.5);
     --shadow-md: 0 6px 18px rgb(0 0 0 / 0.5);
     --shadow-lg: 0 14px 40px rgb(0 0 0 / 0.55);
-    --gradient-accent: linear-gradient(135deg, #3FA795 0%, #2E7D6F 100%);
+    --gradient-accent: linear-gradient(135deg, #46B5A2 0%, #3FA795 100%);
   }
 }
 
@@ -90,7 +91,7 @@
   --text: #ECEAE3;
   --text-1: var(--text);
   --text-2: #B8B4AA;
-  --text-3: #908C82;
+  --text-3: #9B968A;
   --text-inverse: #161511;
   --border: #3B382F;
   --border-strong: #4C483D;
@@ -112,7 +113,7 @@
   --warning: #D9A441;
   --warning-weak: #33290F;
   --warning-weak-2: #463917;
-  --danger: #E0685C;
+  --danger: #E8796B;
   --danger-weak: #3B201C;
   --danger-weak-2: #4E2A24;
   --info: #6B9BD1;
@@ -128,14 +129,15 @@
   --chart-slate: #9BA3AD;
   --secondary-hover-border: #6B6656;
   --input-hover-border: #5A5648;
-  --danger-hover: #C4544A;
+  --danger-hover: #E06E5E;
   --danger-hover-text: #E8B54D;
+  --btn-ink: #161511; /* dark ink on light-teal filled buttons */
   --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0E7568) 68%, #ECEAE3);
   --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.55);
   --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.5);
   --shadow-md: 0 6px 18px rgb(0 0 0 / 0.5);
   --shadow-lg: 0 14px 40px rgb(0 0 0 / 0.55);
-  --gradient-accent: linear-gradient(135deg, #3FA795 0%, #2E7D6F 100%);
+  --gradient-accent: linear-gradient(135deg, #46B5A2 0%, #3FA795 100%);
 }
 
 /* campus dots consume the derived channel; light falls back to the server hex */

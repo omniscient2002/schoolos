@@ -9,6 +9,10 @@ import type { LiveEvent } from '../types/domain';
 /* Single brain: the app always runs against the backend. */
 export const LIVE_API = true;
 const BASE = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080';
+/* unit 14: exported for the kernel plugin resync, which must hit the same origin
+   as every other door (relative '/plugins' only works when the API serves the
+   app — split-origin serving silently no-oped enablement; see backlog ledger). */
+export const LIVE_BASE = BASE;
 
 export interface ApiUser { id: string; name: string; role: string; email: string; tenantId: string }
 
@@ -108,3 +112,16 @@ export const apiEnablePlugin = (id: string, version: string, pclass: string, per
   call<{ plugin: Record<string, unknown> }>(`/plugins/${id}/enable`, { method: 'POST', body: JSON.stringify({ version, class: pclass, permissions }) });
 export const apiDisablePlugin = (id: string) =>
   call<{ plugin: Record<string, unknown> }>(`/plugins/${id}/disable`, { method: 'POST', body: '{}' });
+
+/* ---- admissions.funnel (wave-2 #1; server truth for PII masking + lattice) ---- */
+export interface ApiFunnelLead {
+  id: string; studentName: string; classApplied: string; source: string; stage: string;
+  admissionYear: string | null; createdAt: string; updatedAt: string;
+  guardianName: string | null; guardianPhone: string | null; /* masked shape for non-office roles */
+}
+export const apiFunnelLeads = () => call<{ masked: boolean; leads: ApiFunnelLead[] }>(`/plugins/admissions.funnel/leads`);
+export const apiFunnelMoveStage = (id: string, to: string) =>
+  call<{ ok: boolean; from: string; to: string; actionId: string | null }>(`/plugins/admissions.funnel/leads/${id}/stage`, { method: 'POST', body: JSON.stringify({ to }) });
+export const apiFunnelHistory = (id: string) =>
+  call<{ history: { from_stage: string | null; to_stage: string; actor: string; at: string }[] }>(`/plugins/admissions.funnel/leads/${id}/history`);
+export const apiFunnelSummary = () => call<{ byStage: Record<string, number>; total: number }>(`/plugins/admissions.funnel/summary`);

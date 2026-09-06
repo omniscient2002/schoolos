@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState, createContext, useContext } from 'react';
-import { KernelProvider, KernelGate } from './plugins/useKernel';
+import { KernelProvider, KernelGate, useKernel } from './plugins/useKernel';
 import './plugins/registerWidgets';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { StoreProvider, useStore } from './state/store';
@@ -29,6 +29,7 @@ const Attendance = F(() => import('./screens/Attendance'));
 const Operations = F(() => import('./screens/Operations'));
 const Fees = F(() => import('./screens/Fees'));
 const Admissions = F(() => import('./screens/Admissions'));
+const FunnelBoard = F(() => import('./screens/FunnelBoard'));
 const Transport = F(() => import('./screens/Transport'));
 const Documents = F(() => import('./screens/Documents'));
 const Maintenance = F(() => import('./screens/Maintenance'));
@@ -220,6 +221,14 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   );
 }
 
+/* unit 14: server flag wins on enablement — while admissions.funnel is
+   enabled (kernel resyncs from the server registry), /admissions shows the
+   live funnel board; otherwise the demo kanban stays. */
+function AdmissionsHost() {
+  const { isEnabled } = useKernel();
+  return isEnabled('admissions.funnel') ? <FunnelBoard /> : <Admissions />;
+}
+
 function AppRoutes() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
@@ -237,7 +246,7 @@ function AppRoutes() {
       <Route path="/attendance" element={<S><Attendance /></S>} />
       <Route path="/operations" element={<S><Operations /></S>} />
       <Route path="/fees" element={<S><Fees /></S>} />
-      <Route path="/admissions" element={<S><Admissions /></S>} />
+      <Route path="/admissions" element={<S><AdmissionsHost /></S>} />
       <Route path="/transport" element={<S><Transport /></S>} />
       <Route path="/documents" element={<S><Documents /></S>} />
       <Route path="/maintenance" element={<S><Maintenance /></S>} />

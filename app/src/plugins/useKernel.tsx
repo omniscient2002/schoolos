@@ -7,6 +7,7 @@
    ============================================================ */
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { FIRST_PARTY_PLUGINS, KERNEL_VERSION } from './pluginRegistry';
+import { LIVE_BASE } from '../services/liveApi';
 import type { PluginManifest } from './pluginTypes';
 import { Empty } from '../components/ui';
 import { Icon } from '../components/Icon';
@@ -60,12 +61,22 @@ export function KernelProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const token = localStorage.getItem('schoolos_token');
+        /* unit 14 fix: the provider mounts before AuthGate resolves, so the token
+           often does not exist yet on a fresh browser — wait (bounded) for login
+           instead of no-oping until the next reload. Mirrors the dataset loader's
+           bounded wait. */
+        let token = localStorage.getItem('schoolos_token');
+        for (let i = 0; i < 40 && !token; i++) {
+          await new Promise(r => setTimeout(r, 250));
+          token = localStorage.getItem('schoolos_token');
+        }
         if (!token) return;
         // Same-origin deploy contract (orchestrator verdict, 2026-09-06): the
         // relative fetch is intentional — API serves the app / VITE_API_BASE is
         // pinned at build. Split-origin serving is a hardening-backlog item.
-        const res = await fetch('/plugins', { headers: { authorization: `Bearer ${token}` } });
+        /* unit 14: same origin as every other API door (LIVE_BASE collapses to
+           relative in same-origin deploys, preserving the deploy contract) */
+        const res = await fetch(`${LIVE_BASE}/plugins`, { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean; settings?: unknown }> = Array.isArray(data.plugins) ? data.plugins : [];

@@ -82,6 +82,22 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
   },
   /* library is the proof plugin and ranks LAST on slot surfaces: the docs/10 §6
      ration (max 2 widgets per slot) is consumed by the production rails first */
+  /* wave-2 #1 (unit 14): mirrors server/src/plugins/admissions.funnel (runtime v1.1,
+     migrations 018+021). Headless primitives plugin — its UI is the /admissions
+     funnel board, shown INSTEAD of the demo kanban while the server flag is on
+     (server truth wins on enablement; resync strips it when disabled). */
+  {
+    id: 'admissions.funnel',
+    name: 'Admissions Funnel',
+    version: '1.1.0',
+    class: 'C',
+    description: 'Enquiry→enrollment funnel primitives: lead capture (session window + duplicate guard), enforced stage lattice with side exits, stage history, PII-masked teacher surfaces. Applicant PII stays in plugin_admissions; never writes core students; offer.accepted raises students.create via kernel approval.',
+    icon: 'Users',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['events.emit', 'audit.request'],
+    slots: ['settings', 'reports'],
+    defaultEnabled: false,
+  },
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);

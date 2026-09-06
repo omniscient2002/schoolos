@@ -17,13 +17,13 @@
 .btn svg { flex-shrink: 0; }
 
 .btn-primary {
-  background: var(--gradient-accent); color: #fff;
+  background: var(--gradient-accent); color: var(--btn-ink, #fff);
   box-shadow: var(--shadow-xs), inset 0 1px 0 color-mix(in srgb, #fff 20%, transparent);
 }
 .btn-primary:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm), inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent); }
 .btn-primary:active { background: var(--accent-active); box-shadow: var(--shadow-xs), inset 0 1px 2px color-mix(in srgb, var(--text) 25%, transparent); }
 
-.btn-ai { background: var(--ai); color: #fff; box-shadow: var(--shadow-xs); }
+.btn-ai { background: var(--ai); color: var(--btn-ink, #fff); box-shadow: var(--shadow-xs); }
 .btn-ai:hover { background: var(--ai-hover); }
 
 .btn-secondary { background: var(--surface); border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
@@ -32,7 +32,7 @@
 .btn-ghost { color: var(--text-2); }
 .btn-ghost:hover { background: var(--surface-3); color: var(--text); }
 
-.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger { background: var(--danger); color: var(--btn-ink, #fff); }
 .btn-danger:hover { background: var(--danger-hover); }
 
 .btn-danger-ghost { color: var(--danger); }
@@ -87,7 +87,7 @@
 }
 .checkbox input:checked + .box { background: var(--accent); border-color: var(--accent); transform: scale(1.08); }
 .checkbox input:checked + .box svg { opacity: 1; }
-.checkbox .box svg { opacity: 0; color: #fff; }
+.checkbox .box svg { opacity: 0; color: var(--btn-ink, #fff); }
 .checkbox input:focus-visible + .box { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- Switch ---------- */
@@ -216,7 +216,7 @@ table.data tbody tr.row-click { cursor: pointer; }
 .avatar {
   width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11.5px; font-weight: 640; color: #fff; letter-spacing: .02em;
+  font-size: 11.5px; font-weight: 640; color: var(--btn-ink, #fff); letter-spacing: .02em;
   background: var(--accent);
 }
 .avatar.lg { width: 44px; height: 44px; font-size: 15px; }
@@ -285,9 +285,9 @@ table.data tbody tr.row-click { cursor: pointer; }
 .toast.error { background: color-mix(in srgb, var(--status-critical) 25%, var(--surface-inverse)); }
 .toast .toast-msg { flex: 1; }
 .toast .toast-title { font-weight: 600; }
-.toast .toast-sub { color: rgba(255,255,255,.65); font-size: var(--text-sm); margin-top: 1px; }
-.toast button { color: rgba(255,255,255,.7); }
-.toast button:hover { color: #fff; }
+.toast .toast-sub { color: color-mix(in srgb, var(--text-inverse) 65%, transparent); font-size: var(--text-sm); margin-top: 1px; }
+.toast button { color: color-mix(in srgb, var(--text-inverse) 70%, transparent); }
+.toast button:hover { color: var(--text-inverse); }
 
 /* ---------- Empty / error / loading ---------- */
 .empty {
@@ -464,7 +464,7 @@ table.data tbody tr.row-click { cursor: pointer; }
 .login-card { width: 100%; max-width: 520px; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-hero); padding: 26px 28px 20px; box-shadow: var(--shadow-xl);
   animation: fadeIn 320ms var(--ease-out); max-height: 94vh; overflow: auto; }
-.logo-mark { width: 40px; height: 40px; border-radius: 11px; background: var(--gradient-accent); color: #fff;
+.logo-mark { width: 40px; height: 40px; border-radius: 11px; background: var(--gradient-accent); color: var(--btn-ink, #fff);
   box-shadow: var(--shadow-sm);
   display: grid; place-items: center; font-weight: 800; font-size: 19px; }
 .seg { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: var(--surface-2);
