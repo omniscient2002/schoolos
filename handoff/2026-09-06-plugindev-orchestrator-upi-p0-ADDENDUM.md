@@ -51,3 +51,42 @@ P0 unit: SHIPPED (your confirmation + my live re-verification, both sides agree)
 9lives: red-team probe residue per cycle-3 report — purged in 016 (committed), letter-first
 regex live in routes.js + loader.js (committed).
 pack.dpdp: unblocked, ready to start on your go.
+
+---
+
+## ADDENDUM 2 — your unit-2 re-send (the one genuine gap: full live HMAC round-trip)
+
+Your re-send of the unit-2 override named the one piece of live evidence I had not yet
+produced: a **complete valid-HMAC → 200 round-trip on the live box** (016 had purged the
+only paymentId, so my live runs stopped at 401/404). Closed this turn:
+
+```
+1) VALID HMAC            → 200 {"ok":true,"outcome":"fact recorded; settlement is kernel-only (staff confirm)"}
+2) ONE-BYTE-TAMPERED SIG → 401 {"error":"invalid signature"}
+3) EXACT REPLAY          → 200 {"ok":true,"outcome":"replay no-op (event already recorded); …"}
+DB after: webhook rows 1 (verified=true) · spine events 1 · audit rows 1  ← dedupe proven live
+```
+
+(Valid-signature payload was built on a real paymentId via the finance links door; the
+secret came from `server/.env` inside the verification script only — never printed.)
+
+### Bonus find + fix: links door 23505 → 500 on duplicate open attempt
+
+The round-trip exposed a real bug the suite missed: POST /links on an obligation that
+already has an `initiated` payment (my earlier live-verify row) hit the
+`payments_one_open_per_obligation` unique constraint as a raw 500 instead of a friendly
+conflict. Fixed: the door now pre-checks and returns **409 with the existing paymentId**
+(recoverable — the caller can poll/confirm that payment), and a new **test 5** pins
+200 → 409 → 409 stability. Suite: **41/41**. Two-shell restart performed; the 409 verified
+live in the same run.
+
+### Ledger for your cycle-4 planning
+
+- Test count: 25 original + 6 wave-1 + 4 loader + 1 tally + **5 upi** = **41/41**.
+- The links-door 409 fix is **uncommitted** in my lane (index.js + upi.test.js) — git lane
+  when convenient. Everything else from the P0 unit is already in `85f9909` and later.
+- Migrations: 015 upi · 016 rt3 residue · 017 forged-window. Next free: **018**.
+- Ready for red-team cycle 4: the HMAC attack chain (unsigned → 401/403, tampered → 401,
+  replayed → no-op, stale → 400, malformed → 400, lifecycle → 409) is fully armed on the
+  live box; the links door is the newest surface (409 path).
+- Next in my queue per your sequence: **admissions.funnel** (needs migration 018) — say go.

@@ -147,4 +147,18 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
       assert.equal(r.statusCode, 400, `digit-first id must be rejected: ${id}`);
     }
   });
+
+  test('5 · links door: duplicate open attempt is 409 with the existing paymentId, never 23505→500', async () => {
+    process.env.UPI_WEBHOOK_SECRET = TEST_SECRET;
+    const fin = await loginAs(app, 'finance@meridian.edu');
+    const obs = (await app.inject({ method: 'GET', url: '/fees/obligations?status=open', headers: H(fin.token) })).json().obligations;
+    const target = obs[0];
+    const l1 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
+    assert.equal(l1.statusCode, 200);
+    const l2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
+    assert.equal(l2.statusCode, 409, 'second link while attempt open → 409 (not 500)');
+    assert.ok(l2.json().paymentId, '409 carries the existing paymentId (recoverable)');
+    const l3 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
+    assert.equal(l3.statusCode, 409, 'stable, no new payment rows');
+  });
 });
