@@ -732,3 +732,12 @@ table.data tbody tr.row-click { cursor: pointer; }
 .route-strip .rs-label { font-size: var(--text-xs); color: var(--text-2); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.2; }
 .route-strip .rs-time { font-size: 10px; color: var(--text-3); }
 .route-card.route-delayed { border-left: 3px solid var(--warning); }
+
+/* unit 11: sortable header buttons (inside th; density inherits) */
+.sort-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+  background: none; border: none; padding: 0; cursor: pointer; min-height: 32px;
+}
+.sort-btn .sort-ind { display: inline-flex; color: var(--accent-text); }
+@media (pointer: coarse) { .sort-btn { min-height: 44px; } }

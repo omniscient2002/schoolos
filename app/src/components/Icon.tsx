@@ -31,6 +31,7 @@ export const Icon = {
   ArrowRight: (p: IconProps) => (<svg {...base(p)}><path d="M5 12h14M12 5l7 7-7 7"/></svg>),
   ArrowUpRight: (p: IconProps) => (<svg {...base(p)}><path d="M7 17 17 7M7 7h10v10"/></svg>),
   ArrowDown: (p: IconProps) => (<svg {...base(p)}><path d="M12 5v14M19 12l-7 7-7-7"/></svg>),
+  ArrowUp: (p: IconProps) => (<svg {...base(p)}><path d="M12 19V5M5 12l7-7 7 7"/></svg>),
   Money: (p: IconProps) => (<svg {...base(p)}><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M6 15h4"/></svg>),
   Bus: (p: IconProps) => (<svg {...base(p)}><path d="M8 6v6M15 6v6M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>),
   Calendar: (p: IconProps) => (<svg {...base(p)}><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>),

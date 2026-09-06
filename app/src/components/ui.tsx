@@ -276,21 +276,60 @@ export function Tabs({ tabs, active, onChange, pill, panelId }: {
 }
 
 /* ============ Table ============ */
+/* DataTable — the one data-grid class (unit 7 keyboard rows, unit 8 captions,
+   unit 10 em-dash empty cells, unit 11 client-side sort).
+
+   SORT API (unit 11, product sign-off granted):
+   Give a column `sortable: true` and (when the rendered value isn't the sort
+   key) an optional `sortValue: (row) => string | number`. Clicking (or
+   Enter/Space on) the header button cycles that column: asc → desc → none.
+   Sorting is IN-MEMORY and DETERMINISTIC — the rows prop order is never
+   mutated (this is display order, not data policy); ties break on rowKey.
+   aria-sort="ascending|descending|none" lands on the th; the indicator icon
+   is aria-hidden (aria-sort carries the state). No server round-trip. */
 export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty, caption }: {
-  columns: { key: string; label: ReactNode; render?: (row: T) => ReactNode; width?: number | string; align?: 'left' | 'right' }[];
+  columns: { key: string; label: ReactNode; render?: (row: T) => ReactNode; width?: number | string; align?: 'left' | 'right'; sortable?: boolean; sortValue?: (row: T) => string | number }[];
   rows: T[]; rowKey: (row: T) => string; onRowClick?: (row: T) => void; empty?: ReactNode; caption?: string;
 }) {
+  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
+  const cycleSort = (key: string) => setSort(cur => (cur?.key !== key ? { key, dir: 'asc' } : cur.dir === 'asc' ? { key, dir: 'desc' } : null));
+  /* deterministic in-memory ordering: accessor → number/string compare, ties on rowKey */
+  const sorted = sort
+    ? [...rows].sort((a, b) => {
+        const col = columns.find(c => c.key === sort.key);
+        const acc = col?.sortValue ?? ((r: T) => (r as Record<string, unknown>)[sort.key] as string | number);
+        const av = acc(a), bv = acc(b);
+        const cmp = typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+        return (sort.dir === 'asc' ? cmp : -cmp) || String(rowKey(a)).localeCompare(String(rowKey(b)));
+      })
+    : rows;
   if (!rows.length && empty) return <>{empty}</>;
   return (
     <div className="table-wrap">
       <table className="data">
         {/* unit 8: every table carries an sr-only caption for column context */}
         <caption className="sr-only">{caption ?? `Data table — ${rows.length} row${rows.length === 1 ? '' : 's'}`}</caption>
-        <thead><tr>{columns.map(c => (
-          <th key={c.key} scope="col" style={{ width: c.width, textAlign: c.align }}>{c.label}</th>
-        ))}</tr></thead>
+        <thead><tr>{columns.map(c => {
+          const dir = sort?.key === c.key ? sort.dir : null;
+          return (
+            <th key={c.key} scope="col" aria-sort={c.sortable ? (dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none') : undefined} style={{ width: c.width, textAlign: c.align }}>
+              {c.sortable ? (
+                <button
+                  className="sort-btn"
+                  onClick={() => cycleSort(c.key)}
+                  title={dir === 'asc' ? 'Sorted ascending — activate for descending' : dir === 'desc' ? 'Sorted descending — activate to clear' : 'Sort ascending'}
+                >
+                  {c.label}
+                  <span className="sort-ind" aria-hidden="true">{dir === 'asc' ? <Icon.ArrowUp size={11} /> : dir === 'desc' ? <Icon.ArrowDown size={11} /> : <Icon.ArrowUp size={11} style={{ opacity: .32 }} />}</span>
+                </button>
+              ) : c.label}
+            </th>
+          );
+        })}</tr></thead>
         <tbody>
-          {rows.map(row => (
+          {sorted.map(row => (
             <tr
               key={rowKey(row)}
               className={onRowClick ? 'row-click' : ''}

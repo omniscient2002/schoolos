@@ -298,7 +298,7 @@ export default function People() {
                 onRowClick={p => navigate(`/people/${p.id}`)}
                 columns={[
                   {
-                    key: 'name', label: 'Person',
+                    key: 'name', label: 'Person', sortable: true, sortValue: p => p.name,
                     render: p => (
                       <div className="u-flex" style={{ gap: 10, minWidth: 0 }}>
                         <Avatar name={p.name} size="sm" />
@@ -310,7 +310,7 @@ export default function People() {
                     ),
                   },
                   ...(tab === 'student' ? [
-                    { key: 'grade', label: 'Grade · Sec', render: (p: Person) => <span className="tnum">{p.grade} · {p.section}</span> },
+                    { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => p.grade ?? 999, render: (p: Person) => <span className="tnum">{p.grade} · {p.section}</span> },
                     { key: 'ct', label: 'Class teacher', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 140, display: 'inline-block' }}>{classTeacherName(p)}</span> },
                     { key: 'att', label: 'Attendance', render: (p: Person) => attendanceBadge(p) },
                     { key: 'fee', label: 'Fees', render: (p: Person) => feeBadge(p) },

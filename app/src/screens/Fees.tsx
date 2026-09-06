@@ -366,7 +366,7 @@ export default function Fees() {
                 empty={<Empty icon={<Icon.Money size={22} />} title="No obligations match this filter" sub="Clear the status filter to see the full ledger." />}
                 columns={[
                   {
-                    key: 'student', label: 'Student', render: f => {
+                    key: 'student', label: 'Student', sortable: true, sortValue: f => seed.findPerson(f.studentId)?.name ?? f.studentId, render: f => {
                       const st = seed.findPerson(f.studentId);
                       return (
                         <div>
@@ -378,9 +378,9 @@ export default function Fees() {
                   },
                   { key: 'term', label: 'Term', render: f => <span className="u-small">{f.term.replace(' 2026-27', '')}</span> },
                   { key: 'category', label: 'Category', render: f => <span className="u-small u-muted">{f.category}</span> },
-                  { key: 'amount', label: 'Amount', align: 'right', render: f => <span className="tnum">{fmtMoney(f.amount)}</span> },
+                  { key: 'amount', label: 'Amount', align: 'right', sortable: true, sortValue: f => f.amount, render: f => <span className="tnum">{fmtMoney(f.amount)}</span> },
                   { key: 'paid', label: 'Paid', align: 'right', render: f => <span className="tnum u-muted">{f.paidAmount ? fmtMoney(f.paidAmount) : '—'}</span> },
-                  { key: 'dueDate', label: 'Due date', render: f => <span className="u-small">{fmtDateShort(f.dueDate)}</span> },
+                  { key: 'dueDate', label: 'Due date', sortable: true, sortValue: f => f.dueDate.getTime(), render: f => <span className="u-small">{fmtDateShort(f.dueDate)}</span> },
                   { key: 'status', label: 'Status', align: 'right', render: f => statusBadge(f.status) },
                 ]}
               />

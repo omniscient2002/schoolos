@@ -312,7 +312,7 @@ export function ProfileMenu() {
           </div>
           <div role="none" className="dropdown-sep" />
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
-          <button role="menuitem" className="dropdown-item" style={{ color: '#b91c1c' }} onClick={async () => {
+          <button role="menuitem" className="dropdown-item" style={{ color: 'var(--danger-text)' }} onClick={async () => {
             try { if (LIVE_API) await (await import('../services/liveApi')).apiLogoutAudit(); } catch { /* ledger best-effort */ }
             localStorage.removeItem('schoolos.session');
             (await import('../services/liveApi')).apiLogout();

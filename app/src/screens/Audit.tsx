@@ -121,7 +121,7 @@ export default function Audit() {
           caption="AI audit ledger — who decided what, when and why"
           columns={[
             {
-              key: 'on', label: 'When', width: 150, render: a => (
+              key: 'on', label: 'When', width: 150, sortable: true, sortValue: a => a.on.getTime(), render: a => (
                 <div>
                   <div className="u-small">{fmtDateTime(a.on)}</div>
                   <div className="u-xs u-faint">{fmtRelative(a.on)}</div>
@@ -129,7 +129,7 @@ export default function Audit() {
               ),
             },
             {
-              key: 'actor', label: 'Actor', width: 170, render: a => (
+              key: 'actor', label: 'Actor', width: 170, sortable: true, sortValue: a => a.actor, render: a => (
                 <div>
                   <div className="u-small" style={{ fontWeight: 590 }}>{a.actor}</div>
                   <div className="u-xs u-faint">{ROLE_LABEL[a.actorRole] ?? a.actorRole}</div>
