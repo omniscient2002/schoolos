@@ -3,6 +3,8 @@
 // NEVER writes core students (enrollment into core is a staff/office workflow after
 // the offer stage); no money surfaces. All preHandlers async (Fastify 5 law).
 // Stage lattice is enforced server-side; terminal stages are immutable.
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+
 const ID = 'admissions.funnel';
 
 // forward lattice (transitively closed) + terminal exits
@@ -26,16 +28,7 @@ export function register(app, kernel) {
   const ADMIN = ['owner', 'principal', 'itadmin', 'finance', 'coordinator'];
   const can = (role, list) => list.includes(role);
 
-  // Lifecycle gate (redteam P2-1, closed for THIS module's doors): kernel requireRole
-  // is role-only — every funnel door additionally refuses while the plugin row is not
-  // enabled for the tenant. 409 + explicit reason, zero PII surfaced.
-  const lifecycleGate = async (req, reply) => {
-    const row = (await q(`SELECT status FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
-      [req.user.tenant_id, ID])).rows[0];
-    if (!row || !['enabled', 'active', 'degraded'].includes(row.status)) {
-      return reply.code(409).send({ error: 'admissions.funnel is not enabled for this tenant' });
-    }
-  };
+  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
 
   // ── create lead (admin roles) ────────────────────────────────────────────────
   app.post(`/plugins/${ID}/leads`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {

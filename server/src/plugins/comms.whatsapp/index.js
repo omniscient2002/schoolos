@@ -1,3 +1,4 @@
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 // comms.whatsapp — WhatsApp BSP rail beneath the kernel Communication Orchestrator.
 // Sends are NOT direct: an approved action (kind 'message') executes through the
 // orchestrator; this rail registers DLT templates and reads kernel receipts.
@@ -7,8 +8,9 @@ export { default as manifest } from './manifest.js';
 
 export function register(app, kernel) {
   const { withUser, requestAudit, require } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.q, 'comms.whatsapp');
 
-  app.post(`/plugins/${ID}/templates`, { preHandler: require('owner', 'itadmin') }, async (req, reply) => {
+  app.post(`/plugins/${ID}/templates`, { preHandler: [require('owner', 'itadmin'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.name || !b.body) return reply.code(400).send({ error: 'name and body required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -29,14 +31,14 @@ export function register(app, kernel) {
     });
   });
 
-  app.get(`/plugins/${ID}/templates`, { preHandler: require('owner','itadmin','principal','coordinator','transport','finance') }, async (req) => {
+  app.get(`/plugins/${ID}/templates`, { preHandler: [require('owner','itadmin','principal','coordinator','transport','finance'), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='${ID}'`, [req.user.tenant_id])).rows[0];
       return { templates: s?.settings?.templates ?? {}, policyRef: 'Comms §1.2' };
     });
   });
 
-  app.get(`/plugins/${ID}/receipts`, { preHandler: require('owner','itadmin','principal','coordinator','transport','finance') }, async (req) => {
+  app.get(`/plugins/${ID}/receipts`, { preHandler: [require('owner','itadmin','principal','coordinator','transport','finance'), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
         `SELECT id, template, body, status, policy_ref, sent_at, delivered_at, created_at

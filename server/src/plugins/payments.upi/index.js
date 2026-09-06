@@ -3,10 +3,12 @@
 // Decoupled: zero kernel logic — mounts its own doors only (docs/11 §2.3).
 const ID = 'payments.upi';
 export { default as manifest } from './manifest.js';
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
 
   // ── Raw-bytes capture (redteam P0-1): real Razorpay HMACs are computed over the
   // wire bytes — re-serialized JSON will never verify. This JSON parser stores the
@@ -32,7 +34,7 @@ export function register(app, kernel) {
     }
   });
 
-  app.post(`/plugins/${ID}/links`, { preHandler: require('finance','owner','principal') }, async (req, reply) => {
+  app.post(`/plugins/${ID}/links`, { preHandler: [require('finance','owner','principal'), lifecycleGate] }, async (req, reply) => {
     const { obligationId } = req.body ?? {};
     if (!obligationId) return reply.code(400).send({ error: 'obligationId required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {

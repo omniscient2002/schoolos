@@ -1,3 +1,4 @@
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 // ops.timetable — Class C primitives provider: grid, slots, substitutions,
 // deterministic period-autofill. Every write audited. No kernel edits.
 const ID = 'ops.timetable';
@@ -6,8 +7,9 @@ const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.q, 'ops.timetable');
 
-  app.get(`/plugins/${ID}/grid`, { preHandler: require('owner','principal','coordinator','teacher','itadmin','finance','admissions','transport','facilities','technician') }, async (req) => {
+  app.get(`/plugins/${ID}/grid`, { preHandler: [require('owner','principal','coordinator','teacher','itadmin','finance','admissions','transport','facilities','technician'), lifecycleGate] }, async (req) => {
     const { dayOfWeek } = req.query ?? {};
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const periods = (await c.query(`SELECT id, seq, label, start_time, end_time, is_break FROM app.timetable_periods ORDER BY sort_idx`)).rows;
@@ -33,7 +35,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/substitutions`, { preHandler: require('coordinator','principal','owner','itadmin') }, async (req, reply) => {
+  app.post(`/plugins/${ID}/substitutions`, { preHandler: [require('coordinator','principal','owner','itadmin'), lifecycleGate] }, async (req, reply) => {
     const { slotId, date, substitute, reason } = req.body ?? {};
     if (!slotId || !substitute) return reply.code(400).send({ error: 'slotId and substitute required' });
     const day = date ?? new Date().toISOString().slice(0, 10);
@@ -63,7 +65,7 @@ export function register(app, kernel) {
   });
 
   // deterministic-first candidate ranking (docs/11 §7): same-subject free teachers first
-  app.get(`/plugins/${ID}/substitutions/suggest`, { preHandler: require('coordinator','principal','owner','itadmin') }, async (req, reply) => {
+  app.get(`/plugins/${ID}/substitutions/suggest`, { preHandler: [require('coordinator','principal','owner','itadmin'), lifecycleGate] }, async (req, reply) => {
     const { absentTeacher, dayOfWeek } = req.query ?? {};
     if (!absentTeacher) return reply.code(400).send({ error: 'absentTeacher required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -100,7 +102,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/attendance/autofill`, { preHandler: require('teacher','coordinator','principal') }, async (req, reply) => {
+  app.post(`/plugins/${ID}/attendance/autofill`, { preHandler: [require('teacher','coordinator','principal'), lifecycleGate] }, async (req, reply) => {
     const { date, grade, section, periodSeq } = req.body ?? {};
     if (!date || !grade || !section) return reply.code(400).send({ error: 'date, grade, section required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {

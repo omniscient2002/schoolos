@@ -63,25 +63,38 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     const target = obs[0];
     const paidBefore = Number(target.paid_cents ?? 0);
 
+    // LINK-DOOR lifecycle gate: the row is 'registered' → the links door 409s (P2-1)
+    const o = await loginAs(app, 'owner@meridian.edu');
+    const preLink = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
+    assert.equal(preLink.statusCode, 409, 'links door refuses while the plugin row is not enabled');
+    assert.match(preLink.json().error, /not enabled/);
+
+    // owner enables the rail (audited) — now the links door serves
+    const en = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
+      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
+    assert.equal(en.statusCode, 200);
+
     // link: for the DUE amount only, kernel payment row initiated
     const link = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
     assert.equal(link.statusCode, 200);
     const { paymentId, amountCents } = link.json();
     assert.equal(amountCents, String(Number(target.amount_cents) - paidBefore));
 
-    // LIFECYCLE gate: plugin row is 'registered' → even a VALID HMAC is 409
+    // WEBHOOK lifecycle gate: disable the row again → even a VALID HMAC is 409
     const fresh = payloadFor(paymentId, 'pay_U2_1', Math.floor(Date.now() / 1000));
+    const dis = await app.inject({ method: 'POST', url: '/plugins/payments.upi/disable',
+      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: {} });
+    assert.equal(dis.statusCode, 200);
     const preEnable = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });
     assert.equal(preEnable.statusCode, 409, 'webhook for a non-enabled plugin row is 409');
     const preRows = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_U2_1'`);
     assert.equal(preRows.rows[0].n, 0, 'lifecycle-gated webhook records no facts');
 
-    // owner enables the rail (audited) — now facts may flow
-    const o = await loginAs(app, 'owner@meridian.edu');
-    const en = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
+    // re-enable (audited) — now facts may flow
+    const en2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
       headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
-    assert.equal(en.statusCode, 200);
+    assert.equal(en2.statusCode, 200);
 
     // HMAC gate: unsigned and bad-signature both 401, no facts
     const noSig = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook', payload: fresh });

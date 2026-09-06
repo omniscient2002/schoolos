@@ -16,6 +16,14 @@ before(async () => {
   const { buildApp } = await import('../src/app.js');
   app = await buildApp({ logger: false });
   await app.ready();
+  // uniform lifecycle gating (redteam P2-1): module doors 409 while registered —
+  // the suite owner-enables its plugins up front (audited, same as production flow).
+  const owner = await loginAs(app, 'owner@meridian.edu');
+  for (const [id, cls] of [['ops.timetable','C'], ['transport.gps','B'], ['comms.whatsapp','B'], ['payments.upi','B']]) {
+    const en = await app.inject({ method: 'POST', url: `/plugins/${id}/enable`,
+      headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' }, payload: { version: '1.0.0', class: cls } });
+    if (en.statusCode !== 200) throw new Error(`enable ${id} → ${en.statusCode} ${en.body}`);
+  }
 });
 
 after(async () => { if (app) await app.close(); });

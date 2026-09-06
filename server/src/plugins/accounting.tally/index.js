@@ -1,3 +1,4 @@
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 // accounting.tally — Tally reconciliation rails (Class B, read-only on money).
 // Day-book + voucher export from the kernel fee ledger (app.payments, status
 // 'confirmed'). The plugin READS money and exports — it NEVER posts: every door
@@ -28,9 +29,10 @@ function voucherXml(v, companyName) {
 
 export function register(app, kernel) {
   const { withUser, auditLog, requestAudit, require } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.q, 'accounting.tally');
 
   // ── Day-book: confirmed money for a date window, voucher-ready ────────────────
-  app.get('/plugins/accounting.tally/daybook', { preHandler: require('owner', 'itadmin', 'finance') }, async (req, reply) => {
+  app.get('/plugins/accounting.tally/daybook', { preHandler: [require('owner', 'itadmin', 'finance'), lifecycleGate] }, async (req, reply) => {
     const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query?.from ?? '') ? req.query.from : null;
     const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query?.to ?? '') ? req.query.to : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -62,7 +64,7 @@ export function register(app, kernel) {
   });
 
   // ── Export: materialize a voucher bundle for the window (read-only + audit) ──
-  app.post('/plugins/accounting.tally/export', { preHandler: require('owner', 'itadmin', 'finance') }, async (req, reply) => {
+  app.post('/plugins/accounting.tally/export', { preHandler: [require('owner', 'itadmin', 'finance'), lifecycleGate] }, async (req, reply) => {
     const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query?.from ?? '') ? req.query.from : null;
     const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query?.to ?? '') ? req.query.to : null;
     const companyName = String(req.query?.company ?? 'SchoolOS Demo');
@@ -124,7 +126,7 @@ export function register(app, kernel) {
   });
 
   // ── Export history: rides the kernel audit ledger (digest level) ─────────────
-  app.get('/plugins/accounting.tally/exports', { preHandler: require('owner', 'itadmin', 'finance') }, async (req) => {
+  app.get('/plugins/accounting.tally/exports', { preHandler: [require('owner', 'itadmin', 'finance'), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
         `SELECT created_at, actor, actor_role, action, outcome

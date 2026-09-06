@@ -3,6 +3,7 @@
 // Decoupled: zero kernel logic — mounts its own doors only (docs/11 §2.3).
 const ID = 'transport.gps';
 export { default as manifest } from './manifest.js';
+import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { randomUUID } from 'node:crypto';
 import { checkEventBudget } from '../../governance.js';
 
@@ -11,8 +12,9 @@ const STREETS = ['80 Feet Rd', '5th Block', 'Jyoti Nivas', 'W Catalyst', 'Sector
 
 export function register(app, kernel) {
   const { withUser, auditLog, requestAudit, emitEvent, require } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.q, 'transport.gps');
 
-  app.post(`/plugins/${ID}/positions`, { preHandler: require('transport','coordinator','principal','owner') }, async (req, reply) => {
+  app.post(`/plugins/${ID}/positions`, { preHandler: [require('transport','coordinator','principal','owner'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.routeCode || typeof b.lat !== 'number' || typeof b.lng !== 'number') {
       return reply.code(400).send({ error: 'routeCode, lat, lng required' });
@@ -69,7 +71,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.get(`/plugins/${ID}/positions`, { preHandler: require('transport','coordinator','principal','owner') }, async (req) => {
+  app.get(`/plugins/${ID}/positions`, { preHandler: [require('transport','coordinator','principal','owner'), lifecycleGate] }, async (req) => {
     const { routeCode, hours = '24' } = req.query ?? {};
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // 30d retention: older rows are invisible (manifest retention policy, docs/11 §9)

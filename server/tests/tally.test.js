@@ -13,6 +13,10 @@ before(async () => {
   const { buildApp } = await import('../src/app.js');
   app = await buildApp({ logger: false });
   await app.ready();
+  const owner = await loginAs(app, 'owner@meridian.edu');
+  const en = await app.inject({ method: 'POST', url: '/plugins/accounting.tally/enable',
+    headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
+  if (en.statusCode !== 200) throw new Error('enable accounting.tally → ' + en.statusCode + ' ' + en.body);
 });
 
 describe('accounting.tally (wave-2 #1)', () => {
