@@ -63,14 +63,39 @@ CREATE TABLE IF NOT EXISTS plugin_exams.report (
 );
 GRANT SELECT, INSERT ON plugin_exams.report TO schoolos_app;  -- INSERT happens only on the publish/execute assembly path
 
+-- Moderation: senior review of an assembled report AFTER publication — records the human
+-- decision + adjusted snapshot (chained to the original digest); never touches marks.
+CREATE TABLE IF NOT EXISTS plugin_exams.moderation (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES app.tenants(id),
+  report_id   uuid NOT NULL REFERENCES plugin_exams.report(id),
+  reason      text NOT NULL,
+  status      text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','rejected')),
+  adjusted_snapshot jsonb,
+  proposed_by uuid,
+  decided_by  text,
+  decided_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT, UPDATE ON plugin_exams.moderation TO schoolos_app;
+
+-- Unit settings defaults (attendance-derived eligibility): guard = only fill missing keys,
+-- so tenant customization always wins and re-apply is idempotent.
+UPDATE app.plugins p SET settings = jsonb_set(jsonb_set(p.settings,
+  '{minAttendancePct}', '75', true), '{gradeScale}', '"cbse_10_point"', true)
+WHERE p.plugin_id = 'exams.assessment' AND p.settings->>'minAttendancePct' IS NULL;
+
 -- no_cross_tenant_marks: DB-layer tenant isolation on every table (withUser sets the
 -- schoolos.tenant_id GUC before SET LOCAL ROLE; the kernel owner path is unaffected).
 ALTER TABLE plugin_exams.exam   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE plugin_exams.mark   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE plugin_exams.report ENABLE ROW LEVEL SECURITY;
+ALTER TABLE plugin_exams.moderation ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS exams_tenant_isolation ON plugin_exams.exam;
 DROP POLICY IF EXISTS exams_tenant_isolation ON plugin_exams.mark;
 DROP POLICY IF EXISTS exams_tenant_isolation ON plugin_exams.report;
+DROP POLICY IF EXISTS exams_tenant_isolation ON plugin_exams.moderation;
 CREATE POLICY exams_tenant_isolation ON plugin_exams.exam   FOR ALL TO schoolos_app
   USING (tenant_id::text = current_setting('schoolos.tenant_id', true))
   WITH CHECK (tenant_id::text = current_setting('schoolos.tenant_id', true));
@@ -78,6 +103,9 @@ CREATE POLICY exams_tenant_isolation ON plugin_exams.mark   FOR ALL TO schoolos_
   USING (tenant_id::text = current_setting('schoolos.tenant_id', true))
   WITH CHECK (tenant_id::text = current_setting('schoolos.tenant_id', true));
 CREATE POLICY exams_tenant_isolation ON plugin_exams.report FOR ALL TO schoolos_app
+  USING (tenant_id::text = current_setting('schoolos.tenant_id', true))
+  WITH CHECK (tenant_id::text = current_setting('schoolos.tenant_id', true));
+CREATE POLICY exams_tenant_isolation ON plugin_exams.moderation FOR ALL TO schoolos_app
   USING (tenant_id::text = current_setting('schoolos.tenant_id', true))
   WITH CHECK (tenant_id::text = current_setting('schoolos.tenant_id', true));
 

@@ -165,4 +165,76 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     const pub = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/publish`, payload: {}, headers: H(t.token) });
     assert.equal(pub.statusCode, 403, 'publication is EXAM_ADMIN');
   });
+
+  test('8 · eligibility consumes attendance (kernel primitive): sub-floor student 409, above-floor passes', async () => {
+    // drive students[2] below the 75% floor with synthetic attendance rows
+    const low = students[2];
+    await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
+               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'absent', NULL
+               FROM app.students s, generate_series(1, 12) g(i) WHERE s.id = $1
+               ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='absent'`, [low.id]);
+    const co = await loginAs(app, 'coordinator@meridian.edu');
+    const ex = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
+      payload: { name: 'Unit Test 2', classGrade: '8', weightage: { written: 100 } }, headers: H(co.token) });
+    const examId = ex.json().examId;
+    const denied = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/marks`,
+      payload: { studentId: low.id, component: 'written', marks: 60, maxMarks: 100 }, headers: H(co.token) });
+    assert.equal(denied.statusCode, 409, 'marks refused for below-floor attendance');
+    assert.ok(/below the 75% floor/.test(denied.json().error), 'refusal names the attendance floor');
+    // a student with guaranteed-above-floor attendance (30 present days) passes
+    const high = students[1];
+    await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
+               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'present', NULL
+               FROM app.students s, generate_series(1, 30) g(i) WHERE s.id = $1
+               ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='present'`, [high.id]);
+    const ok = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/marks`,
+      payload: { studentId: high.id, component: 'written', marks: 91, maxMarks: 100 }, headers: H(co.token) });
+    assert.equal(ok.statusCode, 200, 'above-floor student passes eligibility');
+  });
+
+  test('9 · moderation flow: propose → open-dup 409 → proposer-decide 403 → approve → snapshot replaced; reject path', async () => {
+    const co = await loginAs(app, 'coordinator@meridian.edu');
+    // regression pin: kernel action codes are UNIQUE (tenant, code) → a second exam
+    // publishes under its own per-exam code (exams.publish.<examId>); the fixed
+    // 'exams.publish' code would 23505 here
+    const exams0 = (await app.inject({ method: 'GET', url: '/plugins/exams.assessment/exams', headers: H(co.token) })).json();
+    const ut2 = exams0.exams.find((e) => e.name === 'Unit Test 2');
+    if (ut2) {
+      const pub2 = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${ut2.id}/publish`, payload: {}, headers: H(co.token) });
+      assert.equal(pub2.statusCode, 200, 'second exam publishes under its own per-exam action code');
+    }
+    const exams = (await app.inject({ method: 'GET', url: '/plugins/exams.assessment/exams', headers: H(co.token) })).json();
+    const examId = exams.exams.find((e) => e.name === 'Unit Test 1').id;
+    const sid = students[0].id;
+    const orig = (await app.inject({ method: 'GET', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}`, headers: H(co.token) })).json();
+    const principal = await loginAs(app, 'principal@meridian.edu');
+    const prop = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}/moderate`,
+      payload: { reason: 'oral component rescored after revaluation' }, headers: H(co.token) });
+    assert.equal(prop.statusCode, 200);
+    const dup = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}/moderate`,
+      payload: { reason: 'another reason' }, headers: H(co.token) });
+    assert.equal(dup.statusCode, 409, 'one open moderation per report');
+    const self = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${prop.json().moderationId}/decide`,
+      payload: { decision: 'approved', adjustedSnapshot: { ...orig.report, pct: 91, grade: 'A1', points: 10 } }, headers: H(co.token) });
+    assert.equal(self.statusCode, 403, 'proposer may not decide their own moderation (SoD)');
+    const bad = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${prop.json().moderationId}/decide`,
+      payload: { decision: 'approved' }, headers: H(principal.token) });
+    assert.equal(bad.statusCode, 400, 'approval without adjustedSnapshot refused');
+    const ap = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${prop.json().moderationId}/decide`,
+      payload: { decision: 'approved', adjustedSnapshot: { ...orig.report, pct: 91, grade: 'A1', points: 10 }, note: 'revaluation accepted' }, headers: H(principal.token) });
+    assert.equal(ap.statusCode, 200);
+    const now = (await app.inject({ method: 'GET', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}`, headers: H(co.token) })).json();
+    assert.equal(now.report.pct, 91, 'snapshot replaced by approved adjustment');
+    assert.notEqual(now.digest, orig.digest, 'digest re-stamped for the adjusted snapshot');
+    // reject path: second moderation, decided rejected → report unchanged
+    const prop2 = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}/moderate`,
+      payload: { reason: 'speculative second review' }, headers: H(co.token) });
+    const rj = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${prop2.json().moderationId}/decide`,
+      payload: { decision: 'rejected', note: 'no basis' }, headers: H(principal.token) });
+    assert.equal(rj.statusCode, 200);
+    const after = (await app.inject({ method: 'GET', url: `/plugins/exams.assessment/exams/${examId}/reports/${sid}`, headers: H(co.token) })).json();
+    assert.equal(after.digest, now.digest, 'rejected moderation leaves the report untouched');
+    const aud = await sql(`SELECT count(*)::int n FROM app.audit_log WHERE action LIKE 'moderation %'`);
+    assert.equal(aud.rows[0].n >= 3, true, 'moderation decisions audited');
+  });
 });

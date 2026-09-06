@@ -37,6 +37,7 @@ export function register(app, kernel) {
 
   const EXAM_STAFF = ['owner', 'principal', 'itadmin', 'teacher', 'coordinator'];
   const EXAM_ADMIN = ['owner', 'principal', 'itadmin', 'coordinator']; // assessment coordinator administers exams
+  const MOD_TIER = ['owner', 'principal', 'itadmin', 'coordinator']; // moderation decision tier (excludes teacher)
   const lifecycleGate = makeLifecycleGate(kernel.q, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
@@ -88,6 +89,20 @@ export function register(app, kernel) {
       if (e.status === 'published') return bad(reply, 'marks are frozen — exam published (read-only)', 409);
       const st = (await c.query(`SELECT id FROM app.students WHERE id=$1 AND tenant_id=$2`, [studentId, req.user.tenant_id])).rows[0];
       if (!st) return bad(reply, 'student not found', 404);
+      // Eligibility consumes the attendance kernel primitive (014 contract). Late counts
+      // as attended (late = showed up). Settings-driven floor, default 75.
+      const minPct = Number((await q(
+        `SELECT settings->>'minAttendancePct' AS p FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+        [req.user.tenant_id, ID])).rows[0]?.p ?? 75);
+      const att = (await q(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE status IN ('present','late'))::int AS attended
+         FROM app.attendance WHERE tenant_id=$1 AND student_id=$2`,
+        [req.user.tenant_id, studentId])).rows[0];
+      const pct = att.total > 0 ? Math.round((att.attended / att.total) * 1000) / 10 : 0;
+      if (pct < minPct) {
+        return reply.code(409).send({ error: `attendance ${pct}% is below the ${minPct}% floor — student not eligible to sit this exam`, attendancePct: pct, floor: minPct });
+      }
       const comp = String(component ?? 'written').slice(0, 40);
       const r = await c.query(
         `INSERT INTO plugin_exams.mark (tenant_id, exam_id, student_id, component, marks, max_marks, entered_by)
@@ -115,16 +130,21 @@ export function register(app, kernel) {
       if (e.status === 'published') return bad(reply, 'exam already published', 409);
       const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
       if (Math.round(total) !== 100) return bad(reply, `weightage_total_enforced: sums to ${total}, not 100`, 409);
-      const open = (await c.query(`SELECT id FROM app.actions WHERE tenant_id=$1 AND code='exams.publish' AND status='open' AND payload->>'examId'=$2 LIMIT 1`,
-        [req.user.tenant_id, e.id])).rows[0];
+      // weightage freezes one weightage_lock_days window before publication (IST-first)
+      if (e.weightage_locked) return bad(reply, 'weightage is frozen — inside the lock window', 409);
+      // kernel action codes are UNIQUE per (tenant, code) — recurring operations scope the
+      // code per instance (dpdp composes per-kind; here per-exam)
+      const open = (await c.query(`SELECT id FROM app.actions WHERE tenant_id=$1 AND code=$2 AND status='open' LIMIT 1`,
+        [req.user.tenant_id, `exams.publish.${e.id}`])).rows[0];
       if (open) return reply.code(409).send({ error: 'a publication approval is already open', actionId: open.id });
       const act = await c.query(
         `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-         VALUES ($1,'exams.publish','approval',$2,$3,$4,'high','open','Principal','principal','Assessment publication',false,'exam.published.v1',$5::jsonb) RETURNING id`,
+         VALUES ($1,'exams.publish.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Assessment publication',false,'exam.published.v1',$5::jsonb) RETURNING id`,
         [req.user.tenant_id, `Publish exam: ${e.name} (class ${e.class_grade})`,
           `Assemble deterministic report cards and freeze marks. Weightage: ${JSON.stringify(e.weightage)}.`,
           'Publication is approval-required before any guardian-visible surface; marks freeze read-only at publish.',
-          JSON.stringify({ examId: e.id, proposed_by: req.user.id, proposed_by_role: req.user.role, weightage: e.weightage })]);
+          JSON.stringify({ examId: e.id, proposed_by: req.user.id, proposed_by_role: req.user.role, weightage: e.weightage }),
+          e.id]);
       await c.query(`UPDATE plugin_exams.exam SET action_id=$1, updated_at=now() WHERE id=$2`, [act.rows[0].id, e.id]);
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'publication requested', recordType: 'Exam', recordRef: e.id,
@@ -190,10 +210,80 @@ export function register(app, kernel) {
   app.get(`/plugins/${ID}/exams/:id/reports/:studentId`, { preHandler: [require(...EXAM_STAFF), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = (await c.query(
-        `SELECT snapshot, digest, created_at FROM plugin_exams.report WHERE exam_id=$1 AND student_id=$2 AND tenant_id=$3`,
+        `SELECT id, snapshot, digest, created_at FROM plugin_exams.report WHERE exam_id=$1 AND student_id=$2 AND tenant_id=$3`,
         [req.params.id, req.params.studentId, req.user.tenant_id])).rows[0];
       if (!r) return bad(reply, 'report not found (exam published?)', 404);
+      // moderation overlay: latest approved moderation supersedes the frozen snapshot
+      const mo = (await c.query(
+        `SELECT adjusted_snapshot, decided_at FROM plugin_exams.moderation WHERE report_id=$1 AND status='approved' ORDER BY decided_at DESC LIMIT 1`,
+        [r.id])).rows[0];
+      if (mo?.adjusted_snapshot?.digest) {
+        return { report: mo.adjusted_snapshot.snapshot, digest: mo.adjusted_snapshot.digest, generatedAt: r.created_at,
+          moderated: true };
+      }
       return { report: r.snapshot, digest: r.digest, generatedAt: r.created_at };
+    });
+  });
+
+  // ── moderation: senior review of an assembled report (post-publication only) ──
+  // Propose: attaches a reason + proposed adjustment; decide: same-SoD as the kernel
+  // spine — the proposer may not approve their own moderation. Marks stay untouched;
+  // the report row's snapshot is replaced only on approval and the original digest is
+  // preserved in the moderation record (audit chain).
+  app.post(`/plugins/${ID}/exams/:id/reports/:studentId/moderate`, { preHandler: [require(...MOD_TIER), lifecycleGate] }, async (req, reply) => {
+    const { reason } = req.body ?? {};
+    if (!reason || String(reason).trim().length < 4) return bad(reply, 'reason is required (min 4 chars)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(`SELECT id, snapshot, digest FROM plugin_exams.report WHERE exam_id=$1 AND student_id=$2 AND tenant_id=$3`,
+        [req.params.id, req.params.studentId, req.user.tenant_id])).rows[0];
+      if (!r) return bad(reply, 'report not found (published exam?)', 404);
+      const dup = (await c.query(`SELECT id FROM plugin_exams.moderation WHERE report_id=$1 AND status='proposed'`, [r.id])).rows[0];
+      if (dup) return reply.code(409).send({ error: 'a moderation proposal is already open', moderationId: dup.id });
+      const m = await c.query(
+        `INSERT INTO plugin_exams.moderation (tenant_id, report_id, reason, proposed_by)
+         VALUES ($1,$2,$3,$4) RETURNING id`,
+        [req.user.tenant_id, r.id, String(reason).slice(0, 500), req.user.id]);
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: 'moderation proposed', recordType: 'Moderation', recordRef: m.rows[0].id,
+        reason: 'report review', policyRef: 'CBSE pack obligations', risk: 'medium',
+        outcome: `report digest ${String(r.digest).slice(0, 12)}… flagged: ${String(reason).slice(0, 80)}` });
+      return { ok: true, moderationId: m.rows[0].id, status: 'proposed' };
+    });
+  });
+
+  app.post(`/plugins/${ID}/moderations/:mid/decide`, { preHandler: [require(...MOD_TIER), lifecycleGate] }, async (req, reply) => {
+    const { decision, note } = req.body ?? {};
+    if (!['approved', 'rejected'].includes(decision)) return bad(reply, "decision must be 'approved' or 'rejected'");
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const m = (await c.query(`SELECT * FROM plugin_exams.moderation WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.mid, req.user.tenant_id])).rows[0];
+      if (!m) return bad(reply, 'moderation not found', 404);
+      if (m.status !== 'proposed') return bad(reply, `moderation already ${m.status}`, 409);
+      if (m.proposed_by === req.user.id) {
+        return reply.code(403).send({ error: 'proposer may not decide their own moderation (segregation of duties)' });
+      }
+      if (decision === 'approved') {
+        // report rows stay IMMUTABLE (INSERT+SELECT grants only): the approved adjustment
+        // lives as an overlay on the moderation record, self-describing with its own
+        // digest; the read door serves latest-approved-overlay ?? original snapshot.
+        const adj = req.body?.adjustedSnapshot;
+        if (!adj || typeof adj !== 'object' || !adj.pct) {
+          return bad(reply, "adjustedSnapshot (with pct + grade) is required to approve a moderation");
+        }
+        const overlay = { snapshot: adj, digest: createHash('sha256').update(canonical(adj)).digest('hex') };
+        await c.query(
+          `UPDATE plugin_exams.moderation SET status='approved', adjusted_snapshot=$2::jsonb, decided_by=$3, decided_at=now(), updated_at=now() WHERE id=$1`,
+          [m.id, JSON.stringify(overlay), req.user.email]);
+      } else {
+        await c.query(
+          `UPDATE plugin_exams.moderation SET status='rejected', decided_by=$2, decided_at=now(), updated_at=now() WHERE id=$1`,
+          [m.id, req.user.email]);
+      }
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: `moderation ${decision}`, recordType: 'Moderation', recordRef: m.id,
+        reason: note ?? 'report review decision', policyRef: 'CBSE pack obligations', risk: 'high',
+        outcome: decision === 'approved' ? 'report snapshot replaced; original digest preserved in record' : 'report unchanged' });
+      return { ok: true, status: decision };
     });
   });
 }

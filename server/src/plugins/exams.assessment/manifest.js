@@ -15,6 +15,6 @@ export default {
       report_card_template: { type: 'string' },
     },
   },
-  invariants: ['deterministic_only', 'weightage_total_enforced', 'approval_before_publish', 'no_cross_tenant_marks'],
+  invariants: ['deterministic_only', 'weightage_total_enforced', 'approval_before_publish', 'no_cross_tenant_marks', 'eligibility_via_attendance', 'moderation_sod'],
   dependencies: [],
 };
