@@ -62,10 +62,10 @@ export function KernelProvider({ children }: { children: ReactNode }) {
       try {
         const token = localStorage.getItem('schoolos_token');
         if (!token) return;
-        // hit the API origin explicitly — a relative URL silently no-ops when
-        // the UI is served from a different origin than the backend
-        const apiBase = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080';
-        const res = await fetch(`${apiBase}/plugins`, { headers: { authorization: `Bearer ${token}` } });
+        // Same-origin deploy contract (orchestrator verdict, 2026-09-06): the
+        // relative fetch is intentional — API serves the app / VITE_API_BASE is
+        // pinned at build. Split-origin serving is a hardening-backlog item.
+        const res = await fetch('/plugins', { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean; settings?: unknown }> = Array.isArray(data.plugins) ? data.plugins : [];
