@@ -256,12 +256,14 @@ await client.query(
     [T, hash, at]);
 }
 
-// ---- plugin catalog (009) — the school plugin catalog is platform data wiped
-// by the TRUNCATE above, so re-apply it. The migration file is the single source
-// of truth and is idempotent by design (conflict guards + NOT EXISTS); the audit
-// entry it writes chains onto the genesis row just inserted.
-const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', '009_school_plugin_catalog.sql'), 'utf8');
-await client.query(catalogSql);
+// ---- plugin catalog (009) + wave-1 runtime (010) — platform data wiped by the
+// TRUNCATE above, so re-apply. The migration files are the single source of truth
+// and are idempotent by design (conflict guards + NOT EXISTS); the audit entries
+// they write chain onto the genesis row just inserted.
+for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql']) {
+  const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', mig), 'utf8');
+  await client.query(catalogSql);
+}
 
-console.log(`Seeded tenant meridian: ${students.length} students, ${users.length} users, ${wos.length} WOs, 5 migration sources, 6 catalog plugins.`);
+console.log(`Seeded tenant meridian: ${students.length} students, ${users.length} users, ${wos.length} WOs, 5 migration sources, 7 catalog plugins (2 migrations replayed).`);
 await client.end();

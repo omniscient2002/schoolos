@@ -1,8 +1,10 @@
 // Domain routes — every request runs as the RLS-constrained app role with the
 // caller's tenant + role in session. Mutations write the audit ledger.
 import { randomUUID } from 'node:crypto';
-import { linkLineage } from './audit.js';
+import { linkLineage, requestAudit } from './audit.js';
 import { checkEventBudget } from './governance.js';
+import { q } from './db.js';
+import { registerPluginRuntimes } from './plugins/wave1.js';
 
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
@@ -510,13 +512,19 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     const { version, class: pClass, manifest, permissions } = req.body ?? {};
     if (!pClass || !['A','B','C','D','E'].includes(pClass)) return bad(reply, 'class A–E required');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // Catalog rows (009/010) carry the governance manifest server-side; a UI enable
+      // with no manifest body must never blank it (docs/12: the registry is the truth).
+      const known = (await c.query(`SELECT manifest, permissions FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, req.params.id])).rows[0];
       const r = await c.query(
         `INSERT INTO app.plugins (tenant_id, plugin_id, version, class, status, manifest, permissions, enabled_at, enabled_by)
          VALUES ($1,$2,$3,$4,'enabled',$5::jsonb,$6::jsonb, now(), $7)
          ON CONFLICT (tenant_id, plugin_id) DO UPDATE SET status='enabled', version=EXCLUDED.version,
            manifest=EXCLUDED.manifest, permissions=EXCLUDED.permissions, enabled_at=now(), enabled_by=EXCLUDED.enabled_by, updated_at=now()
          RETURNING *`,
-        [req.user.tenant_id, req.params.id, version ?? '1.0.0', pClass, JSON.stringify(manifest ?? {}), JSON.stringify(permissions ?? []), req.user.id]);
+        [req.user.tenant_id, req.params.id, version ?? '1.0.0', pClass,
+         JSON.stringify(manifest ?? known?.manifest ?? {}),
+         JSON.stringify(permissions ?? known?.permissions ?? []),
+         req.user.id]);
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Plugin enabled: ${req.params.id}`, recordType: 'Plugin', recordRef: `${req.params.id}@${version ?? '1.0.0'}`, reason: `class ${pClass} · permissions: ${(permissions ?? []).join(', ') || 'none'}`, policyRef: 'Platform §3.1 (plugin governance)', risk: 'medium', outcome: 'nav, routes and slots will reflect the module' });
       return { plugin: r.rows[0] };
     });
@@ -549,6 +557,12 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       return { plugin: r.rows[0] };
     });
   });
+
+  // ============ wave-1 plugin runtimes (docs/11 §2.3 rails + §3 primitives) ============
+  // The rails ride the kernel loop: sends are orchestrator intents (+ receipts), money
+  // is link/webhook facts with kernel-only settlement, GPS raises approval-required
+  // actions, timetable writes are deterministic + audited. See src/plugins/wave1.js.
+  registerPluginRuntimes(app, { withUser, auditLog, emitEvent, requestAudit, q });
 
   // ============ migration (Golden Loop 1 backend) ============
   app.get('/migration/sources', { preHandler: me }, async (req) => {

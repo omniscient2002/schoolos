@@ -5,7 +5,7 @@
 // kernel-side, transport raises approval-required actions, timetable writes are audited.
 // All writes run through withUser (RLS) with the caller's tenant + role.
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
-import { checkEventBudget } from './governance.js';
+import { checkEventBudget } from '../governance.js';
 
 const ADEVA = { lat: 12.9352, lng: 77.6245 };   // demo campus anchor (Koramangala, Bengaluru)
 const STREETS = ['80 Feet Rd', '5th Block', 'Jyoti Nivas', 'W Catalyst', 'Sector 12 bridge', 'HSR loop'];
@@ -29,13 +29,15 @@ export function registerPluginRuntimes(app, { withUser, auditLog, emitEvent, req
     const b = req.body ?? {};
     if (!b.name || !b.body) return reply.code(400).send({ error: 'name and body required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      // Templates live in plugin settings (DLT registry), never as fake communication rows
+      // Templates live in plugin settings (DLT registry), never as fake communication rows.
+      // jsonb_set + per-key merge: template registrations accumulate, never clobber.
       const r = await c.query(
-        `UPDATE app.plugins SET settings = settings || $3::jsonb, updated_at = now()
+        `UPDATE app.plugins SET settings = jsonb_set(settings, '{templates}',
+            COALESCE(settings->'templates', '{}'::jsonb) || jsonb_build_object($2::text, $3::jsonb), true),
+         updated_at = now()
          WHERE tenant_id=$1 AND plugin_id='comms.whatsapp'
          RETURNING settings->'templates' AS templates`,
-        [req.user.tenant_id, b.name,
-         JSON.stringify({ templates: { [b.name]: { body: b.body, dltId: b.dltId ?? null } } })]);
+        [req.user.tenant_id, b.name, JSON.stringify({ body: b.body, dltId: b.dltId ?? null })]);
       await requestAudit(c, req.user.tenant_id, 'comms.whatsapp', {
         actor: req.user.name, action: `WhatsApp template registered: ${b.name}`, recordType: 'Plugin',
         recordRef: b.name, reason: 'DLT template registry', policyRef: 'Comms §1.2',
