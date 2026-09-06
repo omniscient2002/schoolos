@@ -6,6 +6,13 @@
 // Guards: directory name must be a valid plugin id (same regex the registry routes
 // enforce — redteam P1-1), manifest.id (if exported) must match the directory,
 // register() must be a function. A failing plugin fails LOUD (boot error), never silent.
+//
+// STANDING RULE (orchestrator ruling, rtprobe/RT-015): registry rows and capability
+// contracts are provisioned EXCLUSIVELY via numbered migrations in server/migrations/ —
+// never by hand against a live database. Hand-provisioned rows are intrusion-grade
+// residue by definition (no provenance, no replay) and get purged by the next cleanup
+// migration. Re-introducing ANY fixture (test/red-team) follows the same path: a
+// numbered migration, replay-safe, with a guarded ledger entry.
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';

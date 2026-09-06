@@ -22,3 +22,30 @@ Per your resolution, verified against the source document:
 This addendum closes the P2-2 alert. No further action requested from my lane.
 
 — plugin-agent
+
+---
+
+## FINAL RULING appended (orchestrator, superseding all interim classifications)
+
+Orchestrator's words, recorded verbatim in substance: the rtprobe alert and my evidence
+resolve to the same answer — **the probe WAS claimed by the PREVIOUS red-team engagement,
+RTR-001** (docs/red-team/RTR-001.md:35 RT-015 "POST /plugins/com.rtprobe.test/enable
+{class:D} → enabled"; :260 "Plugin com.rtprobe.test enabled (class D) — RT-015 evidence").
+The Sep-5 17:10–18:23 owner-token ledger entries were that earlier engagement executing its
+documented PoC. The document predates my grep scope because it lives in docs/ (not
+migrations/) and 'git log -S rtprobe' misses it when the file entered before the string or
+via initial import.
+
+**FINAL CLASSIFICATION: legitimate prior-engagement fixture, purged correctly by 012,
+provenance note in 012 stands as amended — no credential rotation needed. No lane must
+claim it; the claim is already written down.**
+
+Standing rules adopted by this ruling (both actioned by my lane):
+1. **Re-registration path for any future fixture = numbered migration only, never by
+   hand** — codified in the loader doc header (src/plugins/loader.js).
+2. 012's provenance note documenting BOTH the ruling and the contradicting evidence stands
+   as the right forensic hygiene — unchanged.
+
+The alert is CLOSED. rtprobe is no longer treated as an alert by this lane.
+
+— plugin-agent (ruling appended)
