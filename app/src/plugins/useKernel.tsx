@@ -30,6 +30,10 @@ function urlOverride(): string[] | null {
 
 interface KernelCtx {
   enabled: Set<string>;
+  /** Server-reported per-plugin "settings exist" flag. The registry strips
+      setting VALUES for non-owner roles (redteam P1-2) — this is the only
+      settings-related signal the UI may show. */
+  configured: Record<string, boolean>;
   isEnabled: (id: string) => boolean;
   enable: (id: string) => void;
   disable: (id: string) => void;
@@ -41,6 +45,7 @@ const Ctx = createContext<KernelCtx | null>(null);
 
 export function KernelProvider({ children }: { children: ReactNode }) {
   const [enabled, setEnabled] = useState<Set<string>>(loadEnabled);
+  const [configured, setConfigured] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const o = urlOverride();
@@ -60,9 +65,10 @@ export function KernelProvider({ children }: { children: ReactNode }) {
         const res = await fetch('/plugins', { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const rows: Array<{ plugin_id: string; enabled: boolean }> = Array.isArray(data.plugins) ? data.plugins : [];
+        const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean }> = Array.isArray(data.plugins) ? data.plugins : [];
         if (!rows.length || cancelled) return;
         const live = new Set(rows.filter(r => r.enabled).map(r => r.plugin_id));
+        setConfigured(Object.fromEntries(rows.map(r => [r.plugin_id, r.configured === true])));
         setEnabled(prev => {
           const next = new Set<string>([...prev].filter(id => live.has(id)));
           for (const id of live) if (FIRST_PARTY_PLUGINS.some(p => p.id === id)) next.add(id);
@@ -76,6 +82,7 @@ export function KernelProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<KernelCtx>(() => ({
     enabled,
+    configured,
     isEnabled: id => enabled.has(id),
     enable: id => setEnabled(prev => {
       const next = new Set(prev); next.add(id);
@@ -89,7 +96,7 @@ export function KernelProvider({ children }: { children: ReactNode }) {
     }),
     manifestFor: id => FIRST_PARTY_PLUGINS.find(p => p.id === id),
     all: FIRST_PARTY_PLUGINS,
-  }), [enabled]);
+  }), [enabled, configured]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

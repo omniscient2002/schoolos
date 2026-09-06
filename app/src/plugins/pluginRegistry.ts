@@ -64,6 +64,59 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     routes: [{ path: '/exams', label: 'Exams' }],
     defaultEnabled: false,
   },
+  /* ── Wave 1 rails & primitives (mirror server/src/plugins/<id>/index.js) ──
+     Headless by rule (docs/11 §2.3): settings/reports slots only, no routes.
+     defaultEnabled=false mirrors server registry rows landing as 'registered';
+     real enablement always comes from the server's `enabled` flag via resync. */
+  {
+    id: 'comms.whatsapp',
+    name: 'WhatsApp Business Rails',
+    version: '1.0.0',
+    class: 'B',
+    description: 'WhatsApp BSP adapter beneath the Communication Orchestrator: DLT-registered template registry, digest delivery with UPI pay buttons, receipt surface. Never sends directly — approved orchestrator intents only.',
+    icon: 'Message',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['comms.send', 'events.emit', 'audit.request'],
+    slots: ['settings', 'reports'],
+    eventSubscriptions: ['attendance.marked', 'fee.due', 'transport.delay'],
+    defaultEnabled: false,
+  },
+  {
+    id: 'payments.upi',
+    name: 'UPI Collection Rails',
+    version: '1.0.0',
+    class: 'B',
+    description: 'UPI payment links + signed gateway webhook facts. Settlement stays kernel-only — staff confirm on the fees ledger; the rail never moves money.',
+    icon: 'CreditCard',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['audit.request', 'events.emit'],
+    slots: ['settings', 'reports'],
+    defaultEnabled: false,
+  },
+  {
+    id: 'transport.gps',
+    name: 'Transport GPS Rail',
+    version: '1.0.0',
+    class: 'B',
+    description: 'Vendor GPS position ingestion with a deterministic guardian-notice guard: delay ≥ 10 min raises an approval-required action (Transport §3.1). Positions retained 30 days.',
+    icon: 'Compass',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['events.emit', 'actions.raise', 'audit.request'],
+    slots: ['settings', 'reports'],
+    defaultEnabled: false,
+  },
+  {
+    id: 'ops.timetable',
+    name: 'Timetable Primitives',
+    version: '1.0.0',
+    class: 'C',
+    description: 'Period grid, class-section slots, deterministic substitution suggestions, and attendance period-autofill primitives consumed by attendance, exams and comms.',
+    icon: 'Grid',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['events.emit', 'audit.request', 'attendance.write'],
+    slots: ['settings', 'reports'],
+    defaultEnabled: false,
+  },
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);

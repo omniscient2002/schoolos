@@ -10,7 +10,7 @@ import { CLASS_INFO, PERMISSION_INFO } from '../plugins/pluginTypes';
 import { LIVE_API, apiEnablePlugin, apiDisablePlugin } from '../services/liveApi';
 
 export default function Plugins() {
-  const { all, enabled, enable, disable } = useKernel();
+  const { all, enabled, enable, disable, configured } = useKernel();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -62,10 +62,15 @@ export default function Plugins() {
                   <div className="u-inline" style={{ gap: 12, minWidth: 0 }}>
                     <span style={{ width: 38, height: 38, borderRadius: 12, background: on ? 'color-mix(in srgb, var(--success) 10%, transparent)' : 'var(--surface-3)', color: on ? 'var(--accent-text)' : 'var(--text-3)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={18} /></span>
                     <div className="u-col" style={{ gap: 2 }}>
-                      <div className="u-inline" style={{ gap: 8 }}>
+                      <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 650 }}>{p.name}</span>
                         <Badge tone="outline">class {p.class} · {CLASS_INFO[p.class].label}</Badge>
                         <span className="u-xs u-faint u-mono">v{p.version}</span>
+                        {configured[p.id] && (
+                          <span title="Settings saved for this plugin (values visible to owner/IT admin only)" className="u-xs" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-3)' }}>
+                            <Icon.Check size={11} /> configured
+                          </span>
+                        )}
                       </div>
                       <span className="u-small u-muted" style={{ lineHeight: 1.55 }}>{p.description}</span>
                     </div>
