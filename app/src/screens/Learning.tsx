@@ -323,6 +323,7 @@ export default function Learning() {
       <Tabs
         active={tab}
         onChange={setTab}
+        panelId="learn-tab"
         tabs={[
           { id: 'assignments', label: 'Assignments', count: assignments.length },
           { id: 'assessments', label: 'Assessments', count: assessments.length },
@@ -333,7 +334,7 @@ export default function Learning() {
 
       {/* ---------------- Assignments ---------------- */}
       {tab === 'assignments' && (
-        <div style={{ marginTop: 16 }}>
+        <div role="tabpanel" id="learn-tab-panel-assignments" aria-labelledby="learn-tab-tab-assignments" style={{ marginTop: 16 }}>
           <div className="u-between u-wrap" style={{ gap: 10, marginBottom: 12 }}>
             <Tabs pill tabs={statusTabs} active={statusFilter} onChange={setStatusFilter} />
             <span className="u-small u-faint">Due dates span the last 5 to next 9 days</span>
@@ -393,7 +394,7 @@ export default function Learning() {
 
       {/* ---------------- Assessments ---------------- */}
       {tab === 'assessments' && (
-        <div className="grid grid-2" style={{ marginTop: 16, alignItems: 'start' }}>
+        <div role="tabpanel" id="learn-tab-panel-assessments" aria-labelledby="learn-tab-tab-assessments" className="grid grid-2" style={{ marginTop: 16, alignItems: 'start' }}>
           <Card pad={false}>
             <div className="card-head"><h3>Recent assessments</h3><span className="u-small u-faint">Term 2</span></div>
             <DataTable<Assessment>
@@ -431,7 +432,7 @@ export default function Learning() {
 
       {/* ---------------- Mastery ---------------- */}
       {tab === 'mastery' && (
-        <div style={{ marginTop: 16 }}>
+        <div role="tabpanel" id="learn-tab-panel-mastery" aria-labelledby="learn-tab-tab-mastery" style={{ marginTop: 16 }}>
           <div className="u-between u-wrap" style={{ gap: 10, marginBottom: 12 }}>
             <select className="select" style={{ width: 200 }} value={subjectFilter} onChange={e => setSubjectFilter(e.target.value)} aria-label="Filter mastery by subject">
               <option value="all">All subjects</option>
@@ -482,7 +483,7 @@ export default function Learning() {
 
       {/* ---------------- Timetable ---------------- */}
       {tab === 'timetable' && (
-        <div style={{ marginTop: 16 }}>
+        <div role="tabpanel" id="learn-tab-panel-timetable" aria-labelledby="learn-tab-tab-timetable" style={{ marginTop: 16 }}>
           <div className="u-between u-wrap" style={{ gap: 10, marginBottom: 12 }}>
             <select className="select" style={{ width: 240 }} value={sectionId} onChange={e => setSectionId(e.target.value)} aria-label="Choose section">
               {scopeSections.map(s => <option key={s.id} value={s.id}>Grade {s.grade}-{s.name} · {campusShort(s.campus)}</option>)}

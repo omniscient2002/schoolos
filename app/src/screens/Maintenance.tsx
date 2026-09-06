@@ -108,10 +108,11 @@ export default function Maintenance() {
             ]}
             active={tab}
             onChange={setTab}
+            panelId="maint-tab"
           />
 
           {tab === 'now' && (
-            <div className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
+            <div role="tabpanel" id="maint-tab-panel-now" aria-labelledby="maint-tab-tab-now" className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
               <Card head="Ranked by urgency + impact" sub="Top of the queue across your scope">
                 <div className="u-col" style={{ gap: 10 }}>
                   {needNow.length === 0 && <Empty icon={<Icon.Check size={22} />} title="Nothing needs you" sub="All reported work is assigned and inside SLA." />}
@@ -160,7 +161,7 @@ export default function Maintenance() {
           )}
 
           {tab === 'assets' && (
-            <div className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
+            <div role="tabpanel" id="maint-tab-panel-assets" aria-labelledby="maint-tab-tab-assets" className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
               <Card head="Assets trending unreliable" sub="Lowest health first — computed from failures, spend, age, PM adherence">
                 <div className="u-col" style={{ gap: 9 }}>
                   {a.riskyAssets.slice(0, 5).map(as => (
@@ -196,7 +197,7 @@ export default function Maintenance() {
           )}
 
           {tab === 'week' && (
-            <div className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
+            <div role="tabpanel" id="maint-tab-panel-week" aria-labelledby="maint-tab-tab-week" className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
               <Card head="Resolved & verifying" sub="Last jobs through the loop">
                 <div className="u-col" style={{ gap: 10 }}>
                   {wos.filter(w => ['verification', 'resolved', 'closed'].includes(w.status)).slice(0, 4).map(wo => <WOCard key={wo.id} wo={wo} />)}
@@ -220,7 +221,7 @@ export default function Maintenance() {
           )}
 
           {tab === 'intel' && (
-            <div className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
+            <div role="tabpanel" id="maint-tab-panel-intel" aria-labelledby="maint-tab-tab-intel" className="grid grid-2" style={{ marginTop: 'var(--s-4)' }}>
               <Card head="Why this queue is ranked this way" sub="Deterministic ordering — no opaque scoring">
                 <EvidenceChain
                   title="Ranking factors"

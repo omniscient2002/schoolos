@@ -188,8 +188,12 @@ export function Drawer({ open, onClose, title, sub, children, footer }: {
 }
 
 /* ============ Tabs ============ */
-export function Tabs({ tabs, active, onChange, pill }: {
+export function Tabs({ tabs, active, onChange, pill, panelId }: {
   tabs: { id: string; label: ReactNode; count?: number }[]; active: string; onChange: (id: string) => void; pill?: boolean;
+  /* unit 8: pass panelId when THIS component owns the panels — each tab gets
+     id=`${panelId}-tab-${id}` + aria-controls=`${panelId}-panel-${id}`;
+     consumers render <div role="tabpanel" id aria-labelledby>. */
+  panelId?: string;
 }) {
   /* WAI-ARIA tabs: arrow keys move selection, Home/End jump (unit 7 batch 1).
      roving tabindex: the active tab is the only tab stop. */
@@ -211,7 +215,8 @@ export function Tabs({ tabs, active, onChange, pill }: {
       key={t.id}
       role="tab"
       data-tab-id={t.id}
-      id={`tab-${t.id}`}
+      id={panelId ? `${panelId}-tab-${t.id}` : `tab-${t.id}`}
+      aria-controls={panelId ? `${panelId}-panel-${t.id}` : undefined}
       aria-selected={active === t.id}
       tabIndex={active === t.id ? 0 : -1}
       className={`tab ${active === t.id ? 'active' : ''}`}
@@ -236,14 +241,16 @@ export function Tabs({ tabs, active, onChange, pill }: {
 }
 
 /* ============ Table ============ */
-export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty }: {
+export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty, caption }: {
   columns: { key: string; label: ReactNode; render?: (row: T) => ReactNode; width?: number | string; align?: 'left' | 'right' }[];
-  rows: T[]; rowKey: (row: T) => string; onRowClick?: (row: T) => void; empty?: ReactNode;
+  rows: T[]; rowKey: (row: T) => string; onRowClick?: (row: T) => void; empty?: ReactNode; caption?: string;
 }) {
   if (!rows.length && empty) return <>{empty}</>;
   return (
     <div className="table-wrap">
       <table className="data">
+        {/* unit 8: every table carries an sr-only caption for column context */}
+        <caption className="sr-only">{caption ?? `Data table — ${rows.length} row${rows.length === 1 ? '' : 's'}`}</caption>
         <thead><tr>{columns.map(c => (
           <th key={c.key} scope="col" style={{ width: c.width, textAlign: c.align }}>{c.label}</th>
         ))}</tr></thead>
@@ -315,9 +322,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 /* ============ Section ============ */
-export function Section({ title, sub, actions, children, style }: { title?: ReactNode; sub?: ReactNode; actions?: ReactNode; children: ReactNode; style?: CSSProperties }) {
+export function Section({ title, sub, actions, children, style, ...rest }: { title?: ReactNode; sub?: ReactNode; actions?: ReactNode; children: ReactNode; style?: CSSProperties } & Omit<React.HTMLAttributes<HTMLElement>, 'style' | 'title'>) {
   return (
-    <section className="section" style={style}>
+    <section className="section" style={style} {...rest}>
       {(title || actions) && (
         <div className="section-title">
           <div><h2>{title}</h2>{sub && <div className="u-small u-muted" style={{ marginTop: 1 }}>{sub}</div>}</div>

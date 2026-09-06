@@ -292,6 +292,7 @@ export default function People() {
           ) : (
             <>
               <DataTable<Person>
+                caption="Student and staff directory — filter by campus or grade"
                 rows={shown}
                 rowKey={p => p.id}
                 onRowClick={p => navigate(`/people/${p.id}`)}

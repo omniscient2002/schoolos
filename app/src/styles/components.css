@@ -662,3 +662,23 @@ table.data tbody tr.row-click { cursor: pointer; }
   text-decoration: none; transition: top var(--t-fast) var(--ease);
 }
 .skip-link:focus { top: 12px; }
+
+/* ---------- unit 8: a11y utilities + coarse-pointer touch guidance ---------- */
+/* visually hidden, stays in the a11y tree (table captions etc.) */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+/* WAI-ARIA: tabpanel inherits the tab's focus outline when the tab is active */
+[role="tabpanel"]:focus-visible {
+  outline: var(--focus-ring); outline-offset: 2px;
+}
+/* Touch guidance (WCAG 2.5.8 / mobile): coarse pointers get 44px targets.
+   Desktop pointer keeps the 32px floors from unit 7 (enterprise density). */
+@media (pointer: coarse) {
+  .btn, .tab, .iconbtn, .icon-btn, .seg-btn, .nav-item, .dropdown-item, .mtab { min-height: 44px; }
+  .iconbtn, .icon-btn { min-width: 44px; }
+  .btn-sm { min-height: 44px; }
+  /* keyboard-activatable table rows reach 44px via cell padding (tr min-height is unreliable) */
+  .data tbody tr.row-click td, .data tbody tr[tabindex="0"] td { padding-top: 14px; padding-bottom: 14px; }
+}

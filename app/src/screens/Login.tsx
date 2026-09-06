@@ -120,13 +120,14 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
           The intelligent operating system for schools. Sign in to continue.
         </p>
 
-        <div className="seg" role="tablist" aria-label="Sign-in method">
+        <div className="seg" role="tablist" aria-label="Sign-in method" id="login-seg">
           {segTabs.map(t => (
             <button
               key={t.id}
               ref={el => { segBtnRefs.current[t.id] = el; }}
               role="tab"
               id={`seg-tab-${t.id}`}
+              aria-controls={`login-seg-panel-${t.id}`}
               aria-selected={method === t.id}
               tabIndex={method === t.id ? 0 : -1}
               className={method === t.id ? 'seg-btn active' : 'seg-btn'}
@@ -141,7 +142,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         )}
 
         {method === 'password' && (
-          <form className="login-form" onSubmit={e => { e.preventDefault(); submitPassword(); }}>
+          <form role="tabpanel" id="login-seg-panel-password" aria-labelledby="seg-tab-password" className="login-form" onSubmit={e => { e.preventDefault(); submitPassword(); }}>
             <label>Email
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@school.edu" autoFocus />
             </label>
@@ -155,7 +156,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         )}
 
         {method === 'phone' && (
-          <form className="login-form" onSubmit={e => { e.preventDefault(); otpSent ? verifyOtp() : requestOtp(); }}>
+          <form role="tabpanel" id="login-seg-panel-phone" aria-labelledby="seg-tab-phone" className="login-form" onSubmit={e => { e.preventDefault(); otpSent ? verifyOtp() : requestOtp(); }}>
             <label>Phone number
               <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98450 00101" disabled={otpSent} autoFocus={!otpSent} />
             </label>
@@ -177,7 +178,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         )}
 
         {method === 'google' && (
-          <div className="login-form">
+          <div role="tabpanel" id="login-seg-panel-google" aria-labelledby="seg-tab-google" className="login-form">
             <button className="btn google-btn" disabled={busy} onClick={googleSignIn} style={{ width: '100%', justifyContent: 'center' }}>
               <GoogleG /> Continue with Google
             </button>

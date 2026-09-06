@@ -324,11 +324,12 @@ export default function Fees() {
         ]}
         active={tab}
         onChange={t => setTab(t as TabId)}
+        panelId="fees-tab"
       />
 
       {/* ---- Ledger ---- */}
       {tab === 'ledger' && (
-        <Section
+        <Section role="tabpanel" id="fees-tab-panel-ledger" aria-labelledby="fees-tab-tab-ledger"
           title="Obligations ledger"
           sub={`${filtered.length} obligations · ${seed.campuses.find(c => c.id === campus)?.name}. Row click opens the student fee summary.`}
           actions={
@@ -358,6 +359,7 @@ export default function Fees() {
               <div className="card-body"><ErrorState title="Could not load the ledger" sub={obligations.error} onRetry={obligations.retry} /></div>
             ) : (
               <DataTable
+                caption="Fee obligations ledger — amount, status and action per student"
                 rows={filtered.slice(0, 60)}
                 rowKey={f => f.id}
                 onRowClick={f => setSelected(f)}
@@ -389,7 +391,7 @@ export default function Fees() {
 
       {/* ---- Payments ---- */}
       {tab === 'payments' && (
-        <Section title="Payments" sub="Last 40 payments across the ledger — newest first.">
+        <Section role="tabpanel" id="fees-tab-panel-payments" aria-labelledby="fees-tab-tab-payments" title="Payments" sub="Last 40 payments across the ledger — newest first.">
           <Card>
             {payments.loading ? (
               <div className="grid grid-3"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
@@ -427,7 +429,7 @@ export default function Fees() {
 
       {/* ---- Failed ---- */}
       {tab === 'failed' && (
-        <Section
+        <Section role="tabpanel" id="fees-tab-panel-failed" aria-labelledby="fees-tab-tab-failed"
           title="Failed payments"
           sub="Retries carry no late fee within 5 days of failure (Fees §4.3). Route 7 households are flagged in the cluster view above."
           actions={
@@ -482,7 +484,7 @@ export default function Fees() {
 
       {/* ---- By class ---- */}
       {tab === 'byclass' && (
-        <Section
+        <Section role="tabpanel" id="fees-tab-panel-byclass" aria-labelledby="fees-tab-tab-byclass"
           title="Collection by class"
           sub="Percentage of billed amount collected, computed from the ledger across every student on this campus. Below 80% is highlighted for follow-up."
         >

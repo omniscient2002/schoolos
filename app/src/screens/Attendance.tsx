@@ -353,13 +353,14 @@ export default function Attendance() {
       <Tabs
         active={tab}
         onChange={id => setTab(id as 'mark' | 'history')}
+          panelId="att-tab"
         tabs={[{ id: 'mark', label: 'Today — mark' }, { id: 'history', label: 'History — 30 days' }]}
       />
 
       {/* ================= Today — mark ================= */}
       {tab === 'mark' && (
         rows.length === 0 ? (
-          <div style={{ marginTop: 16 }}>
+          <div role="tabpanel" id="att-tab-panel-mark" aria-labelledby="att-tab-tab-mark" style={{ marginTop: 16 }}>
             <Empty
               icon={<Icon.People size={26} />}
               title="No students in this section"
@@ -368,7 +369,7 @@ export default function Attendance() {
             />
           </div>
         ) : (
-          <div style={{ marginTop: 16 }}>
+          <div role="tabpanel" id="att-tab-panel-mark" aria-labelledby="att-tab-tab-mark" style={{ marginTop: 16 }}>
             <Card>
               <div className="u-between u-wrap" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', gap: 10 }}>
                 <div className="u-flex u-wrap" style={{ gap: 8 }}>
@@ -477,7 +478,7 @@ export default function Attendance() {
 
       {/* ================= History — 30 days ================= */}
       {tab === 'history' && (
-        <Section
+        <Section role="tabpanel" id="att-tab-panel-history" aria-labelledby="att-tab-tab-history"
           title="30-day register history"
           sub={`${sectionLabel} · ${campusShort(section?.campus ?? 'north')} · Sundays off · anomalies flagged below 80%`}
         >

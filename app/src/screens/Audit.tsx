@@ -118,6 +118,7 @@ export default function Audit() {
 
       <Card>
         <DataTable<AuditEntry>
+          caption="AI audit ledger — who decided what, when and why"
           columns={[
             {
               key: 'on', label: 'When', width: 150, render: a => (
