@@ -273,8 +273,8 @@ table.data tbody tr.row-click { cursor: pointer; }
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
   animation: slideUp var(--t-med) var(--ease-out); font-size: var(--text-md);
 }
-.toast.success { background: #123B26; }
-.toast.error { background: #4A1610; }
+.toast.success { background: color-mix(in srgb, var(--status-success) 22%, var(--surface-inverse)); }
+.toast.error { background: color-mix(in srgb, var(--status-critical) 25%, var(--surface-inverse)); }
 .toast .toast-msg { flex: 1; }
 .toast .toast-title { font-weight: 600; }
 .toast .toast-sub { color: rgba(255,255,255,.65); font-size: var(--text-sm); margin-top: 1px; }
@@ -348,7 +348,7 @@ table.data tbody tr.row-click { cursor: pointer; }
   font-size: var(--text-sm); flex-wrap: wrap;
 }
 .demo-bar .demo-title { font-weight: 600; display: flex; align-items: center; gap: 7px; }
-.demo-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #F5A623; animation: pulse 2.2s ease-in-out infinite; }
+.demo-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--status-warning) 70%, var(--surface)); animation: pulse 2.2s ease-in-out infinite; }
 .demo-bar button {
   color: rgba(255,255,255,.82); border: 1px solid rgba(255,255,255,.22); border-radius: var(--r-sm);
   padding: 2px 9px; font-size: 12px; transition: all var(--t-fast) var(--ease);
@@ -407,10 +407,10 @@ table.data tbody tr.row-click { cursor: pointer; }
 
 /* Inline segmented mark buttons (attendance) */
 .seg-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; flex-shrink: 0; }
-.seg-tabs .seg { padding: 5px 11px; font-size: var(--text-sm); background: var(--surface); color: var(--text-2); border: none; border-right: 1px solid var(--border-subtle); cursor: pointer; font-weight: 500; }
-.seg-tabs .seg:last-child { border-right: none; }
-.seg-tabs .seg:hover { background: var(--surface-3); }
-.seg-tabs .seg.on { background: var(--accent); color: #fff; font-weight: 600; }
+.seg-tabs .seg-tab { padding: 5px 11px; font-size: var(--text-sm); background: var(--surface); color: var(--text-2); border: none; border-right: 1px solid var(--border-subtle); cursor: pointer; font-weight: 500; }
+.seg-tabs .seg-tab:last-child { border-right: none; }
+.seg-tabs .seg-tab:hover { background: var(--surface-3); }
+.seg-tabs .seg-tab.on { background: var(--accent); color: #fff; font-weight: 600; }
 
 /* ============================================================
    Maintenance & Facilities Operations

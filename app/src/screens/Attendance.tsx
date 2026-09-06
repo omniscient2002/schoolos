@@ -451,7 +451,7 @@ export default function Attendance() {
                       </div>
                       <div className="seg-tabs" role="group" aria-label={`Mark ${r.person.name}`}>
                         {MARKS.map(mk => (
-                          <button key={mk} className={`seg ${m === mk ? 'on' : ''}`} aria-pressed={m === mk} onClick={() => setMark(r.person.id, mk)}>
+                          <button key={mk} className={`seg-tab ${m === mk ? 'on' : ''}`} aria-pressed={m === mk} onClick={() => setMark(r.person.id, mk)}>
                             {cap(mk)}
                           </button>
                         ))}

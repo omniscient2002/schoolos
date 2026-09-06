@@ -62,13 +62,21 @@ export function KernelProvider({ children }: { children: ReactNode }) {
       try {
         const token = localStorage.getItem('schoolos_token');
         if (!token) return;
-        const res = await fetch('/plugins', { headers: { authorization: `Bearer ${token}` } });
+        // hit the API origin explicitly — a relative URL silently no-ops when
+        // the UI is served from a different origin than the backend
+        const apiBase = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080';
+        const res = await fetch(`${apiBase}/plugins`, { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean }> = Array.isArray(data.plugins) ? data.plugins : [];
+        const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean; settings?: unknown }> = Array.isArray(data.plugins) ? data.plugins : [];
         if (!rows.length || cancelled) return;
         const live = new Set(rows.filter(r => r.enabled).map(r => r.plugin_id));
-        setConfigured(Object.fromEntries(rows.map(r => [r.plugin_id, r.configured === true])));
+        // configured = server's flag (non-privileged rows) or settings-key presence
+        // (privileged rows get raw settings; we count keys, never surface values)
+        setConfigured(Object.fromEntries(rows.map(r => [
+          r.plugin_id,
+          r.configured === true || (r.settings != null && typeof r.settings === 'object' && Object.keys(r.settings as object).length > 0),
+        ])));
         setEnabled(prev => {
           const next = new Set<string>([...prev].filter(id => live.has(id)));
           for (const id of live) if (FIRST_PARTY_PLUGINS.some(p => p.id === id)) next.add(id);
