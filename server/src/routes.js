@@ -495,21 +495,46 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ plugins (the switchboard) ============
+  // redteam P1-1: registry ids are namespaced strings — reject traversal-style ids
+  // at the door so no consumer ever inherits a malformed registry key.
+  // NOTE: must be `async` — Fastify 5 stalls when an async preHandler is followed
+  // by a sync one (empirically pinned: async guard → 200, sync guard → hung request).
+  const PLUGIN_ID_RE = /^[a-z][a-z0-9._-]{2,63}$/;
+  const pluginGuard = async (req, reply) => {
+    if (!PLUGIN_ID_RE.test(req.params.id)) {
+      return bad(reply, 'invalid plugin id');
+    }
+  };
+  const isPrivileged = (role) => ['owner', 'itadmin'].includes(role);
+
   app.get('/plugins', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // `enabled` is the resync flag the kernel mirror reads on mount
       // (app/src/plugins/useKernel.tsx): the 14-state lifecycle (docs/12) has
       // three enabled-equivalent states — registered/draft/… normalize to false.
-      const r = await c.query(`SELECT plugin_id, version, class, status, (status IN ('enabled','active','degraded')) AS enabled, manifest, permissions, settings, entitlement, enabled_at FROM app.plugins ORDER BY plugin_id`);
+      // redteam P1-2: settings is the secrets column (009 designs it for BSP/gateway/
+      // vendor credentials) — serialize it ONLY for owner/itadmin; lesser roles get
+      // the manifest schema + a configured flag, never the contents.
+      const privileged = isPrivileged(req.user.role);
+      const r = (await c.query(
+        `SELECT plugin_id, version, class, status, (status IN ('enabled','active','degraded')) AS enabled,
+                manifest, permissions, settings, entitlement, enabled_at FROM app.plugins ORDER BY plugin_id`)).rows;
       // docs/12 §4: capability contracts are first-class — surface them with the registry
       const contracts = await c.query(`SELECT capability_id, version, kind, contract, enforced FROM app.capability_contracts ORDER BY capability_id`);
-      return { plugins: r.rows, contracts: contracts.rows };
+      return {
+        plugins: r.map(p => privileged ? p : { ...p, settings: undefined, settings_schema: p.manifest?.settingsSchema ?? null, configured: Object.keys(p.settings ?? {}).length > 0 }),
+        contracts: contracts.rows,
+      };
     });
   });
 
-  app.post('/plugins/:id/enable', { preHandler: require('owner','itadmin') }, async (req, reply) => {
+  app.post('/plugins/:id/enable', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
     const { version, class: pClass, manifest, permissions } = req.body ?? {};
     if (!pClass || !['A','B','C','D','E'].includes(pClass)) return bad(reply, 'class A–E required');
+    // redteam P2-1: registry hygiene — semver-ish version, bounded manifest, bounded permission set
+    if (version != null && !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) return bad(reply, 'version must be semver (e.g. 1.0.0)');
+    if (manifest != null && Buffer.byteLength(JSON.stringify(manifest)) > 65536) return bad(reply, 'manifest too large (max 64KB)', 413);
+    if (permissions != null && (!Array.isArray(permissions) || permissions.length > 32 || !permissions.every(p => typeof p === 'string'))) return bad(reply, 'permissions must be a string array (max 32)');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // Catalog rows (009/010) carry the governance manifest server-side; a UI enable
       // with no manifest body must never blank it (docs/12: the registry is the truth).
@@ -529,7 +554,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/plugins/:id/disable', { preHandler: require('owner','itadmin') }, async (req, reply) => {
+  app.post('/plugins/:id/disable', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // DRAIN PROTOCOL (docs/12 §12): disable may never abandon school work.
       const drained = await c.query(
@@ -548,7 +573,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/plugins/:id/settings', { preHandler: require('owner','itadmin') }, async (req, reply) => {
+  app.post('/plugins/:id/settings', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`UPDATE app.plugins SET settings=$3::jsonb, updated_at=now() WHERE tenant_id=$1 AND plugin_id=$2 RETURNING *`, [req.user.tenant_id, req.params.id, JSON.stringify(req.body ?? {})]);
       if (!r.rows[0]) return bad(reply, 'plugin not registered', 404);
@@ -557,11 +582,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  // ============ wave-1 plugin runtimes (docs/11 §2.3 rails + §3 primitives) ============
-  // The rails ride the kernel loop: sends are orchestrator intents (+ receipts), money
-  // is link/webhook facts with kernel-only settlement, GPS raises approval-required
-  // actions, timetable writes are deterministic + audited. See src/plugins/wave1.js.
-  registerPluginRuntimes(app, { withUser, auditLog, emitEvent, requestAudit, q });
+  // ============ plugin runtimes live in src/plugins/<id>/ (see loader.js) ============
+  // Docs/11 §2.2: each plugin mounts its own doors; the core adds no per-plugin logic.
+  // Registry enable/disable + drain protocol remain right here (the switchboard).
 
   // ============ migration (Golden Loop 1 backend) ============
   app.get('/migration/sources', { preHandler: me }, async (req) => {

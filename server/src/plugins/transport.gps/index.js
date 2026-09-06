@@ -2,23 +2,12 @@
 // (delay >= 10 → approval-required guardian notice), 30d position retention.
 // Decoupled: zero kernel logic — mounts its own doors only (docs/11 §2.3).
 const ID = 'transport.gps';
+export { default as manifest } from './manifest.js';
 import { randomUUID } from 'node:crypto';
-import { checkEventBudget } from '../governance.js';
+import { checkEventBudget } from '../../governance.js';
 
 const ADEVA = { lat: 12.9352, lng: 77.6245 };   // demo campus anchor (Koramangala, Bengaluru)
 const STREETS = ['80 Feet Rd', '5th Block', 'Jyoti Nivas', 'W Catalyst', 'Sector 12 bridge', 'HSR loop'];
-
-export const manifest = {
-  id: ID,
-  name: 'Transport GPS Rail',
-  version: '1.0.0',
-  class: 'B',
-  trust: 'T1',
-  description: 'Vendor GPS position ingestion with deterministic guardian-notice guard (delay ≥ 10 min → approval-required action, Transport §3.1). Positions retained 30 days; approval before any send.',
-  permissions: ['events.emit', 'actions.raise', 'audit.request'],
-  slots: ['settings', 'reports'],
-  policy_refs: ['Transport §3.1', 'Platform §10 (event budgets)'],
-};
 
 export function register(app, kernel) {
   const { withUser, auditLog, requestAudit, emitEvent, require } = kernel;

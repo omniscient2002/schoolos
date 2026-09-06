@@ -1,0 +1,29 @@
+// transport.gps — plugin manifest (drop-in factory, docs/11 §2.2)
+export default {
+  id: 'transport.gps',
+  name: 'Transport GPS Rail',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'Vendor GPS position ingestion with deterministic guardian-notice guard (delay ≥ 10 min → approval-required action, Transport §3.1). Positions retained 30 days; approval before any send.',
+  permissions: ['students.read', 'events.emit', 'actions.raise', 'audit.request'],
+  events: { subscribe: [], publish: ['gps.position'] },
+  slots: ['settings', 'reports'],
+  routes: [],
+  widgets: [],
+  settings_schema: {
+    type: 'object',
+    properties: {
+      vendor: { type: 'string', enum: ['eternalrobotics', 'chakralinux', 'vamroad', 'generic'], default: 'generic' },
+      delay_guard_mins: { type: 'integer', minimum: 5, maximum: 30, default: 10, description: 'Transport §3.1 threshold' },
+      position_retention_days: { type: 'integer', minimum: 7, maximum: 90, default: 30 },
+    },
+    required: ['vendor'],
+  },
+  data: { schema: 'plugin_transport_gps.positions', core_refs: ['routes.id', 'students.bus_route'], retention: { positions: '30d', on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'rails', metered: ['positions_ingested'] },
+  dependencies: [],
+  policy_refs: ['Transport §3.1', 'Platform §10 (event budgets)'],
+};

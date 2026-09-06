@@ -1,19 +1,8 @@
 // ops.timetable — Class C primitives provider: grid, slots, substitutions,
 // deterministic period-autofill. Every write audited. No kernel edits.
 const ID = 'ops.timetable';
+export { default as manifest } from './manifest.js';
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-
-export const manifest = {
-  id: ID,
-  name: 'Timetable Primitives',
-  version: '1.0.0',
-  class: 'C',
-  trust: 'T1',
-  description: 'Period grid, class-section slots, daily substitutions (deterministic suggester), and attendance period-autofill primitives consumed by attendance/exams/comms.',
-  permissions: ['events.emit', 'audit.request', 'attendance.write'],
-  slots: ['settings', 'reports'],
-  policy_refs: ['Attendance §1.1', 'Platform §3 (plugin governance)'],
-};
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;

@@ -3,18 +3,7 @@
 // orchestrator; this rail registers DLT templates and reads kernel receipts.
 // The rail adds ZERO kernel logic — it only mounts doors (docs/11 §2.3).
 const ID = 'comms.whatsapp';
-
-export const manifest = {
-  id: ID,
-  name: 'WhatsApp Rail',
-  version: '1.0.0',
-  class: 'B',
-  trust: 'T1',
-  description: 'DLT-registered WhatsApp template registry + receipt surface. Sends ride the kernel Communication Orchestrator (approval → template → delivery); the rail never sends directly.',
-  permissions: ['audit.request'],
-  slots: ['settings', 'reports'],
-  policy_refs: ['Comms §1.2'],
-};
+export { default as manifest } from './manifest.js';
 
 export function register(app, kernel) {
   const { withUser, requestAudit, require } = kernel;

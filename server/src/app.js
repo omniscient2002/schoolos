@@ -185,7 +185,7 @@ export async function buildApp(opts = {}) {
     }
     return req.user;
   };
-  await loadPlugins(app, { withUser, auditLog, emitEvent, requestAudit, q, requireRole });
+   await loadPlugins(app, { withUser, auditLog, emitEvent, requestAudit, q, require: requireRole });
 
   // --- dataset: the demo domain, server-owned (see src/generated/) ---
   const { dataset } = await import('./dataset.js');

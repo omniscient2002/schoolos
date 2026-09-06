@@ -22,11 +22,20 @@ export async function loadPlugins(app, kernel, { dir = dirname(fileURLToPath(imp
     const id = entry.name;
     try {
       if (!validPluginId(id)) throw new Error(`invalid plugin id (must match ${PLUGIN_ID_RE})`);
+      // charter layout: manifest.js (governance truth) + index.js (register(app, kernel))
+      let manifest;
+      try {
+        const m = await import(pathToFileURL(join(dir, id, 'manifest.js')).href);
+        manifest = m.default;
+      } catch {
+        throw new Error('missing manifest.js with a default-export manifest');
+      }
+      if (!manifest || typeof manifest !== 'object') throw new Error('manifest.js must default-export an object');
+      if (manifest.id !== id) throw new Error(`manifest.id "${manifest.id}" ≠ directory "${id}"`);
       const mod = await import(pathToFileURL(join(dir, id, 'index.js')).href);
       if (typeof mod.register !== 'function') throw new Error('index.js must export register(app, kernel)');
-      if (mod.manifest && mod.manifest.id !== id) throw new Error(`manifest.id "${mod.manifest.id}" ≠ directory "${id}"`);
       mod.register(app, kernel);
-      loaded.push({ id, manifest: mod.manifest ?? null });
+      loaded.push({ id, manifest });
     } catch (e) {
       failed.push({ id, error: e.message });
     }

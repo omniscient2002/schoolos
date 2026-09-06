@@ -1,0 +1,33 @@
+// comms.whatsapp — plugin manifest (drop-in factory, docs/11 §2.2)
+export default {
+  id: 'comms.whatsapp',
+  name: 'WhatsApp Business Rails',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'WhatsApp BSP rail beneath the kernel Communication Orchestrator: DLT template registry, receipt surface. Headless by rule (docs/11 §2.3) — delivers approved orchestrator intents only, never sends directly.',
+  permissions: ['students.read', 'attendance.read', 'fees.read', 'comms.send', 'events.emit', 'audit.request'],
+  events: { subscribe: ['attendance.marked', 'fee.due', 'transport.delay'], publish: ['whatsapp.receipt'] },
+  ai: { request: ['draft.parent_message', 'summarize.day'], modes: ['transformation'], grounding: 'required' },
+  slots: ['settings', 'reports'],
+  routes: [],
+  widgets: [],
+  settings_schema: {
+    type: 'object',
+    properties: {
+      bsp_provider: { type: 'string', enum: ['gupshup', 'meta_cloud_api', 'aisensy', 'interakt'], default: 'gupshup' },
+      sender_id: { type: 'string' },
+      dlt_entity_id: { type: 'string' },
+      dlt_template_ids: { type: 'object' },
+      pay_button_template: { type: 'string' },
+      quiet_hours: { type: 'object' },
+    },
+    required: ['bsp_provider', 'sender_id'],
+  },
+  data: { schema: 'plugin_whatsapp (settings-keyed in v1)', core_refs: ['students.id'], retention: { on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'rails', metered: ['messages_delivered'] },
+  dependencies: [],
+  policy_refs: ['Comms §1.2'],
+};

@@ -2,19 +2,8 @@
 // signed-webhook facts; settlement is kernel-only (staff confirm, Fees §4.2).
 // Decoupled: zero kernel logic — mounts its own doors only (docs/11 §2.3).
 const ID = 'payments.upi';
+export { default as manifest } from './manifest.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
-
-export const manifest = {
-  id: ID,
-  name: 'UPI Collection Rails',
-  version: '1.0.0',
-  class: 'B',
-  trust: 'T2',
-  description: 'UPI payment links + signed gateway webhook facts. Settlement stays kernel-only (staff confirm on /fees/payments/:id/confirm, Fees §4.2); the rail never moves money.',
-  permissions: ['audit.request', 'events.emit'],
-  slots: ['settings', 'reports'],
-  policy_refs: ['Fees §4.2'],
-};
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, q } = kernel;
