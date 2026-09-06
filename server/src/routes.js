@@ -495,11 +495,12 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ plugins (the switchboard) ============
-  // redteam P1-1: registry ids are namespaced strings — reject traversal-style ids
-  // at the door so no consumer ever inherits a malformed registry key.
+  // redteam cycle-2 P1-1: registry ids are namespaced strings — reject traversal-style
+  // ids at the door so no consumer ever inherits a malformed registry key.
+  // Orchestrator-pinned pattern (allows digit-first, excludes underscore).
   // NOTE: must be `async` — Fastify 5 stalls when an async preHandler is followed
   // by a sync one (empirically pinned: async guard → 200, sync guard → hung request).
-  const PLUGIN_ID_RE = /^[a-z][a-z0-9._-]{2,63}$/;
+  const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
   const pluginGuard = async (req, reply) => {
     if (!PLUGIN_ID_RE.test(req.params.id)) {
       return bad(reply, 'invalid plugin id');
@@ -512,9 +513,11 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       // `enabled` is the resync flag the kernel mirror reads on mount
       // (app/src/plugins/useKernel.tsx): the 14-state lifecycle (docs/12) has
       // three enabled-equivalent states — registered/draft/… normalize to false.
-      // redteam P1-2: settings is the secrets column (009 designs it for BSP/gateway/
-      // vendor credentials) — serialize it ONLY for owner/itadmin; lesser roles get
-      // the manifest schema + a configured flag, never the contents.
+      // redteam cycle-2 P1-2 (orchestrator option (a)): settings is the secrets column
+      // (009 designs it for BSP/gateway/vendor credentials) — non-privileged roles get
+      // ONLY {hasSettings, keys} + the manifest schema; never values. Tradeoff (option (b),
+      // RLS/role-filtered column) noted in the unit report: stronger at the storage layer,
+      // but heavier — deferred until a second consumer needs secret reads.
       const privileged = isPrivileged(req.user.role);
       const r = (await c.query(
         `SELECT plugin_id, version, class, status, (status IN ('enabled','active','degraded')) AS enabled,
@@ -522,7 +525,11 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       // docs/12 §4: capability contracts are first-class — surface them with the registry
       const contracts = await c.query(`SELECT capability_id, version, kind, contract, enforced FROM app.capability_contracts ORDER BY capability_id`);
       return {
-        plugins: r.map(p => privileged ? p : { ...p, settings: undefined, settings_schema: p.manifest?.settingsSchema ?? null, configured: Object.keys(p.settings ?? {}).length > 0 }),
+        plugins: r.map(p => {
+          if (privileged) return p;
+          const keys = Object.keys(p.settings ?? {});
+          return { ...p, settings: undefined, hasSettings: keys.length > 0, keys, settings_schema: p.manifest?.settingsSchema ?? null };
+        }),
         contracts: contracts.rows,
       };
     });

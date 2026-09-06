@@ -73,7 +73,9 @@ describe('plugin loader (drop-in factory)', () => {
 
   test('redteam P1-1: traversal-style plugin ids are rejected at the registry', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
-    for (const id of ['..%2F..%2Fkernel', 'UPPER.case', 'has%20space', 'x']) {
+    // orchestrator cycle-2 pattern: ^[a-z0-9][a-z0-9.-]{2,63}$ — traversal at any
+    // depth, uppercase, spaces, short ids and underscore ids all bounce
+    for (const id of ['..%2F..%2Fkernel', 'UPPER.case', 'has%20space', 'x', '_underscore']) {
       const r = await app.inject({ method: 'POST', url: `/plugins/${id}/enable`,
         headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'A' } });
       assert.equal(r.statusCode, 400, `${id} must be rejected (got ${r.statusCode})`);
@@ -94,7 +96,7 @@ describe('plugin loader (drop-in factory)', () => {
     assert.equal(badP.statusCode, 400);
   });
 
-  test('redteam P1-2: settings is owner/itadmin-only; lesser roles get the configured flag', async () => {
+  test('redteam P1-2: settings is owner/itadmin-only; lesser roles get {hasSettings, keys}', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
     const canary = 'SECRET-CANARY-loader-7f3';
     await app.inject({ method: 'POST', url: '/plugins/pack.cbse/settings',
@@ -106,7 +108,14 @@ describe('plugin loader (drop-in factory)', () => {
     assert.equal(JSON.stringify(asTeacher.json()).includes(canary), false, 'canary must not leak to teacher');
     const cbseTeacher = asTeacher.json().plugins.find(p => p.plugin_id === 'pack.cbse');
     assert.equal(cbseTeacher.settings, undefined);
-    assert.equal(cbseTeacher.configured, true, 'configured flag survives redaction');
+    assert.equal(cbseTeacher.hasSettings, true, 'hasSettings flag survives redaction');
+    assert.deepEqual(cbseTeacher.keys, ['redteam_canary'], 'keys are surfaced without values');
+    assert.ok(cbseTeacher.settings_schema, 'manifest schema still guides lesser roles');
+    // parent role (orchestrator verification bar): no settings values either
+    const p = await loginAs(app, 'parent@meridian.edu');
+    const asParent = await app.inject({ method: 'GET', url: '/plugins', headers: H(p.token) });
+    assert.equal(JSON.stringify(asParent.json()).includes(canary), false, 'canary must not leak to parent');
+    assert.equal(asParent.json().plugins.every(pl => pl.settings === undefined), true, 'no settings values for parent');
     // …and the owner still can (management surface unchanged)
     const asOwner = await app.inject({ method: 'GET', url: '/plugins', headers: H(o.token) });
     const cbseOwner = asOwner.json().plugins.find(p => p.plugin_id === 'pack.cbse');
