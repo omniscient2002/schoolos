@@ -107,7 +107,11 @@ export async function ensureDataset(): Promise<void> {
     SCHOOL = data.SCHOOL as { name: string; short: string; established: number; board: string };
     FEE_STORY = data.FEE_STORY as { clusterRoute: string; dipPct: number; failedCount: number };
     for (const [k, v] of Object.entries((data.guardianIdByStudent as unknown as Record<string, string[]>) ?? {})) guardianIdByStudent.set(k, v);
-  })();
+  })().catch((err: unknown) => {
+    loading = null; // a failed load must be retryable — never cache the rejection
+    hydrated = false;
+    throw err;
+  });
   return loading;
 }
 

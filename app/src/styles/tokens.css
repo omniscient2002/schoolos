@@ -11,6 +11,11 @@
   --surface-2: #FAF9F7;
   --surface-3: #F3F2EE;
   --surface-inverse: #17181A;
+  /* Compat aliases (unit 2): pre-token code referenced --bg-2 / --text-1.
+     Resolve them into the real ramps instead of silently failing to initial. */
+  --bg-2: var(--surface-2);
+  --text-1: var(--text);
+  --surface-1: var(--surface);
 
   /* Borders */
   --border: #E7E4DE;
@@ -49,6 +54,10 @@
   --danger-weak-2: #F3CFCB;
   --info: #2E5E9E;
   --info-weak: #E7EEF8;
+  /* Compat aliases (unit 2): inline styles referenced *-text variants. */
+  --success-text: var(--success);
+  --warning-text: var(--warning);
+  --danger-text: var(--danger);
 
   /* Campus hues (avatars, charts) */
   --campus-a: #0E7568;

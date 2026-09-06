@@ -26,7 +26,7 @@ const ROLES = [
 ];
 
 export interface SessionUser { name: string; role: string; email: string }
-export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) => void }) {
+export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) => Promise<void> | void }) {
   const [method, setMethod] = useState<Method>('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -40,7 +40,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
   const fail = (m: string) => { setError(m); setBusy(false); };
   const run = async (fn: () => Promise<{ name: string; role: string; email: string }>) => {
     setBusy(true); setError(null);
-    try { onAuthed(await fn()); } catch (e: unknown) { fail((e as Error).message || 'sign-in failed'); }
+    try { await onAuthed(await fn()); } catch (e: unknown) { fail((e as Error).message || 'sign-in failed'); }
   };
 
   const submitPassword = () => {

@@ -202,7 +202,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Login onAuthed={(s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); void ensureDataset().then(() => setSession(s)); }} />;
+  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setSession(s); }} />;
   return (
     <SessionCtx.Provider value={session}>
       {children}
