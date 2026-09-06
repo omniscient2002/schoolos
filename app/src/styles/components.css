@@ -24,16 +24,16 @@
 .btn-primary:active { background: var(--accent-active); box-shadow: var(--shadow-xs), inset 0 1px 2px color-mix(in srgb, var(--text) 25%, transparent); }
 
 .btn-ai { background: var(--ai); color: #fff; box-shadow: var(--shadow-xs); }
-.btn-ai:hover { background: #4C43A3; }
+.btn-ai:hover { background: var(--ai-hover); }
 
 .btn-secondary { background: var(--surface); border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
-.btn-secondary:hover { background: var(--surface-2); border-color: #C9C4BA; }
+.btn-secondary:hover { background: var(--surface-2); border-color: var(--secondary-hover-border); }
 
 .btn-ghost { color: var(--text-2); }
 .btn-ghost:hover { background: var(--surface-3); color: var(--text); }
 
 .btn-danger { background: var(--danger); color: #fff; }
-.btn-danger:hover { background: #98291F; }
+.btn-danger:hover { background: var(--danger-hover); }
 
 .btn-danger-ghost { color: var(--danger); }
 .btn-danger-ghost:hover { background: var(--danger-weak); }
@@ -61,7 +61,7 @@
   transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 .textarea { height: auto; min-height: 72px; padding: 8px 10px; resize: vertical; line-height: 1.5; }
-.input:hover, .select:hover, .textarea:hover { border-color: #C4BFB5; }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--input-hover-border); }
 .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
 .input::placeholder, .textarea::placeholder { color: var(--text-3); }
 .input:disabled { background: var(--surface-3); color: var(--text-3); }
@@ -115,7 +115,7 @@
 .badge-success { background: var(--success-weak); color: var(--success); }
 .badge-warning { background: var(--warning-weak); color: var(--warning); }
 /* unit 7 batch 1: AA text on warning tint (was 2.8:1) */
-.badge-warning { color: #92400E; }
+.badge-warning { color: var(--danger-hover-text); }
 .badge-danger { background: var(--danger-weak); color: var(--danger); }
 .badge-info { background: var(--info-weak); color: var(--info); }
 .badge-ai { background: var(--ai-weak); color: var(--ai-text); }
@@ -382,7 +382,7 @@ table.data tbody tr.row-click { cursor: pointer; }
 .divider { height: 1px; background: var(--border-subtle); border: none; margin: var(--s-4) 0; }
 
 /* Light demo bar over parent/student surfaces */
-.demo-bar.demo-bar-light { background: #1C1D20; }
+.demo-bar.demo-bar-light { background: var(--text); }
 .demo-bar.demo-bar-light button { color: rgba(255,255,255,.75); }
 
 /* Right AI dock */
@@ -439,8 +439,8 @@ table.data tbody tr.row-click { cursor: pointer; }
 .wo-card { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 13px 15px; transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
 .wo-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); box-shadow: var(--shadow-sm); }
 .wo-card.prio-emergency, .wo-card.prio-critical { border-left: 3px solid var(--danger); }
-.wo-card.prio-high { border-left: 3px solid #DC6803; }
-.wo-card.prio-medium { border-left: 3px solid #175CD3; }
+.wo-card.prio-high { border-left: 3px solid var(--chart-amber); }
+.wo-card.prio-medium { border-left: 3px solid var(--chart-blue); }
 .wo-card.prio-low { border-left: 3px solid var(--border); }
 
 .maint-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }

@@ -304,13 +304,13 @@ export default function MaintIntelligence() {
                   height={10}
                   parts={[
                     { value: pmOnTrack, color: 'var(--accent)', label: `On track ${pmOnTrack}` },
-                    { value: pmDueSoon, color: '#DC6803', label: `Due soon ${pmDueSoon}` },
+                    { value: pmDueSoon, color: 'var(--chart-amber)', label: `Due soon ${pmDueSoon}` },
                     { value: pmOverdue, color: 'var(--danger)', label: `Overdue ${pmOverdue}` },
                   ]}
                 />
                 <div className="u-flex u-small u-muted" style={{ gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
                   <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--accent)' }} /> On track {pmOnTrack}</span>
-                  <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#DC6803' }} /> Due soon {pmDueSoon}</span>
+                  <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--chart-amber)' }} /> Due soon {pmDueSoon}</span>
                   <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--danger)' }} /> Overdue {pmOverdue}</span>
                 </div>
                 <div className="divider" />

@@ -92,7 +92,7 @@ function placeAssets(assets: AssetRecord[], rects: Rect[]) {
 }
 
 const ASSET_DOT: Record<AssetStatus, string> = {
-  operational: 'var(--accent)', watch: '#175CD3', degraded: '#DC6803', down: '#D92D20', maintenance: '#5D53B8', retired: '#98A2B3',
+  operational: 'var(--accent)', watch: 'var(--chart-blue)', degraded: 'var(--chart-amber)', down: 'var(--chart-red)', maintenance: 'var(--ai)', retired: 'var(--chart-slate)',
 };
 const ASSET_LEGEND: { status: AssetStatus; label: string }[] = [
   { status: 'operational', label: 'Operational' },
@@ -104,7 +104,7 @@ const ASSET_LEGEND: { status: AssetStatus; label: string }[] = [
 
 const isOpen = (w: WorkOrderRecord) => !['resolved', 'closed', 'cancelled'].includes(w.status);
 const ringColor = (wos: WorkOrderRecord[]) =>
-  wos.some(w => w.priority === 'emergency' || w.priority === 'critical') ? 'var(--danger)' : '#DC6803';
+  wos.some(w => w.priority === 'emergency' || w.priority === 'critical') ? 'var(--danger)' : 'var(--chart-amber)';
 
 /* ============================================================ */
 
@@ -202,7 +202,7 @@ export default function MaintMap() {
                     background: n >= 2 ? 'color-mix(in srgb, var(--danger) 6%, var(--surface))' : 'var(--surface)',
                     color: 'var(--text-2)', fontWeight: 560,
                   }}>
-                  <span style={{ width: 7, height: 7, borderRadius: 4, background: n >= 2 ? 'var(--danger)' : '#DC6803' }} />
+                  <span style={{ width: 7, height: 7, borderRadius: 4, background: n >= 2 ? 'var(--danger)' : 'var(--chart-amber)' }} />
                   {h.name} · {n} open job{n === 1 ? '' : 's'}
                 </button>
               );
@@ -238,7 +238,7 @@ export default function MaintMap() {
                 {rects.map(r => {
                   const open = (openByBuilding.get(r.name) ?? []).length;
                   const isSel = selBuildingName === r.name;
-                  const stroke = open >= 2 ? 'var(--danger)' : open === 1 ? '#DC6803' : 'var(--border-strong)';
+                  const stroke = open >= 2 ? 'var(--danger)' : open === 1 ? 'var(--chart-amber)' : 'var(--border-strong)';
                   const bAssets = assetsByBuilding.get(r.name) ?? [];
                   return (
                     <g key={r.name} className={`mm-b ${isSel ? 'sel' : ''}`} onClick={() => setSel({ kind: 'building', name: r.name })}>
@@ -251,7 +251,7 @@ export default function MaintMap() {
                         {bAssets.length} asset{bAssets.length === 1 ? '' : 's'}{open > 0 ? ` · ${open} open job${open === 1 ? '' : 's'}` : ''}
                       </text>
                       {open > 0 && (
-                        <text x={r.x + r.w - 12} y={r.y + 24} fontSize="10.5" fontWeight="650" textAnchor="end" fill={open >= 2 ? 'var(--danger)' : '#DC6803'} style={{ fontFamily: 'var(--font-sans)' }}>
+                        <text x={r.x + r.w - 12} y={r.y + 24} fontSize="10.5" fontWeight="650" textAnchor="end" fill={open >= 2 ? 'var(--danger)' : 'var(--chart-amber)'} style={{ fontFamily: 'var(--font-sans)' }}>
                           {open} open
                         </text>
                       )}

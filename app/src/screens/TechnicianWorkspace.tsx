@@ -304,7 +304,7 @@ export default function TechnicianWorkspace() {
                       {wo.resolution && <span className="u-small">Resolution: {wo.resolution.summary}</span>}
                       {wo.reporterRating != null && (
                         <span className="u-inline u-small" style={{ gap: 6 }}>
-                          <Icon.Star size={12} style={{ color: '#DC6803' }} /> {wo.reporterRating}★ from the reporter
+                          <Icon.Star size={12} style={{ color: 'var(--chart-amber)' }} /> {wo.reporterRating}★ from the reporter
                         </span>
                       )}
                     </div>

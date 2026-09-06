@@ -229,7 +229,7 @@ export function CampusSwitcher() {
   return (
     <Dropdown width={250} label="Campus switcher" trigger={() => (
       <button className="btn btn-ghost btn-sm" style={{ gap: 7 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 3, background: campus.hue }} />
+        <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: campus.hue }} />
         <span className="u-truncate" style={{ maxWidth: 100 }}>{campus.name}</span>
         <Icon.ChevronDown size={13} />
       </button>
@@ -240,7 +240,7 @@ export function CampusSwitcher() {
           {seed.campuses.map(c => (
             <button key={c.id} role="menuitem" className="dropdown-item" disabled={!scopedToAll && c.id !== session.campusScope}
               onClick={() => { setActiveCampus(c.id); close(); }}>
-              <span style={{ width: 8, height: 8, borderRadius: 3, background: c.hue }} />
+              <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: c.hue }} />
               <span>{c.name}</span>
               <span className="dd-right u-xs mono">{c.students}</span>
             </button>

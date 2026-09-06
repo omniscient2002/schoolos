@@ -69,7 +69,7 @@ function Stars({ n, size = 14 }: { n: number; size?: number }) {
   return (
     <span className="u-inline" style={{ gap: 2 }} role="img" aria-label={`${n} of 5 stars`}>
       {[1, 2, 3, 4, 5].map(i => (
-        <Icon.Star key={i} size={size} style={{ color: i <= n ? '#DC6803' : 'var(--border)' }} />
+        <Icon.Star key={i} size={size} style={{ color: i <= n ? 'var(--chart-amber)' : 'var(--border)' }} />
       ))}
     </span>
   );

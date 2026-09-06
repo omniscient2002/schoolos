@@ -4,12 +4,20 @@ import { PageHead, Section, Card, Badge, Tabs, Button, useToast, KeyValue, Avata
 import { Icon } from '../components/Icon';
 import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
+import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
+
+const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
+  { id: 'system', label: 'System' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+];
 
 export default function Settings() {
   const { session, actorName } = useStore();
   const toast = useToast();
   const navigate = useNavigate();
   const [tab, setTab] = useState('school');
+  const [theme, setThemeState] = useState<ThemeChoice>(storedTheme());
   const canManage = ['principal', 'itadmin', 'owner'].includes(session.roleId);
 
   return (
@@ -82,6 +90,44 @@ export default function Settings() {
               </div>
             </Card>
           </div>
+        </Section>
+      )}
+
+      {tab === 'school' && (
+        <Section title="Appearance" sub="Your choice wins over this device's system preference. Everyone sees their own — theme is per browser, never per school.">
+          <Card head="Theme">
+            <div style={{ padding: 'var(--s-4) var(--s-5)' }}>
+              <div className="seg" role="radiogroup" aria-label="Colour theme" id="theme-seg">
+                {THEME_OPTS.map(o => (
+                  <button
+                    key={o.id}
+                    id={`theme-seg-${o.id}`}
+                    role="radio"
+                    aria-checked={theme === o.id}
+                    tabIndex={theme === o.id ? 0 : -1}
+                    className={theme === o.id ? 'seg-btn active' : 'seg-btn'}
+                    onClick={() => { setTheme(o.id); setThemeState(o.id); }}
+                    onKeyDown={(e: React.KeyboardEvent) => {
+                      const i = THEME_OPTS.findIndex(x => x.id === theme);
+                      const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+                      if (!dir) return;
+                      e.preventDefault();
+                      const next = THEME_OPTS[(i + dir + THEME_OPTS.length) % THEME_OPTS.length];
+                      setTheme(next.id); setThemeState(next.id);
+                      (document.getElementById(`theme-seg-${next.id}`) as HTMLElement | null)?.focus();
+                    }}
+                  >{o.label}</button>
+                ))}
+              </div>
+              <p className="u-small u-muted" style={{ margin: '10px 0 0' }}>
+                {theme === 'system'
+                  ? <>Following this device — it currently looks {window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'}.</>
+                  : theme === 'dark'
+                    ? <>Dark surfaces on. Charts and status colours are re-tuned for contrast, not just inverted.</>
+                    : <>Light surfaces on — the default SchoolOS look.</>}
+              </p>
+            </div>
+          </Card>
         </Section>
       )}
 

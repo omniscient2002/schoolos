@@ -116,8 +116,8 @@ export function Sparkline({ points, color = 'var(--accent)', height = 30, width 
   const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i * xw).toFixed(1)},${y(p).toFixed(1)}`).join(' ');
   return (
     <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} aria-hidden="true">
-      {fill && <path d={`${d} L${width},${height} L0,${height} Z`} fill={color} opacity="0.09" />}
-      <path d={d} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      {fill && <path d={`${d} L${width},${height} L0,${height} Z`} style={{ fill: color }} opacity="0.09" />}
+      <path d={d} fill="none" style={{ stroke: color }} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -134,13 +134,12 @@ export function Donut({ segments, size = 120, thickness = 14, centerLabel, cente
     <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
       <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
         <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }} aria-hidden="true">
-          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--surface-3)" strokeWidth={thickness} />
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" style={{ stroke: 'var(--surface-3)' }} strokeWidth={thickness} />
           {segments.map(s => {
             const len = (s.value / total) * c;
             const el = (
-              <circle key={s.label} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={s.color} strokeWidth={thickness}
-                strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-offset} strokeLinecap="butt"
-                style={{ transition: 'stroke-dasharray var(--t-slow) var(--ease-out)' }} />
+              <circle key={s.label} cx={size / 2} cy={size / 2} r={r} fill="none" style={{ stroke: s.color, transition: 'stroke-dasharray var(--t-slow) var(--ease-out)' }} strokeWidth={thickness}
+                strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-offset} strokeLinecap="butt" />
             );
             offset += len;
             return el;

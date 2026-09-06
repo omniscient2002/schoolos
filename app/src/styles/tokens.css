@@ -59,6 +59,23 @@
   --warning-text: var(--warning);
   --danger-text: var(--danger);
 
+  /* unit 12: chart/status family — data-vis colors, one dark override point */
+  --chart-amber: #DC6803;   /* due-soon / watch / in-progress */
+  --chart-blue: #175CD3;    /* info-channel metrics */
+  --chart-red: #D92D20;     /* critical / breach */
+  --chart-violet: #5D53B8;  /* tertiary series (== --ai) */
+  --chart-teal: #3C8C64;    /* positive-adjacent series */
+  --chart-slate: #98A2B3;   /* retired / neutral series */
+  --chart-red-deep: #C4320A; /* emergency ramp end — exact-value sibling; zero light-mode change required it */
+  --chart-steel: #4A7A8C;   /* admissions pipeline stage */
+
+  /* unit 12: interaction ramps (hover states were hardcoded before) */
+  --ai-hover: #4C43A3;
+  --secondary-hover-border: #C9C4BA;
+  --input-hover-border: #C4BFB5;
+  --danger-hover: #98291F;
+  --danger-hover-text: #92400E;
+
   /* Campus hues (avatars, charts) */
   --campus-a: #0E7568;
   --campus-b: #7A5AB8;

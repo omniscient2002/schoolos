@@ -47,7 +47,7 @@ const TYPE_TONE: Record<MaintPlan['type'], 'neutral' | 'info' | 'accent' | 'warn
 };
 
 const ASSET_DOT: Record<AssetStatus, string> = {
-  operational: 'var(--accent)', watch: '#175CD3', degraded: '#DC6803', down: '#D92D20', maintenance: '#5D53B8', retired: '#98A2B3',
+  operational: 'var(--accent)', watch: 'var(--chart-blue)', degraded: 'var(--chart-amber)', down: 'var(--chart-red)', maintenance: 'var(--ai)', retired: 'var(--chart-slate)',
 };
 
 /* ---------- days-until chip (overdue danger, ≤7d warning) ---------- */
@@ -58,7 +58,7 @@ function DueChip({ diff }: { diff: number }) {
     <span className="u-inline u-mono" style={{
       alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 580, whiteSpace: 'nowrap',
       color: danger ? 'var(--danger)' : warn ? 'var(--warning)' : 'var(--text-2)',
-      background: danger ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : warn ? 'color-mix(in srgb, #DC6803 8%, transparent)' : 'var(--surface-3)',
+      background: danger ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : warn ? 'color-mix(in srgb, var(--chart-amber) 8%, transparent)' : 'var(--surface-3)',
       border: `1px solid ${danger ? 'color-mix(in srgb, var(--danger) 24%, transparent)' : 'var(--border)'}`,
       padding: '2px 8px', borderRadius: 999,
     }}>
@@ -106,7 +106,7 @@ function MonthStrip({ plans, onPick }: { plans: MaintPlan[]; onPick: (p: MaintPl
                   return (
                     <button key={p.id} title={`${p.id} · ${p.title} · due ${fmtDateShort(p.nextDue)}`} aria-label={`Open plan ${p.id}`}
                       onClick={() => onPick(p)}
-                      style={{ width: 7, height: 7, borderRadius: 4, padding: 0, cursor: 'pointer', border: 'none', background: diff < 0 ? 'var(--danger)' : diff <= 7 ? '#DC6803' : 'var(--accent)' }} />
+                      style={{ width: 7, height: 7, borderRadius: 4, padding: 0, cursor: 'pointer', border: 'none', background: diff < 0 ? 'var(--danger)' : diff <= 7 ? 'var(--chart-amber)' : 'var(--accent)' }} />
                   );
                 })}
               </span>
@@ -116,7 +116,7 @@ function MonthStrip({ plans, onPick }: { plans: MaintPlan[]; onPick: (p: MaintPl
       </div>
       <div className="u-inline u-xs u-muted" style={{ gap: 12, flexWrap: 'wrap' }}>
         <span className="u-inline" style={{ gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--danger)' }} /> Overdue</span>
-        <span className="u-inline" style={{ gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: '#DC6803' }} /> Due ≤ 7 days</span>
+        <span className="u-inline" style={{ gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--chart-amber)' }} /> Due ≤ 7 days</span>
         <span className="u-inline" style={{ gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--accent)' }} /> Later</span>
         <span style={{ marginLeft: 'auto' }} className="u-faint">5-week view · {beyond} plan{beyond === 1 ? '' : 's'} due beyond this window · dots are plan due dates</span>
       </div>

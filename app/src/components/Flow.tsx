@@ -24,7 +24,7 @@ const KIND_META: Record<NonNullable<TimelineEntry['kind']>, { color: string; ico
   close: { color: 'var(--success)', icon: 'Check' },
   note: { color: 'var(--text-3)', icon: 'Message' },
   ai: { color: 'var(--ai)', icon: 'Sparkle' },
-  guard: { color: '#5D53B8', icon: 'Shield' },
+  guard: { color: 'var(--ai)', icon: 'Shield' },
 };
 
 export function EventTimeline({ items, compact }: { items: TimelineEntry[]; compact?: boolean }) {

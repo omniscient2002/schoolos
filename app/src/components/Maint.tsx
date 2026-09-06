@@ -12,17 +12,17 @@ import { fmtTime } from '../lib/format';
 
 /* ---------- Priority ---------- */
 const PRIO_META: Record<MaintPriority, { label: string; tone: 'danger' | 'warning' | 'info' | 'neutral'; dot: string }> = {
-  emergency: { label: 'Emergency', tone: 'danger', dot: '#C4320A' },
-  critical: { label: 'Critical', tone: 'danger', dot: '#D92D20' },
-  high: { label: 'High', tone: 'warning', dot: '#DC6803' },
-  medium: { label: 'Medium', tone: 'info', dot: '#175CD3' },
-  low: { label: 'Low', tone: 'neutral', dot: '#98A2B3' },
+  emergency: { label: 'Emergency', tone: 'danger', dot: 'var(--chart-red-deep)' },
+  critical: { label: 'Critical', tone: 'danger', dot: 'var(--chart-red)' },
+  high: { label: 'High', tone: 'warning', dot: 'var(--chart-amber)' },
+  medium: { label: 'Medium', tone: 'info', dot: 'var(--chart-blue)' },
+  low: { label: 'Low', tone: 'neutral', dot: 'var(--chart-slate)' },
 };
 export function PriorityBadge({ p, size }: { p: MaintPriority; size?: 'sm' }) {
   const m = PRIO_META[p];
   return (
     <span className={`u-inline ${size === 'sm' ? 'u-small' : ''}`} style={{ alignItems: 'center', gap: 5 }}>
-      <span style={{ width: 7, height: 7, borderRadius: 9, background: m.dot, boxShadow: p === 'emergency' ? '0 0 0 3px color-mix(in srgb, #C4320A 18%, transparent)' : undefined }} />
+      <span style={{ width: 7, height: 7, borderRadius: 9, background: m.dot, boxShadow: p === 'emergency' ? '0 0 0 3px color-mix(in srgb, var(--chart-red-deep) 18%, transparent)' : undefined }} />
       <span style={{ fontWeight: 600, fontSize: size === 'sm' ? 11 : 12, color: p === 'emergency' || p === 'critical' ? 'var(--danger-text)' : 'var(--text-2)' }}>{m.label}</span>
     </span>
   );
@@ -58,7 +58,7 @@ export function SLAIndicator({ sla, breach, tone, size = 'md' }: { sla: { label:
       style={{
         alignItems: 'center', gap: 5, fontSize: size === 'sm' ? 11 : 12, fontWeight: 560,
         color: sla.tone === 'danger' ? 'var(--danger-text)' : sla.tone === 'warning' ? 'var(--warning-text, var(--text-2))' : 'var(--text-3)',
-        background: sla.tone === 'danger' ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : sla.tone === 'warning' ? 'color-mix(in srgb, #DC6803 8%, transparent)' : 'var(--surface-3)',
+        background: sla.tone === 'danger' ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : sla.tone === 'warning' ? 'color-mix(in srgb, var(--chart-amber) 8%, transparent)' : 'var(--surface-3)',
         padding: '3px 8px', borderRadius: 999, border: `1px solid ${sla.tone === 'danger' ? 'color-mix(in srgb, var(--danger) 22%, transparent)' : 'var(--border)'}`,
         whiteSpace: 'nowrap',
       }}
@@ -72,7 +72,7 @@ export function SLAIndicator({ sla, breach, tone, size = 'md' }: { sla: { label:
 export function HealthRing({ score, size = 40 }: { score: number; size?: number }) {
   const r = size / 2 - 3.5;
   const c = 2 * Math.PI * r;
-  const col = score >= 80 ? 'var(--success, #12805C)' : score >= 60 ? '#175CD3' : score >= 40 ? '#DC6803' : '#D92D20';
+  const col = score >= 80 ? 'var(--success)' : score >= 60 ? 'var(--chart-blue)' : score >= 40 ? 'var(--chart-amber)' : 'var(--chart-red)';
   return (
     <span style={{ position: 'relative', width: size, height: size, display: 'inline-grid', placeItems: 'center', flexShrink: 0 }} role="img" aria-label={`Health ${score} of 100`}>
       <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>

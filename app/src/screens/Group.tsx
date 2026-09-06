@@ -117,7 +117,7 @@ export default function Group() {
               {
                 key: 'name', label: 'Campus', width: 150, render: c => (
                   <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 3, background: c.hue }} />
+                    <span className="campus-dot" style={{ width: 9, height: 9, borderRadius: 3, ['--campus-hue' as string]: c.hue }} />
                     <span style={{ fontWeight: 600 }}>{c.name}</span>
                   </div>
                 ),
@@ -134,7 +134,9 @@ export default function Group() {
                 key: 'attendance', label: 'Attendance', width: 160, render: c => (
                   <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
                     <span className="tnum" style={{ fontWeight: 600, width: 48 }}>{CAMPUS_METRICS[c.id].attendance.toFixed(1)}%</span>
-                    <Sparkline points={trendFor(c)} width={64} height={22} color={c.hue} />
+                    <span style={{ display: 'inline-flex', ['--campus-hue' as string]: c.hue }}>
+                      <Sparkline points={trendFor(c)} width={64} height={22} color="var(--campus-hue-dot, var(--campus-hue))" />
+                    </span>
                   </div>
                 ),
               },

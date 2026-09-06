@@ -37,11 +37,11 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 /* ---------- stage metadata ---------- */
 const STAGES: { id: LeadStage; label: string; color: string; closed?: boolean }[] = [
   { id: 'inquiry', label: 'Inquiry', color: 'var(--info)' },
-  { id: 'contacted', label: 'Contacted', color: '#4A7A8C' },
+  { id: 'contacted', label: 'Contacted', color: 'var(--chart-steel)' },
   { id: 'visit', label: 'Visit', color: 'var(--accent)' },
-  { id: 'interview', label: 'Interview', color: '#0A5A50' },
+  { id: 'interview', label: 'Interview', color: 'var(--accent-text)' },
   { id: 'offer', label: 'Offer', color: 'var(--ai)' },
-  { id: 'accepted', label: 'Accepted', color: '#3C8C64' },
+  { id: 'accepted', label: 'Accepted', color: 'var(--chart-teal)' },
   { id: 'enrolled', label: 'Enrolled', color: 'var(--success)' },
 ];
 const COLLAPSED: { id: LeadStage; label: string }[] = [
@@ -276,11 +276,11 @@ export default function Admissions() {
     const inquiry = filtered.filter(l => l.stage === 'inquiry').length + contacted;
     return [
       { value: inquiry, color: 'var(--info)', label: `Inquiry — ${inquiry}` },
-      { value: contacted, color: '#4A7A8C', label: `Contacted — ${contacted}` },
+      { value: contacted, color: 'var(--chart-steel)', label: `Contacted — ${contacted}` },
       { value: visit, color: 'var(--accent)', label: `Visit — ${visit}` },
-      { value: interview, color: '#0A5A50', label: `Interview — ${interview}` },
+      { value: interview, color: 'var(--accent-text)', label: `Interview — ${interview}` },
       { value: offers, color: 'var(--ai)', label: `Offer — ${offers}` },
-      { value: accepted, color: '#3C8C64', label: `Accepted — ${accepted}` },
+      { value: accepted, color: 'var(--chart-teal)', label: `Accepted — ${accepted}` },
       { value: enrolled, color: 'var(--success)', label: `Enrolled — ${enrolled}` },
     ];
   }, [filtered]);
