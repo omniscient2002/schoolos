@@ -163,7 +163,7 @@ export default function CalendarScreen() {
                   aria-pressed={types.has(t)}
                   className="u-flex u-xs"
                   style={{
-                    gap: 6, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
+                    gap: 6, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', minHeight: 32,
                     border: `1px solid ${types.has(t) ? 'var(--border-strong)' : 'var(--border)'}`,
                     background: types.has(t) ? 'var(--surface)' : 'transparent',
                     color: types.has(t) ? 'var(--text)' : 'var(--text-3)',

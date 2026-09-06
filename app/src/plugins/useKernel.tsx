@@ -142,6 +142,7 @@ export function KernelGate({ plugin, children }: { plugin: string; children: Rea
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', paddingTop: 'var(--s-8)' }}>
       <Empty
+        titleAs="h1"
         icon={<Icon.Database size={22} />}
         title={`${m?.name ?? plugin} is not enabled for your school`}
         sub="This module is a plugin. An owner can switch it on in the Plugin Manager — data is retained when off, and nothing appears in nav, routes or attention while disabled."

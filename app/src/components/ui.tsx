@@ -69,11 +69,12 @@ export function Stat({ label, value, delta, sub, spark, onClick, style }: {
 }
 
 /* ============ Empty / Error / Loading ============ */
-export function Empty({ icon, title, sub, action }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode }) {
+export function Empty({ icon, title, sub, action, titleAs = 'h3' }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode; titleAs?: 'h1' | 'h2' | 'h3' }) {
+  const Tag = titleAs;
   return (
     <div className="empty">
       {icon}
-      <h3>{title}</h3>
+      <Tag>{title}</Tag>
       {sub && <p>{sub}</p>}
       {action}
     </div>
