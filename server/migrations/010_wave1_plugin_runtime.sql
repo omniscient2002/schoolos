@@ -151,7 +151,7 @@ WHERE NOT EXISTS (SELECT 1 FROM app.timetable_periods x WHERE x.tenant_id = t.id
 
 INSERT INTO app.timetable_slots (tenant_id, period_id, day_of_week, subject, teacher_name, room)
 SELECT g.tenant_id, g.period_id, g.day, st.subject, st.teacher,
-       'R-' || (1 + (hashtext(g.tenant_id::text || g.grade || g.section || g.day || g.seq || st.subject) % 12))
+       'R-' || (1 + abs(hashtext(g.tenant_id::text || g.grade || g.section || g.day || g.seq || st.subject)) % 12)
 FROM (
   SELECT t.id AS tenant_id, tp.id AS period_id, tp.seq, d.day, s.grade, s.section
   FROM app.tenants t
