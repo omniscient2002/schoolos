@@ -7,8 +7,9 @@ import { config } from './config.js';
 import { pool, q, withUser } from './db.js';
 import { verifyPassword, ROLES } from './auth.js';
 import { scryptSync, timingSafeEqual, randomBytes } from 'node:crypto';
-import { auditLog, emitEvent } from './audit.js';
+import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
+import { loadPlugins } from './plugins/loader.js';
 
 export async function buildApp(opts = {}) {
   // RTR-001 Track F: trustProxy is opt-in via env. Hardcoding true made req.ip
@@ -170,6 +171,21 @@ export async function buildApp(opts = {}) {
   });
 
   await registerRoutes(app, { withUser, auditLog, emitEvent, ROLES });
+
+  // --- plugin factory (docs/11 §2.2): the ONE registration point ---
+  // Every plugin lives in src/plugins/<id>/ with manifest.js + index.js exporting
+  // register(app, kernel). Adding a plugin = dropping a folder + one migration;
+  // zero core edits. Enable/disable stays registry-driven (app.plugins via the
+  // /plugins endpoints + drain protocol) — the loader only mounts doors.
+  const requireRole = (...roles) => async (req, reply) => {
+    await app.authenticate(req, reply);
+    if (reply.sent) return;
+    if (!roles.includes(req.user?.role)) {
+      return reply.code(403).send({ error: `role ${req.user?.role} not permitted` });
+    }
+    return req.user;
+  };
+  await loadPlugins(app, { withUser, auditLog, emitEvent, requestAudit, q, requireRole });
 
   // --- dataset: the demo domain, server-owned (see src/generated/) ---
   const { dataset } = await import('./dataset.js');

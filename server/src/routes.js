@@ -4,7 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { linkLineage, requestAudit } from './audit.js';
 import { checkEventBudget } from './governance.js';
 import { q } from './db.js';
-import { registerPluginRuntimes } from './plugins/wave1.js';
 
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
