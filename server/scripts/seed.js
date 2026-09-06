@@ -2,6 +2,9 @@
 // Idempotent: wipes the tenant and reinserts. Values match the frontend demo corpus.
 import pg from 'pg';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.js';
 import { hashPassword } from '../src/auth.js';
 
@@ -253,5 +256,12 @@ await client.query(
     [T, hash, at]);
 }
 
-console.log(`Seeded tenant meridian: ${students.length} students, ${users.length} users, ${wos.length} WOs, 5 migration sources.`);
+// ---- plugin catalog (009) — the school plugin catalog is platform data wiped
+// by the TRUNCATE above, so re-apply it. The migration file is the single source
+// of truth and is idempotent by design (conflict guards + NOT EXISTS); the audit
+// entry it writes chains onto the genesis row just inserted.
+const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', '009_school_plugin_catalog.sql'), 'utf8');
+await client.query(catalogSql);
+
+console.log(`Seeded tenant meridian: ${students.length} students, ${users.length} users, ${wos.length} WOs, 5 migration sources, 6 catalog plugins.`);
 await client.end();

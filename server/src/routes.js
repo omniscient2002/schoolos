@@ -496,7 +496,10 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   // ============ plugins (the switchboard) ============
   app.get('/plugins', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const r = await c.query(`SELECT plugin_id, version, class, status, manifest, permissions, settings, entitlement, enabled_at FROM app.plugins ORDER BY plugin_id`);
+      // `enabled` is the resync flag the kernel mirror reads on mount
+      // (app/src/plugins/useKernel.tsx): the 14-state lifecycle (docs/12) has
+      // three enabled-equivalent states — registered/draft/… normalize to false.
+      const r = await c.query(`SELECT plugin_id, version, class, status, (status IN ('enabled','active','degraded')) AS enabled, manifest, permissions, settings, entitlement, enabled_at FROM app.plugins ORDER BY plugin_id`);
       // docs/12 §4: capability contracts are first-class — surface them with the registry
       const contracts = await c.query(`SELECT capability_id, version, kind, contract, enforced FROM app.capability_contracts ORDER BY capability_id`);
       return { plugins: r.rows, contracts: contracts.rows };

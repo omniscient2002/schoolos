@@ -20,9 +20,10 @@ export const config = {
   otp: {
     ttlMs: int(process.env.OTP_TTL_MS, 5 * 60 * 1000),
     maxAttempts: int(process.env.OTP_MAX_ATTEMPTS, 5),
-    // Dev honesty: with no SMS provider wired, the OTP is returned in the API
-    // response (and logged) so the flow is testable. Production sets SMS_PROVIDER.
-    devEcho: process.env.SMS_PROVIDER ? false : true,
+    // Dev echo is OPT-IN and never on in production: without it, OTP login
+    // requires a real SMS provider. Set OTP_DEV_ECHO=1 only in local dev.
+    // (RTR-001 fix: this literal cannot read `config.env` — TDZ — use NODE_ENV.)
+    devEcho: process.env.SMS_PROVIDER ? false : (process.env.NODE_ENV !== 'production' && process.env.OTP_DEV_ECHO === '1'),
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID ?? null,

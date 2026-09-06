@@ -34,45 +34,118 @@ function revive(value: unknown, key: string | null, depth = 0): unknown {
   return out;
 }
 
-/* ---------- load once, at module evaluation (top-level await) ---------- */
-const raw = (await apiDataset()) as AnyRec;
-const data = revive(raw, null) as AnyRec;
+/* Dataset state — populated by ensureDataset() after authentication.
+   Exports are live `let` bindings: screens re-read them at render time,
+   which only happens once AuthGate has both a /me-validated session AND
+   a hydrated dataset. */
+let data: AnyRec = {};
+let hydrated = false;
+let loading: Promise<void> | null = null;
+
+export function datasetReady(): boolean { return hydrated; }
+
+export async function ensureDataset(): Promise<void> {
+  if (hydrated) return;
+  if (loading) return loading;
+  loading = (async () => {
+    // The endpoint requires auth; wait until the session token exists.
+    for (let i = 0; i < 200 && !localStorage.getItem('schoolos_token'); i++) {
+      await new Promise(r => setTimeout(r, 250));
+    }
+    const raw = (await apiDataset()) as AnyRec;
+    data = revive(raw, null) as AnyRec;
+    hydrated = true;
+    campuses = data.campuses as Campus[] as never;
+    TERM_DAYS = data.TERM_DAYS as Date[] as never;
+    students = data.students as Person[] as never;
+    teachers = data.teachers as Person[] as never;
+    staff = data.staff as Person[] as never;
+    guardians = data.guardians as Person[] as never;
+    guardianLinks = data.guardianLinks as Link[] as never;
+    sections = data.sections as Section[] as never;
+    timetable = data.timetable as TimeSlot[] as never;
+    busRoutes = data.busRoutes as BusRoute[] as never;
+    attendance = data.attendance as AttendanceRecord[] as never;
+    feeObligations = data.feeObligations as FeeObligation[] as never;
+    payments = data.payments as Payment[] as never;
+    leads = data.leads as Lead[] as never;
+    documents = data.documents as DocRecord[] as never;
+    incidents = data.incidents as IncidentRecord[] as never;
+    cases = data.cases as SchoolCase[] as never;
+    actionItems = data.actionItems as ActionRecord[] as never;
+    decisions = data.decisions as DecisionRecord[] as never;
+    meetings = data.meetings as MeetingNote[] as never;
+    memoryDocs = data.memoryDocs as MemoryDoc[] as never;
+    policies = data.policies as PolicyRule[] as never;
+    workflows = data.workflows as WorkflowDef[] as never;
+    workflowRuns = data.workflowRuns as WorkflowRun[] as never;
+    obligations = data.obligations as Obligation[] as never;
+    calendarEvents = data.calendarEvents as CalendarEvent[] as never;
+    healthIssues = data.healthIssues as HealthIssue[] as never;
+    notifications = data.notifications as Notification[] as never;
+    auditEntries = data.auditEntries as AuditEntry[] as never;
+    insights = data.insights as Insight[] as never;
+    aiUsage = data.aiUsage as unknown as AiUsageShape as never;
+    models = data.models as ModelRow[] as never;
+    guardianChat = data.guardianChat as ChatMsg[] as never;
+    DEMO_STUDENT = data.DEMO_STUDENT as Person as never;
+    DEMO_GUARDIAN = data.DEMO_GUARDIAN as Person as never;
+    DEMO_SECTION_ID = data.DEMO_SECTION_ID as string as never;
+    assets = data.assets as AssetRecord[] as never;
+    workOrders = data.workOrders as WorkOrderRecord[] as never;
+    technicians = data.technicians as TechnicianRecord[] as never;
+    maintPlans = data.maintPlans as MaintPlan[] as never;
+    inspections = data.inspections as InspectionRecord[] as never;
+    inventory = data.inventory as InventoryItem[] as never;
+    vendors = data.vendors as VendorRecord[] as never;
+    deskSettings = data.deskSettings as FrontDeskSettings as never;
+    deskIntents = data.deskIntents as DeskIntent[] as never;
+    calls = data.calls as ReceptionCall[] as never;
+    visitors = data.visitors as VisitorEntry[] as never;
+    gatePasses = data.gatePasses as GatePass[] as never;
+    SCENARIOS = data.SCENARIOS as Scenario[] as never;
+    SCHOOL = data.SCHOOL as { name: string; short: string; established: number; board: string };
+    FEE_STORY = data.FEE_STORY as { clusterRoute: string; dipPct: number; failedCount: number };
+    for (const [k, v] of Object.entries((data.guardianIdByStudent as unknown as Record<string, string[]>) ?? {})) guardianIdByStudent.set(k, v);
+  })();
+  return loading;
+}
 
 /* ---------- named exports — same names the mock modules had ---------- */
-export const SCHOOL = data.SCHOOL as { name: string; short: string; established: number; board: string };
-export const campuses = data.campuses as Campus[];
-export const TERM_DAYS = data.TERM_DAYS as Date[];
-export const students = data.students as Person[]; // typed
-export const teachers = data.teachers as Person[];
-export const staff = data.staff as Person[];
-export const guardians = data.guardians as Person[];
-export const guardianLinks = data.guardianLinks as Link[];
-export const guardianIdByStudent = new Map<string, string[]>(Object.entries((data.guardianIdByStudent as unknown as Record<string, string[]>) ?? {}));
-export const sections = data.sections as Section[];
-export const timetable = data.timetable as TimeSlot[];
+export let SCHOOL: { name: string; short: string; established: number; board: string } = {} as never;
+export let campuses: Campus[] = [] as never;
+export let TERM_DAYS: Date[] = [] as never;
+export let students: Person[] = [] as never; // typed
+export let teachers: Person[] = [] as never;
+export let staff: Person[] = [] as never;
+export let guardians: Person[] = [] as never;
+export let guardianLinks: Link[] = [] as never;
+export const guardianIdByStudent = new Map<string, string[]>(); // filled by ensureDataset
+export let sections: Section[] = [] as never;
+export let timetable: TimeSlot[] = [] as never;
 
-export const busRoutes = data.busRoutes as BusRoute[];
-export const attendance = data.attendance as AttendanceRecord[];
-export const feeObligations = data.feeObligations as FeeObligation[];
-export const payments = data.payments as Payment[];
-export const FEE_STORY = data.FEE_STORY as { clusterRoute: string; dipPct: number; failedCount: number };
-export const leads = data.leads as Lead[];
-export const documents = data.documents as DocRecord[];
-export const incidents = data.incidents as IncidentRecord[];
-export const cases = data.cases as SchoolCase[];
-export const actionItems = data.actionItems as ActionRecord[];
-export const decisions = data.decisions as DecisionRecord[];
-export const meetings = data.meetings as MeetingNote[];
-export const memoryDocs = data.memoryDocs as MemoryDoc[];
-export const policies = data.policies as PolicyRule[];
-export const workflows = data.workflows as WorkflowDef[];
-export const workflowRuns = data.workflowRuns as WorkflowRun[];
-export const obligations = data.obligations as Obligation[];
-export const calendarEvents = data.calendarEvents as CalendarEvent[];
-export const healthIssues = data.healthIssues as HealthIssue[];
-export const notifications = data.notifications as Notification[];
-export const auditEntries = data.auditEntries as AuditEntry[];
-export const insights = data.insights as Insight[];
+export let busRoutes: BusRoute[] = [] as never;
+export let attendance: AttendanceRecord[] = [] as never;
+export let feeObligations: FeeObligation[] = [] as never;
+export let payments: Payment[] = [] as never;
+export let FEE_STORY: { clusterRoute: string; dipPct: number; failedCount: number } = {} as never;
+export let leads: Lead[] = [] as never;
+export let documents: DocRecord[] = [] as never;
+export let incidents: IncidentRecord[] = [] as never;
+export let cases: SchoolCase[] = [] as never;
+export let actionItems: ActionRecord[] = [] as never;
+export let decisions: DecisionRecord[] = [] as never;
+export let meetings: MeetingNote[] = [] as never;
+export let memoryDocs: MemoryDoc[] = [] as never;
+export let policies: PolicyRule[] = [] as never;
+export let workflows: WorkflowDef[] = [] as never;
+export let workflowRuns: WorkflowRun[] = [] as never;
+export let obligations: Obligation[] = [] as never;
+export let calendarEvents: CalendarEvent[] = [] as never;
+export let healthIssues: HealthIssue[] = [] as never;
+export let notifications: Notification[] = [] as never;
+export let auditEntries: AuditEntry[] = [] as never;
+export let insights: Insight[] = [] as never;
 export interface AiUsageShape {
   days: { label: string; cost: number; requests: number }[];
   byFeature: { label: string; cost: number; requests: number }[];
@@ -81,33 +154,33 @@ export interface AiUsageShape {
   monthSpend: number;
   budget: number;
 }
-export const aiUsage = data.aiUsage as unknown as AiUsageShape;
+export let aiUsage: AiUsageShape = {} as never;
 export interface ModelRow { name: string; provider: string; region: string; usedFor: string; posture: string; cost: string; latency?: string; status?: string; }
-export const models = data.models as ModelRow[];
-export const guardianChat = data.guardianChat as ChatMsg[];
-export const DEMO_STUDENT = data.DEMO_STUDENT as Person;
-export const DEMO_GUARDIAN = data.DEMO_GUARDIAN as Person;
-export const DEMO_SECTION_ID = data.DEMO_SECTION_ID as string;
+export let models: ModelRow[] = [] as never;
+export let guardianChat: ChatMsg[] = [] as never;
+export let DEMO_STUDENT: Person = {} as never;
+export let DEMO_GUARDIAN: Person = {} as never;
+export let DEMO_SECTION_ID: string = {} as never;
 
 /* maintenance collections (former data/dataset) */
 export const SLA_POLICY = data.SLA_POLICY as Record<string, { responseMins: number; resolveMins: number }>;
-export const assets = data.assets as AssetRecord[];
-export const workOrders = data.workOrders as WorkOrderRecord[];
-export const technicians = data.technicians as TechnicianRecord[];
-export const maintPlans = data.maintPlans as MaintPlan[];
-export const inspections = data.inspections as InspectionRecord[];
-export const inventory = data.inventory as InventoryItem[];
-export const vendors = data.vendors as VendorRecord[];
+export let assets: AssetRecord[] = [] as never;
+export let workOrders: WorkOrderRecord[] = [] as never;
+export let technicians: TechnicianRecord[] = [] as never;
+export let maintPlans: MaintPlan[] = [] as never;
+export let inspections: InspectionRecord[] = [] as never;
+export let inventory: InventoryItem[] = [] as never;
+export let vendors: VendorRecord[] = [] as never;
 
 /* reception (former data/dataset) */
-export const deskSettings = data.deskSettings as FrontDeskSettings;
-export const deskIntents = data.deskIntents as DeskIntent[];
-export const calls = data.calls as ReceptionCall[];
-export const visitors = data.visitors as VisitorEntry[];
-export const gatePasses = data.gatePasses as GatePass[];
+export let deskSettings: FrontDeskSettings = {} as never;
+export let deskIntents: DeskIntent[] = [] as never;
+export let calls: ReceptionCall[] = [] as never;
+export let visitors: VisitorEntry[] = [] as never;
+export let gatePasses: GatePass[] = [] as never;
 
 /* scenarios (former data/dataset) */
-export const SCENARIOS = data.SCENARIOS as Scenario[];
+export let SCENARIOS: Scenario[] = [] as never;
 
 /* ---------- helpers over the dataset (ported 1:1 from the former mock) ---------- */
 type Link = GuardianLink & Record<string, unknown>;

@@ -15,7 +15,7 @@ export async function buildApp(opts = {}) {
   // XFF-derived, so rotating a spoofed X-Forwarded-For defeated every limiter.
   const app = Fastify({ logger: opts.logger ?? { level: config.logLevel }, trustProxy: process.env.TRUST_PROXY === 'true' });
 
-  await app.register(cors, { origin: config.corsOrigins, credentials: true });
+  await app.register(cors, { origin: config.corsOrigins, credentials: false }); // auth is header-borne; no cookies yet
   await app.register(jwt, { secret: config.jwtSecret, sign: { expiresIn: config.jwtTtl } });
   await app.register(rateLimit, {
     max: config.rateLimitMax,
@@ -72,18 +72,21 @@ export async function buildApp(opts = {}) {
     const { phone } = req.body ?? {};
     if (!phone || !/^\+?[0-9]{10,14}$/.test(phone)) return reply.code(400).send({ error: 'valid phone required (+countrycode)' });
     const u = await q(`SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active`, [phone]);
-    if (!u.rows[0]) return reply.code(404).send({ error: 'no account for this phone number' });
-    const user = u.rows[0];
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const salt = randomBytes(16).toString('hex');
-    const hash = scryptSync(code, salt, 64).toString('hex');
-    // kernel path: the OTP vault denies the app role entirely (RLS policy) —
-    // only the owner connection may write verification secrets.
-    await q(`INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + interval '5 minutes')`,
-      [user.tenant_id, phone, `${salt}:${hash}`]);
-    req.log.warn({ phone: phone.slice(-4), msg: 'OTP issued' });
+    const user = u.rows[0] ?? null;
+    // Uniform response shape — phone enumeration must not distinguish
+    // registered from unregistered numbers.
     const body = { sent: true, expiresInSeconds: 300, devEcho: config.otp.devEcho };
-    if (config.otp.devEcho) body.devCode = code; // no SMS provider wired — honest dev echo
+    if (user) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const salt = randomBytes(16).toString('hex');
+      const hash = scryptSync(code, salt, 64).toString('hex');
+      // kernel path: the OTP vault denies the app role entirely (RLS policy) —
+      // only the owner connection may write verification secrets.
+      await q(`INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + interval '5 minutes')`,
+        [user.tenant_id, phone, `${salt}:${hash}`]);
+      req.log.warn({ phone: phone.slice(-4), msg: 'OTP issued' });
+      if (config.otp.devEcho) body.devCode = code; // dev-only echo, opt-in via OTP_DEV_ECHO
+    }
     return body;
   });
 
@@ -150,7 +153,8 @@ export async function buildApp(opts = {}) {
   // Dev SSO simulator — ONLY when Google isn't configured and we're not in production.
   // Lets the full SSO UX be exercised end-to-end before real OAuth credentials exist.
   app.post('/auth/google/demo', async (req, reply) => {
-    if (googleConfigured() || config.env === 'production') return reply.code(403).send({ error: 'dev SSO simulator disabled' });
+    const demoSso = process.env.AUTH_DEV_SSO === '1' && config.env !== 'production';
+    if (!demoSso || googleConfigured()) return reply.code(403).send({ error: 'dev SSO simulator disabled' });
     const { email } = req.body ?? {};
     if (!email) return reply.code(400).send({ error: 'email required' });
     const u = await q(`SELECT id, tenant_id, name, role, email FROM app.users WHERE lower(email)=lower($1) AND active`, [email]);
@@ -170,7 +174,7 @@ export async function buildApp(opts = {}) {
   // --- dataset: the demo domain, server-owned (see src/generated/) ---
   const { dataset } = await import('./dataset.js');
   let datasetPayload = null;
-  app.get('/dataset', async () => {
+  app.get('/dataset', { preHandler: app.authenticate }, async () => {
     if (!datasetPayload) datasetPayload = dataset();
     return datasetPayload;
   });

@@ -7,6 +7,7 @@ import { ToastProvider } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
 import { apiMe, setToken } from './services/liveApi';
+import { ensureDataset } from './data/dataset';
 import { useLiveEventBridge } from './components/Maint';
 import { AiDock } from './components/AiDock';
 import { SkeletonCard } from './components/ui';
@@ -181,6 +182,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         const token = localStorage.getItem('schoolos_token');
         if (!token) { setBooting(false); return; }
         const me = await apiMe();
+        await ensureDataset();
         if (!dead) setSession({ name: me.name, role: me.role, email: me.email });
       } catch {
         localStorage.removeItem('schoolos.session');
@@ -200,7 +202,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Login onAuthed={(s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); setSession(s); }} />;
+  if (!session) return <Login onAuthed={(s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); void ensureDataset().then(() => setSession(s)); }} />;
   return (
     <SessionCtx.Provider value={session}>
       {children}
@@ -214,6 +216,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/today" replace />} />
+      <Route path="/login" element={<Navigate to="/today" replace />} />
       <Route path="/today" element={<S><Today /></S>} />
       <Route path="/attention" element={<S><Attention /></S>} />
       <Route path="/ask" element={<S><Ask /></S>} />
@@ -242,10 +245,10 @@ function AppRoutes() {
       <Route path="/maintenance/map" element={<S><MaintMap /></S>} />
       <Route path="/reception" element={<S><Reception /></S>} />
       <Route path="/migration" element={<S><Migration /></S>} />
-      <Route path="/demo" element={<Demo />} />
-      <Route path="/demo/day" element={<DemoDay />} />
-      <Route path="/demo/parent" element={<DemoParent />} />
-      <Route path="/demo/summary" element={<DemoSummary />} />
+      <Route path="/demo" element={<S><Demo /></S>} />
+      <Route path="/demo/day" element={<S><DemoDay /></S>} />
+      <Route path="/demo/parent" element={<S><DemoParent /></S>} />
+      <Route path="/demo/summary" element={<S><DemoSummary /></S>} />
       <Route path="/live" element={<LiveMode />} />
       <Route path="/plugins" element={<S><PluginsScreen /></S>} />
       <Route path="/library" element={<S><KernelGate plugin="library"><Library /></KernelGate></S>} />
