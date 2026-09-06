@@ -78,7 +78,7 @@ export default function StudentHome() {
 
       <div className="u-col" style={{ gap: 16 }}>
         {/* ---------- today ---------- */}
-        <Card head="Today">
+        <Card headAs="h2" head="Today">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
               <div className="u-upper" style={{ marginBottom: 6 }}>Attendance</div>
@@ -134,7 +134,7 @@ export default function StudentHome() {
         {/* ---------- due soon ---------- */}
         <Card
           head="Due soon"
-          actions={<Link to="/student/learning" className="u-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>Open learning <Icon.ArrowRight size={12} /></Link>}
+          actions={<Link to="/student/learning" className="u-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minHeight: 32, padding: '0 4px' }}>Open learning <Icon.ArrowRight size={12} /></Link>}
         >
           <div className="u-col" style={{ gap: 10 }}>
             <DueCard subject="Mathematics" color={SUBJECT_COLOR.Mathematics} title="Equivalent fractions — practice set 3" due="Due Friday" />
@@ -143,7 +143,7 @@ export default function StudentHome() {
         </Card>
 
         {/* ---------- growth ---------- */}
-        <Card head="Your growth">
+        <Card headAs="h2" head="Your growth">
           <div className="u-between" style={{ gap: 12, flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontWeight: 590 }}>Equivalent fractions — getting there.</div>
@@ -156,7 +156,7 @@ export default function StudentHome() {
         </Card>
 
         {/* ---------- school life ---------- */}
-        <Card head="School life">
+        <Card headAs="h2" head="School life">
           <div className="u-col" style={{ gap: 10 }}>
             {nextEvent && (
               <div className="u-flex" style={{ gap: 10, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)' }}>
@@ -178,7 +178,7 @@ export default function StudentHome() {
         </Card>
 
         {/* ---------- help ---------- */}
-        <Card head="Need help?" style={{ marginBottom: 8 }}>
+        <Card headAs="h2" head="Need help?" style={{ marginBottom: 8 }}>
           <div className="u-small u-muted" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <span className="u-flex" style={{ gap: 8 }}>
               <Icon.Heart size={15} style={{ color: 'var(--accent-text)', flexShrink: 0, marginTop: 2 }} />

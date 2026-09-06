@@ -137,7 +137,7 @@ export default function Migration() {
       {/* STEP 1 — CONNECT */}
       {step === 'connect' && (
         <div className="u-col" style={{ gap: 'var(--s-4)' }}>
-          <Card head="Connect your sources" sub="Everything the school runs on today — spreadsheets, Tally, PDFs, WhatsApp logs. Nothing gets re-keyed.">
+          <Card headAs="h2" head="Connect your sources" sub="Everything the school runs on today — spreadsheets, Tally, PDFs, WhatsApp logs. Nothing gets re-keyed.">
             <div className="grid grid-2" style={{ gap: 10 }}>
               {[
                 { icon: 'File', name: 'Excel — Master 2026-27.xlsx', meta: 'students · guardians linked · classes', n: '1,472 rows' },
@@ -170,7 +170,7 @@ export default function Migration() {
               <Button variant="primary" icon={<Icon.Play size={14} />} onClick={runAnalyze}>Analyze your school</Button>
             </div>
           </Card>
-          <Card head="What happens to your files" sub="Plain language, because trust starts here">
+          <Card headAs="h2" head="What happens to your files" sub="Plain language, because trust starts here">
             <KeyValue items={[
               { k: 'Read', v: 'Every row is parsed and source-stamped — the origin of each record is permanent' },
               { k: 'Never', v: 'No original record is overwritten, renamed, or deleted — the old system stays readable for 30 days' },
@@ -182,7 +182,7 @@ export default function Migration() {
 
       {/* STEP 2 — ANALYZE */}
       {step === 'analyze' && (
-        <Card head="Analyzing your school…" sub="Reading every row — this is a dry run, nothing is committed">
+        <Card headAs="h2" head="Analyzing your school…" sub="Reading every row — this is a dry run, nothing is committed">
           <Progress value={progress * 100} />
           <div className="u-col" style={{ gap: 8, marginTop: 14 }}>
             {[
@@ -205,7 +205,7 @@ export default function Migration() {
 
       {/* STEP 3 — MAPPING */}
       {step === 'map' && (
-        <Card head="Field mapping" sub="SchoolOS mapped 94.7% of columns automatically — confirm the rest">
+        <Card headAs="h2" head="Field mapping" sub="SchoolOS mapped 94.7% of columns automatically — confirm the rest">
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
@@ -242,7 +242,7 @@ export default function Migration() {
 
       {/* STEP 4 — DATA HEALTH */}
       {step === 'health' && (
-        <Card head="Data health — found before they became problems" sub="17 duplicate guardians · 4 missing emergency contacts · 3 fee mismatches · 7 expired documents">
+        <Card headAs="h2" head="Data health — found before they became problems" sub="17 duplicate guardians · 4 missing emergency contacts · 3 fee mismatches · 7 expired documents">
           <div className="u-col" style={{ gap: 10 }}>
             {MIG_SOURCES.flatMap(s => s.issues.map((is, k) => {
               const key = `${s.id}-${k}`;
@@ -278,7 +278,7 @@ export default function Migration() {
 
       {/* STEP 5 — SHADOW SCHOOL */}
       {step === 'shadow' && (
-        <Card head="Shadow school" sub="Preview your school before going live — source system vs SchoolOS, side by side">
+        <Card headAs="h2" head="Shadow school" sub="Preview your school before going live — source system vs SchoolOS, side by side">
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
@@ -349,7 +349,7 @@ export default function Migration() {
 
       {/* STEP 7 — CUTOVER */}
       {step === 'cutover' && (
-        <Card head="Activate SchoolOS" sub="One decision, made with full information">
+        <Card headAs="h2" head="Activate SchoolOS" sub="One decision, made with full information">
           <EvidenceChain
             title="What activation changes — in plain language"
             steps={[
@@ -379,7 +379,7 @@ export default function Migration() {
             </div>
           </Card>
           {firstDay && (
-            <Card head="First day — live" sub="Migration didn't end at data import. It became a school.">
+            <Card headAs="h2" head="First day — live" sub="Migration didn't end at data import. It became a school.">
               <EventTimeline items={firstDay} />
               <div className="divider" />
               <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>

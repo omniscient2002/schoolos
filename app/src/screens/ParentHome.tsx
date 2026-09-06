@@ -124,7 +124,7 @@ export default function ParentHome() {
 
       <div className="u-col" style={{ gap: 16 }}>
         {/* ---------- today ---------- */}
-        <Card head={<>Today <span className="u-xs u-faint" style={{ marginLeft: 8 }}>{weekday(new Date())}, {fmtDate(new Date())}</span></>}>
+        <Card headAs="h2" head={<>Today <span className="u-xs u-faint" style={{ marginLeft: 8 }}>{weekday(new Date())}, {fmtDate(new Date())}</span></>}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
             <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
               <div className="u-upper" style={{ marginBottom: 6 }}>Attendance</div>
@@ -183,7 +183,7 @@ export default function ParentHome() {
         </Card>
 
         {/* ---------- learning ---------- */}
-        <Card head="Learning this week">
+        <Card headAs="h2" head="Learning this week">
           <div className="u-col" style={{ gap: 10 }}>
             <DueRow subject="Mathematics" color="var(--accent)" title="Equivalent fractions — practice set 3" due="Due Friday" />
             <DueRow subject="Science" color="var(--info)" title="Photosynthesis lab write-up" due="Due Thursday" />
@@ -198,7 +198,7 @@ export default function ParentHome() {
         </Card>
 
         {/* ---------- fees ---------- */}
-        <Card head="Fees">
+        <Card headAs="h2" head="Fees">
           <div className="u-between" style={{ gap: 14, flexWrap: 'wrap' }}>
             <div>
               <div className="u-upper">Next payment</div>
@@ -217,7 +217,7 @@ export default function ParentHome() {
         {/* ---------- messages ---------- */}
         <Card
           head="Messages from school"
-          actions={<Link to="/parent/chat" className="u-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>Open chat <Icon.ArrowRight size={12} /></Link>}
+          actions={<Link to="/parent/chat" className="u-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minHeight: 32, padding: '0 4px' }}>Open chat <Icon.ArrowRight size={12} /></Link>}
         >
           {schoolMsgs.length === 0
             ? <div className="u-small u-muted">No school messages yet — the office usually writes in the morning.</div>
@@ -259,7 +259,7 @@ export default function ParentHome() {
         </div>
 
         {/* ---------- family links ---------- */}
-        <Card head="Family links">
+        <Card headAs="h2" head="Family links">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
             {family.map(({ link, guardian }) => (
               <div key={link.guardianId} style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
