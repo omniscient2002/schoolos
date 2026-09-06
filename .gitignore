@@ -29,3 +29,4 @@ shots/
 uk*.xml
 
 research/
+.ui-audit/
