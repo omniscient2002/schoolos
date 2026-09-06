@@ -267,9 +267,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
+      {/* errors announce assertively (role=alert has implicit aria-live=assertive);
+          success/info stay polite via the stack-level region (ARIA 4.3) */}
       <div className="toast-stack" aria-live="polite">
         {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.tone}`}>
+          <div key={t.id} className={`toast ${t.tone}`} {...(t.tone === 'error' ? { role: 'alert' as const } : {})}>
             <span style={{ marginTop: 1 }}>
               {t.tone === 'success' ? <Icon.Check size={15} /> : t.tone === 'error' ? <Icon.Alert size={15} /> : <Icon.Info size={15} />}
             </span>
