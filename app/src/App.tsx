@@ -8,6 +8,7 @@ import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
 import { apiMe, setToken } from './services/liveApi';
 import { ensureDataset } from './data/dataset';
+import type { RoleId } from './types/domain';
 import { useLiveEventBridge } from './components/Maint';
 import { AiDock } from './components/AiDock';
 import { SkeletonCard } from './components/ui';
@@ -132,6 +133,10 @@ function SyncBanner() {
 function dispatchFlush() { window.dispatchEvent(new CustomEvent('schoolos:flush-sync')); }
 
 /* ---------- role screen guard ---------- */
+const mapAccountRole = (r: string): RoleId =>
+  (['owner','principal','teacher','coordinator','finance','admissions','transport','parent','student','itadmin','facilities','technician'] as RoleId[]).includes(r as RoleId)
+    ? (r as RoleId) : 'principal';
+
 function Guard({ children }: { children: React.ReactNode }) {
   const { session } = useStore();
   const live = useSession();
@@ -174,6 +179,7 @@ const SessionCtx = createContext<SessionUser | null>(null);
 export function useSession(): SessionUser { const v = useContext(SessionCtx); if (!v) throw new Error('useSession outside AuthGate'); return v; }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
+  const { setRole } = useStore();
   const [session, setSession] = useState<SessionUser | null>(null);
   const [booting, setBooting] = useState(true);
 
@@ -206,7 +212,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setSession(s); }} />;
+  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setRole(mapAccountRole(s.role)); setSession(s); }} />;
   return (
     <SessionCtx.Provider value={session}>
       {children}
