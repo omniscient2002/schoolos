@@ -30,7 +30,7 @@ before(async () => {
   coreBaseline = (await sql(`SELECT count(*)::int n FROM app.students WHERE name='Aarav Mehta'`)).rows[0].n;
 });
 
-describe('admissions.funnel (wave-2 #1 · migrations 018+021 · India-admissions semantics)', () => {
+describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions semantics)', () => {
   let leadId;
 
   test('1 · registered-not-enabled: doors refuse before enable (per-module lifecycle gate)', async () => {
