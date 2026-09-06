@@ -500,6 +500,15 @@ export default function Fees() {
             <Card pad>
               <div className="u-col" style={{ gap: 12 }}>
                 <div className="u-upper">Watchlist</div>
+                {(() => {
+                  const top = byClass.reduce((a, b) => (b.value > a.value ? b : a), byClass[0]);
+                  return top && top.value >= 90 ? (
+                    <div className="collect-moment" role="status">
+                      <Icon.Check size={13} style={{ flexShrink: 0 }} />
+                      <span><strong>{top.label}</strong> crossed {Math.floor(top.value)}% collected — the term is landing.</span>
+                    </div>
+                  ) : null;
+                })()}
                 {belowAvgClasses.length === 0 ? (
                   <Empty icon={<Icon.Check size={20} />} title="No class below 80%" sub="Every grade is collecting above the follow-up threshold." />
                 ) : (

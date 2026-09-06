@@ -492,7 +492,20 @@ export default function Today() {
       bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
     }
 
-    return { bands, stats, headSub, wocSeries, woc, openCount };
+    /* --- day ribbon: the school day as proportional segments (unit 9) --- */
+    const RIBBON_START = 7 * 60, RIBBON_END = 16 * 60;
+    const pctAt = (m: number) => Math.max(0, Math.min(100, ((m - RIBBON_START) / (RIBBON_END - RIBBON_START)) * 100));
+    const ribbonEvents = [
+      ...slotsToday.map(t => ({ start: toMin(t.start), end: toMin(t.end), label: `Period ${t.period}` })),
+      { start: 7 * 60 + 30, end: 7 * 60 + 50, label: 'Assembly' },
+      { start: 12 * 60 + 30, end: 13 * 60 + 15, label: 'Lunch' },
+    ].sort((a, b) => a.start - b.start);
+    const ribbon = ribbonEvents
+      .filter(e => e.end > RIBBON_START && e.start < RIBBON_END)
+      .map(e => ({ ...e, left: pctAt(e.start), width: Math.max(0.8, pctAt(e.end) - pctAt(e.start)), isNow: hm >= e.start && hm < e.end }));
+    const nowPct = pctAt(hm);
+
+    return { bands, stats, headSub, wocSeries, woc, openCount, ribbon, nowPct };
   }, [routesData, domain.actions, domain.cases, role, actorName, campusLabel]);
 
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
@@ -509,6 +522,18 @@ export default function Today() {
         sub={loading ? 'Assembling the briefing from attendance, fees and transport…' : brief?.headSub}
         actions={<Badge tone="ai" dot>Morning Briefing · assembled 07:55</Badge>}
       />
+
+      {/* day ribbon — the temporal anchor (unit 9; deterministic from the timetable) */}
+      {!loading && brief && brief.ribbon.length > 0 && (
+        <div className="day-ribbon" role="img" aria-label={`School day map: ${brief.ribbon.length} blocks between 7:00 and 16:00, now marker at ${Math.round(brief.nowPct)}% of the day`}>
+          <div className="dr-track">
+            {brief.ribbon.map((e, i) => (
+              <span key={i} className={`dr-seg${e.isNow ? ' now' : ''}`} style={{ left: `${e.left}%`, width: `${e.width}%` }} />
+            ))}
+            {brief.nowPct > 0 && brief.nowPct < 100 && <span className="dr-now" style={{ left: `${brief.nowPct}%` }} />}
+          </div>
+        </div>
+      )}
 
       {/* stat row */}
       <div className="grid grid-4" style={{ marginBottom: 8 }}>

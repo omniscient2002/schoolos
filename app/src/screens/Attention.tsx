@@ -240,7 +240,7 @@ function AttentionCard({ sig, onApprove, onDismiss, onAck: _onAck, onOpen }: {
   const kindLabel: Record<Signal['kind'], string> = { approval: 'Approval', incident: 'Incident', case: 'Case', recommendation: 'Recommendation', exception: 'Exception' };
   const prioTone: BadgeTone = sig.priority === 'critical' ? 'danger' : sig.priority === 'high' ? 'warning' : 'neutral';
   return (
-    <Card pad className="card-click" onClick={onOpen}>
+    <Card pad className={`card-click sev-card sev-${sig.priority}`} onClick={onOpen}>
       <div className="u-col" style={{ gap: 8 }}>
         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <Badge tone={prioTone} dot>{sig.priority === 'critical' ? 'Critical' : sig.priority === 'high' ? 'High priority' : sig.priority === 'normal' ? 'Normal' : 'Low'}</Badge>
@@ -466,8 +466,8 @@ export default function Attention() {
           ) : filtered.length === 0 ? (
             <Card pad>
               <Empty
-                icon={<Icon.Check size={22} />}
-                title={items.length === 0 ? 'Attention feed is clear' : 'Nothing matches these filters'}
+                icon={items.length === 0 ? <span className="clear-check"><Icon.Check size={22} /></span> : <Icon.Check size={22} />}
+                title={items.length === 0 ? 'All clear — nothing needs escalation' : 'Nothing matches these filters'}
                 sub={items.length === 0
                   ? 'Every recommendation is decided and every derived signal is acknowledged. New signals appear here as records change.'
                   : 'Adjust the priority or kind filters to see the rest of the feed.'}

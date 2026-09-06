@@ -163,10 +163,19 @@ export default function Ask() {
                 <div style={{ alignSelf: 'flex-end', background: 'var(--surface-3)', padding: '8px 13px', borderRadius: '12px 12px 3px 12px', fontSize: 'var(--text-md)', maxWidth: '80%' }}>
                   {t.q}
                 </div>
-                <div className="u-col" style={{ gap: 12, maxWidth: 760 }}>
+                <div className="u-col ask-answer-reveal" style={{ gap: 12, maxWidth: 760 }}>
                   <div style={{ fontWeight: 580, lineHeight: 1.6 }}>{t.r.answer}</div>
                   <AiResponseView response={t.r} onAction={(label) => approveAction(t, label.replace(/^Draft approved: /, ''))} />
                   <SuggestedActions actions={t.r.suggestedActions ?? []} compact onApprove={label => approveAction(t, label)} />
+                  {(() => {
+                    const srcs = Array.from(new Set(t.r.blocks.flatMap(b => b.type === 'chain' ? b.steps.map(st => st.source) : []))).slice(0, 5);
+                    return srcs.length > 0 && (
+                      <div className="cite-slip">
+                        <span className="cs-k">Sources</span>
+                        {srcs.map((src, i) => <span key={i} className="cs-src">{src}</span>)}
+                      </div>
+                    );
+                  })()}
                   <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
                     <span className="u-xs u-faint" style={{ alignSelf: 'center' }}>Follow up:</span>
                     {FOLLOW_UPS.map(f => (

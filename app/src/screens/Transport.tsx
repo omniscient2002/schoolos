@@ -74,9 +74,12 @@ function routeStatus(r: BusRoute) {
   return { tone: 'success' as const, label: 'On time' };
 }
 
-/* scoped style — route 7 card stands out (Card has no style prop) */
+/* scoped style — route 7 card stands out (Card has no style prop);
+   unit 9: the delayed traffic-light composes over the r7 tint (same
+   warning token; later + higher specificity beats the 1.5px all-side rule) */
 const MAP_STYLE = `
 .route-card-r7 { border-color: var(--warning) !important; border-width: 1.5px !important; }
+.route-card-r7.route-delayed { border-left-width: 3px !important; }
 `;
 
 /* ---------- route card ---------- */
@@ -85,7 +88,7 @@ function RouteCard({ route, onOpenIncident }: { route: BusRoute; onOpenIncident:
   const st = routeStatus(route);
   const usage = Math.round((route.students / route.capacity) * 100);
   return (
-    <Card className={isR7 ? 'route-card-r7' : ''}>
+    <Card className={`route-card${route.status === 'delayed' ? ' route-delayed' : ''}${isR7 ? ' route-card-r7' : ''}`}>
       <div className="u-col" style={{ gap: 10, padding: 'var(--s-5)' }}>
         <div className="u-between" style={{ gap: 8 }}>
           <div style={{ minWidth: 0 }}>
@@ -110,14 +113,23 @@ function RouteCard({ route, onOpenIncident }: { route: BusRoute; onOpenIncident:
 
         <div>
           <div className="u-upper" style={{ marginBottom: 5 }}>Next stops</div>
-          <div className="u-col" style={{ gap: 4 }}>
-            {route.stops.slice(0, 3).map(s => (
-              <div key={s.name} className="u-between u-small" style={{ gap: 8 }}>
-                <span className="u-truncate u-muted">{s.name}</span>
-                <span className="mono" style={{ flexShrink: 0 }}>{s.time}</span>
+          {(() => {
+            const stops = route.stops.slice(0, 4);
+            if (stops.length === 0) return null;
+            const span = Math.max(1, stops.length - 1);
+            return (
+              <div className="route-strip" role="img" aria-label={`Stop sequence: ${stops.map(st => `${st.name} at ${st.time}`).join(', ')}`}>
+                <span className="rs-line" aria-hidden="true" />
+                {stops.map((st, i) => (
+                  <span key={st.name} className="rs-stop" style={{ left: `${(i / span) * 100}%` }}>
+                    <span className="rs-dot" aria-hidden="true" style={route.status === 'delayed' && i === stops.length - 1 ? { borderColor: 'var(--warning)' } : undefined} />
+                    <span className="rs-label">{st.name}</span>
+                    <span className="rs-time mono">{st.time}</span>
+                  </span>
+                ))}
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
 
         {isR7 && (
