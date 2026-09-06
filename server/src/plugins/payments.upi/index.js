@@ -41,6 +41,11 @@ export function register(app, kernel) {
       if (!o) return reply.code(404).send({ error: 'obligation not found' });
       const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
       if (due <= 0n) return reply.code(409).send({ error: 'obligation already settled' });
+      // existing open attempt → 409 with its paymentId (recoverable), never a raw 23505 → 500
+      const open = (await c.query(
+        `SELECT id FROM app.payments WHERE tenant_id=$1 AND obligation_id=$2 AND status IN ('initiated','pending') LIMIT 1`,
+        [req.user.tenant_id, obligationId])).rows[0];
+      if (open) return reply.code(409).send({ error: 'an open payment attempt already exists for this obligation', paymentId: open.id });
       const linkId = `plink_${randomUUID().slice(0, 12)}`;
       const r = await c.query(
         `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status)
