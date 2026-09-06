@@ -3,7 +3,7 @@
    Shown whenever there is no valid session. All three methods run
    against the live API — the server is the only authentication brain.
    ============================================================ */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
@@ -36,6 +36,37 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
   const [devCode, setDevCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* Seg tablist a11y (unit 3): roving tabindex + arrow/Home/End keys.
+     Handling and attributes only — arrows perform the same selection a
+     click performs (setMethod); no submit, no auth logic, no extra state. */
+  const segTabs: { id: Method; label: string }[] = [
+    { id: 'password', label: 'Email' },
+    { id: 'phone', label: 'Phone' },
+    { id: 'google', label: 'Google' },
+  ];
+  const segBtnRefs = useRef<Record<Method, HTMLButtonElement | null>>({ password: null, phone: null, google: null });
+  const segKeyNav = useRef(false);
+  const onSegKeyDown = (e: React.KeyboardEvent) => {
+    const idx = segTabs.findIndex(t => t.id === method);
+    let next: number | null = null;
+    if (e.key === 'ArrowRight') next = (idx + 1) % segTabs.length;
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + segTabs.length) % segTabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = segTabs.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    segKeyNav.current = true;
+    setMethod(segTabs[next].id);
+  };
+  /* Keyboard nav only: the newly mounted panel carries autoFocus inputs —
+     return focus to the (roving) tab so focus follows the selection, per
+     the WAI-ARIA tabs pattern. Mouse clicks keep the autoFocus behavior. */
+  useEffect(() => {
+    if (!segKeyNav.current) return;
+    segKeyNav.current = false;
+    segBtnRefs.current[method]?.focus();
+  }, [method]);
 
   const fail = (m: string) => { setError(m); setBusy(false); };
   const run = async (fn: () => Promise<{ name: string; role: string; email: string }>) => {
@@ -90,9 +121,19 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         </p>
 
         <div className="seg" role="tablist" aria-label="Sign-in method">
-          <button className={method === 'password' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('password')}>Email</button>
-          <button className={method === 'phone' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('phone')}>Phone</button>
-          <button className={method === 'google' ? 'seg-btn active' : 'seg-btn'} onClick={() => setMethod('google')}>Google</button>
+          {segTabs.map(t => (
+            <button
+              key={t.id}
+              ref={el => { segBtnRefs.current[t.id] = el; }}
+              role="tab"
+              id={`seg-tab-${t.id}`}
+              aria-selected={method === t.id}
+              tabIndex={method === t.id ? 0 : -1}
+              className={method === t.id ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setMethod(t.id)}
+              onKeyDown={onSegKeyDown}
+            >{t.label}</button>
+          ))}
         </div>
 
         {error && error !== '__stage__' && (
