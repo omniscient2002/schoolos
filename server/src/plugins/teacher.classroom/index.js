@@ -24,7 +24,6 @@ export { default as manifest } from './manifest.js';
 
 const TEACHER = ['teacher'];
 const STUDENT = ['student'];
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REVIEW_STATUSES = ['reviewed', 'graded', 'resubmit_requested'];
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -60,14 +59,14 @@ export function register(app, kernel) {
   // ── teacher lists OWN homework (privacy pin: created_by = self) ────────────
   app.get('/plugins/teacher.classroom/homework', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const mine = req.query?.mine;
+      // `mine=1` is the explicit contract; the pin is unconditional — created_by = self
       const rows = (await c.query(
         `SELECT h.id, h.class_grade, h.subject, h.title, h.detail, h.attachment_ref, h.due_at, h.status, h.created_at,
            (SELECT count(*)::int FROM teacher.submission s WHERE s.homework_id = h.id) AS submission_count
          FROM teacher.homework h
          WHERE h.created_by = $1
          ORDER BY h.due_at ASC LIMIT 100`, [req.user.id])).rows;
-      return { homework: rows, scope: mine ? 'mine' : 'mine' };
+      return { homework: rows, scope: 'mine' };
     });
   });
 
@@ -159,20 +158,31 @@ export function register(app, kernel) {
     const state = req.query?.state ?? 'pending';
     if (!['pending', 'reviewed', 'late', 'missing'].includes(state))
       return bad(reply, 'Pick a view: pending, reviewed, late or missing');
-    return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      let where; const params = [req.user.id];
-      if (state === 'pending') where = `s.status IN ('submitted','late')`;
-      else if (state === 'reviewed') where = `s.status IN ('reviewed','graded')`;
-      else if (state === 'late') where = `s.status = 'late'`;
-      else where = `s.id IS NULL AND h.status='open' AND h.due_at < now()`; // missing: due passed, no submission
-      const rows = (await c.query(
-        `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
-           s.id AS submission_id, s.student_id, s.status, s.submitted_at, st.name AS student_name
-         FROM teacher.homework h
-         LEFT JOIN teacher.submission s ON s.homework_id = h.id
-         LEFT JOIN app.students st ON st.id = s.student_id
-         WHERE h.created_by = $1 AND ${where}
-         ORDER BY h.due_at ASC, st.name NULLS LAST LIMIT 200`, params)).rows;
+      return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      let rows;
+      if (state === 'missing') {
+        // roster students of the class whose due date passed with no submission on file
+        rows = (await c.query(
+          `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
+             st.id AS student_id, st.name AS student_name
+           FROM teacher.homework h
+           JOIN app.students st ON st.grade = h.class_grade
+           WHERE h.created_by = $1 AND h.status='open' AND h.due_at < now()
+             AND NOT EXISTS (SELECT 1 FROM teacher.submission s WHERE s.homework_id = h.id AND s.student_id = st.id)
+           ORDER BY h.due_at ASC, st.name ASC LIMIT 200`, [req.user.id])).rows;
+      } else {
+        const where = state === 'pending' ? `s.status IN ('submitted','late')`
+          : state === 'reviewed' ? `s.status IN ('reviewed','graded')`
+          : `s.status = 'late'`;
+        rows = (await c.query(
+          `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
+             s.id AS submission_id, s.student_id, s.status, s.submitted_at, st.name AS student_name
+           FROM teacher.homework h
+           JOIN teacher.submission s ON s.homework_id = h.id
+           LEFT JOIN app.students st ON st.id = s.student_id
+           WHERE h.created_by = $1 AND ${where}
+           ORDER BY h.due_at ASC, s.submitted_at DESC LIMIT 200`, [req.user.id])).rows;
+      }
       return { state, submissions: rows };
     });
   });
@@ -220,15 +230,18 @@ export function register(app, kernel) {
          WHERE r.teacher_id=$1 ORDER BY r.created_at DESC LIMIT 50`, [req.user.id])).rows;
       // mirror the kernel decision into the row (idempotent; the action row is the truth)
       for (const r of rows) {
-        if (r.status === 'pending' && r.action_status === 'approved') {
-          await c.query(`UPDATE teacher.leave_request SET status='approved', decided_at=now(), note=COALESCE(note, r.note) WHERE id=$1`, [r.id]);
-          r.status = 'approved';
-        } else if (r.status === 'pending' && r.action_status === 'dismissed') {
-          await c.query(`UPDATE teacher.leave_request SET status='rejected', decided_at=now(), note=COALESCE(note, r.note) WHERE id=$1`, [r.id]);
-          r.status = 'rejected';
-        }
+        if (r.status === 'pending' && r.action_status === 'approved')
+          await c.query(`UPDATE teacher.leave_request SET status='approved', decided_at=now() WHERE id=$1 AND status='pending'`, [r.id]);
+        else if (r.status === 'pending' && r.action_status === 'dismissed')
+          await c.query(`UPDATE teacher.leave_request SET status='rejected', decided_at=now() WHERE id=$1 AND status='pending'`, [r.id]);
       }
-      return { leave: rows.map(({ action_status, decision_note, ...r }) => ({ ...r, decisionNote: decision_note })) };
+      const fresh = (await c.query(
+        `SELECT id, kind, from_date, to_date, reason, status, decided_at, note FROM teacher.leave_request
+         WHERE teacher_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.user.id])).rows;
+      return { leave: fresh.map((r) => ({
+        ...r,
+        decisionNote: rows.find((x) => x.id === r.id)?.decision_note ?? null,
+      })) };
     });
   });
 }

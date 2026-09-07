@@ -139,6 +139,10 @@ export function useNavItems(): NavItem[] {
       ];
     case 'parent':
       return [
+        { to: '/parent/family', label: 'Family', icon: 'Home' },
+        { to: '/parent/consents', label: 'Consents', icon: 'Check' },
+        { to: '/parent/requests', label: 'Requests', icon: 'File' },
+        { to: '/parent/copilot', label: 'AI Assistant', icon: 'Sparkle' },
         { to: '/parent', label: 'Home', icon: 'Home' },
         { to: '/parent/complaints', label: 'My complaints', icon: 'Flag' },
         { to: '/parent/chat', label: 'Messages', icon: 'Message' },

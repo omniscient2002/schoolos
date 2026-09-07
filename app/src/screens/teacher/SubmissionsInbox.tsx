@@ -108,18 +108,40 @@ export default function SubmissionsInbox() {
 
   const markReviewed = async (rows: TeacherSubmission[]) => {
     setBulkSaving(true);
-    try {
-      for (const r of rows) await reviewSubmission(r.id, { status: 'reviewed' });
+    setBulkDone(0);
+    let ok = 0;
+    let failed: TeacherSubmission | null = null;
+    let failErr = '';
+    /* sequential on purpose — one review POST at a time, with live progress,
+       so a mid-run failure leaves the rest untouched and re-runnable */
+    for (let i = 0; i < rows.length; i++) {
+      try {
+        await reviewSubmission(rows[i].id, { status: 'reviewed' });
+        ok++;
+      } catch (e) {
+        failed = rows[i];
+        failErr = friendly(e);
+        break;
+      } finally {
+        setBulkDone(i + 1);
+      }
+    }
+    setBulkSaving(false);
+    if (ok === rows.length) {
       toast({
         title: `${rows.length} submission${rows.length === 1 ? '' : 's'} marked reviewed`,
         sub: 'Students and guardians see the status in their evening digest.',
         tone: 'success',
       });
       setSelected(new Set());
-      subs.retry();
-    } catch (e) {
-      toast({ title: 'Review did not save', sub: String(e).replace('Error: ', ''), tone: 'error' });
-    } finally { setBulkSaving(false); }
+    } else if (failed) {
+      toast({
+        title: `Saved ${ok} of ${rows.length}`,
+        sub: `${failed.student_name}'s review did not save — ${failErr}. Try that one again from its row.`,
+        tone: 'error',
+      });
+    }
+    subs.retry();
   };
 
   const openDrawer = (s: TeacherSubmission) => {

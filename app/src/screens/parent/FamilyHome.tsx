@@ -127,6 +127,16 @@ export default function FamilyHome() {
   const exams = detail?.exams?.upcoming ?? [];
   const attToday = detail?.attendance?.today?.status ?? child.attendance_today ?? null;
 
+  /* family-wide tiered list: each child's attention rows + the home actions,
+     urgent first, then action, then upcoming */
+  const attentionRows = [
+    ...attention.map(a => ({ tier: a.tier, title: a.title, due: a.due, ref: a.ref, childName: a.childName })),
+    ...home.actions.map((a: ParentHomeAction) => ({
+      tier: a.kind === 'payment' || a.kind === 'consent' ? ('action' as const) : ('upcoming' as const),
+      title: a.title, due: a.due, ref: a.ref, childName: undefined,
+    })),
+  ].sort((x, y) => tierRank(x.tier) - tierRank(y.tier));
+
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', display: 'grid', gap: 16 }}>
       {/* ---------- greeting ---------- */}
@@ -239,10 +249,7 @@ export default function FamilyHome() {
           />
         ) : (
           <div className="u-col" style={{ gap: 8 }}>
-            {[...attention.map(a => ({ tier: a.tier, title: a.title, due: a.due, ref: a.ref, childName: a.childName })),
-              ...home.actions.map((a: ParentHomeAction) => ({ tier: a.kind === 'payment' || a.kind === 'consent' ? 'action' : 'upcoming', title: a.title, due: a.due, ref: a.ref, childName: undefined }))]}
-              .sort((x, y) => tierRank(x.tier) - tierRank(y.tier))
-              .map((row, i) => {
+            {attentionRows.map((row, i) => {
                 const to = targetOf(row.ref);
                 const inner = (
                   <>

@@ -77,6 +77,10 @@ const ParentComplaints = F(() => import('./screens/ParentComplaints'));
 const ParentChat = F(() => import('./screens/ParentChat'));
 const ParentFees = F(() => import('./screens/ParentFees'));
 const ParentAsk = F(() => import('./screens/ParentAsk'));
+const FamilyHome = F(() => import('./screens/parent/FamilyHome'));
+const ParentConsents = F(() => import('./screens/parent/Consents'));
+const ParentRequests = F(() => import('./screens/parent/Requests'));
+const ParentCopilot = F(() => import('./screens/parent/Copilot'));
 const StudentHome = F(() => import('./screens/StudentHome'));
 const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
@@ -316,6 +320,10 @@ function AppRoutes() {
       <Route path="/parent/chat" element={<S><ParentChat /></S>} />
       <Route path="/parent/fees" element={<S><ParentFees /></S>} />
       <Route path="/parent/ask" element={<S><ParentAsk /></S>} />
+      <Route path="/parent/family" element={<S><FamilyHome /></S>} />
+      <Route path="/parent/consents" element={<S><ParentConsents /></S>} />
+      <Route path="/parent/requests" element={<S><ParentRequests /></S>} />
+      <Route path="/parent/copilot" element={<S><ParentCopilot /></S>} />
       <Route path="/student" element={<S><StudentHome /></S>} />
       <Route path="/student/home2" element={<S><StudentHome2 /></S>} />
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
