@@ -61,7 +61,7 @@ SELECT t.id, 'parent.assistant', '1.0.0', 'C', 'registered',
   '{"id":"parent.assistant","name":"Parent Assistant","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"The parent assistant: morning/evening/week brief per child (attendance today, homework due in the next 24h when the homework lane is connected, pending consents, exams announced in the last 7 days, open requests, weekly attendance share and published reports), a keyword ask that answers ONLY from the family''s own records with sources, labelled template drafts (question to teacher, leave note) that the parent edits before sending, and plain-language explains built from real numbers. DETERMINISTIC-ONLY: no LLM is contacted anywhere; unknown topics get an honest no and point to the class teacher; every ask/draft call writes a parent.copilot_call budget row (P-copilot, 100 per calendar month). Guardian scoping via family.child_link; cross-guardian access refused; teachers refused on every door. Contracts: parent.brief.v1, parent.copilot.v1.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"deterministic_v0":{"type":"string","default":"v0 is deterministic-only: no LLM calls; answers are composed from the family''s own records, unknowns are said honestly","description":"Scope note for the AI governance slot"}}},"data":{"schema":"parent.copilot_call, parent.brief_log (all RLS-scoped); reads family.child_link, family.request, family.consent, app.attendance, app.fee_obligations, teacher.homework (probed), plugin_exams.* (probed)","core_refs":["students.id","users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"family"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='parent.assistant');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='parent.assistant' AND p.tenant_id = t.id);
 
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
 SELECT t.id, v.cap, 'parent.assistant', '1.0.0',
@@ -71,7 +71,7 @@ CROSS JOIN (VALUES
   ('parent.brief.v1','deterministic per-child brief (morning/evening/week) from own-child records'),
   ('parent.copilot.v1','keyword ask + labelled template drafts over own-child data; P-copilot budget 100/calendar month; honest unknowns')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='parent.assistant' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='parent.assistant' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- guarded ledger entry (024/029/032/033/034 precedent — chain-selection must match audit_append's verifier)
 WITH cands AS (

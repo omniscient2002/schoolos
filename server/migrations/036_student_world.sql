@@ -134,7 +134,7 @@ SELECT t.id, 'student.world', '1.0.0', 'C', 'registered',
   '{"id":"student.world","name":"Student World","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"The student world on school computers/kiosks (no personal phones): own home view (next class from the timetable grid + current IST period, today counts, upcoming test, needs-attention, progress directions, bag-for-tomorrow), homework split digital/paper (paper = complete in notebook, teacher marks receipt — no submission flow), own published results with plain-language explains, and the self-study plane: mistake notes, flashcards, study tasks, and school-controlled print jobs (student queues, office/teacher prints) plus a print-ready weekly noticeboard. Wellbeing requests route to the counselor/principal plane; anonymous filings store no student identity. Session isolation on shared machines: user-owned rows are RLS-pinned to schoolos.user_id, every /student/* response is no-store, and GET /student/session drives the kiosk idle-countdown. Contracts: student.home.v1, student.print.v1, student.wellbeing.v1.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"student.home.v1","schema":"v1"},{"type":"student.print.v1","schema":"v1"},{"type":"student.wellbeing.v1","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"student_idle_timeout_minutes":{"type":"integer","minimum":1,"maximum":120,"default":10}}},"data":{"schema":"student.mistake_note, student.flashcard, student.study_task, student.print_job, student.wellbeing_request","core_refs":["students.id","users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"student"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='student.world');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='student.world' AND p.tenant_id = t.id);
 
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
 SELECT t.id, v.cap, 'student.world', '1.0.0',
@@ -145,7 +145,7 @@ CROSS JOIN (VALUES
   ('student.print.v1','school-controlled print queue — student queues, staff discharge'),
   ('student.wellbeing.v1','counselor/principal wellbeing plane; anonymous = no identity stored')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='student.world' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='student.world' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- guarded ledger entry (024/029/032/034 precedent — chain-selection must match audit_append's verifier)
 WITH cands AS (

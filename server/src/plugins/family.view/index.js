@@ -46,7 +46,12 @@ export function register(app, kernel) {
   };
 
   const tableExists = async (c, name) =>
-    !!(await c.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1`, [name])).rows.length;
+    // schema-qualified names ('teacher.homework'); unqualified defaults to public
+    !!(await c.query(
+      `SELECT 1 FROM information_schema.tables
+       WHERE table_name = split_part($1, '.', 2)
+         AND table_schema = CASE WHEN position('.' in $1) > 0 THEN split_part($1, '.', 1) ELSE 'public' END`,
+      [name])).rows.length;
 
   // ── home aggregation ────────────────────────────────────────────────────────
   app.get('/parent/home', { preHandler: [require(...GUARDIAN), lifecycleGate] }, async (req) => {

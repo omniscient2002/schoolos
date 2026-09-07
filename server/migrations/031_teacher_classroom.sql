@@ -105,7 +105,7 @@ SELECT t.id, 'teacher.classroom', '1.0.0', 'C', 'registered',
   '{"id":"teacher.classroom","name":"Classroom & Homework","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"The teacher classroom lane: post homework per class and subject with due dates, one-shot student submissions (text or link) with automatic late detection (submitted_at > due_at → late), the assigning-teacher-only review desk (reviewed / graded / resubmit_requested with grade and feedback), and the pending/reviewed/late/missing inbox. Teacher staff leave rides per-instance kernel actions (teacher.leave.<requestId>, coordinator decides on the kernel door). Privacy pins: students can ONLY submit and always as themselves (UNIQUE(homework_id,student_id) — a second submit is refused, resubmission is requested by the teacher, not allowed through this door); teachers see ONLY the homework they assigned and their own inbox; review belongs to the assigning teacher alone. Contracts: homework.v1, submission.v1, staff.leave.requested.v1.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"homework.v1","schema":"v1"},{"type":"submission.v1","schema":"v1"},{"type":"staff.leave.requested.v1","schema":"v1"}]},"eventSubscriptions":[],"slots":[],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{}},"data":{"schema":"teacher.homework, teacher.submission, teacher.leave_request","core_refs":["students.id","users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"teacher"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='teacher.classroom');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='teacher.classroom' AND p.tenant_id = t.id);
 
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
 SELECT t.id, v.cap, 'teacher.classroom', '1.0.0',
@@ -116,7 +116,7 @@ CROSS JOIN (VALUES
   ('submission.v1',           'student one-shot submission with late detection; review outcome recorded by the assigning teacher'),
   ('staff.leave.requested.v1','teacher self leave raised as per-instance kernel action teacher.leave.<requestId>; coordinator decides')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='teacher.classroom' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='teacher.classroom' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- guarded ledger entry (024/029/032/034 precedent — chain-selection must match audit_append's verifier)
 WITH cands AS (

@@ -245,7 +245,7 @@ export function register(app, kernel) {
     if (!(await tableExists(c, 'teacher', 'concern'))) return [];
     return (await c.query(
       `SELECT cc.id, cc.category, cc.urgency, cc.status, cc.routed_role, cc.routed_to, cc.student_id,
-              (SELECT max(e.at) FROM teacher.concern_status_event e
+              (SELECT max(e.created_at) FROM teacher.concern_status_event e
                 WHERE e.concern_id = cc.id AND e.to_status='routed') AS routed_at,
               s.name AS student_name
        FROM teacher.concern cc
@@ -440,10 +440,10 @@ export function register(app, kernel) {
       if (await tableExists(c, 'teacher', 'concern')) {
         concerns = (await c.query(
           `SELECT cc.id, cc.category, cc.urgency, cc.status, cc.routed_role, cc.routed_to, cc.created_at,
-                  (SELECT max(e.at) FROM teacher.concern_status_event e
+                  (SELECT max(e.created_at) FROM teacher.concern_status_event e
                     WHERE e.concern_id = cc.id AND e.to_status='routed') AS routed_at,
                   s.name AS student_name,
-                  (SELECT json_agg(json_build_object('to', ev.to_status, 'note', ev.note, 'at', ev.at) ORDER BY ev.at, ev.id)
+                  (SELECT json_agg(json_build_object('to', ev.to_status, 'note', ev.note, 'at', ev.created_at) ORDER BY ev.created_at, ev.id)
                    FROM teacher.concern_status_event ev WHERE ev.concern_id = cc.id) AS timeline
            FROM teacher.concern cc
            LEFT JOIN app.students s ON s.id = cc.student_id
@@ -509,7 +509,7 @@ export function register(app, kernel) {
         sources: [],
       };
       const delays = m.monitor.filter((r) => r.weeks_behind > 0)
-        .sort((a, z) => z.weeks_behind - a.week_behind || a.subject.localeCompare(z.subject)).slice(0, 3);
+        .sort((a, z) => z.weeks_behind - a.weeks_behind || a.subject.localeCompare(z.subject)).slice(0, 3);
       const answer = delays.length === 0
         ? `All tracked class×subject pairs are at or ahead of the term pace (${m.pace.expectedPct}% of the term elapsed).`
         : `Term pace: ${m.pace.expectedPct}% of the term elapsed. ${delays.map((d) => `${d.subject} class ${d.class_grade} is ${d.weeks_behind} week${d.weeks_behind === 1 ? '' : 's'} behind (${d.covered_pct}% covered)`).join('; ')}.`;

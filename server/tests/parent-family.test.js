@@ -105,25 +105,21 @@ test('report-discrepancy creates a profile_correction request (parents never edi
 
 test('graceful degradation: doors work when TeacherOS tables are absent', async () => {
   const p = await login('parent@meridian.edu');
-  // simulate the absent-table environment: create the shape if absent, probe, drop, probe again
+  // deterministic both-ways pin (031 creates these tables in fresh test DBs):
+  // force tables ABSENT → null sections; restore shapes → real arrays.
   const { pool } = await import('../src/db.js');
-  const hw = await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='teacher' AND table_name='homework'`);
-  const created = !hw.rows.length; // in TeacherOS-complete envs the table exists — probe only
-  if (created) {
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS teacher`);
-    await pool.query(`CREATE TABLE teacher.homework (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, class_grade text, subject text, title text, detail text, due_at timestamptz, created_by uuid, status text DEFAULT 'open')`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS teacher.submission (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, homework_id uuid, student_id uuid, status text, grade text, submitted_at timestamptz DEFAULT now())`);
-  }
+  await pool.query(`DROP TABLE IF EXISTS teacher.submission CASCADE`);
+  await pool.query(`DROP TABLE IF EXISTS teacher.homework CASCADE`);
   try {
-    const r = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
-    assert.equal(r.statusCode, 200, r.body);
-    if (created) for (const ch of r.json().children) assert.ok(Array.isArray(ch.assignments), 'assignments array when tables exist');
+    const r0 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+    assert.equal(r0.statusCode, 200, r0.body);
+    for (const ch of r0.json().children) assert.equal(ch.assignments, null, 'assignments section degrades to null');
   } finally {
-    if (created) { await pool.query(`DROP TABLE IF EXISTS teacher.submission`); await pool.query(`DROP TABLE IF EXISTS teacher.homework`); }
+    // restore the real 031 shapes so later tests (and reruns) see a TeacherOS-complete env
+    await pool.query(`CREATE TABLE IF NOT EXISTS teacher.homework (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, class_grade text, subject text, title text, detail text, attachment_ref text, due_at timestamptz, created_by uuid, status text DEFAULT 'open', created_at timestamptz DEFAULT now())`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS teacher.submission (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, homework_id uuid, student_id uuid, content_type text DEFAULT 'text', content text, status text DEFAULT 'submitted', grade text, feedback text, submitted_at timestamptz DEFAULT now(), reviewed_by uuid, reviewed_at timestamptz)`);
   }
-  if (created) {
-    const r2 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
-    assert.equal(r2.statusCode, 200, r2.body);
-    for (const ch of r2.json().children) assert.equal(ch.assignments, null, 'assignments section degrades to null');
-  }
+  const r1 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  assert.equal(r1.statusCode, 200, r1.body);
+  for (const ch of r1.json().children) assert.ok(Array.isArray(ch.assignments), 'assignments is an array when tables exist');
 });

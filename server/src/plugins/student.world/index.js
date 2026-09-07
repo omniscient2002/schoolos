@@ -54,11 +54,15 @@ export function register(app, kernel) {
   // Registered BEFORE this module's routes mount, so it scopes exactly the /student/*
   // doors (Fastify snapshots hooks at route registration; /auth/logout was registered
   // earlier and is a shared file — one-line suggestion documented in the handoff).
+  // Clear-Site-Data rides every /student/* response (the sanctioned fallback): the
+  // shared-machine browser clears cache + storage between student sessions, so nothing
+  // leaks to the next student on the kiosk.
   app.addHook('onSend', async (req, reply, payload) => {
     const url = req.raw?.url ?? '';
     if (url === '/student' || url.startsWith('/student/') || url.startsWith('/student?')) {
       reply.header('Cache-Control', 'no-store');
       reply.header('Pragma', 'no-cache');
+      reply.header('Clear-Site-Data', '"cache", "storage"');
     }
     return payload;
   });
@@ -71,9 +75,9 @@ export function register(app, kernel) {
       const c = await pool.connect();
       try {
         await c.query('BEGIN');
-        await c.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [tenantId]);
-        await c.query(`SELECT set_config('schoolos.user_id', $2, true)`, [userId]);
-        await c.query(`SELECT set_config('schoolos.role', $1, true)`, ['student']);
+        await c.query(`SELECT set_config('schoolos.tenant_id', $1::text, true)`, [String(tenantId)]);
+        await c.query(`SELECT set_config('schoolos.user_id', $1::text, true)`, [String(userId)]);
+        await c.query(`SELECT set_config('schoolos.role', 'student', true)`);
         await c.query('SET LOCAL ROLE schoolos_app');
         const out = await fn(c);
         await c.query('COMMIT');

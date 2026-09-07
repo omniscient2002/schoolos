@@ -14,6 +14,9 @@ export const config = {
   databaseUrl: req('DATABASE_URL', 'postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/schoolos'),
   jwtSecret: req('JWT_SECRET', 'dev-only-secret-change-me'),
   jwtTtl: req('JWT_TTL', '12h'),
+  // Shared-computer safety (StudentOS §62/§63/§78): student sessions are
+  // intentionally short — a lab kiosk left logged in must self-expire.
+  studentSessionTtl: req('STUDENT_SESSION_TTL', '30m'),
   logLevel: req('LOG_LEVEL', 'info'),
   corsOrigins: (process.env.CORS_ORIGINS ?? '*').split(','),
   // Full authentication (008): phone OTP + Google SSO.

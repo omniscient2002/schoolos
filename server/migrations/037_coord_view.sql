@@ -52,7 +52,7 @@ SELECT t.id, 'coord.view', '1.0.0', 'C', 'registered',
   '{"id":"coord.view","name":"Coordinator Command Center","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"The coordinator execution plane: staffing today (absences, periods affected), substitution gaps on the timetable grid, open kernel approvals owned by the coordinator role (decide door with proposer≠decider SoD), curriculum pace vs term expectation (covered_pct from curriculum.progress; expected_pct from IST term calendar; weeks_behind; revision_needed), teacher workload aggregates with a fairness overload flag (never a score or rank), duty allocation by least-loaded deterministic pick, escalations (family requests, routed concerns, re-evaluations) with append-only timelines, and the deterministic v0 coordinator copilot (keyword intents, honest empty answers, 200/month budget rows). Privacy pins: workload doors return aggregates only — no student data; escalations carry student identity only where the coordinator is the routed authority; the teacher role is refused on every door. Contracts: coord.home.v1, coord.decision.v1.","permissions":["users.read","students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"coord.home.v1","schema":"v1"},{"type":"coord.decision.v1","schema":"v1"},{"type":"sub.assign.v1","schema":"v1"},{"type":"duty.assigned.v1","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"copilot_monthly_cap":{"type":"integer","default":200,"description":"Monthly coordinator copilot ask budget (A2 budget class coordinator_tier)"}}},"data":{"schema":"coord.copilot_call (plugin-owned, RLS-scoped); reads: app.timetable_*, plugin_hr.leave, teacher.leave_request, app.actions, family.request(+events), teacher.concern(+status events), curriculum.node/progress, duty.assignment","core_refs":["users.id","students.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"coordination"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["users.read","students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='coord.view');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='coord.view' AND p.tenant_id = t.id);
 
 -- ── 4. Capability contracts (034 shape: guard per tenant row, idempotent) ───────
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
@@ -63,7 +63,7 @@ CROSS JOIN (VALUES
   ('coord.home.v1',    'daily coordinator read plane (staffing, gaps, approvals, delays, issues)'),
   ('coord.decision.v1','kernel-approval decisions on coordinator-owned actions (SoD: proposer≠decider)')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='coord.view' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='coord.view' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- ── 5. Guarded ledger entry (034 shape verbatim; record_ref coordinator-view@1) ─
 WITH cands AS (

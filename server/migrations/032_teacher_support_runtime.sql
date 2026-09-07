@@ -285,7 +285,7 @@ SELECT t.id, 'teacher.support', '1.0.0', 'C', 'registered',
   '{"id":"teacher.support","name":"Teacher Support & Safeguarding","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"One-tap concerns with append-only status events and coordinator routing (counselor/principal designees), the anonymous student safety box (reporter identity never stored for anonymous reports; serious severity raises the per-instance kernel page safety.page.<boxId> to the principal; designated-authority reads only — never teachers; weekly pattern summary counts classes/categories, never people), deterministic doubt routing over timetable data (no AI) with FAQ promotion, intervention plans with an append-only lifecycle, and PTM slots/bookings with strictly teacher-private notes (RLS-pinned to schoolos.user_id). Comms templates: concern.routed.v1, ptm.invite.v1.","permissions":["students.read","users.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"concern.filed","schema":"v1"},{"type":"concern.routed","schema":"v1"},{"type":"concern.closed","schema":"v1"},{"type":"safety.report.filed","schema":"v1"},{"type":"safety.page.raised","schema":"v1"},{"type":"doubt.routed","schema":"v1"},{"type":"doubt.answered","schema":"v1"},{"type":"doubt.faq.promoted","schema":"v1"},{"type":"intervention.status.changed","schema":"v1"},{"type":"ptm.slot.published","schema":"v1"},{"type":"ptm.booked","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"escalate_on_critical":{"type":"boolean","default":true,"description":"Raise the per-instance concern.escalate.<id> kernel action when a concern is critical or safety-category"},"page_on_serious":{"type":"boolean","default":true,"description":"Raise the per-instance safety.page.<boxId> kernel page to the principal when a safety report is serious"}}},"data":{"schema":"teacher.concern(+status_events), safety.box, support.doubt, support.faq, intervention.plan(+events), ptm.slot, ptm.booking, teacher.note (RLS-scoped; notes teacher-only)","core_refs":["students.id","users.id"],"retention":{"on_uninstall":"export_then_purge_30d","note":"safety box follows safeguarding retention norms; export-then-purge on uninstall"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"operations"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["students.read","users.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='teacher.support');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='teacher.support' AND p.tenant_id = t.id);
 
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
 SELECT t.id, v.cap, 'teacher.support', '1.0.0',
@@ -303,7 +303,7 @@ CROSS JOIN (VALUES
   ('ptm.booked.v1',                 'guardian books own child; comms template ptm.invite.v1 (transactional receipt)'),
   ('teacher.note.private.v1',       'PTM notes RLS-pinned to schoolos.user_id — strictly teacher-only')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='teacher.support' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='teacher.support' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- ── §3 · guarded ledger entry (024/029 precedent) ───────────────────────────────
 WITH cands AS (

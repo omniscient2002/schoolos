@@ -107,7 +107,7 @@ SELECT t.id, 'family.view', '1.0.0', 'C', 'registered',
   '{"id":"family.view","name":"Family Command Center","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"The parent read-plane: per-child home aggregation (attendance, assignments, exams, timeline), the unified request center with append-only ticket statuses, immutable event consents (a decision can never be altered — a new decision is a new row), child leave requests via per-instance kernel actions, and the report-discrepancy flow (parents never edit school records). Guardian scoping via family.child_link; cross-guardian access is refused; teachers are refused on every door. Contracts: family.request.v1, family.consent.v1, child.leave.requested.v1.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"family.request.v1","schema":"v1"},{"type":"family.consent.v1","schema":"v1"},{"type":"child.leave.requested.v1","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{}},"data":{"schema":"family.child_link, family.request(+events), family.consent","core_refs":["students.id","users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"family"},"dependencies":[],"defaultEnabled":false}'::jsonb,
   '["students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
-WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='family.view');
+WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='family.view' AND p.tenant_id = t.id);
 
 INSERT INTO app.capability_contracts (tenant_id, capability_id, plugin_id, version, contract)
 SELECT t.id, v.cap, 'family.view', '1.0.0',
@@ -118,7 +118,7 @@ CROSS JOIN (VALUES
   ('family.consent.v1','immutable consent decisions'),
   ('child.leave.requested.v1','guardian-filed child leave')
 ) AS v(cap, note)
-WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='family.view' AND c.capability_id=v.cap);
+WHERE NOT EXISTS (SELECT 1 FROM app.capability_contracts c WHERE c.plugin_id='family.view' AND c.capability_id=v.cap AND c.tenant_id = t.id);
 
 -- guarded ledger entry (024/029/032 precedent — chain-selection must match audit_append's verifier)
 WITH cands AS (

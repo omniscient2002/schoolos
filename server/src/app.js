@@ -54,17 +54,19 @@ export async function buildApp(opts = {}) {
     if (!user || !verifyPassword(password, user.password_hash)) {
       return reply.code(401).send({ error: 'invalid credentials' });
     }
-    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name });
+    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name },
+      user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>
-      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: 'Signed in', recordType: 'Auth', recordRef: user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: 'JWT issued' }));
+      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: 'Signed in', recordType: 'Auth', recordRef: user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `JWT issued${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
     return { token, user: { id: user.id, name: user.name, role: user.role, email: user.email, tenantId: user.tenant_id } };
   });
 
   // ---- full authentication (008): phone OTP · Google SSO · logout ----
   const issueSession = async (user, via) => {
-    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name });
+    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name },
+      user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>
-      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: `Signed in (${via})`, recordType: 'Auth', recordRef: via === 'phone' ? user.phone : user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: 'JWT issued' }));
+      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: `Signed in (${via})`, recordType: 'Auth', recordRef: via === 'phone' ? user.phone : user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `JWT issued${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
     return { token, user: { id: user.id, name: user.name, role: user.role, email: user.email, tenantId: user.tenant_id } };
   };
 
@@ -164,9 +166,17 @@ export async function buildApp(opts = {}) {
   });
 
   // --- logout (audited) ---
-  app.post('/auth/logout', { preHandler: app.authenticate }, async (req) => {
+  // Shared-computer guarantee (StudentOS §78/§79): ending a session wipes the
+  // browser's cached content and storage — the next student on this machine can
+  // never reopen the previous student's data. Personal-data planes are no-store.
+  app.addHook('onSend', async (req, reply) => {
+    const path = (req.raw?.url || '').split('?')[0];
+    if (/^\/(auth|me|parent|student)(\/|$)/.test(path)) reply.header('cache-control', 'no-store');
+  });
+  app.post('/auth/logout', { preHandler: app.authenticate }, async (req, reply) => {
+    reply.header('Clear-Site-Data', '"cache", "storage"');
     await withUser(req.user.tenant_id, req.user.role, (c) =>
-      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: 'session ended client-side · token expires naturally' }));
+      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access) · StudentOS §78 shared computers', outcome: 'session ended · browser storage wipe requested (Clear-Site-Data)' }));
     return { ok: true };
   });
 
