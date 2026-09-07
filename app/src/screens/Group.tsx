@@ -59,7 +59,7 @@ export default function Group() {
         <Empty
           icon={<Icon.Lock size={26} />}
           title="The group console is restricted"
-          sub="Cross-campus data is available to Owner, Principal and Finance roles only. Switch the demo role from the avatar menu to explore it."
+          sub="Cross-campus data is only for Owner, Principal and Finance. Switch the demo role (top right) to explore it."
         />
       </>
     );

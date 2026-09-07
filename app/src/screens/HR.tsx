@@ -370,7 +370,7 @@ export default function HR() {
               ))}
               {!canDecide && (
                 <div className="u-small u-muted">
-                  Assignments are made by the Academic Coordinator or Principal. Switch role from the avatar menu to decide.
+                  Assignments are made by the Academic Coordinator or Principal. Sign in as them (or switch the demo role, top right) to decide.
                 </div>
               )}
               <Timeline

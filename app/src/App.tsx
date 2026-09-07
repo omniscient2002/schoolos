@@ -155,7 +155,8 @@ function Guard({ children }: { children: React.ReactNode }) {
         <div className="empty" style={{ padding: '80px 0' }}>
           <Icon.Lock size={28} />
           <h3>Not available on this account</h3>
-          <p>Parent and Student views are deliberately calm surfaces. Switch to a staff demo role from the avatar menu (top right) to see the full operating console.</p>
+          <p>This page is for school staff. Parents and students see their own pages only.</p>
+          <p style={{ marginTop: 8 }}>Want to explore everything? Sign out and sign in again as <strong>principal@meridian.edu</strong> — or use the role switcher in the menu (top right).</p>
         </div>
       </PageShell>
     );

@@ -377,7 +377,7 @@ export default function TechnicianWorkspace() {
       {/* supervisor note when a non-technician opens the workspace */}
       {!isTech && mine.length === 0 && tab === 'mine' && shown.length === 0 && (
         <p className="u-small u-muted" style={{ marginTop: 10 }}>
-          Technician identity in this demo is {techName} ({m.technicianByName(techName)?.skills.join(' · ') ?? 'AV & Electrical'}) — switch to the technician role from the avatar menu to see the mobile experience.
+          Technician identity in this demo is {techName} ({m.technicianByName(techName)?.skills.join(' · ') ?? 'AV & Electrical'}) — switch the demo role to technician (top right) to see their mobile view.
         </p>
       )}
     </div>
