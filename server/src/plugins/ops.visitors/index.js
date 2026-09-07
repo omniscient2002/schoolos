@@ -71,6 +71,37 @@ export function register(app, kernel) {
   });
 
   // ── check in (expected → checked_in; badge physically issued) ────────────────
+  // ── guardian lookup (front-desk pickup roster) ─────────────────────────────
+  // UI lane #2 data-flow contract: the pickup roster is NOT dataset-derived. The desk
+  // resolves student → primary guardian through this door (app.guardians is the single
+  // source of truth; dataset student ids are fixture keys, not app.students UUIDs).
+  // Resolve by uuid id, admission_no (MER-…), or name tail match; phone tail is NOT
+  // echoed — masked to the desk tier (full numbers only ride the OTP vault path).
+  app.get(`/plugins/${ID}/guardian-lookup`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+    const { studentId, admissionNo, q: nameQuery } = req.query ?? {};
+    if (!studentId && !admissionNo && !nameQuery) return bad(reply, 'studentId, admissionNo or q is required');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const clauses = []; const params = [req.user.tenant_id];
+      if (studentId) { params.push(String(studentId)); clauses.push(`s.id=$${params.length}`); }
+      if (admissionNo) { params.push(String(admissionNo)); clauses.push(`s.admission_no=$${params.length}`); }
+      if (nameQuery) { params.push(`%${String(nameQuery)}%`); clauses.push(`s.name ILIKE $${params.length}`); }
+      const rows = (await c.query(
+        `SELECT s.id, s.admission_no, s.name, s.grade, s.section,
+                g.name AS guardian_name, g.relation, g.phone,
+                right(regexp_replace(g.phone, '\\D', '', 'g'), 4) AS phone_tail
+         FROM app.students s
+         LEFT JOIN app.guardians g ON g.student_id = s.id AND g.is_primary
+         WHERE s.tenant_id=$1 AND ${clauses.join(' OR ')}
+         ORDER BY s.name LIMIT 10`, params)).rows;
+      return { matches: rows.map((r) => ({
+        studentId: r.id, admissionNo: r.admission_no, studentName: r.name, class: `${r.grade}-${r.section}`,
+        guardian: r.guardian_name ? {
+          name: r.guardian_name, relation: r.relation,
+          phoneOnFile: !!r.phone, phoneTail: r.phone_tail ?? null,
+        } : null })) };
+    });
+  });
+
   app.post(`/plugins/${ID}/visitors/:id/checkin`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, purpose FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
@@ -135,15 +166,15 @@ export function register(app, kernel) {
       if (v.status !== 'pickup_pending' || !v.otp_request_id) return bad(reply, `no active pickup OTP (status '${v.status}')`, 409);
       const s = (await settings(req.user.tenant_id)).rows[0]?.settings ?? {};
       const otp = (await q(`SELECT id, phone, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE id=$1`, [v.otp_request_id])).rows[0];
-      if (!otp || otp.consumed_at) return bad(reply, 'no active code — request a new one', 401);
-      if (new Date(otp.expires_at) < new Date()) return bad(reply, 'code expired — request a new one', 401);
+      if (!otp || otp.consumed_at) return bad(reply, 'no active code — request a new one', 409); // UI lane #1: OTP-state ≠ auth
+      if (new Date(otp.expires_at) < new Date()) return bad(reply, 'code expired — request a new one', 409); // UI lane #1
       if (otp.attempts >= config.otp.maxAttempts) return bad(reply, 'too many attempts — request a new code', 429);
       const [salt, hash] = otp.code_hash.split(':');
       const ok = (() => { try { return timingSafeEqual(scryptSync(String(code), salt, 64), Buffer.from(hash, 'hex')); } catch { return false; } })();
       if (!ok) {
         await q(`UPDATE app.auth_otps SET attempts = attempts + 1 WHERE id=$1`, [otp.id]);
         await c.query(`UPDATE plugin_visitors.visit SET otp_attempts = otp_attempts + 1, updated_at=now() WHERE id=$1`, [v.id]);
-        return bad(reply, 'invalid code', 401);
+        return bad(reply, 'invalid code', 422); // UI lane #1: unprocessable code, not an auth failure
       }
       await q(`UPDATE app.auth_otps SET consumed_at = now() WHERE id=$1`, [otp.id]); // consume on success (kernel parity, owner path)
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='verified', verified_at=now(), updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);

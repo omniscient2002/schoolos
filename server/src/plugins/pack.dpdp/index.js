@@ -40,6 +40,19 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
+      // the dedupe guard applies ONLY to new grants whose operative (latest) artifact is
+      // still granted — a withdrawal supersedes it, so re-granting appends a fresh
+      // artifact (consent_immutable: append-only decision trail)
+      if (decision === 'granted') {
+        const live = (await c.query(
+          `SELECT decision FROM plugin_dpdp.consent
+           WHERE tenant_id=$1 AND subject_ref=$2 AND purpose=$3
+           ORDER BY valid_from DESC, created_at DESC LIMIT 1`,
+          [req.user.tenant_id, normPhone(subjectRef), String(purpose).slice(0, 80)])).rows[0];
+        if (live && live.decision === 'granted') {
+          return reply.code(409).send({ error: 'a granted consent artifact is already operative for this subject and purpose' });
+        }
+      }
       const r = await c.query(
         `INSERT INTO plugin_dpdp.consent (tenant_id, subject_ref, purpose, decision, basis, channel, actor, evidence, valid_until)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb, ${validityStamp(s.consent_validity_days)}) RETURNING id, valid_until`,
@@ -61,10 +74,12 @@ export function register(app, kernel) {
   app.get(`/plugins/${ID}/consent/state`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
     const subjectRef = req.query.subjectRef ? String(req.query.subjectRef) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // P2-1: normalize the query so spaced input matches stored E.164 artifacts
+      const norm = subjectRef ? normPhone(subjectRef) : null;
       const rows = (await c.query(
         `SELECT DISTINCT ON (subject_ref, purpose) subject_ref, purpose, decision, valid_from, valid_until
          FROM plugin_dpdp.consent WHERE tenant_id=$1 AND ($2::text IS NULL OR subject_ref=$2)
-         ORDER BY subject_ref, purpose, valid_from DESC, created_at DESC`, [req.user.tenant_id, subjectRef])).rows;
+         ORDER BY subject_ref, purpose, valid_from DESC, created_at DESC`, [req.user.tenant_id, norm])).rows;
       const now = Date.now();
       const states = rows.map((r) => ({
         subjectRef: r.subject_ref, purpose: r.purpose,
@@ -112,8 +127,8 @@ export function register(app, kernel) {
           JSON.stringify({ sarId, subjectRef: normPhone(subjectRef), dsrKind: kind, note: note ?? null, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
       await c.query(`UPDATE plugin_dpdp.sar SET action_id=$1 WHERE id=$2`, [act.rows[0].id, sarId]);
       await emitEvent(c, req.user.tenant_id,
-        { type: 'dpdp', label: `SAR ${kind} opened for ${String(subjectRef)}`, ref: sarId },
-        'sar.opened.v1', { sarId, actionId: act.rows[0].id, kind, subjectRef: String(subjectRef) });
+        { type: 'dpdp', label: `SAR ${kind} opened for ${normPhone(subjectRef)}`, ref: sarId },
+        'sar.opened.v1', { sarId, actionId: act.rows[0].id, kind, subjectRef: normPhone(subjectRef) });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: `SAR ${kind} opened`, recordType: 'SAR', recordRef: sarId,
         reason: 'data-principal request', policyRef: 'DPDP Act 2023 · SAR', risk: kind === 'erasure' ? 'high' : 'medium',

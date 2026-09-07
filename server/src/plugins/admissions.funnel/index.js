@@ -20,12 +20,30 @@ const NEXT = {
 const TERMINAL = new Set(['enrolled', 'rejected', 'withdrawn']);
 const STAGES = [...Object.keys(NEXT), ...TERMINAL];
 
-// PII mask for non-privileged surfaces: teacher/finance see shape, not content
-const maskPhone = (p) => (p ? `${String(p).slice(0, 2)}xxxx${String(p).slice(-2)}` : null);
+// PII mask for non-privileged surfaces: teacher/finance see shape, not content.
+// E.164-aware: mask the 10-digit subscriber part, not the country code.
+const maskPhone = (p) => {
+  if (!p) return null;
+  const d = String(p).replace(/\D/g, '').slice(-10); // last 10 digits of the E.164 number
+  return `${d.slice(0, 2)}xxxx${d.slice(-2)}`;
+};
 
-// current Apr–Mar Indian academic cycle, e.g. '2026-27'
+// P2-1 (cycle 5): normalize guardian phones to digits-only E.164 at the door — spaced,
+// dashed or compact input is ONE guardian (dedupe + dpdp erasure alignment). IST-first
+// (P2, cycle 4 standard): the school day is Asia/Kolkata, so the Apr–Mar cycle rolls
+// on the IST clock, not the server's UTC.
+const normPhone = (s) => {
+  const d = String(s).replace(/\D/g, '');
+  if (d.length === 10) return `+91${d}`;
+  if (d.length === 12 && d.startsWith('91')) return `+${d}`;
+  if (d.length === 13 && d.startsWith('091')) return `+${d.slice(1)}`;
+  return d.length > 0 ? `+${d}` : '';
+};
+const IST_NOW = () => new Date(Date.now() + 5.5 * 3600 * 1000);
+
+// current Apr–Mar Indian academic cycle, e.g. '2026-27' (IST clock)
 const currentSessionYear = () => {
-  const n = new Date();
+  const n = IST_NOW();
   const y = (n.getUTCMonth() + 1) >= 4 ? n.getUTCFullYear() : n.getUTCFullYear() - 1;
   return `${y}-${String((y + 1) % 100).padStart(2, '0')}`;
 };
@@ -46,29 +64,53 @@ export function register(app, kernel) {
       return reply.code(400).send({ error: 'studentName, guardianPhone, classApplied are required' });
     }
     if (!/^[\d+\-\s()]{6,15}$/.test(String(guardianPhone))) return reply.code(400).send({ error: 'guardianPhone looks invalid' });
+    // P2-2 (cycle 5): body-supplied admissionYear used to bypass window + dedupe semantics.
+    // Format-validated, and non-current sessions require owner/itadmin.
+    if (admissionYear != null && !/^\d{4}-\d{2}$/.test(String(admissionYear))) {
+      return reply.code(400).send({ error: 'admissionYear must look like 2026-27' });
+    }
+    const phone = normPhone(guardianPhone);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // settings: admission_year + Feb–Jun session window (settings-driven, not hard-coded)
       const pl = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0];
       const s = pl?.settings ?? {};
       const ay = String(admissionYear ?? s.admission_year ?? currentSessionYear());
+      if (ay !== currentSessionYear() && !['owner', 'itadmin'].includes(req.user.role)) {
+        return reply.code(403).send({ error: `admissionYear ${ay} is not the current session — only owner/itadmin may capture into a past/future cycle` });
+      }
       if (s.cycle_start && s.cycle_end) {
         const today = mmdd(new Date());
         if (today < String(s.cycle_start) || today > String(s.cycle_end)) {
           return reply.code(409).send({ error: `outside the admission window (${s.cycle_start} → ${s.cycle_end} for ${ay})` });
         }
       }
-      // duplicate-enquiry guard: one open enquiry per (guardian, class, session)
+      // duplicate-enquiry guard: one open enquiry per (guardian, class, session).
+      // Normalized phone — spaced and compact input dedupe to the same guardian.
       const dup = (await c.query(
         `SELECT id FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2 AND class_applied=$3
           AND COALESCE(notes->>'admission_year','')=$4 AND stage IN ('enquiry','form','interaction','offer') LIMIT 1`,
-        [req.user.tenant_id, String(guardianPhone), String(classApplied), ay])).rows[0];
+        [req.user.tenant_id, phone, String(classApplied), ay])).rows[0];
       if (dup) return reply.code(409).send({ error: 'an open enquiry already exists for this guardian, class and session', leadId: dup.id });
-      const r = await c.query(
-        `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7, jsonb_build_object('admission_year',$8::text)) RETURNING id`,
-        [req.user.tenant_id, String(studentName).slice(0, 120), guardianName ? String(guardianName).slice(0, 120) : null,
-          String(guardianPhone), String(classApplied).slice(0, 40), String(source ?? 'walk-in').slice(0, 40), req.user.id, ay]);
+      // P1-2 backstop: the check-then-insert above can race (two offices, same walk-in);
+      // the partial unique index (migration 027) turns the loser's 23505 into a friendly 409.
+      let r;
+      try {
+        r = await c.query(
+          `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7, jsonb_build_object('admission_year',$8::text)) RETURNING id`,
+          [req.user.tenant_id, String(studentName).slice(0, 120), guardianName ? String(guardianName).slice(0, 120) : null,
+            phone, String(classApplied).slice(0, 40), String(source ?? 'walk-in').slice(0, 40), req.user.id, ay]);
+      } catch (e) {
+        if (e?.code === '23505') {
+          const winner = (await c.query(
+            `SELECT id FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2 AND class_applied=$3
+              AND COALESCE(notes->>'admission_year','')=$4 AND stage IN ('enquiry','form','interaction','offer') LIMIT 1`,
+            [req.user.tenant_id, phone, String(classApplied), ay])).rows[0];
+          return reply.code(409).send({ error: 'an open enquiry already exists for this guardian, class and session', leadId: winner?.id ?? null });
+        }
+        throw e;
+      }
       const leadId = r.rows[0].id;
       await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
         VALUES ($1,$2,NULL,'enquiry',$3)`, [req.user.tenant_id, leadId, req.user.email]);
@@ -126,16 +168,21 @@ export function register(app, kernel) {
       // app.students directly (invariant: no_core_students_writes).
       let actionId = null;
       if (cur.stage === 'offer' && to === 'enrolled') {
+        // P1-1 (cycle 5): action codes are UNIQUE (tenant_id, code) — the fixed
+        // 'students.create' code meant the SECOND conversion of a lifetime 500'd at the
+        // INSERT, leaving the offer accepted but unraisable. Per-instance code; the
+        // approval binding rides the payload + the kernel decide/execute path.
         const a = await c.query(
           `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-           VALUES ($1,'students.create','approval',$2,$3,$4,'high','open','Principal','principal','Admissions §2',false,'admission.offer.accepted',$5::jsonb) RETURNING id`,
+           VALUES ($1,'students.create.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Admissions §2',false,'admission.offer.accepted',$5::jsonb) RETURNING id`,
           [req.user.tenant_id,
             'Admission offer accepted — create student record',
             `Lead ${cur.student_name} (class ${cur.class_applied}) accepted the offer. Approve to create the core student record.`,
             'Admissions offers create core students — core-domain write routed through kernel approval; the funnel never writes app.students directly.',
             JSON.stringify({ leadId: req.params.id, studentName: cur.student_name, classApplied: cur.class_applied,
               guardianName: cur.guardian_name, guardianPhone: cur.guardian_phone,
-              admissionYear: cur.notes?.admission_year ?? null })]);
+              admissionYear: cur.notes?.admission_year ?? null }),
+            req.params.id]);
         actionId = a.rows[0].id;
       }
       const u = await c.query(`UPDATE plugin_admissions.lead SET stage=$1, updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING stage`,

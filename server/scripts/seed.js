@@ -76,13 +76,16 @@ for (let g = 6; g <= 10; g++) {
 const aarav = students.find(s => s.name === 'Aarav Sharma'); // exactly one by construction
 await client.query(`UPDATE app.students SET bus_route='Route 7', guardian_name='Kavita Sharma' WHERE id=$1`, [aarav.id]);
 aarav.route = 'Route 7';
-await client.query(`UPDATE app.guardians SET name='Kavita Sharma' WHERE student_id=$1`, [aarav.id]);
-// guardians for 8-B riders
-const guardians8B = students.filter(s => s.grade === '8' && s.section === 'B').slice(0, 15);
-for (const s of guardians8B) {
+// UI lane #3: EVERY student gets a primary guardian — the pickup flow is demo-complete
+// across the whole roster (was: 15 of 25 8-B students only). Documented drill phones
+// stay pinned (Aarav …0176, Diya …0177).
+const pinnedGuardianPhones = { 'Aarav Sharma': '+91 9720000176', 'Diya Nair': '+91 9720000177' };
+for (const s of students) {
+  const phone = pinnedGuardianPhones[s.name] ?? `+91 97${String(20000000+students.indexOf(s)).slice(0,8)}`;
+  const gname = s.id === aarav.id ? 'Kavita Sharma' : `Guardian of ${s.name}`;
   await client.query(
     `INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary) VALUES ($1,$2,$3,$4,'mother',true)`,
-    [T, s.id, `Guardian of ${s.name}`, `+91 97${String(20000000+students.indexOf(s)).slice(0,8)}`]);
+    [T, s.id, gname, phone]);
 }
 
 // ---- fee plans & obligations ----
@@ -260,7 +263,7 @@ await client.query(
 // TRUNCATE above, so re-apply. The migration files are the single source of truth
 // and are idempotent by design (conflict guards + NOT EXISTS); the audit entries
 // they write chain onto the genesis row just inserted.
-for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql', '014_exams_assessment_registration.sql', '015_payments_upi.sql', '016_redteam3_cleanup.sql', '017_forged_window_cleanup.sql', '018_admissions_funnel.sql', '019_redteam4_residue_purge.sql', '020_transport_gps.sql', '021_ops_timetable.sql', '022_admissions_india_semantics.sql', '023_dpdp_pack.sql', '024_ops_visitors.sql', '025_exams_assessment_runtime.sql', '026_pack_cbse_runtime.sql']) {
+for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql', '014_exams_assessment_registration.sql', '015_payments_upi.sql', '016_redteam3_cleanup.sql', '017_forged_window_cleanup.sql', '018_admissions_funnel.sql', '019_redteam4_residue_purge.sql', '020_transport_gps.sql', '021_ops_timetable.sql', '022_admissions_india_semantics.sql', '023_dpdp_pack.sql', '024_ops_visitors.sql', '025_exams_assessment_runtime.sql', '026_pack_cbse_runtime.sql', '027_cycle5_remediation.sql', '028_ui_lane_visitors.sql']) {
   const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', mig), 'utf8');
   await client.query(catalogSql);
 }

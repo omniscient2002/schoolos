@@ -378,6 +378,11 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.post('/actions/:id/decide', { preHandler: me }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
     if (!['approved','dismissed'].includes(decision)) return bad(reply, "decision must be 'approved' or 'dismissed'");
+    // P2-3 (cycle 5): non-uuid :id hit the SELECT with 22P02 → raw 500; format-guard
+    // first (same pattern as /events/lineage)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id))) {
+      return bad(reply, 'action id must be a uuid');
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const a = (await c.query(`SELECT * FROM app.actions WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) return bad(reply, 'not found', 404);

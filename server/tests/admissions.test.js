@@ -90,7 +90,7 @@ describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions
     // offer.accepted raised the kernel approval action — plugin-direct write it is not
     const act = await sql(`SELECT code, kind, status, owner_role, payload FROM app.actions WHERE payload->>'leadId'=$1`, [leadId]);
     assert.equal(act.rows.length, 1, 'exactly one students.create action');
-    assert.equal(act.rows[0].code, 'students.create');
+    assert.match(act.rows[0].code, /^students\.create\.[0-9a-f-]{36}$/, 'per-instance action code (P1-1)');
     assert.equal(act.rows[0].kind, 'approval');
     assert.equal(act.rows[0].status, 'open');
     assert.equal(act.rows[0].owner_role, 'principal');
@@ -123,7 +123,7 @@ describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions
     const coordinator = await loginAs(app, 'coordinator@meridian.edu');
     const cv = await app.inject({ method: 'GET', url: '/plugins/admissions.funnel/leads', headers: H(coordinator.token) });
     const cl = cv.json().leads.find((x) => x.id === leadId);
-    assert.equal(cl.guardianPhone, '9876543210', 'coordinator (admissions office) sees full PII');
+    assert.equal(cl.guardianPhone, '+919876543210', 'coordinator (admissions office) sees full PII (P2-1: stored E.164)');
     const fl = (await app.inject({ method: 'GET', url: '/plugins/admissions.funnel/leads', headers: H(fin.token) })).json().leads.find((x) => x.id === leadId);
     assert.match(fl.guardianPhone, /^98xxxx10$/, 'finance sees masked phone (no admissions need)');
     assert.equal(fl.guardianName, null, 'finance sees no guardian name');

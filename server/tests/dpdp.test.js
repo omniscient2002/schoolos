@@ -53,7 +53,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
       payload: { subjectRef: '9811100111', purpose: 'admissions_enquiry', decision: 'granted', channel: 'walk-in' }, headers: H(co.token) });
     assert.equal(r.statusCode, 200);
     assert.match(r.json().validUntil, /^\d{4}-\d{2}-\d{2}T/, 'validUntil stamped from retention schedule');
-    const n = await sql(`SELECT count(*)::int n FROM plugin_dpdp.consent WHERE subject_ref='9811100111'`);
+    const n = await sql(`SELECT count(*)::int n FROM plugin_dpdp.consent WHERE subject_ref='+919811100111'`); // P2-1: stored E.164
     assert.equal(n.rows[0].n, 1);
     const ev = await sql(`SELECT count(*)::int n FROM app.outbox WHERE topic='consent.recorded.v1'`);
     assert.equal(ev.rows[0].n >= 1, true, 'consent.recorded.v1 on the event spine');
@@ -66,7 +66,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
     const w = await app.inject({ method: 'POST', url: '/plugins/pack.dpdp/consent',
       payload: { subjectRef: '9811100111', purpose: 'admissions_enquiry', decision: 'withdrawn' }, headers: H(co.token) });
     assert.equal(w.statusCode, 200);
-    const rows = await sql(`SELECT decision FROM plugin_dpdp.consent WHERE subject_ref='9811100111' ORDER BY created_at ASC`);
+    const rows = await sql(`SELECT decision FROM plugin_dpdp.consent WHERE subject_ref='+919811100111' ORDER BY created_at ASC`);
     assert.equal(rows.rows.length, 2, 'append-only: two artifacts, no in-place update');
     assert.equal(rows.rows[0].decision, 'granted', 'original artifact untouched');
     assert.equal(rows.rows[1].decision, 'withdrawn');
@@ -80,7 +80,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
   });
 
   test('4 · expiry computed at read (retention schedule) — aged artifact reads expired', async () => {
-    await sql(`UPDATE plugin_dpdp.consent SET valid_until = now() - interval '1 hour' WHERE subject_ref='9811100111' AND decision='granted'`);
+    await sql(`UPDATE plugin_dpdp.consent SET valid_until = now() - interval '1 hour' WHERE subject_ref='+919811100111' AND decision='granted'`);
     const co = await loginAs(app, 'coordinator@meridian.edu');
     const st = await app.inject({ method: 'GET', url: '/plugins/pack.dpdp/consent/state?subjectRef=9811100111', headers: H(co.token) });
     assert.equal(st.json().states[0].state, 'expired', 'valid_until in the past → expired at read');
@@ -94,7 +94,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
     const { sarId, actionId } = r.json();
     assert.match(r.json().slaDueAt, /^\d{4}-\d{2}-\d{2}T/, 'sar_sla_tracked');
     const act = await sql(`SELECT code, kind, status, owner_role FROM app.actions WHERE id=$1`, [actionId]);
-    assert.equal(act.rows[0].code, 'dpdp.dsr.export');
+    assert.match(act.rows[0].code, /^dpdp\.dsr\.export\.[0-9a-f-]{36}$/, 'per-instance action code (P1-1)');
     assert.equal(act.rows[0].kind, 'approval');
     assert.equal(act.rows[0].status, 'open');
     assert.equal(act.rows[0].owner_role, 'principal');
@@ -131,7 +131,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
 
   test('7 · SAR erasure: kernel-approved → identity redacted, decision TRAIL preserved, core students untouched', async () => {
     await sql(`INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, notes)
-      SELECT id, 'Dsar Kid', 'G. Parent', '9822200222', '5', 'walk-in', NULL, jsonb_build_object('admission_year','2026-27') FROM app.tenants LIMIT 1`);
+      SELECT id, 'Dsar Kid', 'G. Parent', '+919822200222', '5', 'walk-in', NULL, jsonb_build_object('admission_year','2026-27') FROM app.tenants LIMIT 1`); // P2-1: fixture stored E.164
     const co = await loginAs(app, 'coordinator@meridian.edu');
     const cr = await app.inject({ method: 'POST', url: '/plugins/pack.dpdp/consent',
       payload: { subjectRef: '9822200222', purpose: 'admissions_enquiry', decision: 'granted' }, headers: H(co.token) });
