@@ -60,7 +60,7 @@ function TopicRow({ node, classGrade, onSaved }: {
   };
 
   return (
-    <div style={{ padding: '10px 0', borderTop: '1px solid var(--border-subtle)' }} className="u-col" style-ignore="">
+    <div className="u-col" style={{ padding: '10px 0', borderTop: '1px solid var(--border-subtle)' }}>
       <div className="u-between" style={{ gap: 10, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
