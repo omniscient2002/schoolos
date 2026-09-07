@@ -344,7 +344,7 @@ export interface NewHomework {
   due_at: string;
 }
 
-export type SubmissionState = 'submitted' | 'late' | 'reviewed' | 'resubmit_requested' | 'missing';
+export type SubmissionState = 'submitted' | 'late' | 'reviewed' | 'graded' | 'resubmit_requested' | 'missing';
 
 export interface TeacherSubmission {
   id: string;
@@ -364,7 +364,7 @@ export interface TeacherSubmission {
 
 /* ---------- P8 · teacher self-leave, duty, workload (TS-1) ---------- */
 
-export type LeaveKind = 'casual' | 'sick' | 'earned' | 'duty';
+export type LeaveKind = 'casual' | 'sick' | 'earned' | 'duty' | 'other';
 
 export interface TeacherLeaveRequest {
   id: string;
@@ -402,6 +402,8 @@ export interface MyWorkload {
   periods: number;
   substitutions: number;
   invigilation: number;
+  duties: number;                           /* roster duties this week (§4 /workload/mine) */
+  load_score: number;                       /* composite 0–100 — fairness input, NEVER a rating (P8) */
   grading_estimate_mins: number;
   ptm_count: number;
   meetings: number;
@@ -438,23 +440,41 @@ export interface MsgThread {
 
 export interface MessageTemplate { id: string; name: string; text: string }
 
-/* ---------- P11 · PTM (teacher.support, TS-2) ---------- */
-
-export interface PtmSlot { id: string; date: string; period_label: string; status: 'open' | 'booked' | 'closed'; student_name?: string }
-
-export interface PtmMeeting {
-  id: string;
-  slot_id: string;
+/* ---------- P11 · PTM (teacher.support, TS-2) — server shapes ----------
+   GET  /ptm/slots        → { slots: [{ slotId, teacherId, teacherName, date,
+                                startTime, endTime, status, booked,
+                                bookedStudentId?, bookedStudentName? }] }
+   POST /ptm/slots        {date, startTime, endTime} → { ok, slotId, status }
+   GET/POST /ptm/:id/notes  :id = BOOKING id → { notes: [{ noteId, note, at }] } / { ok, private }
+   The slot board does not yet echo the booking id (TS-2 gap, tracked in the
+   handoff) — `bookingId` is optional and the notes editor degrades plainly
+   when a booked slot arrives without one. */
+export interface PtmSlot {
+  slotId: string;
+  teacherId: string;
+  teacherName: string;
   date: string;
-  time: string;
-  student_name: string;
-  class_grade: string;
-  guardian_name: string;
-  guardian_relation: string;
-  status: 'booked' | 'done';
-  pack_ready: boolean;          /* pre-meeting pack link (P11) */
-  notes: string | null;         /* PRIVATE — teacher-only (P11) */
-  notes_at: string | null;
+  startTime: string;
+  endTime: string;
+  status: 'open' | 'booked' | 'closed';
+  booked: boolean;
+  bookingId?: string | null;
+  bookedStudentId?: string | null;
+  bookedStudentName?: string | null;
+}
+
+export interface PtmNote { noteId: string; note: string; at: string }
+
+/** The teacher's booked meetings — derived from the slot board (booked, mine). */
+export interface PtmMeeting {
+  bookingId: string | null;
+  slotId: string;
+  date: string;
+  startTime: string;
+  studentName: string;
+  guardianName: string | null;
+  status: 'booked' | 'cancelled' | 'completed';
+  notes: PtmNote[];             /* PRIVATE — teacher-only (P11) */
 }
 
 /* ---------- TU-2 teacher context (prefills; TU-1's /teacher/home
@@ -581,8 +601,8 @@ let fxSubmissions: TeacherSubmission[] = [
   { id: 'sub_6', homework_id: 'hw_103', homework_title: 'Integers practice — signs', class_grade: '7-A', student_id: 'stu_6', student_name: 'Meera Pillai', content_type: 'image', content_ref: 'meera-integer-work.jpg', submitted_at: dayF(-2, 16, 45), status: 'submitted', grade: null, feedback: null, reviewed_at: null },
   { id: 'sub_7', homework_id: 'hw_103', homework_title: 'Integers practice — signs', class_grade: '7-A', student_id: 'stu_7', student_name: 'Anil Kumar', content_type: 'image', content_ref: 'anil-integer-work.jpg', submitted_at: dayF(-2, 18, 30), status: 'resubmit_requested', grade: null, feedback: 'Signs are flipped on Q4–Q6 — redo those three and send it again.', reviewed_at: dayF(-1, 10) },
   { id: 'sub_8', homework_id: 'hw_103', homework_title: 'Integers practice — signs', class_grade: '7-A', student_id: 'stu_8', student_name: 'Sara Khan', content_type: 'image', content_ref: 'sara-integer-work.jpg', submitted_at: dayF(-2, 15, 10), status: 'reviewed', grade: 9, feedback: 'Neat work — every answer correct.', reviewed_at: dayF(-1, 11) },
-  { id: 'sub_9', homework_id: 'hw_104', homework_title: 'Mensuration revision quiz', class_grade: '8-B', student_id: 'stu_1', student_name: 'Aarav Sharma', content_type: 'text', content_ref: 'Auto-graded · 13/15', submitted_at: dayF(-4, 19), status: 'reviewed', grade: 13, feedback: 'Re-check area units — cm vs m.', reviewed_at: dayF(-3, 9) },
-  { id: 'sub_10', homework_id: 'hw_104', homework_title: 'Mensuration revision quiz', class_grade: '8-B', student_id: 'stu_9', student_name: 'Tanvi Rao', content_type: 'text', content_ref: 'Auto-graded · 15/15', submitted_at: dayF(-4, 18, 20), status: 'reviewed', grade: 15, feedback: null, reviewed_at: dayF(-3, 9) },
+  { id: 'sub_9', homework_id: 'hw_104', homework_title: 'Mensuration revision quiz', class_grade: '8-B', student_id: 'stu_1', student_name: 'Aarav Sharma', content_type: 'text', content_ref: 'Auto-graded · 13/15', submitted_at: dayF(-4, 19), status: 'graded', grade: 13, feedback: 'Re-check area units — cm vs m.', reviewed_at: dayF(-3, 9) },
+  { id: 'sub_10', homework_id: 'hw_104', homework_title: 'Mensuration revision quiz', class_grade: '8-B', student_id: 'stu_9', student_name: 'Tanvi Rao', content_type: 'text', content_ref: 'Auto-graded · 15/15', submitted_at: dayF(-4, 18, 20), status: 'graded', grade: 15, feedback: null, reviewed_at: dayF(-3, 9) },
   /* missing rows — the inbox state=missing view (students with no submission) */
   { id: 'sub_m1', homework_id: 'hw_101', homework_title: 'Fractions worksheet 4', class_grade: '8-B', student_id: 'stu_10', student_name: 'Arjun Menon', content_type: 'text', content_ref: '', submitted_at: null, status: 'missing', grade: null, feedback: null, reviewed_at: null },
   { id: 'sub_m2', homework_id: 'hw_101', homework_title: 'Fractions worksheet 4', class_grade: '8-B', student_id: 'stu_11', student_name: 'Nisha Pillai', content_type: 'text', content_ref: '', submitted_at: null, status: 'missing', grade: null, feedback: null, reviewed_at: null },
@@ -613,7 +633,7 @@ export async function reviewSubmission(id: string, body: { status: string; grade
       status: body.status as TeacherSubmission['status'],
       grade: body.grade ?? sub.grade,
       feedback: body.feedback ?? sub.feedback,
-      reviewed_at: body.status === 'resubmit_requested' || body.status === 'missing' ? sub.reviewed_at : isoF(new Date()),
+      reviewed_at: body.status === 'missing' ? sub.reviewed_at : isoF(new Date()),
     };
     fxSubmissions = fxSubmissions.map(s => (s.id === id ? updated : s));
     return { ok: true, submission: updated };
@@ -711,6 +731,8 @@ export async function myWorkload(): Promise<{ workload: MyWorkload }> {
         periods: 24,
         substitutions: 2,
         invigilation: 3,
+        duties: 4,
+        load_score: 61,
         grading_estimate_mins: 95,
         ptm_count: 2,
         meetings: 1,
@@ -822,60 +844,171 @@ export async function sendThreadMessage(threadId: string, text: string, template
   }).then(r => r.data);
 }
 
-/* ---- P11 PTM ---- */
+/* ---- P11 PTM — slot board + private notes (server shapes) ---- */
+
+const ME = 'usr_priya'; /* fixture self — Priya Iyer */
 
 let fxSlots: PtmSlot[] = [
-  { id: 'ps_1', date: dateOnlyF(3), period_label: '09:00', status: 'booked', student_name: 'Aarav Sharma' },
-  { id: 'ps_2', date: dateOnlyF(3), period_label: '09:20', status: 'booked', student_name: 'Diya Patel' },
-  { id: 'ps_3', date: dateOnlyF(3), period_label: '09:40', status: 'open' },
-  { id: 'ps_4', date: dateOnlyF(3), period_label: '10:00', status: 'open' },
-  { id: 'ps_5', date: dateOnlyF(3), period_label: '10:20', status: 'booked', student_name: 'Kavya Nair' },
-  { id: 'ps_6', date: dateOnlyF(3), period_label: '10:40', status: 'open' },
+  { slotId: 'ps_1', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '09:00', endTime: '09:20', status: 'booked', booked: true, bookingId: 'bk_1', bookedStudentId: 'stu_1', bookedStudentName: 'Aarav Sharma' },
+  { slotId: 'ps_2', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '09:20', endTime: '09:40', status: 'booked', booked: true, bookingId: 'bk_2', bookedStudentId: 'stu_4', bookedStudentName: 'Diya Patel' },
+  { slotId: 'ps_3', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '09:40', endTime: '10:00', status: 'open', booked: false },
+  { slotId: 'ps_4', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '10:00', endTime: '10:20', status: 'open', booked: false },
+  { slotId: 'ps_5', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '10:20', endTime: '10:40', status: 'booked', booked: true, bookingId: 'bk_3', bookedStudentId: 'stu_2', bookedStudentName: 'Kavya Nair' },
+  { slotId: 'ps_6', teacherId: ME, teacherName: 'Priya Iyer', date: dateOnlyF(3), startTime: '10:40', endTime: '11:00', status: 'open', booked: false },
 ];
 
-let fxMeetings: PtmMeeting[] = [
-  { id: 'pm_1', slot_id: 'ps_1', date: dateOnlyF(3), time: '09:00', student_name: 'Aarav Sharma', class_grade: '8-B', guardian_name: 'Kavita Sharma', guardian_relation: 'Mother', status: 'booked', pack_ready: true, notes: null, notes_at: null },
-  { id: 'pm_2', slot_id: 'ps_2', date: dateOnlyF(3), time: '09:20', student_name: 'Diya Patel', class_grade: '8-A', guardian_name: 'N. Patel', guardian_relation: 'Father', status: 'booked', pack_ready: true, notes: null, notes_at: null },
-  { id: 'pm_3', slot_id: 'ps_5', date: dateOnlyF(3), time: '10:20', student_name: 'Kavya Nair', class_grade: '8-B', guardian_name: 'M. Nair', guardian_relation: 'Mother', status: 'booked', pack_ready: true, notes: 'Asked about maths confidence. Agreed: 10 minutes of word problems daily at home; I share a weekly progress note until the next PTM.', notes_at: dayF(-1, 17, 10) },
-];
+/* PRIVATE teacher notes (P11) — keyed by booking id, like the server's
+   user-pinned teacher.note ledger. Never shown to anyone but the teacher. */
+const fxNotes: Record<string, PtmNote[]> = {
+  bk_3: [{ noteId: 'pn_1', note: 'Asked about maths confidence. Agreed: 10 minutes of word problems daily at home; I share a weekly progress note until the next PTM.', at: dayF(-1, 17, 10) }],
+};
 
-/** GET /ptm/slots?mine=1 (§4, frozen) */
-export async function listPtmSlots(): Promise<{ slots: PtmSlot[] }> {
-  return flowRead('ptm_slots', '/ptm/slots?mine=1', async () => {
+function fxMeetingFromSlot(s: PtmSlot): PtmMeeting {
+  return {
+    bookingId: s.bookingId ?? null,
+    slotId: s.slotId,
+    date: s.date,
+    startTime: s.startTime,
+    studentName: s.bookedStudentName ?? '—',
+    guardianName: null,
+    status: 'booked',
+    notes: s.bookingId ? fxNotes[s.bookingId] ?? [] : [],
+  };
+}
+
+/** GET /ptm/slots — the board (§4). `mine` filters to the signed-in teacher
+ *  by name when the caller has it (the board is school-wide for staff). */
+export async function listPtmSlots(mine?: string): Promise<{ slots: PtmSlot[] }> {
+  return flowRead('ptm_slots', '/ptm/slots', async () => {
     await waitF(300);
-    return { slots: fxSlots };
-  }).then(r => r.data);
+    return { slots: fxSlots.filter(s => !mine || s.teacherName === mine) };
+  }).then(r => ({ slots: (r.data.slots ?? []).filter(s => !mine || !r.source || r.source === 'fixture' || s.teacherName === mine) }));
 }
 
-/** POST /ptm/slots {date, times[]} (§4, frozen) */
-export async function createPtmSlots(body: { date: string; times: string[] }): Promise<{ ok: boolean; created: number; slots: PtmSlot[] }> {
+/** POST /ptm/slots {date, startTime, endTime} — ONE slot per call (server law:
+ *  HH:MM, end after start, one slot per start time). Publishing a block of
+ *  slots = sequential calls from the screen, like bulk review. */
+export async function createPtmSlot(body: { date: string; startTime: string; endTime: string }): Promise<{ ok: boolean; slotId?: string; status?: string }> {
   return flowWrite('ptm_slots', '/ptm/slots', { method: 'POST', body: JSON.stringify(body) }, async () => {
-    await waitF(380);
-    if (!body.times.length) throw new Error('Tick at least one time to publish.');
-    const created: PtmSlot[] = body.times.map(t => ({ id: uidF('ps'), date: body.date, period_label: t, status: 'open' }));
-    fxSlots = [...fxSlots, ...created].sort((a, b) => (a.date + a.period_label).localeCompare(b.date + b.period_label));
-    return { ok: true, created: created.length, slots: fxSlots };
+    await waitF(300);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.date)) throw new Error('Slot date must be YYYY-MM-DD');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(body.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(body.endTime)) throw new Error('Times must be HH:MM (24-hour)');
+    if (body.startTime >= body.endTime) throw new Error('End time must be after the start time');
+    if (fxSlots.some(s => s.date === body.date && s.startTime === body.startTime && s.teacherName === teacherContext.name)) {
+      throw new Error('You already have a slot at that time — pick another start time');
+    }
+    const slot: PtmSlot = { slotId: uidF('ps'), teacherId: ME, teacherName: teacherContext.name, date: body.date, startTime: body.startTime, endTime: body.endTime, status: 'open', booked: false };
+    fxSlots = [...fxSlots, slot].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
+    return { ok: true, slotId: slot.slotId, status: 'open' };
   }).then(r => r.data);
 }
 
-/** GET /ptm/meetings?mine=1 — PROPOSED read view over ptm.booking (§3); freeze with TS-2 */
-export async function listPtmMeetings(): Promise<{ meetings: PtmMeeting[] }> {
-  return flowRead('ptm_meetings', '/ptm/meetings?mine=1', async () => {
-    await waitF(320);
-    return { meetings: fxMeetings };
+/** The teacher's booked meetings — booked slots on my board. */
+export async function listPtmMeetings(mine?: string): Promise<{ meetings: PtmMeeting[] }> {
+  const { slots } = await listPtmSlots(mine);
+  return { meetings: slots.filter(s => s.booked).map(fxMeetingFromSlot) };
+}
+
+/** GET /ptm/:id/notes (:id = booking id) — private, teacher-only. */
+export async function listPtmNotes(bookingId: string): Promise<{ bookingId: string; notes: PtmNote[] }> {
+  return flowRead(`ptm_notes_${bookingId}`, `/ptm/${encodeURIComponent(bookingId)}/notes`, async () => {
+    await waitF(240);
+    if (!fxNotes[bookingId]) throw new Error("We couldn't find that PTM booking");
+    return { bookingId, notes: fxNotes[bookingId] };
   }).then(r => r.data);
 }
 
-/** POST /ptm/:id/notes (§4, frozen) */
-export async function savePtmNotes(id: string, notes: string): Promise<{ ok: boolean }> {
-  return flowWrite('ptm_meetings', `/ptm/${encodeURIComponent(id)}/notes`, { method: 'POST', body: JSON.stringify({ notes }) }, async () => {
+/** POST /ptm/:id/notes {note} — PRIVATE: "Only you can see this." */
+export async function savePtmNotes(bookingId: string, note: string): Promise<{ ok: boolean; private: boolean }> {
+  return flowWrite('ptm_meetings', `/ptm/${encodeURIComponent(bookingId)}/notes`, { method: 'POST', body: JSON.stringify({ note }) }, async () => {
     await waitF(280);
-    if (!notes.trim()) throw new Error('Write a note first — the field is empty.');
-    const m = fxMeetings.find(x => x.id === id);
-    if (!m) throw new Error('That meeting is no longer on your list.');
-    m.notes = notes.trim();
-    m.notes_at = isoF(new Date());
-    return { ok: true };
+    if (!note.trim()) throw new Error('Write the meeting note first');
+    if (!fxNotes[bookingId]) throw new Error("We couldn't find that PTM booking");
+    fxNotes[bookingId] = [...fxNotes[bookingId], { noteId: uidF('pn'), note: note.trim(), at: isoF(new Date()) }];
+    return { ok: true, private: true };
+  }).then(r => r.data);
+}
+
+/* ---- P10 · concerns (teacher.support, TS-2 — exact door shapes) ----
+   POST /teacher/concern        {studentId?, category, urgency?, detail}
+                                  → { ok, concernId, status, escalateActionId? }
+   GET  /teacher/concerns       → { scope, concerns: [...] }  (teacher = own filed)
+   GET  /teacher/concern/:id/events → { concernId, events: [{ from, to, note, at }] }
+   Safety-category or critical concerns raise a principal-desk escalation
+   server-side (concern.escalate.<id>) — the screen says so in plain words. */
+
+export type ConcernCategory = 'academic' | 'attendance' | 'behaviour' | 'wellbeing' | 'safety' | 'engagement';
+export type ConcernUrgency = 'low' | 'normal' | 'high' | 'critical';
+
+export interface TeacherConcern {
+  concernId: string;
+  studentId: string | null;
+  studentName: string | null;
+  category: ConcernCategory;
+  urgency: ConcernUrgency;
+  detail: string;
+  status: 'open' | 'routed' | 'closed';
+  routedRole: string | null;
+  outcome: string | null;
+  outcomeNote: string | null;
+  createdAt: string;
+}
+
+export interface ConcernEvent { from: string | null; to: string; note: string | null; at: string }
+
+let fxConcerns: TeacherConcern[] = [
+  {
+    concernId: 'con_2', studentId: 'stu_3', studentName: 'Rohan Gupta', category: 'attendance', urgency: 'normal',
+    detail: 'Late three mornings this week, tired in class. Guardian said the commute changed — worth a check-in before it becomes a pattern.',
+    status: 'routed', routedRole: 'counselor', outcome: null, outcomeNote: null, createdAt: dayF(-2, 11, 20),
+  },
+  {
+    concernId: 'con_1', studentId: 'stu_8', studentName: 'Sara Khan', category: 'academic', urgency: 'low',
+    detail: 'Word problems slip when two steps are combined — she loses the thread mid-sum. Practice set sent home.',
+    status: 'closed', routedRole: 'counselor', outcome: 'resolved', outcomeNote: 'Extra practice set shared with home; reviewed after two weeks — improving.', createdAt: dayF(-9, 15),
+  },
+];
+
+/** POST /teacher/concern — one-tap flag. */
+export async function fileConcern(body: { studentId?: string | null; category: ConcernCategory; urgency?: ConcernUrgency; detail: string }): Promise<{ ok: boolean; concernId: string; status: string; escalateActionId?: string | null }> {
+  return flowWrite('concern', '/teacher/concern', { method: 'POST', body: JSON.stringify(body) }, async () => {
+    await waitF(360);
+    if (!body.detail.trim()) throw new Error('Please describe what you noticed');
+    const student = body.studentId ? fxRoster.find(r => r.id === body.studentId) : undefined;
+    const row: TeacherConcern = {
+      concernId: uidF('con'),
+      studentId: body.studentId ?? null,
+      studentName: student?.name ?? null,
+      category: body.category,
+      urgency: body.urgency ?? 'normal',
+      detail: body.detail.trim().slice(0, 2000),
+      status: 'open', routedRole: null, outcome: null, outcomeNote: null,
+      createdAt: isoF(new Date()),
+    };
+    fxConcerns = [row, ...fxConcerns];
+    const escalates = body.category === 'safety' || (body.urgency ?? 'normal') === 'critical';
+    return { ok: true, concernId: row.concernId, status: 'open', escalateActionId: escalates ? uidF('act') : null };
+  }).then(r => r.data);
+}
+
+/** GET /teacher/concerns — a teacher sees the concerns they filed. */
+export async function listMyConcerns(): Promise<{ scope: string; concerns: TeacherConcern[] }> {
+  return flowRead('concern', '/teacher/concerns', async () => {
+    await waitF(320);
+    return { scope: 'own_filed', concerns: fxConcerns };
+  }).then(r => r.data);
+}
+
+/** GET /teacher/concern/:id/events — the append-only history. */
+export async function concernEvents(concernId: string): Promise<{ concernId: string; events: ConcernEvent[] }> {
+  return flowRead(`concern_${concernId}`, `/teacher/concern/${encodeURIComponent(concernId)}/events`, async () => {
+    await waitF(240);
+    const c = fxConcerns.find(x => x.concernId === concernId);
+    if (!c) throw new Error("We couldn't find that concern");
+    const evs: ConcernEvent[] = [{ from: null, to: 'open', note: 'concern filed', at: c.createdAt }];
+    if (c.routedRole) evs.push({ from: 'open', to: 'routed', note: `routed to ${c.routedRole}`, at: c.createdAt });
+    if (c.status === 'closed') evs.push({ from: 'routed', to: 'closed', note: `outcome: ${c.outcome} — ${c.outcomeNote ?? ''}`.trim(), at: c.createdAt });
+    return { concernId, events: evs };
   }).then(r => r.data);
 }
 
