@@ -1,0 +1,38 @@
+process.env.DATABASE_URL='postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/schoolos_test';
+const { buildApp } = await import('/home/cassandra/schoolOS/server/src/app.js');
+const app = await buildApp({ logger: false });
+const owner = await app.inject({ method:'POST', url:'/auth/login', payload:{ email:'owner@meridian.edu', password:'schoolos-demo' }, headers:{'content-type':'application/json'} });
+const en = await app.inject({ method:'POST', url:'/plugins/student.world/enable', headers:{ authorization:'Bearer '+owner.json().token, 'content-type':'application/json' }, payload:{ version:'1.0.0', class:'C' } });
+console.log('enable:', en.statusCode, en.body.slice(0,120));
+const st = await app.inject({ method:'POST', url:'/auth/login', payload:{ email:'student@meridian.edu', password:'schoolos-demo' }, headers:{'content-type':'application/json'} });
+const H = { authorization:'Bearer '+st.json().token, 'content-type':'application/json' };
+for (const [m,u] of [['GET','/student/home'],['GET','/student/homework'],['GET','/student/results'],['GET','/student/tasks'],['GET','/student/print/mine'],['GET','/student/noticeboard'],['GET','/student/session'],['GET','/student/mistakes'],['GET','/student/flashcards']]) {
+  const r = await app.inject({ method:m, url:u, headers:H });
+  console.log(m, u, r.statusCode, r.headers['cache-control'], '|', r.body.slice(0,140).replace(/\n/g,' '));
+}
+const p = await app.inject({ method:'POST', url:'/student/mistakes', headers:H, payload:{ subject:'Math', topic:'Fractions', what_wrong:'added denominators', correction:'use LCM' } });
+console.log('POST mistakes', p.statusCode, p.body.slice(0,100));
+const f = await app.inject({ method:'POST', url:'/student/flashcards', headers:H, payload:{ deck:'Science', front:'H2O?', back:'water' } });
+console.log('POST flashcards', f.statusCode, f.body.slice(0,80));
+const t = await app.inject({ method:'POST', url:'/student/tasks', headers:H, payload:{ title:'Revise fractions', due_date:'2026-09-09' } });
+console.log('POST tasks', t.statusCode, t.body.slice(0,80));
+const pr = await app.inject({ method:'POST', url:'/student/print', headers:H, payload:{ kind:'timetable' } });
+console.log('POST print', pr.statusCode, pr.body.slice(0,120));
+const tr = await app.inject({ method:'POST', url:'/auth/login', payload:{ email:'teacher@meridian.edu', password:'schoolos-demo' }, headers:{'content-type':'application/json'} });
+const TH = { authorization:'Bearer '+tr.json().token, 'content-type':'application/json' };
+const q = await app.inject({ method:'GET', url:'/student/print/queue', headers:TH });
+console.log('GET queue(teacher)', q.statusCode, q.body.slice(0,200));
+const wb = await app.inject({ method:'POST', url:'/student/wellbeing', headers:H, payload:{ category:'bullying', detail:'someone keeps taking my tiffin', anonymous:true } });
+console.log('POST wellbeing', wb.statusCode, wb.body.slice(0,120));
+const prr = await app.inject({ method:'POST', url:'/auth/login', payload:{ email:'principal@meridian.edu', password:'schoolos-demo' }, headers:{'content-type':'application/json'} });
+const PR = { authorization:'Bearer '+prr.json().token, 'content-type':'application/json' };
+const wr = await app.inject({ method:'GET', url:'/student/wellbeing', headers:PR });
+console.log('GET wellbeing(principal)', wr.statusCode, wr.body.slice(0,200));
+const tw = await app.inject({ method:'GET', url:'/student/wellbeing', headers:TH });
+console.log('GET wellbeing(teacher)', tw.statusCode, tw.body.slice(0,80));
+const t409 = await app.inject({ method:'POST', url:'/auth/login', payload:{ email:'owner@meridian.edu', password:'schoolos-demo' }, headers:{'content-type':'application/json'} });
+const dis = await app.inject({ method:'POST', url:'/plugins/student.world/disable', headers:{ authorization:'Bearer '+t409.json().token, 'content-type':'application/json' }, payload:{} });
+console.log('disable:', dis.statusCode);
+const gated = await app.inject({ method:'GET', url:'/student/home', headers:H });
+console.log('GET home after disable', gated.statusCode, gated.body.slice(0,90));
+await app.close();
