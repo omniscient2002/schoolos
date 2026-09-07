@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
-import { DeniedEmpty, ParentError, ParentLoading } from '../../components/parent/states';
+import {ParentError, ParentLoading} from '../../components/parent/states';
 import { friendly } from '../../lib/friendlyErrors';
 import { fmtDateShort, fmtTime } from '../../lib/format';
 import { getRequests, createRequest, reportDiscrepancy, type FamilyRequest, type RequestCategory } from '../../services/parentApi';

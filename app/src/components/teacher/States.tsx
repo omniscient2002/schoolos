@@ -104,10 +104,10 @@ export function CardStates({ state, title, sub, emptySub, onRetry, children, min
 /* ---------- small state chip used inside live cards ---------- */
 
 export function StateChip({ state, source }: { state?: TeacherState; source?: 'live' | 'fixture' }) {
-  const show = state && ['pending', 'approval', 'archived', 'locked', 'conflict', 'sync', 'partial', 'offline'].includes(state);
+  const show = state && ['pending', 'approval', 'archived', 'locked', 'conflict', 'sync', 'partial', 'offline', 'loading', 'empty', 'error', 'denied'].includes(state);
   if (!show && !source) return null;
   const label = state && show
-    ? { pending: 'Waiting on someone else', approval: 'Waiting for approval', archived: 'Archived', locked: 'Locked', conflict: 'Needs a second look', sync: 'Saving…', partial: 'Partly loaded', offline: 'Offline — showing last saved' }[state]
+    ? { pending: 'Waiting on someone else', approval: 'Waiting for approval', archived: 'Archived', locked: 'Locked', conflict: 'Needs a second look', sync: 'Saving…', partial: 'Partly loaded', offline: 'Offline — showing last saved', loading: 'Loading…', empty: 'Nothing here yet', error: 'Could not load — try again', denied: 'Not available for your role' }[state]
     : undefined;
   return (
     <span className="t-state-chips">

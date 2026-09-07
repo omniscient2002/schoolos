@@ -5,8 +5,8 @@
    phone push (StudentOS plan: print jobs are school-controlled).
    ============================================================ */
 import { useState } from 'react';
-import { Button } from '../../ui';
-import { Icon } from '../../Icon';
+import { Button } from '../ui';
+import { Icon } from '../Icon';
 import { requestPrint, PRINT_KIND_LABEL, type StudentPrintKind } from '../../services/studentApi';
 import { friendly } from '../../lib/friendlyErrors';
 

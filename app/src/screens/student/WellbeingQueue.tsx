@@ -38,8 +38,8 @@ const STAFF_ROLES: string[] = ['counselor', 'principal', 'owner', 'itadmin', 'co
 const STATUS_META: Record<string, { label: string; tone: 'info' | 'success' | 'warning' | 'danger' | 'neutral' }> = {
   new: { label: 'New', tone: 'warning' },
   open: { label: 'Open', tone: 'info' },
-  routed: { label: 'With counselor', tone: 'accent' },
-  in_progress: { label: 'Counselor following up', tone: 'accent' },
+  routed: { label: 'With counselor', tone: 'info' },
+  in_progress: { label: 'Counselor following up', tone: 'info' },
   resolved: { label: 'Resolved', tone: 'success' },
   closed: { label: 'Closed', tone: 'neutral' },
 };

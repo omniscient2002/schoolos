@@ -35,7 +35,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { fmtDate, weekday } from '../lib/format';
 import {
   getTeacherHome, getTeacherBrief, teacherDoorLive, _resetTeacherDoors,
-  type TeacherHomeAggregate, type TeacherNeed, type TeacherState, type TeacherBrief,
+  type TeacherHomeAggregate, type TeacherNeed, type TeacherBrief,
 } from '../services/teacherFixtures';
 
 /* ---------- async card state ---------- */
@@ -168,7 +168,7 @@ function NextRow({ c }: { c: TeacherHomeAggregate['next'][number] }) {
 /* ---------- brief banner (17:00 eod + weekly surface) ---------- */
 function BriefBanner({ brief, onClose }: { brief: TeacherBrief; onClose: () => void }) {
   return (
-    <Card pad className="t-brief-banner" role="region" aria-label={`Your ${brief.span} brief`}>
+    <Card pad className="t-brief-banner" headAs="h2" head={`Your ${brief.span} brief`}>
       <div className="u-flex" style={{ gap: 12, alignItems: 'flex-start' }}>
         <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--ai-weak)', color: 'var(--ai-text)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
           <Icon.Sunrise size={17} />
@@ -217,7 +217,6 @@ function WeeklyBriefCard({ brief }: { brief: TeacherBrief }) {
    ============================================================ */
 export default function TeacherHome() {
   const { session, actorName } = useStore();
-  const navigate = useNavigate();
   const { setClassContext, openAction } = useTeacher();
   const [briefDismissed, setBriefDismissed] = useState(false);
   const [clock, setClock] = useState(() => new Date());
@@ -240,7 +239,6 @@ export default function TeacherHome() {
   const source = home.isFixture ? 'fixture' : 'live';
 
   const now = clock;
-  const hm = now.getHours() * 60 + now.getMinutes();
   const headSub = `${weekday(now)} · ${fmtDate(now)} · ${dayStatus(agg) || 'Preparing your day'}${agg ? ` · ${agg.glance.periods} period${agg.glance.periods === 1 ? '' : 's'} today` : ''}`;
 
   const openNeed = (to: string, need: TeacherNeed) => {
@@ -360,7 +358,7 @@ export default function TeacherHome() {
               </CardStates>
             ) : (
               <Card pad={false}>
-                {agg!.next.map((c, i) => <NextRow key={c.id} c={c} />)}
+                {agg!.next.map((c) => <NextRow key={c.id} c={c} />)}
                 {agg!.next.length === 0 && null}
               </Card>
             )}

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Card, Empty, Modal, PageHead, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
-import { DeniedEmpty, ParentError, ParentLoading } from '../../components/parent/states';
+import {ParentError, ParentLoading} from '../../components/parent/states';
 import { friendly } from '../../lib/friendlyErrors';
 import { fmtDateShort } from '../../lib/format';
 import { getConsents, decideConsent, type ParentConsent } from '../../services/parentApi';

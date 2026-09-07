@@ -78,9 +78,12 @@ export function register(app, kernel) {
          FROM teacher.homework WHERE id=$1 AND created_by=$2`,
         [req.params.id, req.user.id])).rows[0];
       if (!hw) return bad(reply, 'We couldn\'t find that homework', 404);
+      // submissions key student_id to the signed-in student USER; the name rides the
+      // users row (roster ids and user ids are different animals)
       const subs = (await c.query(
-        `SELECT s.id, s.student_id, s.content_type, s.status, s.grade, s.feedback, s.submitted_at, s.reviewed_at, st.name AS student_name
-         FROM teacher.submission s LEFT JOIN app.students st ON st.id = s.student_id
+        `SELECT s.id, s.student_id, s.content_type, s.status, s.grade, s.feedback, s.submitted_at, s.reviewed_at,
+           su.name AS student_name
+         FROM teacher.submission s LEFT JOIN app.users su ON su.id = s.student_id
          WHERE s.homework_id=$1 ORDER BY s.submitted_at DESC`, [req.params.id])).rows;
       return { homework: hw, submissions: subs };
     });
@@ -128,13 +131,16 @@ export function register(app, kernel) {
     if (!REVIEW_STATUSES.includes(b.status)) return bad(reply, 'Review must set the work as reviewed, graded, or ask for a resubmission');
     if (b.grade != null && b.status !== 'graded') return bad(reply, 'A grade can only be recorded when the work is marked graded');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      // join pins review to the ASSIGNING teacher (privacy pin — never a colleague)
+      // fetch WITHOUT the owner filter first: a colleague's submission must answer 403
+      // "assigning teacher only" (the pin), never a dataless 404 that hides the rule
       const row = (await c.query(
         `SELECT s.id, s.status, s.homework_id, s.student_id, h.title, h.subject, h.created_by
          FROM teacher.submission s JOIN teacher.homework h ON h.id = s.homework_id
-         WHERE s.id=$1 AND h.created_by=$2 FOR UPDATE OF s`,
-        [req.params.id, req.user.id])).rows[0];
+         WHERE s.id=$1 FOR UPDATE OF s`,
+        [req.params.id])).rows[0];
       if (!row) return bad(reply, 'We couldn\'t find that submission', 404);
+      if (row.created_by !== req.user.id)
+        return bad(reply, 'Only the teacher who assigned this homework can review it', 403);
       if (b.grade != null && b.status === 'graded' && String(b.grade).trim() === '')
         return bad(reply, 'Add the grade you want to record, or leave it out');
       const upd = await c.query(
