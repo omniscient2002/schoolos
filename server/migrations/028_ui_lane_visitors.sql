@@ -22,6 +22,15 @@ SELECT s.tenant_id, s.id, 'Guardian of ' || s.name,
 FROM app.students s
 WHERE NOT EXISTS (SELECT 1 FROM app.guardians g WHERE g.student_id = s.id AND g.is_primary);
 
+-- Converge the documented drill pins on existing rows (idempotent: the live cast
+-- already carries these exact numbers — Aarav S. Sharma …0176, Diya Nair …0177).
+UPDATE app.guardians g SET phone = '+91 9720000176', name = 'Kavita Sharma'
+FROM app.students s WHERE g.student_id = s.id AND g.is_primary
+ AND s.name = 'Aarav Sharma' AND (g.phone <> '+91 9720000176' OR g.name <> 'Kavita Sharma');
+UPDATE app.guardians g SET phone = '+91 9720000177'
+FROM app.students s WHERE g.student_id = s.id AND g.is_primary
+ AND s.name = 'Diya Nair' AND g.phone <> '+91 9720000177';
+
 -- ── §2 · guarded ledger entry ────────────────────────────────────────────────────
 WITH cands AS (
   SELECT t.id AS tenant_id,

@@ -87,11 +87,11 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     assert.equal(ev.rows[0].n, 1);
   });
 
-  test('4 · wrong code → 401 + attempt bump; correct code → verified + OTP consumed', async () => {
+  test('4 · wrong code → 422 + attempt bump; correct code → verified + OTP consumed', async () => {
     const co = await loginAs(app, 'coordinator@meridian.edu');
     const wrong = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${pickupVisit}/pickup/verify`,
       payload: { code: '000000' }, headers: H(co.token) });
-    assert.equal(wrong.statusCode, 401);
+    assert.equal(wrong.statusCode, 422, 'invalid code is an OTP-state failure, NOT auth (UI lane #1: 401 collides with session-expiry)');
     const a = await sql(`SELECT otp_attempts FROM plugin_visitors.visit WHERE id=$1`, [pickupVisit]);
     assert.equal(a.rows[0].otp_attempts, 1, 'failed attempts tracked on the visit');
     // re-request from pickup_pending is REFUSED by design (anti-spam: one active code per visit)
@@ -185,5 +185,52 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     assert.equal(reg.rows[0].a, true);
     const ct = await sql(`SELECT plugin_id FROM app.capability_contracts WHERE capability_id='visitors.gate.pass'`);
     assert.equal(ct.rows[0].plugin_id, 'ops.visitors', 'contract linked to its plugin');
+  });
+  test('10 · expired-code re-verify → 409 (OTP-state ≠ auth; UI wrapper removal unblocked)', async () => {
+    const co = await loginAs(app, 'coordinator@meridian.edu');
+    // force the pending OTP into the expired state directly (no TTL wait)
+    const v = (await sql(`SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1 AND status='pickup_pending' ORDER BY created_at DESC LIMIT 1`, [pickupVisit])).rows[0];
+    if (v) { // pickupVisit already verified in test 4 — this branch only trips on fresh orders
+      await sql(`UPDATE app.auth_otps SET expires_at = now() - interval '1 minute' WHERE id=$1`, [v.otp_request_id]);
+      const late = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${pickupVisit}/pickup/verify`,
+        payload: { code: '000000' }, headers: H(co.token) });
+      assert.equal(late.statusCode, 409, 'expired code → 409, never 401');
+    }
+    // deterministic half: consumed-OTP path on a brand-new visit
+    const gv = await app.inject({ method: 'POST', url: '/plugins/ops.visitors/visitors',
+      payload: { visitorName: 'Expired OTP Parent', visitorPhone: '9833300111', purpose: 'pickup', studentId: student.id }, headers: H(co.token) });
+    assert.equal(gv.statusCode, 200, gv.body);
+    const vid = gv.json().visitId;
+    await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/checkin`, payload: {}, headers: H(co.token) });
+    const pr = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup`, payload: {}, headers: H(co.token) });
+    assert.equal(pr.statusCode, 200, pr.body);
+    const req2 = (await sql(`SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1`, [vid])).rows[0].otp_request_id;
+    await sql(`UPDATE app.auth_otps SET expires_at = now() - interval '1 minute' WHERE id=$1`, [req2]);
+    const late = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup/verify`,
+      payload: { code: '000000' }, headers: H(co.token) });
+    assert.equal(late.statusCode, 409, 'expired code → 409 (was 401: logged the desk out mid-verify)');
+  });
+
+  test('11 · guardian-lookup door: id, admission_no, name-tail; masked for the desk tier', async () => {
+    const co = await loginAs(app, 'coordinator@meridian.edu');
+    const byId = await app.inject({ method: 'GET', url: `/plugins/ops.visitors/guardian-lookup?studentId=${student.id}`, headers: H(co.token) });
+    assert.equal(byId.statusCode, 200, byId.body);
+    const m1 = byId.json().matches[0];
+    assert.equal(m1.studentId, student.id);
+    assert.ok(m1.guardian, 'primary guardian hydrated');
+    assert.equal(m1.guardian.phoneOnFile, true);
+    assert.match(m1.guardian.phoneTail, /^\d{4}$/, 'tail only — full numbers ride the OTP vault path');
+    assert.equal(m1.guardian.phone, undefined, 'no full PII to the desk tier');
+    const byAdm = await app.inject({ method: 'GET', url: `/plugins/ops.visitors/guardian-lookup?admissionNo=${m1.admissionNo}`, headers: H(co.token) });
+    assert.equal(byAdm.statusCode, 200);
+    assert.equal(byAdm.json().matches[0].studentId, student.id, 'admission_no resolves');
+    const byName = await app.inject({ method: 'GET', url: '/plugins/ops.visitors/guardian-lookup?q=Aarav', headers: H(co.token) });
+    assert.equal(byName.statusCode, 200);
+    assert.ok(byName.json().matches.some((m) => m.studentName.startsWith('Aarav')), 'name tail-match works');
+    const fin = await loginAs(app, 'finance@meridian.edu');
+    const denied = await app.inject({ method: 'GET', url: '/plugins/ops.visitors/guardian-lookup?q=Aarav', headers: H(fin.token) });
+    assert.equal(denied.statusCode, 403, 'desk-tier door (finance refused)');
+    const none = await app.inject({ method: 'GET', url: '/plugins/ops.visitors/guardian-lookup', headers: H(co.token) });
+    assert.equal(none.statusCode, 400, 'selector required');
   });
 });
