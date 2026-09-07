@@ -5,7 +5,7 @@
 // otp_vault_kernel_pattern. Uniform lifecycle gate on every door.
 export default {
   id: 'ops.visitors',
-  version: '1.0.0',
+  version: '1.0.2',
   class: 'C',
   description: 'Campus gate pass with guardian-verified student pickup. Front desk logs visitors, issues badges; student pickup raises an OTP to the primary guardian (kernel OTP-vault pattern, scrypt-hashed, TTL + attempt-bounded); release is fail-closed without verification.',
   policyRefs: ['Student safety · guardian pickup verification', 'Platform §2.4'],

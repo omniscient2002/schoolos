@@ -6,7 +6,7 @@
 // this file mirrors that row for the drop-in factory (no separate provisioning path).
 export default {
   id: 'pack.dpdp',
-  version: '1.0.0',
+  version: '1.1.1',
   class: 'C',
   description: 'DPDP Act 2023 compliance pack: immutable consent ledger, SAR (export/erasure) workflow through the kernel action spine, retention schedule hooks. Data-residency IN.',
   policyRefs: ['DPDP Act 2023 · consent and retention', 'Platform §2.4'],

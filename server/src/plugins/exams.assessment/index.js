@@ -12,6 +12,7 @@
 // Every marks write is audited (policy_ref CBSE pack obligations). All preHandlers async.
 import { createHash } from 'node:crypto';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 
 const ID = 'exams.assessment';
 
@@ -74,7 +75,7 @@ export function register(app, kernel) {
   });
 
   // ── marks entry (per-write audit; frozen once published) ─────────────────────
-  app.post(`/plugins/${ID}/exams/:id/marks`, { preHandler: [require(...EXAM_STAFF), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/exams/:id/marks`, { preHandler: [require(...EXAM_STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const { studentId, component, marks, maxMarks } = req.body ?? {};
     if (!studentId || marks == null) return bad(reply, 'studentId and marks are required');
     const m = Number(marks);
@@ -122,7 +123,7 @@ export function register(app, kernel) {
   });
 
   // ── publish request → kernel approval action (nothing assembled yet) ─────────
-  app.post(`/plugins/${ID}/exams/:id/publish`, { preHandler: [require(...EXAM_ADMIN), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/exams/:id/publish`, { preHandler: [require(...EXAM_ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT id, name, class_grade, status, weightage FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -155,7 +156,7 @@ export function register(app, kernel) {
   });
 
   // ── execute APPROVED publication — deterministic assembly + freeze (SoD-guarded) ──
-  app.post(`/plugins/${ID}/exams/:id/publish/execute`, { preHandler: [require(...EXAM_ADMIN), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/exams/:id/publish/execute`, { preHandler: [require(...EXAM_ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT * FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -207,7 +208,7 @@ export function register(app, kernel) {
   });
 
   // ── report card (post-publication; deterministic read) ───────────────────────
-  app.get(`/plugins/${ID}/exams/:id/reports/:studentId`, { preHandler: [require(...EXAM_STAFF), lifecycleGate] }, async (req, reply) => {
+  app.get(`/plugins/${ID}/exams/:id/reports/:studentId`, { preHandler: [require(...EXAM_STAFF), uuidParams('id', 'studentId'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = (await c.query(
         `SELECT id, snapshot, digest, created_at FROM plugin_exams.report WHERE exam_id=$1 AND student_id=$2 AND tenant_id=$3`,
@@ -218,8 +219,14 @@ export function register(app, kernel) {
         `SELECT adjusted_snapshot, decided_at FROM plugin_exams.moderation WHERE report_id=$1 AND status='approved' ORDER BY decided_at DESC LIMIT 1`,
         [r.id])).rows[0];
       if (mo?.adjusted_snapshot?.digest) {
-        return { report: mo.adjusted_snapshot.snapshot, digest: mo.adjusted_snapshot.digest, generatedAt: r.created_at,
-          moderated: true };
+        // P2-1 belt-and-braces: even a pre-hardening overlay cannot serve an absurd
+        // grade — re-derive on the way out and state the served pct explicitly
+        const snap = mo.adjusted_snapshot.snapshot ?? {};
+        const scale = (await q(`SELECT settings->>'grade_scale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+        const pct = Number(snap.pct);
+        const served = Number.isFinite(pct) && pct >= 0 && pct <= 100 ? { ...snap, ...gradeOf(pct, scale) } : r.snapshot;
+        return { report: served, digest: mo.adjusted_snapshot.digest, generatedAt: r.created_at,
+          moderated: Number.isFinite(pct) && pct >= 0 && pct <= 100 };
       }
       return { report: r.snapshot, digest: r.digest, generatedAt: r.created_at };
     });
@@ -230,7 +237,7 @@ export function register(app, kernel) {
   // spine — the proposer may not approve their own moderation. Marks stay untouched;
   // the report row's snapshot is replaced only on approval and the original digest is
   // preserved in the moderation record (audit chain).
-  app.post(`/plugins/${ID}/exams/:id/reports/:studentId/moderate`, { preHandler: [require(...MOD_TIER), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/exams/:id/reports/:studentId/moderate`, { preHandler: [require(...MOD_TIER), uuidParams('id', 'studentId'), lifecycleGate] }, async (req, reply) => {
     const { reason } = req.body ?? {};
     if (!reason || String(reason).trim().length < 4) return bad(reply, 'reason is required (min 4 chars)');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -251,13 +258,15 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/moderations/:mid/decide`, { preHandler: [require(...MOD_TIER), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/moderations/:mid/decide`, { preHandler: [require(...MOD_TIER), uuidParams('mid'), lifecycleGate] }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
     if (!['approved', 'rejected'].includes(decision)) return bad(reply, "decision must be 'approved' or 'rejected'");
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const m = (await c.query(`SELECT * FROM plugin_exams.moderation WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.mid, req.user.tenant_id])).rows[0];
       if (!m) return bad(reply, 'moderation not found', 404);
+      const r = (await c.query(`SELECT id, digest FROM plugin_exams.report WHERE id=$1`, [m.report_id])).rows[0];
+      if (!r) return bad(reply, 'underlying report not found', 404);
       if (m.status !== 'proposed') return bad(reply, `moderation already ${m.status}`, 409);
       if (m.proposed_by === req.user.id) {
         return reply.code(403).send({ error: 'proposer may not decide their own moderation (segregation of duties)' });
@@ -266,11 +275,23 @@ export function register(app, kernel) {
         // report rows stay IMMUTABLE (INSERT+SELECT grants only): the approved adjustment
         // lives as an overlay on the moderation record, self-describing with its own
         // digest; the read door serves latest-approved-overlay ?? original snapshot.
+        // P2-1 (cycle 6): trust NOTHING stored — pct must be a finite number in [0,100]
+        // (Number.isFinite, NOT truthiness: pct:0 is a legitimate adjustment), and the
+        // grade/points are RE-DERIVED via this module's gradeOf on the exam's scale;
+        // a hand-supplied grade can no longer reach the served report.
         const adj = req.body?.adjustedSnapshot;
-        if (!adj || typeof adj !== 'object' || !adj.pct) {
-          return bad(reply, "adjustedSnapshot (with pct + grade) is required to approve a moderation");
+        const scale = (await q(`SELECT settings->>'grade_scale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+        const pct = Number(adj?.pct);
+        if (!adj || typeof adj !== 'object' || !Number.isFinite(pct) || pct < 0 || pct > 100) {
+          return bad(reply, 'adjustedSnapshot.pct must be a finite number in [0,100]');
         }
-        const overlay = { snapshot: adj, digest: createHash('sha256').update(canonical(adj)).digest('hex') };
+        const corrected = { ...adj, pct, ...gradeOf(pct, scale) };
+        if (adj.grade != null && adj.grade !== corrected.grade) {
+          return bad(reply, `grade mismatch: ${adj.grade} is not derivable from pct ${pct} on scale ${scale} (${corrected.grade})`);
+        }
+        const overlay = { snapshot: corrected, correctsReportId: m.report_id,
+          originalDigest: r.digest,
+          digest: createHash('sha256').update(canonical(corrected)).digest('hex') };
         await c.query(
           `UPDATE plugin_exams.moderation SET status='approved', adjusted_snapshot=$2::jsonb, decided_by=$3, decided_at=now(), updated_at=now() WHERE id=$1`,
           [m.id, JSON.stringify(overlay), req.user.email]);

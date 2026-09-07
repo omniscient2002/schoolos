@@ -1,4 +1,5 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 // health.clinic — infirmary log, sick passes, guardian health notices (wave 3).
 // Visits are append-first: corrections append a new row, the log is never rewritten.
 // sent_home / hospital_referral outcomes raise a per-instance kernel approval action
@@ -42,30 +43,7 @@ export function register(app, kernel) {
         'clinic.visit.logged.v1',
         { visitId: v.id, studentId: student.id, action, visitedAt: v.visited_at });
       // guardian notice: APPROVED communication via per-instance kernel action (Comms §1.2)
-      let noticeActionId = null;
-      if (action === 'sent_home' || action === 'hospital_referral') {
-        const s = (await c.query(
-          `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='${ID}'`,
-          [req.user.tenant_id])).rows[0]?.settings ?? {};
-        const flag = action === 'sent_home' ? 'notify_on_sent_home' : 'notify_on_referral';
-        if (s[flag] !== false) { // default true
-          const isReferral = action === 'hospital_referral';
-          noticeActionId = (await c.query(
-            `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-             VALUES ($1, $2, 'approval', $3, $4, $5, $6, 'open', NULL, 'principal', 'Comms §1.2 · DPDP Act 2023 (health PII)', false, $7, $8)
-             RETURNING id`,
-            [req.user.tenant_id, `clinic.notify.${v.id}`,
-             isReferral ? `Guardian notice: hospital referral — ${student.name}` : `Guardian notice: sent home — ${student.name}`,
-             isReferral ? `${student.name} was referred to a hospital from the infirmary today (complaint: ${String(b.complaint).slice(0, 120)}). Please arrange pickup.` :
-               `${student.name} was sent home from the infirmary today (complaint: ${String(b.complaint).slice(0, 120)}). Rest advised.`,
-             'guardian must be informed of health events (school duty of care)', isReferral ? 'high' : 'normal',
-             v.id,
-             JSON.stringify({ kind: 'message', visitId: v.id, action, audience: 'guardians', channel: 'WhatsApp',
-               template: isReferral ? 'CLINIC_REFERRAL' : 'CLINIC_SENT_HOME',
-               draft: isReferral ? `${student.name} was referred to a hospital from the infirmary today. Please arrange pickup at the earliest.` :
-                 `${student.name} was sent home from the infirmary today. Rest advised; keep the child home for the day.`})])).rows[0].id;
-        }
-      }
+      const noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, v.id, student, action, String(b.complaint));
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: `Clinic visit logged (${action})`, recordType: 'ClinicVisit', recordRef: v.id,
         reason: 'infirmary log', policyRef: 'Health · DPDP Act 2023 (health PII)', risk: isSensitive(action) ? 'high' : 'medium',
@@ -75,7 +53,7 @@ export function register(app, kernel) {
   });
 
   // append a correction — the original row is never rewritten (append-first)
-  app.post(`/plugins/${ID}/visits/:id/correct`, { preHandler: [require(...NURSE), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visits/:id/correct`, { preHandler: [require(...NURSE), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.correction) return bad(reply, 'correction text required');
     if (b.action && !ACTIONS.includes(b.action)) return bad(reply, `action must be one of ${ACTIONS.join(', ')}`);
@@ -94,16 +72,23 @@ export function register(app, kernel) {
         { type: 'clinic', label: 'Clinic visit corrected (appended)', ref: corr.id },
         'clinic.visit.logged.v1',
         { visitId: corr.id, correctsVisitId: orig.id, studentId: orig.student_id, action });
+      // P3-3 (cycle 6): a correction that ESCALATES the action class re-fires the
+      // guardian notice (duty of care) — per-instance code on the correction row id
+      const SEVERE = ['sent_home', 'hospital_referral'];
+      let noticeActionId = null;
+      if (action !== orig.action && SEVERE.includes(action)) {
+        noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, corr.id, { name: (await c.query(`SELECT name FROM app.students WHERE id=$1`, [orig.student_id])).rows[0]?.name ?? 'student' }, action, orig.complaint);
+      }
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Clinic visit correction appended', recordType: 'ClinicVisit', recordRef: corr.id,
         reason: 'log integrity: append, never rewrite', policyRef: 'Health · audit trail', risk: 'medium',
         outcome: `correction of ${orig.id} appended as ${corr.id}` });
-      return { ok: true, correctionId: corr.id, correctsVisitId: orig.id };
+      return { ok: true, correctionId: corr.id, correctsVisitId: orig.id, noticeActionId };
     });
   });
 
   // sick pass — class-release authorization tied to a visit
-  app.post(`/plugins/${ID}/visits/:id/sick-pass`, { preHandler: [require(...NURSE), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visits/:id/sick-pass`, { preHandler: [require(...NURSE), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(
         `SELECT id, student_id FROM plugin_clinic.visit WHERE id=$1 AND tenant_id=$2`,
@@ -146,7 +131,7 @@ export function register(app, kernel) {
   });
 
   // revoke a pass — office lane (returned unexpectedly, wrong student, etc.)
-  app.post(`/plugins/${ID}/sick-passes/:id/revoke`, { preHandler: [require('owner', 'principal', 'itadmin'), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/sick-passes/:id/revoke`, { preHandler: [require('owner', 'principal', 'itadmin'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const p = (await c.query(
         `SELECT id, status FROM plugin_clinic.sick_pass WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
@@ -161,6 +146,33 @@ export function register(app, kernel) {
     });
   });
 
+  // APPROVED communication via per-instance kernel action — shared by the visit log
+  // door and the correction-escalation path (Comms §1.2; never a plugin-direct send)
+  async function raiseGuardianNotice(c, tenantId, visitRef, student, action, complaint) {
+    const s = (await c.query(
+      `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='${ID}'`,
+      [tenantId])).rows[0]?.settings ?? {};
+    const SEVERE = ['sent_home', 'hospital_referral']; // notices are for these ONLY (P3-3 refactor guard)
+    if (!SEVERE.includes(action)) return null;
+    const flag = action === 'sent_home' ? 'notify_on_sent_home' : 'notify_on_referral';
+    if (s[flag] === false) return null; // disabled by settings
+    const isReferral = action === 'hospital_referral';
+    const name = student?.name ?? 'the student';
+    return (await c.query(
+      `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
+       VALUES ($1, $2, 'approval', $3, $4, $5, $6, 'open', NULL, 'principal', 'Comms §1.2 · DPDP Act 2023 (health PII)', false, $7, $8)
+       RETURNING id`,
+      [tenantId, `clinic.notify.${visitRef}`,
+       isReferral ? `Guardian notice: hospital referral — ${name}` : `Guardian notice: sent home — ${name}`,
+       isReferral ? `${name} was referred to a hospital from the infirmary today (complaint: ${String(complaint).slice(0, 120)}). Please arrange pickup.` :
+         `${name} was sent home from the infirmary today (complaint: ${String(complaint).slice(0, 120)}). Rest advised.`,
+       'guardian must be informed of health events (school duty of care)', isReferral ? 'high' : 'normal',
+       visitRef,
+       JSON.stringify({ kind: 'message', visitId: visitRef, action, audience: 'guardians', channel: 'WhatsApp',
+         template: isReferral ? 'CLINIC_REFERRAL' : 'CLINIC_SENT_HOME',
+         draft: isReferral ? `${name} was referred to a hospital from the infirmary today. Please arrange pickup at the earliest.` :
+           `${name} was sent home from the infirmary today. Rest advised; keep the child home for the day.`})])).rows[0].id;
+  }
   function bad(reply, error, code = 400) { return reply.code(code).send({ error }); }
   function isSensitive(action) { return action === 'hospital_referral'; }
   async function sickPassTtlHours(c, tenantId) {

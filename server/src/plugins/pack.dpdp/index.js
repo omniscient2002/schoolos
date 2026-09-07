@@ -8,6 +8,7 @@
 // sar_sla_tracked). Events: consent.recorded.v1 · sar.opened.v1 · sar.fulfilled.v1.
 // All preHandlers async (Fastify 5 law).
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 
 const ID = 'pack.dpdp';
 
@@ -36,7 +37,9 @@ export function register(app, kernel) {
     if (!subjectRef || !purpose || !['granted', 'withdrawn'].includes(decision)) {
       return reply.code(400).send({ error: "subjectRef, purpose, decision ('granted'|'withdrawn') are required" });
     }
-    if (!PHONE.test(String(subjectRef))) return reply.code(400).send({ error: 'subjectRef looks invalid (guardian phone)' });
+    // P3-1 (cycle 6): normalize BEFORE validating — spaced variants of any length meet
+    // the E.164 contract; the regex judges the normalized form, not the raw input
+    if (!PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'subjectRef looks invalid (guardian phone)' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
@@ -99,7 +102,7 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/dsr`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
     const { kind, subjectRef, note } = req.body ?? {};
     if (!['export', 'erasure'].includes(kind)) return reply.code(400).send({ error: "kind must be 'export' or 'erasure'" });
-    if (!subjectRef || !PHONE.test(String(subjectRef))) return reply.code(400).send({ error: 'subjectRef (guardian phone) required' });
+    if (!subjectRef || !PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'subjectRef (guardian phone) required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const open = (await c.query(
         `SELECT id FROM plugin_dpdp.sar WHERE tenant_id=$1 AND subject_ref=$2 AND kind=$3 AND status='open' LIMIT 1`,
@@ -154,7 +157,7 @@ export function register(app, kernel) {
   });
 
   // ── export bundle (only after kernel approval + execution) ───────────────────
-  app.get(`/plugins/${ID}/dsr/:id/export`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+  app.get(`/plugins/${ID}/dsr/:id/export`, { preHandler: [require(...DPO), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -170,7 +173,7 @@ export function register(app, kernel) {
   });
 
   // ── execute an APPROVED SAR (kernel-gated; this door never approves) ─────────
-  app.post(`/plugins/${ID}/dsr/:id/execute`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/dsr/:id/execute`, { preHandler: [require(...DPO), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];

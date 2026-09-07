@@ -7,6 +7,7 @@
 // semantics and the plugin NEVER writes app.students directly. No money surfaces
 // (fee collection is payments.upi's lane). All preHandlers async (Fastify 5 law).
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 
 const ID = 'admissions.funnel';
 
@@ -154,7 +155,7 @@ export function register(app, kernel) {
   });
 
   // ── stage transition (admin roles; lattice enforced server-side) ─────────────
-  app.post(`/plugins/${ID}/leads/:id/stage`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/leads/:id/stage`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const to = String(req.body?.to ?? '');
     if (!STAGES.includes(to)) return reply.code(400).send({ error: `unknown stage (valid: ${STAGES.join(', ')})` });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -209,7 +210,7 @@ export function register(app, kernel) {
   });
 
   // ── stage history (admin roles) ──────────────────────────────────────────────
-  app.get(`/plugins/${ID}/leads/:id/history`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {
+  app.get(`/plugins/${ID}/leads/:id/history`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
         `SELECT from_stage, to_stage, actor, at FROM plugin_admissions.stage_history

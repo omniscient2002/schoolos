@@ -1,4 +1,5 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 // hr.leave — staff leave marking + duty roster (wave 3, locked list).
 // Emits staff.leave.marked.v1 / staff.leave.cancelled.v1 — the absence FACTS that
 // ops.timetable consumes when its absence_feed setting is 'hr.leave' (021 contract).
@@ -48,8 +49,8 @@ export function register(app, kernel) {
           actor: req.user.name, action: `Staff leave marked (${b.kind})`, recordType: 'Leave', recordRef: r.id,
           reason: b.reason ?? 'office marking', policyRef: 'HR §1.4 · timetable absence_feed=hr.leave', risk: 'low',
           outcome: `absence fact published for ${b.leaveDate} (staff.leave.marked.v1)` });
+        await c.query('RELEASE SAVEPOINT leave_insert'); // P3-4 (cycle 6): before the return — dead code otherwise
         return { ok: true, leaveId: r.id, staffId: staff.id, staffName: staff.name, leaveDate: b.leaveDate, kind: b.kind, status: r.status };
-        await c.query('RELEASE SAVEPOINT leave_insert');
       } catch (e) {
         if (e?.code === '23505') { // leave_staff_day_unique backstop (cycle-5 P1-2 pattern)
           await c.query('ROLLBACK TO SAVEPOINT leave_insert');
@@ -63,7 +64,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/leave/:id/cancel`, { preHandler: [require(...OFFICE), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/leave/:id/cancel`, { preHandler: [require(...OFFICE), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const l = (await c.query(
         `SELECT id, staff_id, leave_date, kind, status FROM plugin_hr.leave WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,

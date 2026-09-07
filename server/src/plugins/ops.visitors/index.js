@@ -6,8 +6,9 @@
 // withUser). Release is FAIL-CLOSED: a pickup visit cannot complete without guardian
 // verification (audited owner/principal override is the only bypass). Uniform
 // lifecycle gate on every door (P2-1 posture). All preHandlers async (Fastify 5 law).
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js';
 import { config } from '../../config.js';
 
 const ID = 'ops.visitors';
@@ -84,7 +85,12 @@ export function register(app, kernel) {
       const clauses = []; const params = [req.user.tenant_id];
       if (studentId) { params.push(String(studentId)); clauses.push(`s.id=$${params.length}`); }
       if (admissionNo) { params.push(String(admissionNo)); clauses.push(`s.admission_no=$${params.length}`); }
-      if (nameQuery) { params.push(`%${String(nameQuery)}%`); clauses.push(`s.name ILIKE $${params.length}`); }
+      if (nameQuery) {
+        // P3-5 (cycle 6): escape ILIKE wildcards — q is a substring, not a pattern
+        const esc = String(nameQuery).replace(/([%_\\])/g, '\\$1');
+        params.push(`%${esc}%`);
+        clauses.push(`s.name ILIKE $${params.length} ESCAPE '\\'`);
+      }
       const rows = (await c.query(
         `SELECT s.id, s.admission_no, s.name, s.grade, s.section,
                 g.name AS guardian_name, g.relation, g.phone,
@@ -102,7 +108,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/visitors/:id/checkin`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visitors/:id/checkin`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, purpose FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -120,7 +126,7 @@ export function register(app, kernel) {
   });
 
   // ── request pickup (raises guardian OTP through the kernel vault) ────────────
-  app.post(`/plugins/${ID}/visitors/:id/pickup`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visitors/:id/pickup`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, student_ref FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -133,7 +139,7 @@ export function register(app, kernel) {
       if (!g) return bad(reply, 'no primary guardian phone on file — manual verification (photo ID at desk) required', 409);
       // kernel OTP-vault write (owner path): scrypt+salt hash, TTL from settings
       const s = (await settings(req.user.tenant_id)).rows[0]?.settings ?? {};
-      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const code = String(randomInt(100000, 1000000)); // P3-2 (cycle 6): CSPRNG — Math.random is not a secret source
       const salt = randomBytes(16).toString('hex');
       const hash = scryptSync(code, salt, 64).toString('hex');
       // kernel OTP-vault write (owner path): the app role is RLS-denied on the vault —
@@ -156,7 +162,7 @@ export function register(app, kernel) {
   });
 
   // ── verify pickup code (pickup_pending → verified; consumes the vault OTP) ───
-  app.post(`/plugins/${ID}/visitors/:id/pickup/verify`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visitors/:id/pickup/verify`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const { code } = req.body ?? {};
     if (!code) return bad(reply, 'code required');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -190,7 +196,7 @@ export function register(app, kernel) {
   });
 
   // ── complete (release / departure) — FAIL-CLOSED for pickup visits ───────────
-  app.post(`/plugins/${ID}/visitors/:id/complete`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visitors/:id/complete`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const override = req.body?.override === true;
     const note = req.body?.note ? String(req.body.note).slice(0, 200) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -222,7 +228,7 @@ export function register(app, kernel) {
   });
 
   // ── deny (front desk refuses entry) ──────────────────────────────────────────
-  app.post(`/plugins/${ID}/visitors/:id/deny`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/visitors/:id/deny`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const note = req.body?.note ? String(req.body.note).slice(0, 200) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,

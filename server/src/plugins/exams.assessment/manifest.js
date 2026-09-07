@@ -4,7 +4,7 @@
 // approval_before_publish · no_cross_tenant_marks.
 export default {
   id: 'exams.assessment',
-  version: '1.0.0',
+  version: '1.0.1',
   class: 'D',
   description: 'Examination primitives: marks entry, deterministic report-card assembly, publication via the kernel approval spine. Marks freeze read-only at publication; nothing guardian-visible before approval.',
   policyRefs: ['CBSE pack obligations', 'Platform §3 (plugin governance)'],
