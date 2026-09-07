@@ -95,14 +95,17 @@ export function register(app, kernel) {
       // P1-2 backstop: the check-then-insert above can race (two offices, same walk-in);
       // the partial unique index (migration 027) turns the loser's 23505 into a friendly 409.
       let r;
+      await c.query('SAVEPOINT lead_insert'); // a 23505 aborts the txn — the catch rolls back to here
       try {
         r = await c.query(
           `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, notes)
            VALUES ($1,$2,$3,$4,$5,$6,$7, jsonb_build_object('admission_year',$8::text)) RETURNING id`,
           [req.user.tenant_id, String(studentName).slice(0, 120), guardianName ? String(guardianName).slice(0, 120) : null,
             phone, String(classApplied).slice(0, 40), String(source ?? 'walk-in').slice(0, 40), req.user.id, ay]);
+        await c.query('RELEASE SAVEPOINT lead_insert');
       } catch (e) {
         if (e?.code === '23505') {
+          await c.query('ROLLBACK TO SAVEPOINT lead_insert');
           const winner = (await c.query(
             `SELECT id FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2 AND class_applied=$3
               AND COALESCE(notes->>'admission_year','')=$4 AND stage IN ('enquiry','form','interaction','offer') LIMIT 1`,

@@ -30,8 +30,13 @@ export function register(app, kernel) {
       const istNow = new Date(Date.now() + 5.5 * 3600 * 1000);
       const today = istNow.toISOString().slice(0, 10);
       if (String(b.leaveDate) < today) return bad(reply, `leaveDate ${b.leaveDate} is in the past (today is ${today} IST)`, 400);
+      // the per-staff-day unique index is the race backstop; inside withUser a failed
+      // statement aborts the transaction, so the catch must ROLLBACK TO SAVEPOINT
+      // before it can query for the friendly 409
+      await c.query('SAVEPOINT leave_insert');
+      let r;
       try {
-        const r = (await c.query(
+        r = (await c.query(
           `INSERT INTO plugin_hr.leave (tenant_id, staff_id, leave_date, kind, reason, marked_by)
            VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, staff_id, leave_date, kind, status`,
           [req.user.tenant_id, staff.id, b.leaveDate, b.kind, b.reason ? String(b.reason).slice(0, 500) : null, req.user.id])).rows[0];
@@ -44,8 +49,10 @@ export function register(app, kernel) {
           reason: b.reason ?? 'office marking', policyRef: 'HR §1.4 · timetable absence_feed=hr.leave', risk: 'low',
           outcome: `absence fact published for ${b.leaveDate} (staff.leave.marked.v1)` });
         return { ok: true, leaveId: r.id, staffId: staff.id, staffName: staff.name, leaveDate: b.leaveDate, kind: b.kind, status: r.status };
+        await c.query('RELEASE SAVEPOINT leave_insert');
       } catch (e) {
         if (e?.code === '23505') { // leave_staff_day_unique backstop (cycle-5 P1-2 pattern)
+          await c.query('ROLLBACK TO SAVEPOINT leave_insert');
           const dupe = (await c.query(
             `SELECT id FROM plugin_hr.leave WHERE tenant_id=$1 AND staff_id=$2 AND leave_date=$3 AND status='marked'`,
             [req.user.tenant_id, staff.id, b.leaveDate])).rows[0];
@@ -86,7 +93,7 @@ export function register(app, kernel) {
          ORDER BY u.name`, [req.user.tenant_id, req.params.date])).rows;
       const onDuty = (await c.query(
         `SELECT u.id, u.name, u.role FROM app.users u
-         WHERE u.tenant_id=$1 AND u.role <> 'parent' AND u.is_active
+         WHERE u.tenant_id=$1 AND u.role <> 'parent' AND u.active
            AND NOT EXISTS (SELECT 1 FROM plugin_hr.leave l
                            WHERE l.tenant_id=$1 AND l.staff_id=u.id AND l.leave_date=$2 AND l.status='marked')
          ORDER BY u.name`, [req.user.tenant_id, req.params.date])).rows;

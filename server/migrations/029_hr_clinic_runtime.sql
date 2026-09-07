@@ -39,6 +39,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS leave_staff_day_unique ON plugin_hr.leave (ten
 CREATE INDEX IF NOT EXISTS leave_date_idx ON plugin_hr.leave (tenant_id, leave_date);
 GRANT SELECT, INSERT, UPDATE ON plugin_hr.leave TO schoolos_app;
 ALTER TABLE plugin_hr.leave ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS hr_leave_tenant_isolation ON plugin_hr.leave;
 CREATE POLICY hr_leave_tenant_isolation ON plugin_hr.leave
   USING (tenant_id = current_setting('schoolos.tenant_id')::uuid)
   WITH CHECK (tenant_id = current_setting('schoolos.tenant_id')::uuid);
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS plugin_clinic.visit (
 CREATE INDEX IF NOT EXISTS clinic_visit_student_idx ON plugin_clinic.visit (tenant_id, student_id, visited_at DESC);
 GRANT SELECT, INSERT, UPDATE ON plugin_clinic.visit TO schoolos_app;
 ALTER TABLE plugin_clinic.visit ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS clinic_visit_tenant_isolation ON plugin_clinic.visit;
 CREATE POLICY clinic_visit_tenant_isolation ON plugin_clinic.visit
   USING (tenant_id = current_setting('schoolos.tenant_id')::uuid)
   WITH CHECK (tenant_id = current_setting('schoolos.tenant_id')::uuid);
@@ -87,20 +89,23 @@ CREATE INDEX IF NOT EXISTS sick_pass_visit_idx ON plugin_clinic.sick_pass (tenan
 CREATE INDEX IF NOT EXISTS sick_pass_student_idx ON plugin_clinic.sick_pass (tenant_id, student_id, status);
 GRANT SELECT, INSERT, UPDATE ON plugin_clinic.sick_pass TO schoolos_app;
 ALTER TABLE plugin_clinic.sick_pass ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sick_pass_tenant_isolation ON plugin_clinic.sick_pass;
 CREATE POLICY sick_pass_tenant_isolation ON plugin_clinic.sick_pass
   USING (tenant_id = current_setting('schoolos.tenant_id')::uuid)
   WITH CHECK (tenant_id = current_setting('schoolos.tenant_id')::uuid);
 
 -- ── registry rows (factory-authored, 018/021 precedent) ─────────────────────────
-INSERT INTO app.plugins (tenant_id, plugin_id, name, version, class, trust, status, manifest)
-SELECT t.id, 'hr.leave', 'HR Leave & Duty Roster', '1.0.0', 'C', 'T1', 'registered',
-  '{"id":"hr.leave","name":"HR Leave & Duty Roster","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"Staff leave marking and the daily duty roster. Emits staff.leave.marked.v1 / staff.leave.cancelled.v1 — the absence facts consumed by ops.timetable when its absence_feed setting is set to hr.leave (021 contract). Leave marking is an office operation (principal/owner lane); the roster read is the coordination desk lane. No communication rail use — absence is a fact, not a parent notice.","permissions":["users.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"staff.leave.marked","schema":"v1"},{"type":"staff.leave.cancelled","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"absence_feed_contract":{"type":"string","default":"ops.timetable absence_feed=hr.leave consumes staff.leave.marked.v1 (spine, per staff-day unique)","description":"Consumption contract note for the timetable slot"}}},"data":{"schema":"plugin_hr.leave (RLS-scoped)","core_refs":["users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"operations"},"dependencies":[],"defaultEnabled":false}'::jsonb
+INSERT INTO app.plugins (tenant_id, plugin_id, version, class, status, manifest, permissions)
+SELECT t.id, 'hr.leave', '1.0.0', 'C', 'registered',
+  '{"id":"hr.leave","name":"HR Leave & Duty Roster","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"Staff leave marking and the daily duty roster. Emits staff.leave.marked.v1 / staff.leave.cancelled.v1 — the absence facts consumed by ops.timetable when its absence_feed setting is set to hr.leave (021 contract). Leave marking is an office operation (principal/owner lane); the roster read is the coordination desk lane. No communication rail use — absence is a fact, not a parent notice.","permissions":["users.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"staff.leave.marked","schema":"v1"},{"type":"staff.leave.cancelled","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"absence_feed_contract":{"type":"string","default":"ops.timetable absence_feed=hr.leave consumes staff.leave.marked.v1 (spine, per staff-day unique)","description":"Consumption contract note for the timetable slot"}}},"data":{"schema":"plugin_hr.leave (RLS-scoped)","core_refs":["users.id"],"retention":{"on_uninstall":"export_then_purge_30d"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"operations"},"dependencies":[],"defaultEnabled":false}'::jsonb,
+  '["users.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
 WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='hr.leave');
 
-INSERT INTO app.plugins (tenant_id, plugin_id, name, version, class, trust, status, manifest)
-SELECT t.id, 'health.clinic', 'Health Clinic', '1.0.0', 'C', 'T1', 'registered',
-  '{"id":"health.clinic","name":"Health Clinic","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"Infirmary log, sick passes and guardian health notices. Visits are append-first (corrections append); sent-home and hospital-referral outcomes raise a per-instance kernel approval action (clinic.notify.<visitId>) executed by the decide handler onto the comms rail — guardian notice is an approved communication, never a plugin-direct send (Comms §1.2). Health history is nurse-lane PII: no teacher/finance/parent read.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"clinic.visit.logged","schema":"v1"},{"type":"clinic.sick_pass.issued","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"notify_on_sent_home":{"type":"boolean","default":true,"description":"Raise the guardian-notice action when a visit ends sent_home"},"notify_on_referral":{"type":"boolean","default":true,"description":"Raise the guardian-notice action on hospital_referral"},"sick_pass_ttl_hours":{"type":"number","default":8,"description":"Sick-pass validity window (hours)"}}},"data":{"schema":"plugin_clinic.visit, plugin_clinic.sick_pass (RLS-scoped)","core_refs":["students.id"],"retention":{"on_uninstall":"export_then_purge_30d","note":"health records follow school medical-retention norms; export-then-purge on uninstall"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"operations"},"dependencies":[],"defaultEnabled":false}'::jsonb
+INSERT INTO app.plugins (tenant_id, plugin_id, version, class, status, manifest, permissions)
+SELECT t.id, 'health.clinic', '1.0.0', 'C', 'registered',
+  '{"id":"health.clinic","name":"Health Clinic","version":"1.0.0","kernel":">=1.0.0 <2.0.0","class":"C","trust":"T1","description":"Infirmary log, sick passes and guardian health notices. Visits are append-first (corrections append); sent-home and hospital-referral outcomes raise a per-instance kernel approval action (clinic.notify.<visitId>) executed by the decide handler onto the comms rail — guardian notice is an approved communication, never a plugin-direct send (Comms §1.2). Health history is nurse-lane PII: no teacher/finance/parent read.","permissions":["students.read","events.emit","audit.request"],"events":{"subscribe":[],"publish":[{"type":"clinic.visit.logged","schema":"v1"},{"type":"clinic.sick_pass.issued","schema":"v1"}]},"eventSubscriptions":[],"slots":["settings","reports"],"routes":[],"widgets":[],"settingsSchema":{"type":"object","properties":{"notify_on_sent_home":{"type":"boolean","default":true,"description":"Raise the guardian-notice action when a visit ends sent_home"},"notify_on_referral":{"type":"boolean","default":true,"description":"Raise the guardian-notice action on hospital_referral"},"sick_pass_ttl_hours":{"type":"number","default":8,"description":"Sick-pass validity window (hours)"}}},"data":{"schema":"plugin_clinic.visit, plugin_clinic.sick_pass (RLS-scoped)","core_refs":["students.id"],"retention":{"on_uninstall":"export_then_purge_30d","note":"health records follow school medical-retention norms; export-then-purge on uninstall"},"residency":["IN"]},"regions":["IN"],"residency":"IN","billing":{"model":"pack","pack":"operations"},"dependencies":[],"defaultEnabled":false}'::jsonb,
+  '["students.read","events.emit","audit.request"]'::jsonb
 FROM app.tenants t
 WHERE NOT EXISTS (SELECT 1 FROM app.plugins p WHERE p.plugin_id='health.clinic');
 
