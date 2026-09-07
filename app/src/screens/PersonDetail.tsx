@@ -163,7 +163,7 @@ function StudentDetail({ person }: { person: Person }) {
         : fees.due > 0
           ? `${fmtMoneyShort(fees.due)} due across ${fees.items.length} obligations${fees.overdue > 0 ? ` · ${fmtMoneyShort(fees.overdue)} overdue` : ''}`
           : `All ${fees.items.length} obligations settled · ${fmtMoneyShort(fees.paid)} paid this year`,
-      source: 'Fee ledger',
+      source: 'Fees records',
       refType: 'fees',
     },
     {

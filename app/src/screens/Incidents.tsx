@@ -46,7 +46,7 @@ const CAMPUS_LABEL: Record<IncidentRecord['campus'], string> = { north: 'North',
 function linkedFor(inc: IncidentRecord): { label: string; ref: string }[] {
   switch (inc.kind) {
     case 'transport': return [{ label: 'Routes & live status', ref: '/transport' }, { label: 'Attendance leniency', ref: '/attendance' }];
-    case 'payment': return [{ label: 'Fee ledger', ref: '/fees' }, { label: 'Reconciliation case', ref: '/cases' }];
+    case 'payment': return [{ label: 'Fees records', ref: '/fees' }, { label: 'Payment matching case', ref: '/cases' }];
     case 'facilities': return [{ label: 'Maintenance flagship', ref: '/maintenance' }];
     case 'student': return [{ label: 'Operations desk', ref: '/operations' }];
     case 'compliance': return [{ label: 'Obligations', ref: '/operations' }];
@@ -283,7 +283,7 @@ export default function Incidents() {
             </div>
 
             <div className="u-xs u-faint">
-              Detected {fmtDate(selected.openedOn)} — this incident and its full timeline are preserved in the audit ledger; entries cannot be edited or deleted.
+              Detected {fmtDate(selected.openedOn)} — this incident and its full timeline are preserved in the audit trail; entries cannot be edited or deleted.
             </div>
           </div>
         )}

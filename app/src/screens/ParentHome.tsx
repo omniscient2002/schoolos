@@ -97,7 +97,7 @@ export default function ParentHome() {
     setPayState('processing');
     setTimeout(() => {
       setPayState('done');
-      toast({ title: 'Receipt sent on WhatsApp', sub: 'Payment recorded in the school fee ledger.', tone: 'success' });
+      toast({ title: 'Receipt sent on WhatsApp', sub: 'Payment recorded in the school fees record.', tone: 'success' });
     }, 1200);
   };
   const resetPay = () => { setPayOpen(false); setPayState('form'); };
@@ -317,7 +317,7 @@ export default function ParentHome() {
             </span>
             <div style={{ fontWeight: 620 }}>Payment successful</div>
             <div className="u-small u-muted">
-              Receipt sent on WhatsApp to {guardianName}. The fee ledger updates instantly — no late fee applies (Fees §4.3).
+              Receipt sent on WhatsApp to {guardianName}. The fees record updates instantly — no late fee applies (Fees §4.3).
             </div>
           </div>
         ) : (

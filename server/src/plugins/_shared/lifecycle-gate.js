@@ -10,7 +10,15 @@ export function makeLifecycleGate(q, pluginId) {
     const row = (await q(`SELECT status FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
       [req.user.tenant_id, pluginId])).rows[0];
     if (!row || !['enabled', 'active', 'degraded'].includes(row.status)) {
-      return reply.code(409).send({ error: `${pluginId} is not enabled for this tenant` });
+      // plain-language copy pass: the plugin id is support detail, the desk needs the ask
+      const FRIENDLY = {
+        'ops.visitors': 'Visitors', 'ops.timetable': 'Timetable', 'hr.leave': 'Leave & duty roster',
+        'health.clinic': 'Health clinic', 'exams.assessment': 'Exams', 'admissions.funnel': 'Admissions',
+        'pack.dpdp': 'Data requests (DPDP)', 'pack.cbse': 'CBSE pack', 'payments.upi': 'Fee payments',
+        'transport.gps': 'Transport', 'comms.whatsapp': 'WhatsApp updates', 'accounting.tally': 'Accounting',
+      };
+      const label = FRIENDLY[pluginId] ?? pluginId.split('.')[0].replace(/^./, (c) => c.toUpperCase());
+      return reply.code(409).send({ error: `${label} is switched off — ask the school owner to turn it on` });
     }
   };
 }

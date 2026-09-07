@@ -19,6 +19,7 @@ import {
   PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Modal, Dropdown,
 } from '../components/ui';
 import { fmtRelative } from '../lib/format';
+import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import {
   LIVE_API, apiVisitorsList, apiVisitorLog, apiVisitorCheckin, apiVisitorPickup,
@@ -89,7 +90,7 @@ export default function VisitorsBoard() {
     setLoading(true); setError(null);
     apiVisitorsList()
       .then(d => { if (liveReq) { setVisits(d.visits); setLoading(false); } })
-      .catch(e => { if (liveReq) { setError(String(e)); setLoading(false); } });
+      .catch(e => { if (liveReq) { setError(friendly(e)); setLoading(false); } });
     return () => { liveReq = false; };
   }, [tick, desk]);
 
@@ -111,7 +112,7 @@ export default function VisitorsBoard() {
         const r = await apiVisitorPickup(v.id);
         setDevCode(r.devCode ?? null);
         toast({ title: 'Pickup OTP raised', sub: `6-digit code sent to the primary guardian · valid ${r.ttlMinutes}m (single-use, attempt-bounded).`, tone: 'success' });
-        auditEntry(v, 'Pickup OTP raised', `OTP issued to primary guardian, TTL ${r.ttlMinutes}m — secret in kernel vault`, 'medium');
+        auditEntry(v, 'Pickup OTP raised', `Code sent to the guardian, valid ${r.ttlMinutes} minutes — stored encrypted`, 'medium');
       }
       if (what === 'complete') {
         const r = await apiVisitorComplete(v.id, override, noteText);
@@ -127,7 +128,7 @@ export default function VisitorsBoard() {
       setTick(t => t + 1);
     } catch (e) {
       /* server law surfaces verbatim — the fail-closed message is the feature */
-      toast({ title: 'Action blocked', sub: String(e).replace('Error: ', ''), tone: 'error' });
+      toast({ title: 'Action blocked', sub: friendly(e), tone: 'error' });
     } finally { setBusyId(null); }
   };
 
@@ -145,7 +146,7 @@ export default function VisitorsBoard() {
       auditEntry({ badge: r.badge, visitorName: logName.trim() } as ApiVisitorVisit, 'Visitor logged', `expected (${logPurpose}) · badge ${r.badge}`, 'low');
       setTick(t => t + 1);
     } catch (e) {
-      toast({ title: 'Could not log visitor', sub: String(e).replace('Error: ', ''), tone: 'error' });
+      toast({ title: 'Could not log visitor', sub: friendly(e), tone: 'error' });
     } finally { setLogBusy(false); }
   };
 
@@ -159,7 +160,7 @@ export default function VisitorsBoard() {
       setVerifyFor(null); setCode(''); setDevCode(null);
       setTick(t => t + 1);
     } catch (e) {
-      toast({ title: 'Verification failed', sub: String(e).replace('Error: ', ''), tone: 'error' });
+      toast({ title: 'Verification failed', sub: friendly(e), tone: 'error' });
     } finally { setBusyId(null); }
   };
 
@@ -229,8 +230,8 @@ export default function VisitorsBoard() {
       <Card pad style={{ marginBottom: 24, borderColor: 'var(--danger-weak-2)' }}>
         <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
           <Icon.Lock size={13} style={{ color: 'var(--danger)' }} />
-          <span className="u-small" style={{ fontWeight: 600 }}>Release law: no student leaves with a visitor until the guardian OTP verifies.</span>
-          <span className="u-small u-faint">Fail-closed by the server — an owner/principal override with a mandatory note is the only bypass, and it is audited high-risk.</span>
+          <span className="u-small" style={{ fontWeight: 600 }}>The safety rule: a student only leaves with a visitor once the guardian confirms their code.</span>
+          <span className="u-small u-faint">Safety comes first: the server will not release a student without verification. In an emergency the owner or principal can override — with a written note, and it is always logged.</span>
         </div>
       </Card>
 
@@ -315,7 +316,7 @@ export default function VisitorsBoard() {
 
       <div style={{ height: 20 }} />
       <div className="u-small u-muted">
-        Badges are V-prefixed server codes. Pickup OTPs ride the kernel vault (scrypt-hashed, TTL-bounded, single-use, attempt-capped) — the desk never sees the code.
+        Badges use server-issued codes. Guardian codes are stored encrypted, expire quickly, work once, and stop after too many tries — the desk never sees the code itself.
         Release is fail-closed server-side; the blocked state you see on unverified pickup rows mirrors the server's 409 before you click.
       </div>
 
@@ -425,7 +426,7 @@ export default function VisitorsBoard() {
       </Modal>
 
       {/* ---- deny ---- */}
-      <Modal open={!!deniedNoteFor} onClose={() => setDenyNoteFor(null)} title="Deny entry" sub="Refuses this visitor at the gate. Optional note is recorded in the audit ledger.">
+      <Modal open={!!deniedNoteFor} onClose={() => setDenyNoteFor(null)} title="Deny entry" sub="Refuses this visitor at the gate. The note is recorded in the audit trail.">
         <label className="u-small u-muted" htmlFor="v-deny">Note</label>
         <textarea id="v-deny" className="input" rows={2} maxLength={200} value={denyNote} onChange={e => setDenyNote(e.target.value)} placeholder="Optional reason" style={{ resize: 'vertical', marginTop: 4 }} />
         <footer className="u-flex" style={{ gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>

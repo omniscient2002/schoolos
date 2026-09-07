@@ -5,6 +5,7 @@
    ============================================================ */
 import { useEffect, useRef, useState } from 'react';
 import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
+import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
 
@@ -71,7 +72,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
   const fail = (m: string) => { setError(m); setBusy(false); };
   const run = async (fn: () => Promise<{ name: string; role: string; email: string }>) => {
     setBusy(true); setError(null);
-    try { await onAuthed(await fn()); } catch (e: unknown) { fail((e as Error).message || 'sign-in failed'); }
+    try { await onAuthed(await fn()); } catch (e: unknown) { fail(friendly((e as Error).message || 'sign-in failed')); }
   };
 
   const submitPassword = () => {
@@ -192,7 +193,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         )}
 
         <div className="login-roles">
-          <div className="login-roles-title">Deployment credentials — every role, one password</div>
+          <div className="login-roles-title">Try SchoolOS: pick a role</div>
           <div className="login-roles-grid">
             {ROLES.map(r => (
               <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>
@@ -215,7 +216,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         </div>
 
         <div className="login-foot">
-          <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit ledger
+          <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit trail
         </div>
       </div>
     </div>

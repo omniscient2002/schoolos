@@ -19,7 +19,7 @@ type Posture = PolicyRule['posture'];
 const POSTURE_TONE: Record<Posture, 'success' | 'warning' | 'danger'> = {
   AUTO: 'success', 'APPROVAL REQUIRED': 'warning', 'HUMAN-ONLY': 'danger',
 };
-const POSTURE_SHORT: Record<Posture, string> = { AUTO: 'AUTO', 'APPROVAL REQUIRED': 'APPROVAL', 'HUMAN-ONLY': 'HUMAN-ONLY' };
+const POSTURE_SHORT: Record<Posture, string> = { AUTO: 'Runs automatically', 'APPROVAL REQUIRED': 'Needs approval', 'HUMAN-ONLY': 'Never without a human' };
 
 /* ---------- screen ---------- */
 export default function AiGovernance() {
@@ -77,7 +77,7 @@ export default function AiGovernance() {
   return (
     <>
       <PageHead
-        title="AI Governance"
+        title="AI rules & control"
         sub="Where the AI may act on its own, where it must wait for a human, and where it never goes."
         actions={<Badge tone="ai" dot>Constitution v2026.1</Badge>}
       />
@@ -91,11 +91,11 @@ export default function AiGovernance() {
 
       {/* ---------- human-control boundary ---------- */}
       <Section
-        title="Human-control boundary"
-        sub={`All ${seed.policies.length} policies, with the AI Governance category first. Distribution: ${dist.AUTO} AUTO · ${dist['APPROVAL REQUIRED']} approval · ${dist['HUMAN-ONLY']} human-only.`}
+        title="Where humans stay in charge"
+        sub={`All ${seed.policies.length} AI rules, with the AI Governance category first. AI acts automatically for ${dist.AUTO}, with approval for ${dist['APPROVAL REQUIRED']}, and never without a human for ${dist['HUMAN-ONLY']}.`}
         actions={
-          <select className="select" style={{ width: 190 }} value={postureFilter} onChange={e => setPostureFilter(e.target.value as Posture | 'all')} aria-label="Filter by posture">
-            <option value="all">All postures</option>
+          <select className="select" style={{ width: 190 }} value={postureFilter} onChange={e => setPostureFilter(e.target.value as Posture | 'all')} aria-label="Filter by AI rule">
+            <option value="all">All AI rules</option>
             <option value="AUTO">AUTO only</option>
             <option value="APPROVAL REQUIRED">APPROVAL only</option>
             <option value="HUMAN-ONLY">HUMAN-ONLY only</option>
@@ -111,7 +111,7 @@ export default function AiGovernance() {
                 <span className="u-xs u-faint">{r.category} · {r.version} · {r.owner}</span>
               </span>
             ) },
-            { key: 'posture', label: 'Posture', width: 150, render: r => <Badge tone={POSTURE_TONE[r.posture]} dot>{POSTURE_SHORT[r.posture]}</Badge> },
+            { key: 'posture', label: 'AI acts', width: 150, render: r => <Badge tone={POSTURE_TONE[r.posture]} dot>{POSTURE_SHORT[r.posture]}</Badge> },
             { key: 'statement', label: 'Statement', render: r => <span className="u-muted u-clamp2" style={{ maxWidth: 520 }}>{r.statement}</span> },
           ]}
           rows={boundaryRows}
@@ -120,7 +120,7 @@ export default function AiGovernance() {
       </Section>
 
       {/* ---------- recent AI decisions ---------- */}
-      <Section title="Recent AI decisions" sub="From the immutable audit ledger — every AI action shows what it did, where it acted, and why." style={{ marginBottom: 4 }}>
+      <Section title="Recent AI decisions" sub="From the immutable audit trail — every AI action shows what it did, where it acted, and why." style={{ marginBottom: 4 }}>
         <Card pad>
           <div className="u-col">
             {aiAudit.slice(0, 6).map(e => (

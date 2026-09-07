@@ -163,7 +163,7 @@ function WorkOrderBody({ wo }: { wo: WorkOrderRecord }) {
       },
       actor: actorName, note,
     });
-    toast({ title: 'Override recorded in the audit ledger', sub: `${wo.id} → ${PRIORITY_LABEL[newPriority]} · reason: ${reason.trim()}`, tone: 'success' });
+    toast({ title: 'Override recorded in the audit trail', sub: `${wo.id} → ${PRIORITY_LABEL[newPriority]} · reason: ${reason.trim()}`, tone: 'success' });
     setOverrideOpen(false);
     setReason('');
   };
@@ -173,7 +173,7 @@ function WorkOrderBody({ wo }: { wo: WorkOrderRecord }) {
     try {
       await maintenanceService.rate(wo.id, 5);
       dispatch({ type: 'wo/advance', id: wo.id, to: 'resolved', actor: actorName, note: 'Verified — fix confirmed', actorRole: session.roleId });
-      toast({ title: 'Verified — work order resolved', sub: `5★ confirmed with ${wo.reportedBy}; the audit ledger has the entry.`, tone: 'success' });
+      toast({ title: 'Verified — work order resolved', sub: `5★ confirmed with ${wo.reportedBy}; the audit trail has the entry.`, tone: 'success' });
     } catch (e) {
       toast({ title: 'Verification failed', sub: String(e), tone: 'error' });
     } finally {
@@ -188,7 +188,7 @@ function WorkOrderBody({ wo }: { wo: WorkOrderRecord }) {
       patch: { escalation: 'vendor', timeline: [...wo.timeline, { on: new Date(), actor: actorName, note, kind: 'status' as const }] },
       actor: actorName, note,
     });
-    toast({ title: 'Escalated to vendor', sub: `${wo.id} moved to the vendor queue — tracked in the audit ledger.`, tone: 'success' });
+    toast({ title: 'Escalated to vendor', sub: `${wo.id} moved to the vendor queue — tracked in the audit trail.`, tone: 'success' });
   };
 
   const assignedTech = m.technicianByName(wo.assignedTo);
@@ -497,7 +497,7 @@ function WorkOrderBody({ wo }: { wo: WorkOrderRecord }) {
         open={overrideOpen}
         onClose={() => setOverrideOpen(false)}
         title="Override priority"
-        sub={`${wo.id} — currently ${PRIORITY_LABEL[wo.priority]}. Overrides are recorded in the audit ledger with your reason.`}
+        sub={`${wo.id} — currently ${PRIORITY_LABEL[wo.priority]}. Overrides are recorded in the audit trail with your reason.`}
         footer={
           <div className="u-inline" style={{ gap: 8, justifyContent: 'flex-end' }}>
             <Button variant="ghost" onClick={() => setOverrideOpen(false)}>Cancel</Button>

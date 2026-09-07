@@ -112,7 +112,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
     const sar = list.json().sars.find((x) => x.kind === 'export' && x.status === 'open');
     const early = await app.inject({ method: 'POST', url: `/plugins/pack.dpdp/dsr/${sar.sarId}/execute`, payload: {}, headers: H(co.token) });
     assert.equal(early.statusCode, 409);
-    assert.match(early.json().error, /kernel approval required/);
+    assert.match(early.json().error, /needs approval first/); // plain-language copy pass
     const coSelf = await app.inject({ method: 'POST', url: `/actions/${sar.actionId}/decide`,
       payload: { decision: 'approved' }, headers: H(co.token) });
     assert.equal(coSelf.statusCode, 403, 'proposer may not approve (kernel SoD)');

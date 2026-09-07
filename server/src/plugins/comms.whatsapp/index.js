@@ -12,7 +12,7 @@ export function register(app, kernel) {
 
   app.post(`/plugins/${ID}/templates`, { preHandler: [require('owner', 'itadmin'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
-    if (!b.name || !b.body) return reply.code(400).send({ error: 'name and body required' });
+    if (!b.name || !b.body) return reply.code(400).send({ error: 'Template name and body are required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // Templates live in plugin settings (DLT registry), never as fake communication rows.
       // jsonb_set + per-key merge: template registrations accumulate, never clobber.

@@ -68,7 +68,7 @@ export default function ParentFees() {
           reference: `MER${String(Date.now()).slice(-6)}`,
         }, ...h]);
       }
-      toast({ title: 'Receipt sent on WhatsApp', sub: 'Recorded in the school fee ledger — no late fee applies.', tone: 'success' });
+      toast({ title: 'Receipt sent on WhatsApp', sub: 'Recorded in the school fees record — no late fee applies.', tone: 'success' });
       dispatch({ type: 'audit/add', entry: { actor: GUARDIAN_NAME, actorRole: 'parent', action: 'Paid fee online', recordType: 'Fee', recordRef: nextDue ? `${nextDue.term} · ${fmtMoney(nextDue.amount)}` : 'Payment', aiInvolved: false, risk: 'low', outcome: `Success via ${payMethod} · receipt on WhatsApp` } });
     }, 1200);
   };

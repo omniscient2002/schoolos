@@ -161,7 +161,7 @@ describe('wave-1 plugin runtimes', () => {
     const whOff = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: { event: 'payment.captured', payload: { payment: { entity: { id: 'pay_TEST1', notes: { paymentId } } } } } });
     assert.equal(whOff.statusCode, 403, 'secret unset → webhook refused entirely');
-    assert.match(whOff.json().error, /not configured/);
+    assert.match(whOff.json().error, /not set up/); // plain-language copy pass
     const logOff = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log WHERE event_id='pay_TEST1'`);
     assert.equal(logOff.rows[0].n, 0, 'no facts recorded while unconfigured');
     const ob2 = await sql(`SELECT status FROM app.fee_obligations WHERE id=$1`, [o.id]);

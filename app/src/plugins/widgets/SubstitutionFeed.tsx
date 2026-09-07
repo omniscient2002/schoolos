@@ -49,7 +49,7 @@ export default function SubstitutionFeedWidget() {
       </div>
       <div className="u-xs u-muted" style={{ marginTop: 6, lineHeight: 1.6 }}>
         {state.loading
-          ? 'Reading the event spine…'
+          ? 'Checking the timetable…'
           : state.error
             ? 'Live event feed unavailable — assignments still on the ledger.'
             : n === 0

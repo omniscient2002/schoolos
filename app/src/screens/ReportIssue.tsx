@@ -92,7 +92,7 @@ export default function ReportIssue() {
     dispatch({ type: 'wo/patch', id: created.id, patch: { priority: overrideTo, timeline: [...created.timeline, { on: new Date(), actor: actorName, note: `Priority overridden ${created.priority} → ${overrideTo} by ${actorName} · reason recorded`, kind: 'status' as const }] }, actor: actorName, note: `Priority override → ${overrideTo}` });
     setCreated({ ...created, priority: overrideTo });
     setOverrideOpen(false);
-    toast({ title: `Priority set to ${overrideTo}`, sub: 'Override recorded in the audit ledger', tone: 'success' });
+    toast({ title: `Priority set to ${overrideTo}`, sub: 'Override recorded in the audit trail', tone: 'success' });
   };
 
   const voiceFill = () => {
@@ -214,7 +214,7 @@ export default function ReportIssue() {
               </ul>
               <div className="divider" />
               <KeyValue items={[
-                { k: 'SLA', v: <SLAIndicator sla={{ label: `resolve in ${Math.round(created.sla.resolveMins / 60)}h · respond in ${created.sla.responseMins}m`, tone: 'neutral' }} /> },
+                { k: 'Deadline', v: <SLAIndicator sla={{ label: `fix within ${Math.round(created.sla.resolveMins / 60)}h · reply within ${created.sla.responseMins}m`, tone: 'neutral' }} /> },
                 { k: 'Affected', v: `${reading.affectedPeople ?? 5} people (estimated)` },
                 { k: 'Skill needed', v: reading.suggestedSkill },
               ]} cols={3} />
@@ -275,7 +275,7 @@ export default function ReportIssue() {
         open={overrideOpen}
         onClose={() => setOverrideOpen(false)}
         title="Override priority"
-        sub="Overrides are honoured immediately and recorded in the audit ledger with your name."
+        sub="Overrides are honoured immediately and recorded in the audit trail with your name."
         footer={
           <div className="u-inline" style={{ gap: 8, justifyContent: 'flex-end', width: '100%' }}>
             <Button variant="ghost" onClick={() => setOverrideOpen(false)}>Cancel</Button>

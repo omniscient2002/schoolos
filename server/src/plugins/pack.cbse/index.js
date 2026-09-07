@@ -159,12 +159,12 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const settings = await loadSettings(c, req.user.tenant_id);
       if (!settings.affiliation || !settings.academicYear) {
-        return reply.code(409).send({ error: 'R6 board_identity: affiliation_no and academic_year must be configured before any board export', rule: 'R6' });
+        return reply.code(409).send({ error: 'Set the board affiliation number and academic year before exporting', rule: 'R6' });
       }
       const e = (await c.query(`SELECT id, name, term, class_grade, status, digest, published_at FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2`,
         [req.params.examId, req.user.tenant_id])).rows[0];
       if (!e) return bad(reply, 'exam not found', 404);
-      if (e.status !== 'published') return bad(reply, 'exam not published — nothing leaves for the board before kernel approval', 409);
+      if (e.status !== 'published') return bad(reply, 'Publish this exam first — reports only exist after publication', 409);
       const rows = (await c.query(
         `SELECT r.student_id, r.snapshot, r.digest, s.admission_no, s.name, s.grade
          FROM plugin_exams.report r JOIN app.students s ON s.id = r.student_id AND s.tenant_id = r.tenant_id

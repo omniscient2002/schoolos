@@ -22,7 +22,7 @@ const MIG_SOURCES = [
       { row: 'row 388', field: 'class', problem: '"8-C" does not exist in the sections table', fix: 'Queued for coordinator — provisionally mapped to 8-B' },
       { row: 'row 902', field: 'dob', problem: 'Age 3.4 years for Grade 5', fix: 'Flagged — likely typing error (2013 → 2023)' },
     ] },
-  { id: 'fees', name: 'Fee ledger Term 1 + 2', legacy: 'Tally export + bank statement PDFs', rows: 2913, imported: 2870, flagged: 31, skipped: 12, confidence: 0.93, icon: 'Money' as const,
+  { id: 'fees', name: 'Fees records Term 1 + 2', legacy: 'Tally export + bank statement PDFs', rows: 2913, imported: 2870, flagged: 31, skipped: 12, confidence: 0.93, icon: 'Money' as const,
     issues: [
       { row: 'txn 1187', field: 'amount', problem: 'PDF ledger total ≠ bank credit (₹500 short)', fix: 'Held as partial — reconciliation case opened' },
       { row: 'txn 2044', field: 'receipt_no', problem: 'Duplicate receipt number across two students', fix: 'Both flagged; registrar to reissue one' },
@@ -65,7 +65,7 @@ const MAPPINGS = [
 const SHADOW_ROWS = [
   { metric: 'Students', theirs: '1,472', ours: '1,472', state: 'matched' },
   { metric: 'Guardians', theirs: '~700', ours: '682 linked · 17 merged duplicates', state: 'changed' },
-  { metric: 'Fee ledger', theirs: '₹4.21 Cr / 2,913 txns', ours: '₹4.21 Cr · 3 held for reconciliation', state: 'matched' },
+  { metric: 'Fees records', theirs: '₹4.21 Cr / 2,913 txns', ours: '₹4.21 Cr · 3 held for payment matching', state: 'matched' },
   { metric: 'Attendance (30 days)', theirs: 'paper registers (photo archive)', ours: 'not yet imported — day-1 capture replaces it', state: 'review' },
   { metric: 'Routes & riders', theirs: '418 stop pairs, 2 spellings', ours: '402 clean · 16 flagged', state: 'changed' },
   { metric: 'Documents', theirs: '4 shelf-boxes + 2 drives', ours: '198 certificates indexed, 7 expired flagged', state: 'changed' },
@@ -125,8 +125,8 @@ export default function Migration() {
   return (
     <div style={{ maxWidth: 980, margin: '0 auto' }}>
       <PageHead
-        title="The switch"
-        sub="Meridian International Academy → SchoolOS · 5 sources · one evening of cutover"
+        title="Data import"
+        sub="Meridian International Academy → SchoolOS · 5 sources · switched over in one evening"
         actions={<Link to="/demo" className="btn btn-ghost">Demo launcher</Link>}
       />
 
@@ -141,7 +141,7 @@ export default function Migration() {
             <div className="grid grid-2" style={{ gap: 10 }}>
               {[
                 { icon: 'File', name: 'Excel — Master 2026-27.xlsx', meta: 'students · guardians linked · classes', n: '1,472 rows' },
-                { icon: 'Money', name: 'Tally export — Term 1+2', meta: 'fee ledger · vouchers', n: '2,913 txns' },
+                { icon: 'Money', name: 'Tally export — Term 1+2', meta: 'fees records · vouchers', n: '2,913 txns' },
                 { icon: 'Document', name: 'Bank statement PDFs', meta: 'credits · settlement refs', n: '3 files' },
                 { icon: 'Message', name: 'WhatsApp logs — transport', meta: '17 chats → routes & riders', n: '418 pairs' },
                 { icon: 'Wrench', name: 'AMC register + invoices', meta: 'assets · service history · 14 service docs', n: '228 records' },
@@ -242,7 +242,7 @@ export default function Migration() {
 
       {/* STEP 4 — DATA HEALTH */}
       {step === 'health' && (
-        <Card headAs="h2" head="Data health — found before they became problems" sub="17 duplicate guardians · 4 missing emergency contacts · 3 fee mismatches · 7 expired documents">
+        <Card headAs="h2" head="Data quality — fixed before they became problems" sub="17 duplicate guardians · 4 missing emergency contacts · 3 fee mismatches · 7 expired documents">
           <div className="u-col" style={{ gap: 10 }}>
             {MIG_SOURCES.flatMap(s => s.issues.map((is, k) => {
               const key = `${s.id}-${k}`;

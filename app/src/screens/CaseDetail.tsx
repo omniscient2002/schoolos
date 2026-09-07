@@ -46,7 +46,7 @@ function slaInfo(c: SchoolCase, now: number) {
   const leftH = c.slaHours - elapsedH;
   const pct = Math.max(0, Math.min(100, (elapsedH / c.slaHours) * 100));
   if (leftH <= 0) return { label: `SLA breached ${fmtH(-leftH)} ago`, tone: 'danger' as const, pct: 100 };
-  if (pct > 75) return { label: `SLA at risk — ${fmtH(leftH)} left`, tone: 'warning' as const, pct };
+  if (pct > 75) return { label: `Deadline soon — ${fmtH(leftH)} left`, tone: 'warning' as const, pct };
   return { label: `${fmtH(leftH)} of ${c.slaHours}h left`, tone: 'neutral' as const, pct };
 }
 
@@ -162,13 +162,13 @@ export default function CaseDetail() {
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: session.roleId, action: 'Escalated case to Principal',
+        actor: actorName, actorRole: session.roleId, action: 'Sent case to the Principal',
         recordType: 'Case', recordRef: `${c.id} — ${c.title}`,
         reason: 'Needs a decision above the current owner', aiInvolved: false, risk: 'high',
-        outcome: 'Escalation recorded · Principal notified in Action Center',
+        outcome: 'Recorded · the Principal can see it in the Action Center',
       },
     });
-    toast({ title: 'Case escalated to the Principal', sub: 'Response SLA tightens to 4h · audit entry recorded', tone: 'success' });
+    toast({ title: 'Case sent to the Principal', sub: 'They now have 4 hours to respond · saved to the activity log', tone: 'success' });
   };
 
   const idx = FLOW.indexOf(c.status);
@@ -280,14 +280,14 @@ export default function CaseDetail() {
                 { k: 'Opened by', v: c.openedBy },
                 { k: 'Owner', v: c.owner },
                 { k: 'Opened on', v: fmtDate(c.openedOn) },
-                { k: 'SLA', v: `${c.slaHours}h` },
+                { k: 'Deadline', v: `${c.slaHours}h` },
               ]}
             />
           </Card>
 
           <Card>
             <div className="u-between" style={{ marginBottom: 8 }}>
-              <span className="u-xs" style={{ fontWeight: 640, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-3)' }}>SLA clock</span>
+              <span className="u-xs" style={{ fontWeight: 640, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-3)' }}>Deadline</span>
               <Badge tone={sla.tone === 'danger' ? 'danger' : sla.tone === 'warning' ? 'warning' : 'outline'}>{sla.label}</Badge>
             </div>
             <Progress value={sla.pct} tone={sla.tone === 'danger' ? 'danger' : sla.tone === 'warning' ? 'warn' : undefined} />

@@ -290,6 +290,9 @@ table.data tbody tr.row-click { cursor: pointer; }
 .toast button:hover { color: var(--text-inverse); }
 
 /* ---------- Empty / error / loading ---------- */
+.parent-complaint-title { font-weight: 600; font-size: var(--text-sm); }
+.parent-complaint-meta { display: flex; gap: 10px; font-size: var(--text-xs); color: var(--text-2); margin-top: 2px; }
+.parent-complaint-detail { font-size: var(--text-xs); margin-top: 4px; white-space: pre-wrap; }
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: var(--s-9) var(--s-5); text-align: center; color: var(--text-2);

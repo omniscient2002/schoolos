@@ -61,7 +61,7 @@ export default function Ask() {
         r: {
           ...turn.r,
           id: `${turn.r.id}_ack`,
-          answer: `Done — “${label}” is executing. The action, its policy reference and your approval have been written to the audit ledger.`,
+          answer: `Done — “${label}” is executing. The action, its policy reference and your approval have been written to the audit trail.`,
           blocks: [],
           suggestedActions: [],
           trace: {
@@ -101,14 +101,14 @@ export default function Ask() {
       : session.roleId === 'teacher'
         ? ['Show me the attendance trend for my class', 'Draft the parent message', 'What needs my approval today?']
         : session.roleId === 'facilities' || session.roleId === 'technician'
-          ? ['What maintenance problems need my attention?', 'Which assets are becoming unreliable?', 'Which maintenance jobs are about to breach SLA?', 'Why does the science lab AC keep failing?']
+          ? ['What maintenance problems need my attention?', 'Which assets are becoming unreliable?', 'Which maintenance jobs are running out of time?', 'Why does the science lab AC keep failing?']
           : ['Why are 8-B absences rising?', 'What maintenance problems need my attention?', 'Which assets are becoming unreliable?', 'Why did maintenance costs increase this month?'];
 
   const examples = [
     { icon: 'Users' as const, tone: 'var(--warning)', title: 'Why are 8-B absences rising?', sub: 'Investigates registers, transport GPS and message logs with evidence.' },
     { icon: 'Wrench' as const, tone: 'var(--ai-text)', title: 'Which assets are becoming unreliable?', sub: 'Reads failure history, repair spend and preventive adherence per asset.' },
     { icon: 'Money' as const, tone: 'var(--accent)', title: 'Why did maintenance costs increase this month?', sub: 'Traces spend to repeat repairs — not new incidents.' },
-    { icon: 'Bus' as const, tone: 'var(--info)', title: 'Which maintenance jobs are about to breach SLA?', sub: 'Checks every open work order against the deterministic SLA policy.' },
+    { icon: 'Bus' as const, tone: 'var(--info)', title: 'Which maintenance jobs are running out of time?', sub: 'Checks every open work order against its response promise.' },
   ];
 
   return (
@@ -119,7 +119,7 @@ export default function Ask() {
           ? 'Ask about your classes, attendance or fees. Every answer shows the records behind it.'
           : 'Ask anything about your school. Every answer cites its records; every action follows the Constitution.'}
         actions={turns.length > 0 && (
-          <Button variant="ghost" size="sm" icon={<Icon.Trash size={13} />} onClick={() => { setTurns([]); toast({ title: 'Conversation cleared.', sub: 'School Memory keeps the decisions; this thread starts fresh.', tone: 'info' }); }}>
+          <Button variant="ghost" size="sm" icon={<Icon.Trash size={13} />} onClick={() => { setTurns([]); toast({ title: 'Conversation cleared.', sub: 'The AI memory keeps the decisions; this thread starts fresh.', tone: 'info' }); }}>
             Clear conversation
           </Button>
         )}

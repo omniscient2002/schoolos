@@ -38,7 +38,7 @@ describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions
     const r = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads',
       payload: { studentName: 'Test Kid', guardianPhone: '9876543210', classApplied: '6' }, headers: H(fin.token) });
     assert.equal(r.statusCode, 409, 'plugin row registered → lifecycle gate 409 (P2-1 closed for this module)');
-    assert.match(r.json().error, /not enabled/);
+    assert.match(r.json().error, /switched off/); // plain-language copy pass (gate)
   });
 
   test('2 · enable (owner, audited) → capture enquiry → history starts at enquiry', async () => {
@@ -140,7 +140,7 @@ describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions
     const out = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads',
       payload: { studentName: 'Off Cycle Kid', guardianPhone: '9111100000', classApplied: '2' }, headers: H(fin.token) });
     assert.equal(out.statusCode, 409);
-    assert.match(out.json().error, /outside the admission window/);
+    assert.match(out.json().error, /Admissions are open from/); // plain-language copy pass
     // window covering the whole year → capture succeeds
     const setIn = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/settings',
       headers: { ...H(o.token), 'content-type': 'application/json' },

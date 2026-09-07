@@ -358,7 +358,7 @@ export default function People() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         title="Add a person to the directory"
-        sub="Requests are logged to the audit ledger and completed by the front office after verification."
+        sub="Requests are logged to the audit trail and completed by the front office after verification."
         footer={
           <>
             <Button variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Button>

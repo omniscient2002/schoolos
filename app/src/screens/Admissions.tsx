@@ -3,7 +3,7 @@
    between stages (or use the a11y "Move to" dropdown), watch
    stage values accumulate in the headers, and read the AI
    diagnosis of the visit-stage stall. All mutations go through
-   admissionsService and land in the audit ledger.
+   admissionsService and land in the audit trail.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
@@ -51,7 +51,7 @@ const COLLAPSED: { id: LeadStage; label: string }[] = [
 const ALL_STAGES = [...STAGES.map(s => s.id), ...COLLAPSED.map(s => s.id)];
 
 const STALL_TRACE = {
-  trigger: 'Weekly funnel review · visit-stage aging exceeded 7-day SLA',
+  trigger: 'Weekly funnel review · a visit enquiry has waited more than 7 days',
   policy: 'Read-only analysis · Admissions decisions stay with the Admissions Head (Constitution pol_14)',
   dataUsed: ['lead records (90 days)', 'follow-up task log', 'communication log'],
   reasoningRole: 'Investigator (read-only)',

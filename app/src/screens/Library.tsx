@@ -34,7 +34,7 @@ export default function Library() {
     setLoans(ls => ls.map(x => x === l ? { ...x, back: true } : x));
     dispatch({ type: 'event/add', e: { id: `ev_${Date.now()}`, on: new Date(), type: 'library', label: `Library — ${l.student} returned "${BOOKS.find(b => b.id === l.bookId)?.title}"`, severity: 'info' as const } });
     dispatch({ type: 'audit/add', entry: { actor: 'Library desk', actorRole: 'coordinator', action: 'Book returned', recordType: 'LibraryLoan', recordRef: BOOKS.find(b => b.id === l.bookId)?.title ?? l.bookId, reason: 'return counter', policyRef: 'Library §1.1', aiInvolved: false, risk: 'low', outcome: 'copy back on shelf' } });
-    toast({ title: 'Returned', sub: `${l.student} · recorded on the kernel ledger`, tone: 'success' });
+    toast({ title: 'Returned', sub: `${l.student} · saved to the activity log`, tone: 'success' });
   };
 
   return (
@@ -53,7 +53,7 @@ export default function Library() {
       </div>
 
       <div className="grid grid-2">
-        <Card head="Catalog" sub="Owned tables — the kernel never sees inside">
+        <Card head="Catalog" sub="Library's own records — nothing else touches them">
           <div className="u-col" style={{ gap: 8 }}>
             {BOOKS.map(b => (
               <div key={b.id} className="u-between" style={{ padding: '8px 10px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)' }}>
@@ -67,7 +67,7 @@ export default function Library() {
           </div>
         </Card>
 
-        <Card head="Circulation" sub="Issue/return writes events + audit via the kernel">
+        <Card head="Circulation" sub="Every issue and return is recorded in the activity log">
           {loans.length === 0 ? <Empty title="No loans" /> : (
             <div className="u-col" style={{ gap: 8 }}>
               {loans.map((l, i) => (
@@ -92,7 +92,7 @@ export default function Library() {
           { time: '08:21', label: 'Nav item appears only while enabled', detail: 'Shell filters through useKernelNav', kind: 'note' },
           { time: '08:22', label: 'Route gated by KernelGate', detail: 'App.tsx wraps /library — disabled shows the "not enabled" state, not a 404', kind: 'note' },
           { time: '08:23', label: 'Attention widget renders in the principal list', detail: 'Slot name="attention" → library:overdue widget (docs/10 §6 ration: max 2 per slot — rank by manifest order; the wave-1 rails outrank the proof widget)', kind: 'note' },
-          { time: '08:25', label: 'Return writes: events.emit + audit.request', detail: 'This screen just dispatched both through the kernel store', kind: 'verify' },
+          { time: '08:25', label: 'Return recorded in the activity log', detail: 'This screen just recorded it — one entry for the flow, one for the log', kind: 'verify' },
         ]} />
       </Card>
     </div>

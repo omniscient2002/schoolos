@@ -131,10 +131,10 @@ export default function Memory() {
   return (
     <>
       <PageHead
-        title="School Memory"
+        title="AI memory"
         sub={session.roleId === 'owner'
-          ? 'Every decision the group makes, with its expected outcome — and what actually happened.'
-          : 'Decisions carry expected outcomes. Memory compares them to what actually happened and schedules the review.'}
+          ? 'What your assistant remembers — every decision the group makes, its expected outcome, and what actually happened.'
+          : 'What your assistant remembers. Decisions carry expected outcomes — memory compares them to what actually happened and schedules the review.'}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
@@ -144,7 +144,7 @@ export default function Memory() {
         <Stat label="Meetings captured" value={meetings.length} sub="decisions + tasks extracted automatically" />
       </div>
 
-      <Section title="How memory closes loops" sub="A decision is not a document — it is a promise with a review date.">
+      <Section title="How memory gets things done" sub="A decision is not a document — it is a promise with a review date.">
         <Card>
           <div className="grid grid-2" style={{ gap: 16 }}>
             <div className="u-col" style={{ gap: 10 }}>
@@ -155,7 +155,7 @@ export default function Memory() {
               <EvidenceChain
                 title="Decision → expected outcome → telemetry → review"
                 steps={[
-                  { label: 'Decision recorded', detail: '“Bus 14 pre-route inspection” · approved by Principal · dec_4', source: 'School Memory · decisions' },
+                  { label: 'Decision recorded', detail: '“Bus 14 pre-route inspection” · approved by Principal · dec_4', source: 'AI memory · decisions' },
                   { label: 'Expected outcome set', detail: 'Zero route delays for 4 weeks · review scheduled automatically', source: 'Decision record dec_4' },
                   { label: 'Telemetry compared', detail: 'Route 7 delays since decision: 0 · complaints for 2 days: 0', source: 'Transport + case telemetry', refType: 'transport' },
                   { label: 'Review', detail: 'Runs in 27 days — evidence pack assembled automatically from the same records', source: 'Memory review scheduler' },
@@ -208,9 +208,9 @@ export default function Memory() {
           }
         >
           {everything.loading && <div className="grid grid-2"><SkeletonCard lines={6} /><SkeletonCard lines={6} /><SkeletonCard lines={6} /><SkeletonCard lines={6} /></div>}
-          {everything.error && <ErrorState title="Could not load School Memory" sub={everything.error} onRetry={everything.retry} />}
+          {everything.error && <ErrorState title="Could not load AI memory" sub={everything.error} onRetry={everything.retry} />}
           {!everything.loading && !everything.error && decisions.length === 0 && (
-            <Empty icon={<Icon.Memory size={26} />} title="No decisions match" sub={q ? `Nothing in memory matches “${q}”.` : 'Record a decision to start a loop.'} />
+            <Empty icon={<Icon.Memory size={26} />} title="No decisions match these filters" sub={q ? `Nothing in memory matches “${q}”.` : 'Record a decision to start a loop.'} />
           )}
           {!everything.loading && !everything.error && decisions.length > 0 && (
             <div className="grid grid-2">
@@ -328,11 +328,11 @@ export default function Memory() {
 
       {/* ---------- Documents ---------- */}
       {tab === 'documents' && (
-        <Section title="Memory documents" sub="The policies and SOPs that decisions and automations cite as their source.">
+        <Section title="What your assistant remembers" sub="The policies and SOPs that decisions and automations cite as their source.">
           {everything.loading && <div className="grid grid-2"><SkeletonCard lines={4} /><SkeletonCard lines={4} /></div>}
           {everything.error && <ErrorState title="Could not load documents" sub={everything.error} onRetry={everything.retry} />}
           {!everything.loading && !everything.error && docs.length === 0 && (
-            <Empty icon={<Icon.Document size={26} />} title="No documents in memory" />
+            <Empty icon={<Icon.Document size={26} />} title="Nothing in the AI memory yet" />
           )}
           {!everything.loading && !everything.error && docs.length > 0 && (
             <div className="grid grid-2">
@@ -359,7 +359,7 @@ export default function Memory() {
 
       {/* ---------- Timeline ---------- */}
       {tab === 'timeline' && (
-        <Section title="Memory timeline" sub="Decisions, meetings and incidents on one chronological line — newest first.">
+        <Section title="What your assistant remembers — timeline" sub="Decisions, meetings and incidents on one chronological line — newest first.">
           {everything.loading ? (
             <div className="grid grid-2"><SkeletonCard lines={6} /><SkeletonCard lines={6} /></div>
           ) : (
@@ -407,7 +407,7 @@ export default function Memory() {
                 <option value="open">Still open — outcome not yet observable</option>
               </select>
             </div>
-            <div className="u-xs u-faint">The recorded outcome is appended to the decision — earlier entries are never overwritten, and the loop closure lands in the audit ledger.</div>
+            <div className="u-xs u-faint">The recorded outcome is appended to the decision — earlier entries are never overwritten, and the loop closure lands in the audit trail.</div>
           </div>
         )}
       </Modal>

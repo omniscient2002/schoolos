@@ -10,7 +10,7 @@ export function uuidParams(...names) {
   return async function uuidParamGuard(req, reply) {
     for (const n of list) {
       if (!UUID_RE.test(String(req.params?.[n] ?? ''))) {
-        return reply.code(400).send({ error: `${n} must be a uuid` });
+        return reply.code(400).send({ error: 'This record needs a valid ID' });
       }
     }
   };

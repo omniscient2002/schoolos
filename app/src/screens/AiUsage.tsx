@@ -29,7 +29,7 @@ export default function AiUsage() {
   return (
     <>
       <PageHead
-        title="AI Usage & Cost"
+        title="AI usage & cost"
         sub={isFinanceView
           ? 'Model spend for the group — every rupee mapped to the feature that incurred it.'
           : 'Token and rupee spend across the AI features, with guardrails that keep it predictable.'}

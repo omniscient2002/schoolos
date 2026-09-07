@@ -416,7 +416,7 @@ export default function HR() {
 
       <div style={{ height: 12 }} />
       <div className="u-small u-muted">
-        Approval queue state is shared: deciding an item here updates the Action Center and the audit ledger ({domain.audit.length} entries so far).
+        Approval queue state is shared: deciding an item here updates the Action Center and the audit trail ({domain.audit.length} entries so far).
       </div>
     </div>
   );

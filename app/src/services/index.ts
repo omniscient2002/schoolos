@@ -162,9 +162,9 @@ export const aiService = {
         answer: 'Collection is 82.3% this week vs the 88% four-week average — a 4.7-point dip, fully explained by two identified clusters.',
         blocks: [
           { type: 'chain', title: 'Evidence chain', steps: [
-            { label: 'Collection trend', detail: '14-day series: 88 → 82.3%', source: 'Fee ledger · recomputed', refType: 'fees' },
-            { label: 'Failed payment cluster', detail: '47 failures · 41 on Route 7 households · avg ticket ₹57,457', source: 'Gateway + ledger diff', refType: 'fees' },
-            { label: 'Gateway timeouts', detail: '23 successful UPI transactions missing ledger entries (11:00–11:40 yesterday)', source: 'Reconciliation worker', refType: 'case' },
+            { label: 'Collection trend', detail: '14-day series: 88 → 82.3%', source: 'Fees records · recomputed', refType: 'fees' },
+            { label: 'Failed payment cluster', detail: '47 failures · 41 on Route 7 households · avg ticket ₹57,457', source: 'Gateway + payments record', refType: 'fees' },
+            { label: 'Gateway timeouts', detail: '23 successful UPI payments not yet in the payments record (11:00–11:40 yesterday)', source: 'Payment matching', refType: 'case' },
           ] },
           { type: 'text', text: 'Reading: disruption-linked, not affordability-linked. Route 7 families had an abnormal week (Bus 14 breakdown). The 23 timeout transactions are administrative, not payment failures.' },
           { type: 'draft', title: 'Payment assistance message', audience: 'Guardians with failed Term-2 payments', channel: 'WhatsApp', language: 'English + Hindi template', body: 'Dear Parents, some Term 2 online payments did not go through this week (we noticed the Bus 14 disruption may have affected routines). You can safely retry via the link below, or reply here and our accounts team will call you. No late fee will apply for retries by Friday. — Meridian Accounts' },
@@ -173,7 +173,7 @@ export const aiService = {
           { id: 'f1', label: 'Send payment assistance message', type: 'message', audience: 'Guardians with failed payments', audienceCount: 41, channel: 'WhatsApp', posture: 'APPROVAL' },
           { id: 'f2', label: 'Retry failed UPI mandates', type: 'workflow', workflow: 'wf_4', posture: 'AUTO' },
         ],
-        trace: trace({ trigger: 'Finance/Principal question: fee realization', dataUsed: ['fee ledger (14 days)', 'gateway settlement file', 'transport incident timeline'], reasoningRole: 'Investigator (read-only) → Proposer (draft only)' }),
+        trace: trace({ trigger: 'Finance/Principal question: fee realization', dataUsed: ['fees records (14 days)', 'gateway settlement file', 'transport incident timeline'], reasoningRole: 'Investigator (read-only) → Proposer (draft only)' }),
       });
     }
 
@@ -191,7 +191,7 @@ export const aiService = {
           { type: 'note', text: 'Nothing here requires action today. The transport watch item resolves with the Bus 14 repair (scheduled Saturday).' },
         ],
         suggestedActions: [{ id: 's1', label: 'Share mastery snapshot with guardian', type: 'message', audience: 'Kavita Sharma', channel: 'WhatsApp', posture: 'APPROVAL' }],
-        trace: trace({ trigger: 'Student 360 briefing request', dataUsed: ['attendance (30d)', 'assessment scores (term)', 'fee ledger', 'transport log'], reasoningRole: 'Summarizer (read-only)' }),
+        trace: trace({ trigger: 'Student 360 briefing request', dataUsed: ['attendance (30d)', 'assessment scores (term)', 'fees records', 'transport log'], reasoningRole: 'Summarizer (read-only)' }),
       });
     }
 

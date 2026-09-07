@@ -37,7 +37,7 @@ const STEP_ICON: Record<WorkflowStep['type'], ReactNode> = {
   update: <Icon.Refresh size={12} />,
 };
 
-const postureLabel = (p: WorkflowDef['posture']) => (p === 'APPROVAL' ? 'APPROVAL REQUIRED' : p);
+const postureLabel = (p: WorkflowDef['posture']) => (p === 'APPROVAL' ? 'Needs approval' : p === 'HUMAN-ONLY' ? 'Never without a human' : 'Runs automatically');
 
 const RUN_TONE: Record<WorkflowRun['status'], 'success' | 'warning' | 'danger' | 'info'> = {
   completed: 'success', 'awaiting-approval': 'warning', failed: 'danger', running: 'info',
@@ -110,7 +110,7 @@ function neverDoFor(w: WorkflowDef): string[] {
 
 const NL_EXAMPLES = [
   'When a guardian replies to an absence notification with a reason, classify it and create a follow-up task for the class teacher.',
-  'If a compliance document expires within 14 days, notify the owner, then escalate to the Admin Officer at 7 days.',
+  'If a compliance document expires within 14 days, tell the owner, and after 7 days pass it to the Admin Officer.',
   'When a bus is delayed more than 15 minutes, notify affected parents and mark attendance leniency for that route.',
   'When a payment fails for the second time, create a finance call task and pause automated reminders.',
 ];
@@ -317,7 +317,7 @@ export default function Automation() {
                       <span style={{ fontWeight: 620, lineHeight: 1.3 }}>{wf.name}</span>
                       <span className={`u-flex u-xs ${wf.posture === 'APPROVAL' ? 'wf-posture-approval' : ''}`} style={{ gap: 5, fontWeight: 600, color: !wf.enabled ? 'var(--text-3)' : wf.posture === 'APPROVAL' ? 'var(--status-warning)' : 'var(--success)' }}>
                         <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 2, background: 'currentColor', display: 'inline-block' }} />
-                        {wf.enabled ? 'Enabled' : 'Paused'} · {wf.posture === 'APPROVAL' ? 'approval required' : 'auto-executes'}
+                        {wf.enabled ? 'On' : 'Paused'} · {wf.posture === 'APPROVAL' ? 'needs approval' : 'runs on its own'}
                       </span>
                     </span>
                   </div>

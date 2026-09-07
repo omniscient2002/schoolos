@@ -109,7 +109,7 @@ function contractBadge(days: number) {
 const BRIEFING_TRACE = {
   trigger: 'Morning assembly of overnight operational events (07:30 daily)',
   policy: 'Read-only summarisation · Constitution v2026.1 · no automated actions on operations',
-  dataUsed: ['fee ledger (30d)', 'transport GPS events', 'case queue', 'incident log', 'document registry'],
+  dataUsed: ['fees records (30d)', 'transport GPS events', 'case queue', 'incident log', 'document registry'],
   reasoningRole: 'Summarizer (read-only)',
   action: 'None — surfaces the briefing and links to each domain',
   approvalStatus: 'Not required (read-only)',
@@ -225,7 +225,7 @@ export default function Operations() {
             title="Evidence chain"
             steps={[
               { label: 'Route 7 · Bus 14 status', detail: 'Delayed +13 min · 38 students · incident inc_1 resolved, repair scheduled Saturday', source: 'Transport GPS · Route 7', refType: 'transport' },
-              { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Fee ledger · recomputed', refType: 'fees' },
+              { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Fees records · recomputed', refType: 'fees' },
               { label: 'Case queue', detail: `${live.openCases} open cases on ${campusName} · 1 on a 24h SLA (Bus 14 complaint)`, source: 'Cases · live queue', refType: 'case' },
               { label: 'Compliance watch', detail: 'Fire Safety Certificate (North) expires in 21 days · vendor quote pending', source: 'Document registry', refType: 'document' },
             ]}

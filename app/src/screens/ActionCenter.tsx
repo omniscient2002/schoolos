@@ -112,7 +112,7 @@ function ActionCard({ a, onOpen, onApprove, onDismiss }: {
               <div style={{ minWidth: 0 }}>
                 <div className="u-flex" style={{ gap: 7, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 570, fontSize: 'var(--text-md)' }}>{s.label}</span>
-                  {s.posture && <Badge tone={s.posture === 'APPROVAL' ? 'warning' : s.posture === 'HUMAN-ONLY' ? 'danger' : 'success'}>{s.posture === 'APPROVAL' ? 'APPROVAL REQUIRED' : s.posture}</Badge>}
+                  {s.posture && <Badge tone={s.posture === 'APPROVAL' ? 'warning' : s.posture === 'HUMAN-ONLY' ? 'danger' : 'success'}>{s.posture === 'APPROVAL' ? 'Needs approval' : s.posture === 'HUMAN-ONLY' ? 'Never without a human' : 'Runs automatically'}</Badge>}
                 </div>
                 {s.detail && <div className="u-small u-muted" style={{ marginTop: 1 }}>{s.detail}</div>}
               </div>
@@ -346,14 +346,14 @@ export default function ActionCenter() {
         }
       >
         <p className="u-small u-muted" style={{ marginTop: 0, lineHeight: 1.65 }}>
-          Dismissing removes “{confirmDismiss?.title}” from every queue for your role. The reason is written to the audit ledger with your name —
+          Dismissing removes “{confirmDismiss?.title}” from every queue for your role. The reason is written to the audit trail with your name —
           the item can be re-raised later if the underlying pattern reappears.
         </p>
         <EvidenceChain
           title="What you are closing"
           steps={[
             { label: 'Item leaves the open queue', detail: 'Status changes to dismissed for this actor and role', source: 'Action Center state' },
-            { label: 'Audit entry recorded', detail: `Actor ${actorName} · role ${session.roleId} · outcome “Closed without action”`, source: 'Audit ledger · immutable' },
+            { label: 'Audit entry recorded', detail: `Actor ${actorName} · role ${session.roleId} · outcome “Closed without action”`, source: 'Audit trail · cannot be edited' },
             { label: 'Underlying records untouched', detail: 'Attendance, fee and transport records are never modified by a dismissal', source: 'Constitution v2026.1' },
           ]}
         />

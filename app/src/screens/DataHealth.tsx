@@ -35,7 +35,7 @@ type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'ai' | 
 const CATEGORY_LABEL: Record<HealthIssue['category'], string> = {
   guardian: 'Guardian records',
   enrollment: 'Enrollment',
-  fees: 'Fee ledger',
+  fees: 'Fees records',
   attendance: 'Attendance',
   documents: 'Documents',
   integrations: 'Integrations',
@@ -106,7 +106,7 @@ function feeMismatchRows(): ReviewTable {
   return {
     columns: [ { key: 'reference', label: 'Gateway ref' }, { key: 'student', label: 'Payer' }, { key: 'amount', label: 'Amount' }, { key: 'method', label: 'Method' }, { key: 'on', label: 'Attempted' }, { key: 'action', label: 'Resolution' } ],
     rows,
-    note: 'Includes the 23 timeout batch from case_3. Importing the settlement file re-matches automatically; ledger rows are never edited by hand.',
+    note: 'Includes the 23 timeout batch from case_3. Importing the bank file re-matches payments automatically; payment records are never edited by hand.',
   };
 }
 
@@ -374,9 +374,9 @@ export default function DataHealth() {
   return (
     <>
       <PageHead
-        title="Data Health"
+        title="Data quality"
         sub="The state of the records every decision stands on — duplicates, gaps, mismatches and expiries, each with an audited fix path."
-        actions={<Button variant="secondary" size="sm" icon={<Icon.Database size={13} />} onClick={() => navigate('/audit')}>Open audit ledger</Button>}
+        actions={<Button variant="secondary" size="sm" icon={<Icon.Database size={13} />} onClick={() => navigate('/audit')}>Open the audit trail</Button>}
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 24, alignItems: 'start' }}>
@@ -394,7 +394,7 @@ export default function DataHealth() {
                 ))}
                 {grouped.get(cat)!.every(i => i.status !== 'open') && (
                   <div className="u-xs u-faint" style={{ paddingTop: 10 }}>
-                    All clear in this category — fixes and ignores are recorded in the audit ledger.
+                    All clear in this category — fixes and ignored items are recorded in the audit trail.
                   </div>
                 )}
               </Card>
@@ -420,7 +420,7 @@ export default function DataHealth() {
             </div>
             <div style={{ marginTop: 10 }}><Progress value={scorePct} tone={scorePct >= 97 ? undefined : 'warn'} /></div>
             <div className="u-xs u-faint" style={{ marginTop: 8, lineHeight: 1.6 }}>
-              Baseline 94 · each verified fix adds +2.6 (policy weights: high 2.4 / medium 1.1 / low 0.4). Ignored items do not move the score — they stay visible here and in the audit ledger.
+              Baseline 94 · each verified fix adds +2.6 (policy weights: high 2.4 / medium 1.1 / low 0.4). Ignored items do not move the score — they stay visible here and in the audit trail.
             </div>
             <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
               <Badge tone="warning">{openCount} open</Badge>
@@ -522,7 +522,7 @@ export default function DataHealth() {
               </>
             )}
             <div className="u-xs u-faint" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, lineHeight: 1.6 }}>
-              Fixes run as bulk actions with your identity — every affected record keeps its history, and the action is reversible from the audit ledger.
+              Fixes run as bulk actions with your identity — every affected record keeps its history, and the action can be undone from the audit trail.
             </div>
           </div>
         )}

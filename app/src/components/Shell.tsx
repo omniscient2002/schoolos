@@ -24,7 +24,7 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention', badge: openActions },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
@@ -35,7 +35,7 @@ export function useNavItems(): NavItem[] {
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
         { to: '/automation', label: 'Automation', icon: 'Automation' },
-        { to: '/memory', label: 'Memory', icon: 'Memory' },
+        { to: '/memory', label: 'AI memory', icon: 'Memory' },
         library,
         kernel,
       ];
@@ -43,7 +43,7 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention' },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
@@ -55,7 +55,7 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention', badge: openActions },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
@@ -69,14 +69,14 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention', badge: openActions },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
-        { to: '/migration', label: 'Migration', icon: 'Database' },
+        { to: '/migration', label: 'Data import', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
       ];
     case 'admissions':
@@ -84,7 +84,7 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention' },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
@@ -103,26 +103,26 @@ export function useNavItems(): NavItem[] {
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
-        { to: '/migration', label: 'Migration', icon: 'Database' },
+        { to: '/migration', label: 'Data import', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
       ];
     case 'itadmin':
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention' },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/it', label: 'Platform', icon: 'Shield' },
-        { to: '/memory', label: 'Memory', icon: 'Memory' },
+        { to: '/memory', label: 'AI memory', icon: 'Memory' },
         kernel,
       ];
     case 'facilities':
       return [
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Attention', icon: 'Attention', badge: openWOs },
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openWOs },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
@@ -140,6 +140,7 @@ export function useNavItems(): NavItem[] {
     case 'parent':
       return [
         { to: '/parent', label: 'Home', icon: 'Home' },
+        { to: '/parent/complaints', label: 'My complaints', icon: 'Flag' },
         { to: '/parent/chat', label: 'Messages', icon: 'Message' },
         { to: '/parent/fees', label: 'Fees', icon: 'Wallet' },
         { to: '/parent/ask', label: 'Ask', icon: 'Ask' },
@@ -163,9 +164,9 @@ export function Sidebar() {
   useEffect(() => { localStorage.setItem('schoolos.sidebarCollapsed', collapsed ? '1' : '0'); }, [collapsed]);
   const items = useNavItems();
   const groups = [
-    { label: 'Operating loop', items: items.filter(i => ['Today', 'Attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
+    { label: 'Daily operations', items: items.filter(i => ['Today', 'Needs your attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
     { label: 'Records', items: items.filter(i => ['People', 'Learning', 'Operations'].includes(i.label)) },
-    { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'Memory', 'Platform'].includes(i.label)) },
+    { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'AI memory', 'Platform'].includes(i.label)) },
     { label: 'Your space', items: items.filter(i => ['Home', 'Messages', 'Fees', 'My Day', 'Portfolio'].includes(i.label)) },
   ].filter(g => g.items.length);
 
@@ -322,7 +323,7 @@ export function ProfileMenu() {
             (await import('../services/liveApi')).apiLogout();
             window.location.href = '/login';
           }}><Icon.Shield size={14} /> Sign out</button>
-          <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit ledger</button>
+          <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit trail</button>
           <div role="none" className="dropdown-sep" />
           <div role="none" className="dropdown-label">Switch demo role</div>
           <div className="scroll-thin" style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -356,7 +357,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const list: PaletteItem[] = [
       { id: 'a1', label: 'Ask SchoolOS…', hint: 'Open the AI panel', group: 'AI', icon: 'Sparkle', action: go('/ask') },
       { id: 'n1', label: 'Go to Today', group: 'Navigate', icon: 'Today', action: go('/today') },
-      { id: 'n2', label: 'Go to Attention', group: 'Navigate', icon: 'Attention', action: go('/attention') },
+      { id: 'n2', label: 'Go to Needs your attention', group: 'Navigate', icon: 'Attention', action: go('/attention') },
       { id: 'n3', label: 'Go to Action Center', group: 'Navigate', icon: 'Zap', action: go('/action-center') },
       { id: 'n4', label: 'Go to People', group: 'Navigate', icon: 'People', action: go('/people') },
       { id: 'n5', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/learning') },
@@ -368,13 +369,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: 'n11', label: 'Go to Calendar', group: 'Navigate', icon: 'Calendar', action: go('/calendar') },
       { id: 'n12', label: 'Go to Insights', group: 'Navigate', icon: 'Insights', action: go('/insights') },
       { id: 'n13', label: 'Go to Automation builder', group: 'Navigate', icon: 'Workflow', action: go('/automation') },
-      { id: 'n14', label: 'Go to School Memory', group: 'Navigate', icon: 'Memory', action: go('/memory') },
-      { id: 'n15', label: 'Go to School Constitution', group: 'Navigate', icon: 'Scale', action: go('/constitution') },
+      { id: 'n14', label: 'Go to AI memory', group: 'Navigate', icon: 'Memory', action: go('/memory') },
+      { id: 'n15', label: 'Go to School policies', group: 'Navigate', icon: 'Scale', action: go('/constitution') },
       { id: 'n16', label: 'Go to Cases', group: 'Navigate', icon: 'Wrench', action: go('/cases') },
       { id: 'n17', label: 'Go to Incidents', group: 'Navigate', icon: 'Alert', action: go('/incidents') },
-      { id: 'n18', label: 'Go to Data Health', group: 'Navigate', icon: 'Database', action: go('/data-health') },
-      { id: 'n19', label: 'Go to Audit ledger', group: 'Navigate', icon: 'Clipboard', action: go('/audit') },
-      { id: 'n20', label: 'Go to AI Governance', group: 'Navigate', icon: 'Shield', action: go('/ai-governance') },
+      { id: 'n18', label: 'Go to Data quality', group: 'Navigate', icon: 'Database', action: go('/data-health') },
+      { id: 'n19', label: 'Go to Audit trail', group: 'Navigate', icon: 'Clipboard', action: go('/audit') },
+      { id: 'n20', label: 'Go to AI rules & control', group: 'Navigate', icon: 'Shield', action: go('/ai-governance') },
       { id: 'n21', label: 'Go to Settings', group: 'Navigate', icon: 'Settings', action: go('/settings') },
     ];
     const qw = q.trim().toLowerCase();

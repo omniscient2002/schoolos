@@ -57,7 +57,7 @@ function mkTrace(over: Partial<AiTrace>): AiTrace {
   return {
     trigger: 'Ranked attention feed — anomaly detection',
     policy: 'Read-only assembly; actions approval-gated · Constitution v2026.1',
-    dataUsed: ['attendance records', 'transport GPS', 'fee ledger', 'document register'],
+    dataUsed: ['attendance records', 'transport GPS', 'fees records', 'document register'],
     reasoningRole: 'Investigator (read-only)',
     action: 'Ranked and proposed — awaiting human decision',
     approvalStatus: 'Pending your approval',
@@ -145,7 +145,7 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
       detail: '41 of 47 failures belong to Route 7 families. Collection sits at 82.3% vs the 88% four-week average; 23 further gateway successes await settlement-file import.',
       why: 'A single combined message (bus + payment) historically recovers ~60% within 48h — but bulk messaging requires your approval (Communication §2.1).',
       priority: 'high',
-      chips: ['Fee ledger · 10:12 · high', 'Gateway settlement diff · medium'],
+      chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
       evidence: [
         { label: 'Collection trend (14 days)', detail: '88 → 82.3% · dip begins with the Bus 14 breakdown' },
         { label: 'Failure cluster', detail: '47 failures · 41 share Route 7 · avg ticket ₹57,457' },
@@ -203,21 +203,21 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
         title: wo.title,
         detail: `${wo.building}${wo.room ? ' · ' + wo.room : ''}${wo.assetId ? ' · ' + wo.assetId : ''} · reported by ${wo.reportedBy} · status ${wo.status.replace('-', ' ')}.`,
         why: urgent
-          ? 'Safety or core-function impact with a hard SLA window. The facilities desk owns it; leadership visibility is automatic.'
+          ? 'Safety or core-function impact with a fixed deadline. The facilities desk owns it; leadership is kept informed automatically.'
           : 'Learning or comfort impact inside teaching hours. Ranked against every other open signal on urgency, impact, and deadline.',
         priority: urgent ? 'critical' : wo.priority === 'high' ? 'high' : 'normal',
         chips: [`${wo.id} · SLA ${new Date(wo.sla.resolveBy).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`, wo.assetId ? `Asset ${wo.assetId}` : 'No registered asset', `Category ${wo.category}`],
         evidence: [
           { label: 'Report intake', detail: `${wo.source} · ${wo.reportedBy} · ${new Date(wo.reportedOn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` },
           ...(wo.aiUnderstanding ? [{ label: 'AI understanding', detail: `${wo.aiUnderstanding.category} · ${wo.aiUnderstanding.assetMatch ? 'asset ' + wo.aiUnderstanding.assetMatch.assetId + ' (' + Math.round(wo.aiUnderstanding.assetMatch.confidence * 100) + '%)' : 'no asset match'} · confidence ${Math.round(wo.aiUnderstanding.confidence * 100)}%` }] : []),
-          { label: 'SLA policy', detail: `respond ${wo.sla.responseMins}m · resolve ${Math.round(wo.sla.resolveMins / 60)}h (deterministic, Facilities §1.2)` },
+          { label: 'Response promise', detail: `reply within ${wo.sla.responseMins}m · fix within ${Math.round(wo.sla.resolveMins / 60)}h (school rule, Facilities §1.2)` },
           ...(wo.assetId ? [{ label: 'Asset history', detail: (() => { const a = seedAssetsMaint.find(x => x.id === wo.assetId); return a ? `${a.failures.length} prior failure${a.failures.length === 1 ? '' : 's'} · ₹${a.repairSpendYTD.toLocaleString('en-IN')} YTD · health ${a.health}` : 'asset record'; })() }] : []),
         ],
         suggested: [
           { id: 'open', label: 'Open work order', type: 'investigate' },
           ...(wo.assignedTo ? [] : [{ id: 'assign', label: 'Assign technician', type: 'workflow' as const, detail: 'Ranked by skill match, availability, first-time fix rate' }]),
         ],
-        policyRef: 'Facilities §1.2 (intake + priority) · SLA engine deterministic',
+        policyRef: 'Facilities §1.2 (intake + priority) · deadlines are set by the book',
         to: `/maintenance/work-orders/${wo.id}`,
         due: wo.sla.resolveBy.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
         aiInvolved: !!wo.aiUnderstanding,
@@ -409,13 +409,13 @@ export default function Attention() {
         outcome: 'Acknowledged · no action yet',
       },
     });
-    toast({ title: 'Acknowledged.', sub: 'Logged to the audit ledger; the signal stays visible until decided.', tone: 'info' });
+    toast({ title: 'Acknowledged.', sub: 'Saved to the activity log; the signal stays visible until someone decides.', tone: 'info' });
   };
 
   return (
     <>
       <PageHead
-        title="Attention"
+        title="Needs your attention"
         sub={`${items.length} ranked item${items.length === 1 ? '' : 's'} — recommended actions merged with signals derived from today's records. Ranked at ${data ? fmtTime(data.rankedAt) : '…'}.`}
         actions={<Button variant="secondary" size="sm" icon={<Icon.Refresh size={13} />} onClick={retry}>Re-rank</Button>}
       />
@@ -467,7 +467,7 @@ export default function Attention() {
             <Card pad>
               <Empty
                 icon={items.length === 0 ? <span className="clear-check"><Icon.Check size={22} /></span> : <Icon.Check size={22} />}
-                title={items.length === 0 ? 'All clear — nothing needs escalation' : 'Nothing matches these filters'}
+                title={items.length === 0 ? 'All clear — nothing needs a human right now' : 'Nothing matches these filters'}
                 sub={items.length === 0
                   ? 'Every recommendation is decided and every derived signal is acknowledged. New signals appear here as records change.'
                   : 'Adjust the priority or kind filters to see the rest of the feed.'}

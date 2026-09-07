@@ -112,7 +112,7 @@ export default function Constitution() {
   return (
     <>
       <PageHead
-        title="School Constitution"
+        title="School policies"
         sub={session.roleId === 'itadmin'
           ? 'Runtime policy source. Entries are read-only at runtime — edits create new versions with full audit.'
           : 'Every automation, message and decision in SchoolOS checks itself against these entries before it acts.'}
@@ -144,7 +144,7 @@ export default function Constitution() {
 
       <div className="grid grid-4" style={{ marginBottom: 22 }}>
         <Stat label="Constitution entries" value={local.length} sub="across 8 categories" />
-        <Stat label="Postures" value={`${autoCount} / ${approvalCount} / ${humanCount}`} sub="AUTO / approval required / human-only" />
+        <Stat label="AI acts" value={`${autoCount} / ${approvalCount} / ${humanCount}`} sub="AI acts: automatically / with approval / never without a human" />
         <Stat label="Last amended" value={fmtDate(lastAmended)} sub={edited && Object.keys(edited).length ? 'includes today’s edits' : 'most recent effective date'} />
         <Stat label="Platform invariants" value={local.filter(isFloor).length} sub="locked for every school" />
       </div>
@@ -166,8 +166,8 @@ export default function Constitution() {
             </button>
           ))}
           <div style={{ width: 12 }} />
-          <select className="select" style={{ width: 210 }} value={posture} onChange={e => setPosture(e.target.value)} aria-label="Filter by posture">
-            <option value="All">All postures</option>
+          <select className="select" style={{ width: 210 }} value={posture} onChange={e => setPosture(e.target.value)} aria-label="Filter by AI rule">
+            <option value="All">All AI rules</option>
             {POSTURES.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
@@ -231,7 +231,7 @@ export default function Constitution() {
                         </span>
                       ))}
                     </div>
-                    <div className="u-xs u-faint">Status: {p.status} · changes take effect immediately and are recorded in the audit ledger.</div>
+                    <div className="u-xs u-faint">Status: {p.status} · changes take effect immediately and are recorded in the audit trail.</div>
                   </div>
                 )}
               </Card>
@@ -240,7 +240,7 @@ export default function Constitution() {
         </div>
       </Section>
 
-      <Section title="Platform floor" sub="These invariants are outside every school's control — by design.">
+      <Section title="What always runs" sub="These invariants are outside every school's control — by design.">
         <Card>
           <div className="u-flex" style={{ gap: 9, marginBottom: 8 }}>
             <Icon.Lock size={15} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }} />
@@ -258,7 +258,7 @@ export default function Constitution() {
       <Modal
         open={!!editing}
         onClose={() => setEditId(null)}
-        title="Edit draft — constitution entry"
+        title="Edit draft — policy entry"
         sub={editing ? `${refOf(editing)} · ${editing.title} — a new version goes live immediately on save.` : undefined}
         footer={
           <>

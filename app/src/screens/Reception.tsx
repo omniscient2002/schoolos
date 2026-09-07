@@ -191,7 +191,7 @@ export default function Reception() {
         <div className="u-col" style={{ gap: 'var(--s-4)' }}>
           <Card headAs="h2" head="How this desk works" sub="Grounded, consented, hand-off ready">
             <KeyValue items={[
-              { k: 'Answers from', v: 'Calendar · transport GPS · fee ledger · attendance · documents · asset records' },
+              { k: 'Answers from', v: 'Calendar · transport GPS · fees records · attendance · documents · asset records' },
               { k: 'Languages', v: d.deskSettings.languages.join(' · ') },
               { k: 'Never does', v: 'Disclose student data to unverified callers · negotiate fees · medical or safeguarding advice' },
               { k: 'Handoff', v: `${d.deskSettings.escalationNumber} — with call summary, caller history, and sentiment attached` },
@@ -216,7 +216,7 @@ export default function Reception() {
               trace={{
                 trigger: 'Live call answering (phone/WhatsApp)',
                 policy: 'Front Desk §1.1–1.4 — grounded answers only; student data only after caller verification',
-                dataUsed: ['calendar', 'transport GPS', 'fee ledger', 'attendance register', 'document requests'],
+                dataUsed: ['calendar', 'transport GPS', 'fees records', 'attendance register', 'document requests'],
                 reasoningRole: 'Voice receptionist (deterministic retrieval + templates)',
                 action: 'Answers, files reports, books callbacks — never approves anything',
                 approvalStatus: 'Not required (read-only + message filing)',

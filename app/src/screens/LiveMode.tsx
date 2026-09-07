@@ -34,7 +34,7 @@ export default function LiveMode() {
       const r = await apiLogin(email, DEMO_PASSWORD);
       setUser(r.user);
       setStage('ready');
-      toast({ title: `Signed in as ${r.user.name}`, sub: 'JWT issued · real API · real Postgres · tenant RLS', tone: 'success' });
+      toast({ title: `Signed in as ${r.user.name}`, sub: 'Signed in for real — your school\'s data, kept separate per school', tone: 'success' });
     } catch (e) {
       toast({ title: 'Login failed', sub: (e as Error).message, tone: 'error' });
     } finally {
@@ -114,7 +114,7 @@ export default function LiveMode() {
           <Card>
             <KeyValue items={[
               { k: 'Signed in', v: `${user.name} · ${user.role}` },
-              { k: 'Tenant', v: user.tenantId },
+              { k: 'School', v: user.tenantId },
               { k: 'Token', v: 'JWT · 12h · role claims enforced server-side' },
             ]} cols={2} />
             <div className="u-inline" style={{ gap: 8, marginTop: 10 }}>
@@ -169,7 +169,7 @@ export default function LiveMode() {
             </div>
           </Card>
 
-          <Card head="Audit ledger (live)" sub="Append-only, hash-chained — the entries your session just created">
+          <Card head="Audit trail (live)" sub="Append-only, tamper-proof — the entries your session just created">
             <div className="u-col" style={{ gap: 6 }}>
               <SectionLabel>Chain integrity</SectionLabel>
               <VerifyRow ok label={`${audit.length} recent entries readable`} detail="Every write path in the API records actor · action · policy · outcome" />

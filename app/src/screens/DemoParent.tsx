@@ -23,9 +23,9 @@ const PAY_CHAIN: ChainStep[] = [
   { id: 'evidence', label: 'Evidence', detail: 'obligation + attempt', state: 'done' },
   { id: 'proposal', label: 'Answer', detail: 'deterministic', state: 'done' },
   { id: 'approval', label: 'Consent', detail: 'parent taps Pay now', state: 'done' },
-  { id: 'execution', label: 'Execution', detail: 'gateway + ledger', state: 'done' },
+  { id: 'execution', label: 'Execution', detail: 'gateway + payments record', state: 'done' },
   { id: 'verification', label: 'Verification', detail: 'reconciled ₹0 diff', state: 'done' },
-  { id: 'audit', label: 'Audit', detail: 'ledger entry', state: 'done' },
+  { id: 'audit', label: 'Audit', detail: 'recorded in the activity log', state: 'done' },
 ];
 
 export default function DemoParent() {
@@ -88,7 +88,7 @@ export default function DemoParent() {
         };
         setPlanCase(c);
         dispatch({ type: 'case/add', c });
-        dispatch({ type: 'event/add', e: { id: `ev_${Date.now()}`, on: new Date(), type: 'fees', label: 'Case opened — fee arrangement request (owner: Finance, SLA 48h). AI acknowledged; did NOT decide.', severity: 'info' } });
+        dispatch({ type: 'event/add', e: { id: `ev_${Date.now()}`, on: new Date(), type: 'fees', label: 'Case opened — fee arrangement request (owner: Finance, 48h to respond). AI acknowledged; a human decides.', severity: 'info' } });
         setPhase('plan-review');
       }, 2000));
       return;
@@ -195,7 +195,7 @@ export default function DemoParent() {
                   <SectionLabel right={<Badge tone={planApproved ? 'success' : 'warning'}>{planApproved ? 'APPROVED' : 'PENDING FINANCE'}</Badge>}>Case created — not auto-answered</SectionLabel>
                   <div style={{ fontWeight: 590, fontSize: 'var(--text-sm)' }}>{planCase.title}</div>
                   <KeyValue items={[
-                    { k: 'Priority', v: 'Medium' }, { k: 'Owner', v: 'Finance (Ms. Rao)' }, { k: 'SLA', v: '48 hours' },
+                    { k: 'Priority', v: 'Medium' }, { k: 'Owner', v: 'Finance (Ms. Rao)' }, { k: 'Deadline', v: '48 hours' },
                     { k: 'Evidence', v: 'Fee record + payment history — attached to the case' },
                     { k: 'Parent was told', v: '"Your request has been received. The finance team will respond by tomorrow."' },
                   ]} cols={2} />
@@ -212,7 +212,7 @@ export default function DemoParent() {
             <div className="u-col" style={{ gap: 10 }}>
               <EventTimeline items={[
                 { time: '10:24', label: 'Case approved', detail: 'Ms. Rao · 2-month split allowed (Fees §4.3 — history clean)', kind: 'act' },
-                { time: '10:24', label: 'Payment plan updated', detail: 'next debit Nov 5 · ledger annotated', kind: 'act' },
+                { time: '10:24', label: 'Payment plan updated', detail: 'next debit Nov 5 · recorded on the payment plan', kind: 'act' },
                 { time: '10:25', label: 'Parent informed on WhatsApp', detail: 'plan confirmed in writing · delivery receipt ✓', kind: 'verify' },
                 { time: '10:25', label: 'Case closed', detail: 'with evidence — approval, plan change, delivered message', kind: 'close' },
               ]} compact />
@@ -221,13 +221,13 @@ export default function DemoParent() {
                 <SectionLabel>Why was this closed?</SectionLabel>
                 <div className="u-col" style={{ gap: 5 }}>
                   <VerifyRow ok label="Approved payment-plan change" detail="Fees §4.3 · decision by Finance, not AI" />
-                  <VerifyRow ok label="Finance approval on the ledger" detail="actor, reason, policy ref recorded 10:24" />
+                  <VerifyRow ok label="Finance approval on record" detail="actor, reason, policy ref recorded 10:24" />
                   <VerifyRow ok label="Communication delivered" detail="WhatsApp receipt attached to the case" />
                 </div>
               </div>
               <ActionChain steps={PAY_CHAIN} />
               <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <Link to="/audit" className="btn btn-secondary btn-sm">Open the audit ledger</Link>
+                <Link to="/audit" className="btn btn-secondary btn-sm">Open the audit trail</Link>
                 <Link to="/cases" className="btn btn-ghost btn-sm">See the case</Link>
                 <Link to="/demo/summary" className="btn btn-primary btn-sm">Finish — school running →</Link>
               </div>
@@ -263,9 +263,9 @@ export default function DemoParent() {
         <div className="grid grid-4" style={{ gap: 10 }}>
           {[
             { r: 'Principal', sees: 'Fee issue resolved — no action needed', ref: 'briefing attention item cleared', icon: 'User' as const },
-            { r: 'Finance', sees: '₹18,500 reconciled · ₹0 difference · plan approved under §4.3', ref: 'ledger entry · case closed', icon: 'Money' as const },
+            { r: 'Finance', sees: '₹18,500 reconciled · ₹0 difference · plan approved under §4.3', ref: 'payment record · case closed', icon: 'Money' as const },
             { r: 'Parent', sees: 'Receipt RCP-1187 · plan confirmed for Nov 5', ref: 'the WhatsApp thread itself', icon: 'Message' as const },
-            { r: 'Auditor / IT', sees: 'Full chain: verify → answer → pay → reconcile → approve → close', ref: 'audit ledger, 7 entries, every one sourced', icon: 'Lock' as const },
+            { r: 'Auditor / IT', sees: 'Full chain: verify → answer → pay → reconcile → approve → close', ref: 'audit trail, 7 entries, every one sourced', icon: 'Lock' as const },
           ].map(x => {
             const I = Icon[x.icon];
             return (
@@ -279,7 +279,7 @@ export default function DemoParent() {
         </div>
       </Card>
 
-      <Drawer open={stmtOpen} onClose={() => setStmtOpen(false)} title="Fee statement — Aarav Sharma (8-B)" sub="Migrated from the Tally ledger · source-stamped, read-only">
+      <Drawer open={stmtOpen} onClose={() => setStmtOpen(false)} title="Fee statement — Aarav Sharma (8-B)" sub="Migrated from your Tally books · source-stamped, read-only">
         <div className="u-col" style={{ gap: 12 }}>
           <KeyValue items={[
             { k: 'Term 2 plan', v: '₹63,500 — three installments' },

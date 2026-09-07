@@ -32,11 +32,11 @@ export interface PluginManifest {
 }
 
 export const CLASS_INFO: Record<PluginClass, { label: string; detail: string }> = {
-  A: { label: 'Record', detail: 'Owns its data; contributes screens & reports' },
-  B: { label: 'Process', detail: 'Uses kernel workflow + approval spine' },
-  C: { label: 'Primitives', detail: 'Outputs other modules consume' },
-  D: { label: 'Automation', detail: 'Channels & triggers on kernel events' },
-  E: { label: 'Extension', detail: 'Out-of-process, restricted API, signed' },
+  A: { label: 'Keeps records', detail: 'Stores its own information and adds screens or reports' },
+  B: { label: 'Runs a process', detail: 'Handles approvals and step-by-step workflows' },
+  C: { label: 'Provides building blocks', detail: 'Other features use what it produces' },
+  D: { label: 'Automates', detail: 'Sends messages and reacts to events' },
+  E: { label: 'Connects outward', detail: 'Works with outside software, with tight limits' },
 };
 
 export const PERMISSION_INFO: Record<PluginPermission, string> = {
@@ -44,10 +44,10 @@ export const PERMISSION_INFO: Record<PluginPermission, string> = {
   'attendance.read': 'Read attendance registers',
   'attendance.write': 'Mark or amend attendance',
   'fees.read': 'Read fee obligations',
-  'fees.write': 'Change money records — rarely granted',
-  'audit.request': 'Ask the kernel to record an audit entry',
-  'events.emit': 'Publish events on the kernel bus',
-  'actions.raise': 'Raise approval-required actions',
-  'comms.send': 'Send via Communication Orchestrator (dedup + receipts)',
-  'memory.write': 'Write institutional memory entries',
+  'fees.write': 'Change money records — rarely allowed',
+  'audit.request': 'Write to the school activity log',
+  'events.emit': 'Tell other features when something happens',
+  'actions.raise': 'Ask a person to approve something',
+  'comms.send': 'Send messages to parents and staff (with delivery receipts)',
+  'memory.write': 'Save notes to the AI memory',
 };

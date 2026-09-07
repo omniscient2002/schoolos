@@ -40,7 +40,7 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     const pre = await app.inject({ method: 'POST', url: '/plugins/ops.visitors/visitors',
       payload: { visitorName: 'Gate Kid Uncle', purpose: 'pickup', studentId: student.id }, headers: H(co.token) });
     assert.equal(pre.statusCode, 409);
-    assert.match(pre.json().error, /not enabled/);
+    assert.match(pre.json().error, /switched off/); // plain-language copy pass (gate)
     const teacher = await loginAs(app, 'teacher@meridian.edu');
     const t = await app.inject({ method: 'GET', url: '/plugins/ops.visitors/visitors', headers: H(teacher.token) });
     assert.equal(t.statusCode, 403, 'visitors are a front-desk surface');

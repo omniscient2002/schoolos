@@ -19,14 +19,14 @@ const LOOPS = [
   {
     id: 'loop2', num: '2', feeling: 'Control', title: 'Run my day',
     sub: 'A disruption morning: SchoolOS notices, explains with evidence, proposes the action — you approve it once.',
-    steps: ['Simulate the day', 'Watch the event spine', 'Read the briefing', 'Ask why', 'Approve', 'Watch it propagate', 'Loop closed'],
+    steps: ['Simulate the day', 'Watch events flow', 'Read the briefing', 'Ask why', 'Approve', 'Watch it propagate', 'Loop closed'],
     to: '/demo/day', cta: 'Run the day',
     icon: 'Operations' as const, accent: 'var(--accent)',
   },
   {
     id: 'loop3', num: '3', feeling: 'Trust', title: 'Resolve a parent issue',
-    sub: 'A fee question from WhatsApp: verified, answered from records, self-served, reconciled — and remembered.',
-    steps: ['Parent message', 'Verify before disclose', 'Deterministic answer', 'Pay now', 'Receipt + reconcile', 'Case & resolution', 'The audit'],
+    sub: 'A fee question from WhatsApp: checked, answered from records, self-served, payment matched — and remembered.',
+    steps: ['Parent message', 'Checked before shared', 'Clear, sourced answer', 'Pay now', 'Receipt + matching', 'Case resolved', 'The activity log'],
     to: '/demo/parent', cta: 'Open the parent loop',
     icon: 'Shield' as const, accent: 'var(--ai)',
   },

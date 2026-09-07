@@ -59,7 +59,7 @@ export default function DemoSummary() {
         ))}
       </div>
 
-      <Card head="Follow anything — the architecture, made walkable" sub="Four journeys through the same operating spine" style={{ marginTop: 'var(--s-5)' }}>
+      <Card head="Follow anything — the architecture, made walkable" sub="Four journeys through the same school day" style={{ marginTop: 'var(--s-5)' }}>
         <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
           {FOLLOW_TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className="btn btn-sm" style={{

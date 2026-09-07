@@ -35,11 +35,11 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/consent`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
     const { subjectRef, purpose, decision, basis, channel } = req.body ?? {};
     if (!subjectRef || !purpose || !['granted', 'withdrawn'].includes(decision)) {
-      return reply.code(400).send({ error: "subjectRef, purpose, decision ('granted'|'withdrawn') are required" });
+      return reply.code(400).send({ error: "Guardian phone number, purpose and a grant/withdraw decision are required" });
     }
     // P3-1 (cycle 6): normalize BEFORE validating — spaced variants of any length meet
     // the E.164 contract; the regex judges the normalized form, not the raw input
-    if (!PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'subjectRef looks invalid (guardian phone)' });
+    if (!PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'Please enter a valid guardian phone number' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
@@ -53,7 +53,7 @@ export function register(app, kernel) {
            ORDER BY valid_from DESC, created_at DESC LIMIT 1`,
           [req.user.tenant_id, normPhone(subjectRef), String(purpose).slice(0, 80)])).rows[0];
         if (live && live.decision === 'granted') {
-          return reply.code(409).send({ error: 'a granted consent artifact is already operative for this subject and purpose' });
+          return reply.code(409).send({ error: 'Consent is already granted for this purpose' });
         }
       }
       const r = await c.query(
@@ -101,13 +101,13 @@ export function register(app, kernel) {
   // ── open SAR (export|erasure) → kernel approval action ───────────────────────
   app.post(`/plugins/${ID}/dsr`, { preHandler: [require(...DPO), lifecycleGate] }, async (req, reply) => {
     const { kind, subjectRef, note } = req.body ?? {};
-    if (!['export', 'erasure'].includes(kind)) return reply.code(400).send({ error: "kind must be 'export' or 'erasure'" });
-    if (!subjectRef || !PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'subjectRef (guardian phone) required' });
+    if (!['export', 'erasure'].includes(kind)) return reply.code(400).send({ error: "Data request type must be export or erasure" });
+    if (!subjectRef || !PHONE.test(normPhone(String(subjectRef)))) return reply.code(400).send({ error: 'Please enter the guardian\'s phone number' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const open = (await c.query(
         `SELECT id FROM plugin_dpdp.sar WHERE tenant_id=$1 AND subject_ref=$2 AND kind=$3 AND status='open' LIMIT 1`,
         [req.user.tenant_id, normPhone(subjectRef), kind])).rows[0];
-      if (open) return reply.code(409).send({ error: `an open ${kind} SAR already exists for this subject`, sarId: open.id });
+      if (open) return reply.code(409).send({ error: `There is already an open ${kind} request for this phone number`, sarId: open.id });
       const s = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
       const sar = await c.query(
@@ -161,9 +161,9 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!sar) return reply.code(404).send({ error: 'SAR not found' });
-      if (sar.kind !== 'export') return reply.code(400).send({ error: 'not an export SAR' });
-      if (sar.status !== 'fulfilled') return reply.code(409).send({ error: 'SAR not yet fulfilled (kernel approval + execute pending)' });
+      if (!sar) return reply.code(404).send({ error: 'We couldn\'t find that data request' });
+      if (sar.kind !== 'export') return reply.code(400).send({ error: 'Only export requests produce a data bundle' });
+      if (sar.status !== 'fulfilled') return reply.code(409).send({ error: 'This request is still waiting for approval' });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'SAR export bundle delivered', recordType: 'SAR', recordRef: sar.id,
         reason: 'data-principal access fulfilment', policyRef: 'DPDP Act 2023 · SAR', risk: 'medium',
@@ -177,16 +177,16 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!sar) return reply.code(404).send({ error: 'SAR not found' });
-      if (sar.status !== 'open') return reply.code(409).send({ error: `SAR already ${sar.status}` });
+      if (!sar) return reply.code(404).send({ error: 'We couldn\'t find that data request' });
+      if (sar.status !== 'open') return reply.code(409).send({ error: `This request is already ${sar.status}` });
       if (!sar.action_id) return reply.code(409).send({ error: 'kernel approval action missing (raise failed mid-flight)' });
       const act = (await c.query(`SELECT status, payload FROM app.actions WHERE id=$1 AND tenant_id=$2`, [sar.action_id, req.user.tenant_id])).rows[0];
-      if (!act || act.status === 'open') return reply.code(409).send({ error: 'kernel approval required — decide the action first (/actions/:id/decide)' });
-      if (act.status === 'dismissed') return reply.code(409).send({ error: 'kernel approval dismissed — SAR cannot execute' });
+      if (!act || act.status === 'open') return reply.code(409).send({ error: 'This needs approval first — decide it in the Approvals queue' });
+      if (act.status === 'dismissed') return reply.code(409).send({ error: 'This request was dismissed, so it can\'t be carried out' });
       // defense in depth: the kernel blocks self-approval; the pack also refuses to
       // execute for the proposer (segregation of duties)
       if (act.payload?.proposed_by === req.user.id) {
-        return reply.code(403).send({ error: 'proposer may not execute their own SAR action (segregation of duties)' });
+        return reply.code(403).send({ error: 'The person who raised this request can\'t approve it — a second person must' });
       }
       let bundle;
       if (sar.kind === 'export') {

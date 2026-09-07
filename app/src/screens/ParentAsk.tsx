@@ -84,7 +84,7 @@ export default function ParentAsk() {
       return {
         text: `Term 2 for Aarav (Grade 8) is ${fmtMoney(feeSummary.items.find(f => f.status === 'due')?.amount ?? 55500)}: tuition ₹51,000 plus activity and labs ₹4,500. Nothing is hidden — every line is on the fee page.`,
         lines: feeLines.length ? feeLines : ['Term 2 is already paid — thank you.'],
-        sources: ['Fee ledger'],
+        sources: ['Fees records'],
       };
     }
     return {
@@ -151,7 +151,7 @@ export default function ParentAsk() {
           {!thinking && !answer && (
             <div className="u-col u-small u-muted" style={{ gap: 8 }}>
               <span className="u-flex" style={{ gap: 8 }}><Icon.Sparkle size={14} style={{ color: 'var(--ai-text)' }} /> Start with a suggested question above, or type your own.</span>
-              <span>Answers come from the attendance register, transport GPS, the academic calendar and the fee ledger — the same records the school sees.</span>
+              <span>Answers come from the attendance register, transport GPS, the academic calendar and the fees records — the same records the school sees.</span>
             </div>
           )}
 

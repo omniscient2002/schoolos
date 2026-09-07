@@ -26,7 +26,7 @@ const KIND_TABS: { id: string; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'complaint', label: 'Complaint' },
   { id: 'request', label: 'Request' },
-  { id: 'reconciliation', label: 'Reconciliation' },
+  { id: 'reconciliation', label: 'Payment matching' },
   { id: 'compliance', label: 'Compliance' },
   { id: 'transport', label: 'Transport' },
   { id: 'facilities', label: 'Facilities' },
@@ -65,14 +65,14 @@ function slaInfo(c: SchoolCase, now: number) {
   const leftH = c.slaHours - elapsedH;
   const pct = Math.max(0, Math.min(100, (leftH / c.slaHours) * 100));
   if (leftH <= 0) return { label: `SLA breached ${fmtH(-leftH)} ago`, tone: 'danger' as const, pct, breached: true, atRisk: false };
-  if (pct < 25) return { label: `SLA at risk — ${fmtH(leftH)} left`, tone: 'warning' as const, pct, breached: false, atRisk: true };
+  if (pct < 25) return { label: `Deadline soon — ${fmtH(leftH)} left`, tone: 'warning' as const, pct, breached: false, atRisk: true };
   return { label: `${fmtH(leftH)} of ${c.slaHours}h left`, tone: 'neutral' as const, pct, breached: false, atRisk: false };
 }
 
 const TRIAGE_TRACE: AiTrace = {
   trigger: 'Inbound parent WhatsApp message classified as a case',
   policy: 'Communication §1.1 (WhatsApp-first) · Privacy §1.2 (reads logged)',
-  dataUsed: ['guardian thread', 'fee ledger', 'transport roster', 'incident index'],
+  dataUsed: ['guardian thread', 'fees records', 'transport roster', 'incident index'],
   reasoningRole: 'Triage (classify + link only)',
   action: 'Opened the case, set priority, attached linked records',
   approvalStatus: 'Auto-triage allowed; the first reply to the guardian needs staff approval',
@@ -137,7 +137,7 @@ export default function Cases() {
         outcome: `Case created · SLA ${KIND_SLA[form.kind]}h · owner ${form.owner}`,
       },
     });
-    toast({ title: 'Case created — SLA clock started', sub: `${id} · ${form.owner} owns it · AI triage attached`, tone: 'success' });
+    toast({ title: 'Case created — deadline clock started', sub: `${id} · ${form.owner} owns it · AI triage attached`, tone: 'success' });
     setNewOpen(false);
     setForm(f => ({ ...f, title: '' }));
     navigate(`/cases/${id}`);
@@ -148,15 +148,15 @@ export default function Cases() {
       <PageHead
         title="Cases"
         sub={session.roleId === 'finance'
-          ? 'Reconciliation and fee-linked cases surface first for your role. Every case carries an SLA clock.'
+          ? 'Payment matching and fee-linked cases surface first for your role. Every case carries a deadline.'
           : 'One queue for every channel. Guardians never have to repeat themselves; nothing falls through.'}
         actions={<Button variant="primary" icon={<Icon.Plus size={14} />} onClick={() => setNewOpen(true)}>New case</Button>}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <Stat label="Open cases" value={openCases.length} sub={`${domain.cases.length} total · ${fmtNum(domain.cases.filter(c => c.origin === 'parent-whatsapp').length)} from WhatsApp`} />
-        <Stat label="SLA at risk" value={atRisk} sub="unresolved · under 25% of the SLA left" />
-        <Stat label="SLA breached" value={breached} sub="unresolved · past SLA with no reply yet" />
+        <Stat label="Deadline soon" value={atRisk} sub="unresolved · less than a quarter of the time left" />
+        <Stat label="Over deadline" value={breached} sub="unresolved · past its deadline with no reply yet" />
         <Stat label="Avg first response" value="18m" sub="median, last 30 days · target 1h" />
       </div>
 
@@ -191,7 +191,7 @@ export default function Cases() {
             { key: 'owner', label: 'Owner', width: 140 },
             { key: 'priority', label: 'Priority', width: 84, render: c => <Badge tone={PRIORITY_TONE[c.priority]}>{c.priority}</Badge> },
             {
-              key: 'sla', label: 'SLA', width: 150, render: (c) => {
+              key: 'sla', label: 'Deadline', width: 150, render: (c) => {
                 const s = slaInfo(c, now);
                 return (
                   <div>
@@ -240,7 +240,7 @@ export default function Cases() {
         open={newOpen}
         onClose={() => setNewOpen(false)}
         title="New case"
-        sub="The SLA clock starts the moment you save. AI triage attaches automatically."
+        sub="The deadline clock starts the moment you save. AI triage attaches automatically."
         footer={
           <>
             <Button variant="ghost" onClick={() => setNewOpen(false)}>Cancel</Button>

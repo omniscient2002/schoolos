@@ -137,7 +137,7 @@ export function AiDock() {
                       r: {
                         ...t.r,
                         id: t.r.id + '_ack',
-                        answer: `Done — “${label}” is executing. The action and its policy reference have been logged to the audit ledger.`,
+                        answer: `Done — “${label}” is executing. The action and its policy reference have been logged to the audit trail.`,
                         blocks: [],
                         trace: {
                           ...t.r.trace,

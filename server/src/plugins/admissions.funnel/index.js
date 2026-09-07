@@ -62,13 +62,13 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/leads`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {
     const { studentName, guardianName, guardianPhone, classApplied, source, admissionYear } = req.body ?? {};
     if (!studentName || !guardianPhone || !classApplied) {
-      return reply.code(400).send({ error: 'studentName, guardianPhone, classApplied are required' });
+      return reply.code(400).send({ error: 'Student name, guardian phone and class are required' });
     }
-    if (!/^[\d+\-\s()]{6,15}$/.test(String(guardianPhone))) return reply.code(400).send({ error: 'guardianPhone looks invalid' });
+    if (!/^[\d+\-\s()]{6,15}$/.test(String(guardianPhone))) return reply.code(400).send({ error: 'Please enter a valid guardian phone number' });
     // P2-2 (cycle 5): body-supplied admissionYear used to bypass window + dedupe semantics.
     // Format-validated, and non-current sessions require owner/itadmin.
     if (admissionYear != null && !/^\d{4}-\d{2}$/.test(String(admissionYear))) {
-      return reply.code(400).send({ error: 'admissionYear must look like 2026-27' });
+      return reply.code(400).send({ error: 'Admission year should look like 2026-27' });
     }
     const phone = normPhone(guardianPhone);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -78,12 +78,15 @@ export function register(app, kernel) {
       const s = pl?.settings ?? {};
       const ay = String(admissionYear ?? s.admission_year ?? currentSessionYear());
       if (ay !== currentSessionYear() && !['owner', 'itadmin'].includes(req.user.role)) {
-        return reply.code(403).send({ error: `admissionYear ${ay} is not the current session — only owner/itadmin may capture into a past/future cycle` });
+        return reply.code(403).send({ error: `Only the school owner can record admissions for ${ay} — it is not the current session` });
       }
       if (s.cycle_start && s.cycle_end) {
         const today = mmdd(new Date());
         if (today < String(s.cycle_start) || today > String(s.cycle_end)) {
-          return reply.code(409).send({ error: `outside the admission window (${s.cycle_start} → ${s.cycle_end} for ${ay})` });
+          // humanize MM-DD → "Feb 1"; literal month names (12 entries, no i18n dependency)
+          const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const human = (md) => { const [m, d] = String(md).split('-'); return `${MONTHS[Number(m) - 1]} ${Number(d)}`; };
+          return reply.code(409).send({ error: `Admissions are open from ${human(s.cycle_start)} to ${human(s.cycle_end)}` });
         }
       }
       // duplicate-enquiry guard: one open enquiry per (guardian, class, session).
@@ -92,7 +95,7 @@ export function register(app, kernel) {
         `SELECT id FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2 AND class_applied=$3
           AND COALESCE(notes->>'admission_year','')=$4 AND stage IN ('enquiry','form','interaction','offer') LIMIT 1`,
         [req.user.tenant_id, phone, String(classApplied), ay])).rows[0];
-      if (dup) return reply.code(409).send({ error: 'an open enquiry already exists for this guardian, class and session', leadId: dup.id });
+      if (dup) return reply.code(409).send({ error: 'This guardian already has an open enquiry for this class and session', leadId: dup.id });
       // P1-2 backstop: the check-then-insert above can race (two offices, same walk-in);
       // the partial unique index (migration 027) turns the loser's 23505 into a friendly 409.
       let r;
@@ -111,7 +114,7 @@ export function register(app, kernel) {
             `SELECT id FROM plugin_admissions.lead WHERE tenant_id=$1 AND guardian_phone=$2 AND class_applied=$3
               AND COALESCE(notes->>'admission_year','')=$4 AND stage IN ('enquiry','form','interaction','offer') LIMIT 1`,
             [req.user.tenant_id, phone, String(classApplied), ay])).rows[0];
-          return reply.code(409).send({ error: 'an open enquiry already exists for this guardian, class and session', leadId: winner?.id ?? null });
+          return reply.code(409).send({ error: 'This guardian already has an open enquiry for this class and session', leadId: winner?.id ?? null });
         }
         throw e;
       }
@@ -157,14 +160,14 @@ export function register(app, kernel) {
   // ── stage transition (admin roles; lattice enforced server-side) ─────────────
   app.post(`/plugins/${ID}/leads/:id/stage`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const to = String(req.body?.to ?? '');
-    if (!STAGES.includes(to)) return reply.code(400).send({ error: `unknown stage (valid: ${STAGES.join(', ')})` });
+    if (!STAGES.includes(to)) return reply.code(400).send({ error: `"${to}" is not a stage we know` });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const cur = (await c.query(`SELECT stage, student_name, class_applied, guardian_name, guardian_phone, notes FROM plugin_admissions.lead WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!cur) return reply.code(404).send({ error: 'lead not found' });
-      if (TERMINAL.has(cur.stage)) return reply.code(409).send({ error: `stage '${cur.stage}' is terminal — immutable` });
+      if (!cur) return reply.code(404).send({ error: 'We couldn\'t find that enquiry' });
+      if (TERMINAL.has(cur.stage)) return reply.code(409).send({ error: `This enquiry is closed (${cur.stage}) and can\'t be changed` });
       if (!(NEXT[cur.stage] ?? []).includes(to)) {
-        return reply.code(409).send({ error: `illegal transition ${cur.stage} → ${to} (allowed: ${(NEXT[cur.stage] ?? []).join(', ')})` });
+        return reply.code(409).send({ error: `This enquiry can\'t move from "${cur.stage}" to "${to}"` });
       }
       // offer.accepted → students.create: raised as a KERNEL APPROVAL-GATED action
       // (app.actions). Admissions offers create core student records — a core-domain
@@ -215,7 +218,7 @@ export function register(app, kernel) {
       const rows = (await c.query(
         `SELECT from_stage, to_stage, actor, at FROM plugin_admissions.stage_history
          WHERE lead_id=$1 AND tenant_id=$2 ORDER BY at ASC`, [req.params.id, req.user.tenant_id])).rows;
-      if (!rows.length) return reply.code(404).send({ error: 'lead not found' });
+      if (!rows.length) return reply.code(404).send({ error: 'We couldn\'t find that enquiry' });
       return { history: rows };
     });
   });

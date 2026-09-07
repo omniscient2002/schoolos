@@ -39,7 +39,7 @@ const TREND = [88, 87, 89, 90, 91, 88, 86, 85, 84, 83, 85, 84, 83, 82.3];
 const FEE_TRACE = {
   trigger: 'Detected collection dip > 2pts vs 4-week average (weekly fee review)',
   policy: 'Read-only analysis · Fees §4.3 retry posture · no automated collection actions',
-  dataUsed: ['fee ledger (14 days)', 'gateway settlement file', 'transport incident timeline', 'route roster'],
+  dataUsed: ['fees records (14 days)', 'gateway settlement file', 'transport incident timeline', 'route roster'],
   reasoningRole: 'Investigator (read-only)',
   action: 'None — analysis only; retry actions below stay with Finance',
   approvalStatus: 'Not required (read-only)',
@@ -93,7 +93,7 @@ function StudentFeeDrawer({ obligation, onClose, onRetry }: {
         </div>
 
         <div>
-          <div className="u-upper" style={{ marginBottom: 8 }}>Obligations</div>
+          <div className="u-upper" style={{ marginBottom: 8 }}>What's owed</div>
           <div className="u-col" style={{ gap: 8 }}>
             {summary.items.map(it => (
               <div key={it.id} className="u-between" style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: it.id === obligation.id ? 'var(--accent-weak)' : 'var(--surface)' }}>
@@ -222,7 +222,7 @@ export default function Fees() {
     try {
       for (const id of ids) await feeService.recordRetry(id);
       auditRetry(`${ids.length} obligations`, `batch of ${ids.length} failed mandates`);
-      toast({ title: `${ids.length} retries queued`, sub: 'Batch retry sent to the gateway per Fees §4.3. Failed ones open reconciliation cases.', tone: 'success' });
+      toast({ title: `${ids.length} retries queued`, sub: 'Retry sent to the payment gateway. Anything that fails again opens a case for the finance desk.', tone: 'success' });
       obligations.retry();
       payments.retry();
     } catch {
@@ -236,7 +236,7 @@ export default function Fees() {
     <div>
       <PageHead
         title="Fee Intelligence"
-        sub="Realization, failures and class-level collection — with the evidence behind every number."
+        sub="Money received, failed payments and class-level collection — with the proof behind every number."
         actions={
           <>
             {stats.failedCount > 0 && (
@@ -251,7 +251,7 @@ export default function Fees() {
 
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
-        <Stat label="Term 2 due" value={fmtMoneyShort(stats.term2Due)} sub="Obligations due or overdue, Term 2" />
+        <Stat label="Term 2 due" value={fmtMoneyShort(stats.term2Due)} sub="Fees due or overdue, Term 2" />
         <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} delta={{ value: `${fmtPct(stats.collectedPct - 88, 1)} vs avg`, dir: stats.collectedPct >= 88 ? 'up' : 'down' }} sub="88% is the 4-week average" />
         <Stat label="Overdue" value={fmtMoneyShort(stats.overdueAmt)} sub="Past due date, unpaid" />
         <Stat label="Failed payments" value={stats.failedCount} sub="41 of 47 on Route 7 households" onClick={() => setTab('failed')} />
@@ -297,8 +297,8 @@ export default function Fees() {
               <EvidenceChain
                 title="Cluster breakdown"
                 steps={[
-                  { label: 'Route 7 households — 41 failures', detail: 'Avg ticket ₹57,457. Households whose week was disrupted by the Bus 14 breakdown (Route 7 — North).', source: 'Gateway + ledger diff', refType: 'fees' },
-                  { label: 'Gateway timeouts — 23', detail: 'Successful UPI transactions 11:00–11:40 yesterday missing ledger entries; pending settlement-file import (case_3).', source: 'Reconciliation worker', refType: 'case' },
+                  { label: 'Route 7 households — 41 failures', detail: 'Avg ticket ₹57,457. Households whose week was disrupted by the Bus 14 breakdown (Route 7 — North).', source: 'Gateway + payments record', refType: 'fees' },
+                  { label: 'Gateway timeouts — 23', detail: 'UPI payments from 11:00–11:40 yesterday haven\'t shown up in the payments record yet — the bank file is still importing (case_3).', source: 'Payment matching', refType: 'case' },
                   { label: 'Other — 6', detail: 'Bank declines and invalid VPAs; standard assistance workflow wf_4 already messaged these guardians.', source: 'Payment retry log', refType: 'fees' },
                 ]}
               />

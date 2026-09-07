@@ -29,7 +29,7 @@ export function register(app, kernel) {
   // ── log an expected visitor (front desk) ─────────────────────────────────────
   app.post(`/plugins/${ID}/visitors`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
     const { visitorName, visitorPhone, purpose, detail, studentId, expectedAt } = req.body ?? {};
-    if (!visitorName || !purpose) return bad(reply, 'visitorName and purpose are required');
+    if (!visitorName || !purpose) return bad(reply, 'Visitor name and purpose are required');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (studentId) {
         const st = (await c.query(`SELECT id FROM app.students WHERE id=$1 AND tenant_id=$2`, [studentId, req.user.tenant_id])).rows[0];
@@ -80,7 +80,7 @@ export function register(app, kernel) {
   // echoed — masked to the desk tier (full numbers only ride the OTP vault path).
   app.get(`/plugins/${ID}/guardian-lookup`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
     const { studentId, admissionNo, q: nameQuery } = req.query ?? {};
-    if (!studentId && !admissionNo && !nameQuery) return bad(reply, 'studentId, admissionNo or q is required');
+    if (!studentId && !admissionNo && !nameQuery) return bad(reply, 'Search by ID, admission number or name');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const clauses = []; const params = [req.user.tenant_id];
       if (studentId) { params.push(String(studentId)); clauses.push(`s.id=$${params.length}`); }
@@ -112,8 +112,8 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, purpose FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
-      if (v.status !== 'expected') return bad(reply, `cannot check in from status '${v.status}'`, 409);
+      if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
+      if (v.status !== 'expected') return bad(reply, `Only an expected visitor can be checked in (this one is ${v.status})`, 409);
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='checked_in', updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'visitors', label: 'visitor checked in', ref: v.id },
@@ -130,13 +130,13 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, student_ref FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
-      if (!['expected', 'checked_in'].includes(v.status)) return bad(reply, `cannot request pickup from status '${v.status}'`, 409);
+      if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
+      if (!['expected', 'checked_in'].includes(v.status)) return bad(reply, `Pickup can only start once the visitor is checked in (this one is ${v.status})`, 409);
       if (!v.student_ref) return bad(reply, 'pickup flow requires a student link (log the visit with studentId)', 400);
       const g = (await c.query(
         `SELECT phone FROM app.guardians WHERE student_id=$1 AND tenant_id=$2 AND is_primary AND phone IS NOT NULL ORDER BY created_at LIMIT 1`,
         [v.student_ref, req.user.tenant_id])).rows[0];
-      if (!g) return bad(reply, 'no primary guardian phone on file — manual verification (photo ID at desk) required', 409);
+      if (!g) return bad(reply, 'No guardian phone on file — verify with photo ID at the desk', 409);
       // kernel OTP-vault write (owner path): scrypt+salt hash, TTL from settings
       const s = (await settings(req.user.tenant_id)).rows[0]?.settings ?? {};
       const code = String(randomInt(100000, 1000000)); // P3-2 (cycle 6): CSPRNG — Math.random is not a secret source
@@ -164,23 +164,23 @@ export function register(app, kernel) {
   // ── verify pickup code (pickup_pending → verified; consumes the vault OTP) ───
   app.post(`/plugins/${ID}/visitors/:id/pickup/verify`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const { code } = req.body ?? {};
-    if (!code) return bad(reply, 'code required');
+    if (!code) return bad(reply, 'Please enter the pickup code');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, otp_request_id FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
-      if (v.status !== 'pickup_pending' || !v.otp_request_id) return bad(reply, `no active pickup OTP (status '${v.status}')`, 409);
+      if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
+      if (v.status !== 'pickup_pending' || !v.otp_request_id) return bad(reply, `No pickup code is active for this visit (status: ${v.status})`, 409);
       const s = (await settings(req.user.tenant_id)).rows[0]?.settings ?? {};
       const otp = (await q(`SELECT id, phone, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE id=$1`, [v.otp_request_id])).rows[0];
-      if (!otp || otp.consumed_at) return bad(reply, 'no active code — request a new one', 409); // UI lane #1: OTP-state ≠ auth
-      if (new Date(otp.expires_at) < new Date()) return bad(reply, 'code expired — request a new one', 409); // UI lane #1
-      if (otp.attempts >= config.otp.maxAttempts) return bad(reply, 'too many attempts — request a new code', 429);
+      if (!otp || otp.consumed_at) return bad(reply, 'That code is used up — request a new one', 409); // UI lane #1: OTP-state ≠ auth
+      if (new Date(otp.expires_at) < new Date()) return bad(reply, 'That code has expired — request a new one', 409); // UI lane #1
+      if (otp.attempts >= config.otp.maxAttempts) return bad(reply, 'Too many wrong attempts — request a new code', 429);
       const [salt, hash] = otp.code_hash.split(':');
       const ok = (() => { try { return timingSafeEqual(scryptSync(String(code), salt, 64), Buffer.from(hash, 'hex')); } catch { return false; } })();
       if (!ok) {
         await q(`UPDATE app.auth_otps SET attempts = attempts + 1 WHERE id=$1`, [otp.id]);
         await c.query(`UPDATE plugin_visitors.visit SET otp_attempts = otp_attempts + 1, updated_at=now() WHERE id=$1`, [v.id]);
-        return bad(reply, 'invalid code', 422); // UI lane #1: unprocessable code, not an auth failure
+        return bad(reply, 'That code is not right — check it and try again', 422); // UI lane #1: unprocessable code, not an auth failure
       }
       await q(`UPDATE app.auth_otps SET consumed_at = now() WHERE id=$1`, [otp.id]); // consume on success (kernel parity, owner path)
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='verified', verified_at=now(), updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);
@@ -202,7 +202,7 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status, purpose, verified_at, student_ref FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
+      if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
       const unverifiedPickup = v.purpose === 'pickup' && v.student_ref && !v.verified_at;
       if (unverifiedPickup) {
         // no_release_without_verification — the only bypass is an audited senior override,
@@ -212,7 +212,7 @@ export function register(app, kernel) {
         }
         if (!note) return bad(reply, 'override requires a note', 400);
       } else if (v.status !== 'verified' && v.status !== 'checked_in') {
-        return bad(reply, `cannot complete from status '${v.status}' (verify pickup first)`, 409);
+        return bad(reply, `Verify the pickup code before completing (this visit is ${v.status})`, 409);
       }
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='completed', updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);
       await emitEvent(c, req.user.tenant_id,
@@ -233,8 +233,8 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const v = (await c.query(`SELECT id, status FROM plugin_visitors.visit WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
-      if (['completed', 'denied'].includes(v.status)) return bad(reply, `cannot deny from status '${v.status}'`, 409);
+      if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
+      if (['completed', 'denied'].includes(v.status)) return bad(reply, `This visit can\'t be denied from ${v.status}`, 409);
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='denied', updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'visitor denied', recordType: 'VisitorPass', recordRef: v.id,

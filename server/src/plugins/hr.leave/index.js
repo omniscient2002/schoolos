@@ -17,20 +17,20 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/leave`, { preHandler: [require(...OFFICE), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.staffId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(b.staffId)))
-      return bad(reply, 'staffId (uuid) required');
-    if (!b.leaveDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(b.leaveDate))) return bad(reply, 'leaveDate (YYYY-MM-DD) required');
+      return bad(reply, 'Please pick a staff member');
+    if (!b.leaveDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(b.leaveDate))) return bad(reply, 'Please pick a date');
     const KINDS = ['sick', 'casual', 'duty', 'comp', 'unpaid', 'training'];
-    if (!KINDS.includes(b.kind)) return bad(reply, `kind must be one of ${KINDS.join(', ')}`);
+    if (!KINDS.includes(b.kind)) return bad(reply, 'Choose a leave type: sick, casual, duty, comp, unpaid or training');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // staff are users: resolve within the tenant
       const staff = (await c.query(`SELECT id, name, role FROM app.users WHERE id=$1 AND tenant_id=$2`,
         [b.staffId, req.user.tenant_id])).rows[0];
-      if (!staff) return bad(reply, 'staff not found', 404);
-      if (staff.role === 'parent') return bad(reply, 'parents are not staff — leave is a staff concept', 400);
+      if (!staff) return bad(reply, 'We couldn\'t find that staff member', 404);
+      if (staff.role === 'parent') return bad(reply, 'Parents aren\'t staff, so leave can\'t be marked for them', 400);
       // IST calendar day (cycle-5 hygiene: date math on the Asia/Kolkata clock)
       const istNow = new Date(Date.now() + 5.5 * 3600 * 1000);
       const today = istNow.toISOString().slice(0, 10);
-      if (String(b.leaveDate) < today) return bad(reply, `leaveDate ${b.leaveDate} is in the past (today is ${today} IST)`, 400);
+      if (String(b.leaveDate) < today) return bad(reply, `Leave can\'t be marked in the past (today is ${today})`, 400);
       // the per-staff-day unique index is the race backstop; inside withUser a failed
       // statement aborts the transaction, so the catch must ROLLBACK TO SAVEPOINT
       // before it can query for the friendly 409
@@ -57,7 +57,7 @@ export function register(app, kernel) {
           const dupe = (await c.query(
             `SELECT id FROM plugin_hr.leave WHERE tenant_id=$1 AND staff_id=$2 AND leave_date=$3 AND status='marked'`,
             [req.user.tenant_id, staff.id, b.leaveDate])).rows[0];
-          return reply.code(409).send({ error: 'leave already marked for this staff member on this date', leaveId: dupe?.id });
+          return reply.code(409).send({ error: 'This staff member already has leave marked for that day', leaveId: dupe?.id });
         }
         throw e;
       }
@@ -69,8 +69,8 @@ export function register(app, kernel) {
       const l = (await c.query(
         `SELECT id, staff_id, leave_date, kind, status FROM plugin_hr.leave WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!l) return bad(reply, 'leave record not found', 404);
-      if (l.status === 'cancelled') return bad(reply, 'already cancelled', 409);
+      if (!l) return bad(reply, 'We couldn\'t find that leave record', 404);
+      if (l.status === 'cancelled') return bad(reply, 'This leave is already cancelled', 409);
       await c.query(`UPDATE plugin_hr.leave SET status='cancelled', updated_at=now() WHERE id=$1`, [l.id]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'hr', label: `Leave cancelled for ${l.leave_date}`, ref: l.id },
@@ -85,7 +85,7 @@ export function register(app, kernel) {
 
   // duty roster for a date: who is absent (facts from this plugin) × who is present
   app.get(`/plugins/${ID}/roster/:date`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.date))) return bad(reply, 'date must be YYYY-MM-DD');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.date))) return bad(reply, 'Please use a valid date (YYYY-MM-DD)');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const absent = (await c.query(
         `SELECT l.id, l.staff_id, l.kind, l.reason, u.name, u.role

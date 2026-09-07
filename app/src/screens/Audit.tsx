@@ -63,7 +63,7 @@ export default function Audit() {
       type: 'audit/add',
       entry: {
         actor: actorName, actorRole: session.roleId, action: 'Audit exported',
-        recordType: 'Audit ledger', recordRef: `CSV · ${ledger.length} entries · signed`,
+        recordType: 'Audit trail', recordRef: `CSV · ${ledger.length} entries · signed`,
         reason: 'Board review / compliance archive', aiInvolved: false, risk: 'low',
         outcome: 'Export queued — a signed download link was generated',
       },
@@ -73,7 +73,7 @@ export default function Audit() {
   return (
     <>
       <PageHead
-        title="Audit ledger"
+        title="Audit trail"
         sub={session.roleId === 'itadmin'
           ? 'Append-only. Even you cannot edit or delete an entry — nightly verification proves the chain.'
           : 'Who did what, when, why and under which policy. AI actions appear here exactly like human ones.'}
@@ -110,7 +110,7 @@ export default function Audit() {
             ))}
           </div>
           <div style={{ width: 260 }}>
-            <input className="input" placeholder="Search record ref, action, actor…" value={q} onChange={e => setQ(e.target.value)} aria-label="Search the audit ledger" />
+            <input className="input" placeholder="Search record ref, action, actor…" value={q} onChange={e => setQ(e.target.value)} aria-label="Search the audit trail" />
           </div>
           <span className="u-xs u-faint">{filtered.length} of {ledger.length} entries</span>
         </div>
@@ -118,7 +118,7 @@ export default function Audit() {
 
       <Card>
         <DataTable<AuditEntry>
-          caption="AI audit ledger — who decided what, when and why"
+          caption="AI audit trail — who decided what, when and why"
           columns={[
             {
               key: 'on', label: 'When', width: 150, sortable: true, sortValue: a => a.on.getTime(), render: a => (

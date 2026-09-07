@@ -13,7 +13,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     await app.authenticate(req, reply);
     if (reply.sent) return;
     if (!roles.includes(req.user.role)) {
-      return reply.code(403).send({ error: `role ${req.user.role} not permitted` });
+      return reply.code(403).send({ error: `Your role (${req.user.role}) doesn't allow this action` });
     }
   };
 
@@ -325,12 +325,24 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ cases ============
-  app.get('/cases', { preHandler: me }, async (req) => {
+  const STAFF_CASE_ROLES = new Set(['owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'finance']);
+  app.get('/cases', { preHandler: me }, async (req, reply) => {
+    if (!STAFF_CASE_ROLES.has(req.user.role)) return reply.code(403).send({ error: 'The full school case log is staff-only. Parents can see their own complaints at /my-cases.' });
     const { status } = req.query;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
         `SELECT * FROM app.cases WHERE ($1::text IS NULL OR status=$1) ORDER BY created_at DESC LIMIT 200`,
         [status ?? null]);
+      return { cases: r.rows };
+    });
+  });
+
+  // A parent's own complaints — and only those (other families' cases never leave the staff board).
+  app.get('/my-cases', { preHandler: me }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT * FROM app.cases WHERE opened_by=$2 AND ($1::text IS NULL OR status=$1) ORDER BY created_at DESC LIMIT 100`,
+        [req.query.status ?? null, req.user.id]);
       return { cases: r.rows };
     });
   });
@@ -351,6 +363,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   app.post('/cases/:id/status', { preHandler: me }, async (req, reply) => {
+    if (!STAFF_CASE_ROLES.has(req.user.role)) return reply.code(403).send({ error: 'Only school staff can change a case status. Parents track progress in My complaints.' });
     const to = req.body?.to;
     if (!['open','triaged','in-progress','resolved','closed'].includes(to)) return bad(reply, 'invalid status');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -381,7 +394,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     // P2-3 (cycle 5): non-uuid :id hit the SELECT with 22P02 → raw 500; format-guard
     // first (same pattern as /events/lineage)
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id))) {
-      return bad(reply, 'action id must be a uuid');
+      return bad(reply, 'This record needs a valid ID');
     }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const a = (await c.query(`SELECT * FROM app.actions WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];

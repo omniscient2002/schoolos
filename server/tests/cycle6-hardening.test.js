@@ -61,7 +61,7 @@ describe('P2-2 · uuid-param guards (garbage :id → 400, never 22P02/500)', () 
       const u = await cachedLogin(app, who);
       const r = await app.inject({ method: 'POST', url, payload, headers: H(u.token) });
       assert.equal(r.statusCode, 400, `expected 400: ${r.body}`);
-      assert.match(r.json().error, /uuid/);
+      assert.match(r.json().error, /valid ID/); // plain-language copy pass (was /uuid/)
     });
   }
   test('multi-param door: garbage studentId on the moderate route → 400', async () => {
@@ -124,7 +124,7 @@ describe('P2-1 · moderation bounds + re-derivation (trust nothing stored)', () 
     const d = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${mid}/decide`,
       payload: { decision: 'approved', adjustedSnapshot: { pct: 99999, grade: 'A1', points: 10 } }, headers: H(pr.token) });
     assert.equal(d.statusCode, 400, `expected 400: ${d.body}`);
-    assert.match(d.json().error, /\[0,100\]/);
+    assert.match(d.json().error, /0 to 100/); // plain-language copy pass (was /[0,100]/)
   });
 
   test('pct:0 → 400-free path approved (Number.isFinite, NOT truthiness)', async () => {
@@ -143,7 +143,7 @@ describe('P2-1 · moderation bounds + re-derivation (trust nothing stored)', () 
     const d = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/moderations/${mid}/decide`,
       payload: { decision: 'approved', adjustedSnapshot: { pct: 50, grade: 'A1' } }, headers: H(pr.token) });
     assert.equal(d.statusCode, 400, `expected 400: ${d.body}`);
-    assert.match(d.json().error, /mismatch/);
+    assert.match(d.json().error, /does not follow from/); // plain-language copy pass (was /mismatch/)
   });
 
   test('read-path defense: even a poisoned overlay cannot serve an absurd grade', async () => {

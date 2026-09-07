@@ -69,7 +69,7 @@ export default function DemoDay() {
     { time: '08:37', label: 'Grade 8-B attendance 23% vs 6% baseline', detail: '15 of 20 absentees are Bus 14 riders — deviation flagged while registers are still open', kind: 'detect', ref: { label: 'View attendance', to: '/attendance' } },
     { time: '08:42', label: 'Parent complaints classified', detail: '4 inbound on Route 7 → deduplicated into ONE case (not four tasks)', kind: 'understand', ref: { label: 'View case', to: '/cases' } },
     { time: '08:49', label: 'Payment failures clustering', detail: '3 new UPI timeouts, all Route 7 households — consistent with the disruption pattern', kind: 'understand', ref: { label: 'View fees', to: '/fees' } },
-    { time: '09:05', label: 'Maintenance SLA closing', detail: 'WO-1042 (AC-04, 4th failure) — resolution window closes 11:21, escalation armed', kind: 'detect', ref: { label: 'View work order', to: '/maintenance/work-orders/WO-1042' } },
+    { time: '09:05', label: 'Maintenance deadline closing', detail: 'WO-1042 (AC-04, 4th failure) — resolution window closes 11:21, escalation armed', kind: 'detect', ref: { label: 'View work order', to: '/maintenance/work-orders/WO-1042' } },
   ] : [];
 
   const openActions = domain.actions.filter((a: import('../types/domain').ActionRecord) => a.status === 'open');
@@ -83,7 +83,7 @@ export default function DemoDay() {
       />
 
       {/* simulate school day */}
-      <Card head="Simulate school day" sub="Pick the morning — the event spine, briefing and queues react live">
+      <Card head="Simulate school day" sub="Pick the morning — events, briefing and queues react live">
         <div className="grid grid-4" style={{ gap: 10 }}>
           {MODES.map(m => (
             <button key={m.id} onClick={() => { setMode(m.id); setApproval('idle'); setAskOpen(false); }}
@@ -112,7 +112,7 @@ export default function DemoDay() {
       {mode === 'disruption' && (
         <>
           {/* event spine */}
-          <Card head="The event spine — one morning, one graph" sub="These are not separate dashboards; they are one causal chain" style={{ marginTop: 'var(--s-4)' }}>
+          <Card head="One morning, one story" sub="These are not separate dashboards — they are one connected story" style={{ marginTop: 'var(--s-4)' }}>
             <EventTimeline items={briefing} />
             <div className="u-xs u-faint" style={{ marginTop: 12 }}>
               Correlation rule: Transport §3.1 delay {'>'} 10 min → roster cross-reference → attendance deviation → comms classification → Attention. Deterministic, auditable, and re-rankable in the Control Plane.
@@ -126,7 +126,7 @@ export default function DemoDay() {
                 {[
                   { t: 'Bus 14 +13 min — 38 students affected', src: 'GPS feed', to: '/transport', link: 'View transport', p: 'high' as const },
                   { t: 'Grade 8-B attendance 23% (vs 6% baseline)', src: 'live registers', to: '/attendance', link: 'View attendance', p: 'high' as const },
-                  { t: 'Maintenance SLA — 1h 42m remaining on WO-1042', src: 'SLA engine', to: '/maintenance/work-orders/WO-1042', link: 'View work order', p: 'critical' as const },
+                  { t: 'Maintenance deadline — 1h 42m left on WO-1042', src: 'Deadline tracker', to: '/maintenance/work-orders/WO-1042', link: 'View work order', p: 'critical' as const },
                 ].map(b => (
                   <div key={b.t} className="u-col" style={{ gap: 3, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)' }}>
                     <div className="u-between" style={{ gap: 8 }}>
@@ -180,14 +180,14 @@ export default function DemoDay() {
                 { time: '08:31', label: 'Bus 14 route deviation', detail: 'GPS: Sector 12 bridge block · +13 min · route 7', kind: 'detect', ref: { label: 'Open transport', to: '/transport' } },
                 { time: '08:37', label: '15 of 20 absentees are Bus 14 riders', detail: 'roster cross-reference — deterministic join', kind: 'understand' },
                 { time: '08:42', label: 'Parent complaints begin', detail: '4 inbound on route 7 · classified transport · deduped to 1 case', kind: 'act', ref: { label: 'Open case', to: '/cases' } },
-                { time: 'now', label: 'Current unresolved issue', detail: 'Cluster case open · owner: Transport desk · SLA 24h', kind: 'close', ref: { label: 'Open case', to: '/cases' } },
+                { time: 'now', label: 'Current unresolved issue', detail: 'Cluster case open · owner: Transport desk · deadline 24h', kind: 'close', ref: { label: 'Open case', to: '/cases' } },
               ]} />
               <div className="divider" />
               <SectionLabel>What should I do?</SectionLabel>
               <SuggestedActions
                 actions={[
                   { id: 'notify', label: 'Notify affected parents (38, Route 7)', type: 'message', detail: 'Transport §3.1 · template TRANSPORT_DELAY · APPROVAL REQUIRED' },
-                  { id: 'incident', label: 'Open transport incident + assign follow-up', type: 'workflow', detail: 'owner: Transport desk · SLA 24h' },
+                  { id: 'incident', label: 'Open transport incident + assign follow-up', type: 'workflow', detail: 'owner: Transport desk · deadline 24h' },
                   { id: 'review', label: 'Review affected attendance entries', type: 'task', detail: 'leniency rule applies to Bus 14 riders (Attendance §1.4)' },
                 ]}
                 onApprove={() => {}}
@@ -233,7 +233,7 @@ export default function DemoDay() {
               <div className="u-col" style={{ gap: 12 }}>
                 <ActionChain steps={chain} />
                 <EventTimeline items={[
-                  { time: '09:03', label: 'Approval recorded', detail: `${actorName} · ${session.roleId} · reason + policy on the ledger entry`, kind: 'act' as const },
+                  { time: '09:03', label: 'Approval recorded', detail: `${actorName} · ${session.roleId} · reason + policy recorded with it`, kind: 'act' as const },
                   (approval === 'sent' || approval === 'delivered' || approval === 'closed') && { time: '09:03', label: 'Message queued → sent', detail: 'Communication orchestrator: dedup ✓ · quiet-hours ✓ · template ✓', kind: 'act' as const },
                   (approval === 'delivered' || approval === 'closed') && { time: '09:04', label: 'Message delivered — 38/38', detail: 'WhatsApp receipts · 3 replies auto-routed to the case', kind: 'verify' as const },
                   approval === 'closed' && { time: '09:05', label: 'All surfaces updated', detail: 'Briefing · Action Center · Transport · Case · Audit · Memory — one action, one truth', kind: 'close' as const },
@@ -242,7 +242,7 @@ export default function DemoDay() {
                   <div className="u-col" style={{ gap: 10 }}>
                     <LoopClosed at="09:05" summary="Detected 08:31 → verified & closed 09:05 · 34 minutes, zero phone calls." />
                     <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
-                      <Link to="/audit" className="btn btn-secondary btn-sm">See it in the audit ledger</Link>
+                      <Link to="/audit" className="btn btn-secondary btn-sm">See it in the audit trail</Link>
                       <Link to="/cases" className="btn btn-ghost btn-sm">Open the case</Link>
                       <Link to="/demo/parent" className="btn btn-primary btn-sm">Next loop — resolve a parent issue</Link>
                     </div>
@@ -282,5 +282,5 @@ export default function DemoDay() {
 }
 
 function toastDismiss(dispatch: ReturnType<typeof useStore>['dispatch']) {
-  dispatch({ type: 'event/add', e: { id: `ev_${Date.now()}`, on: new Date(), type: 'demo', label: 'Proposal dismissed — decision recorded in the ledger with the reason', severity: 'info' } });
+  dispatch({ type: 'event/add', e: { id: `ev_${Date.now()}`, on: new Date(), type: 'demo', label: 'Proposal dismissed — decision recorded with the reason', severity: 'info' } });
 }

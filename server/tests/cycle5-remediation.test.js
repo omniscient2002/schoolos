@@ -107,7 +107,7 @@ describe('cycle-5 remediation (P1-1 · P1-2 · P2-1 · P2-2 · P2-3)', () => {
     const race = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads',
       payload: { studentName: 'Race Loser', guardianPhone: '98222 00333', classApplied: '6' }, headers: H(co.token) });
     assert.equal(race.statusCode, 409, 'the loser gets the friendly 409, not a 500');
-    assert.match(race.json().error, /open enquiry already exists/);
+    assert.match(race.json().error, /already has an open enquiry/); // plain-language copy pass
   });
 
   test('P2-1 · admissions: spaced-then-compact capture dedupes to the same lead', async () => {
@@ -140,6 +140,6 @@ describe('cycle-5 remediation (P1-1 · P1-2 · P2-1 · P2-2 · P2-3)', () => {
     const r = await app.inject({ method: 'POST', url: '/actions/zzz/decide',
       payload: { decision: 'approved' }, headers: H(pr.token) });
     assert.equal(r.statusCode, 400);
-    assert.match(r.json().error, /uuid/);
+    assert.match(r.json().error, /valid ID/); // plain-language copy pass (was /uuid/)
   });
 });

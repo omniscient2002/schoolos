@@ -13,6 +13,7 @@ import {
   PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Dropdown,
 } from '../components/ui';
 import { fmtRelative } from '../lib/format';
+import { friendly } from '../lib/friendlyErrors';
 import { SegmentedBar } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import {
@@ -73,7 +74,7 @@ export default function FunnelBoard() {
     setLoading(true); setError(null);
     apiFunnelLeads()
       .then(leads => { if (live) { setData(leads); setLoading(false); } })
-      .catch(e => { if (live) { setError(String(e)); setLoading(false); } });
+      .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
     return () => { live = false; };
   }, [tick]);
 
@@ -101,7 +102,7 @@ export default function FunnelBoard() {
       toast({
         title: `Moved to ${stageLabel(r.to)}`,
         sub: r.actionId
-          ? 'Offer accepted — a students.create approval was raised for the Principal (kernel-gated core write).'
+          ? 'Offer accepted — an approval to enroll the student was sent to the Principal.'
           : 'Stage transitioned on the server lattice. Audit entry recorded.',
         tone: 'success',
       });
@@ -112,7 +113,7 @@ export default function FunnelBoard() {
           recordType: 'Admission lead (plugin)', recordRef: id,
           reason: 'admissions.funnel stage transition', policyRef: 'Platform §3 (plugin governance)',
           aiInvolved: false, risk: r.to === 'enrolled' ? 'medium' : 'low',
-          outcome: `${r.from} → ${r.to}${r.actionId ? ' · students.create raised via kernel approval' : ''}`,
+          outcome: `${r.from} → ${r.to}${r.actionId ? ' · enrollment approval sent to the Principal' : ''}`,
         },
       });
     } catch (e) {

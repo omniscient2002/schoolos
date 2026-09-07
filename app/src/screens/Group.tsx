@@ -31,7 +31,7 @@ function trendFor(campus: Campus): number[] {
 const GROUP_TRACE: AiTrace = {
   trigger: 'Group question — which campus needs attention first',
   policy: 'Group scope: Owner, Principal, Finance only · Privacy §1.2 (reads logged)',
-  dataUsed: ['attendance registers (3 campuses)', 'fee ledger per campus', 'incident board', 'obligations calendar'],
+  dataUsed: ['attendance registers (3 campuses)', 'fees records per campus', 'incident board', 'fees calendar'],
   reasoningRole: 'Investigator (read-only)',
   action: 'None — surfaces a ranked recommendation for the owner',
   approvalStatus: 'Not required (read-only)',
@@ -216,7 +216,7 @@ export default function Group() {
                   title="Campus comparison — evidence"
                   steps={[
                     { label: 'Attendance · last 5 school days', detail: 'North 94.1% · City 95.2% · East 92.3%', source: 'Attendance registers · recomputed per campus', refType: 'attendance' },
-                    { label: 'Fee collection · 4-week average', detail: 'North 84.2% · City 86.1% · East 79.8%', source: 'Fee ledger · per campus', refType: 'fees' },
+                    { label: 'Fee collection · 4-week average', detail: 'North 84.2% · City 86.1% · East 79.8%', source: 'Fees records · per campus', refType: 'fees' },
                     { label: 'Open incidents', detail: 'North 0 · City 1 (payment gateway) · East 1 (facilities)', source: 'Incident board', refType: 'incident' },
                     { label: 'Obligations due ≤ 14 days', detail: 'East: playground equipment inspection in 4 days · North: fire-safety renewal in 21 days', source: 'Obligations calendar' },
                   ]}

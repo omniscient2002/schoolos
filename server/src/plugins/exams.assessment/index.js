@@ -45,10 +45,10 @@ export function register(app, kernel) {
   // ── create exam (draft) with weightage — invariant checked at once ───────────
   app.post(`/plugins/${ID}/exams`, { preHandler: [require(...EXAM_ADMIN), lifecycleGate] }, async (req, reply) => {
     const { name, term, classGrade, weightage } = req.body ?? {};
-    if (!name || !classGrade) return bad(reply, 'name and classGrade are required');
+    if (!name || !classGrade) return bad(reply, 'Exam name and class are required');
     const w = weightage ?? { written: 100 };
     const total = Object.values(w).reduce((a, b) => a + Number(b || 0), 0);
-    if (Math.round(total) !== 100) return bad(reply, `weightage_total_enforced: components must sum to exactly 100 (got ${total})`, 409);
+    if (Math.round(total) !== 100) return bad(reply, `This exam\'s components must add up to 100% (they add up to ${total}%)`, 409);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
         `INSERT INTO plugin_exams.exam (tenant_id, name, term, class_grade, weightage, created_by)
@@ -77,17 +77,17 @@ export function register(app, kernel) {
   // ── marks entry (per-write audit; frozen once published) ─────────────────────
   app.post(`/plugins/${ID}/exams/:id/marks`, { preHandler: [require(...EXAM_STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const { studentId, component, marks, maxMarks } = req.body ?? {};
-    if (!studentId || marks == null) return bad(reply, 'studentId and marks are required');
+    if (!studentId || marks == null) return bad(reply, 'Student and marks are required');
     const m = Number(marks);
-    if (!Number.isFinite(m) || m < 0) return bad(reply, 'marks must be a non-negative number');
+    if (!Number.isFinite(m) || m < 0) return bad(reply, 'Marks can\'t be negative');
     const mm = Number(maxMarks ?? 100);
-    if (!Number.isFinite(mm) || mm <= 0) return bad(reply, 'maxMarks must be positive');
-    if (m > mm) return bad(reply, `marks (${m}) exceed maxMarks (${mm})`, 409);
+    if (!Number.isFinite(mm) || mm <= 0) return bad(reply, 'Maximum marks must be a positive number');
+    if (m > mm) return bad(reply, `Marks (${m}) can\'t be more than the maximum (${mm})`, 409);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT id, status, class_grade FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!e) return bad(reply, 'exam not found', 404);
-      if (e.status === 'published') return bad(reply, 'marks are frozen — exam published (read-only)', 409);
+      if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
+      if (e.status === 'published') return bad(reply, 'Marks are locked — this exam is already published', 409);
       const st = (await c.query(`SELECT id FROM app.students WHERE id=$1 AND tenant_id=$2`, [studentId, req.user.tenant_id])).rows[0];
       if (!st) return bad(reply, 'student not found', 404);
       // Eligibility consumes the attendance kernel primitive (014 contract). Late counts
@@ -102,7 +102,7 @@ export function register(app, kernel) {
         [req.user.tenant_id, studentId])).rows[0];
       const pct = att.total > 0 ? Math.round((att.attended / att.total) * 1000) / 10 : 0;
       if (pct < minPct) {
-        return reply.code(409).send({ error: `attendance ${pct}% is below the ${minPct}% floor — student not eligible to sit this exam`, attendancePct: pct, floor: minPct });
+        return reply.code(409).send({ error: `Attendance is ${pct}%, below the ${minPct}% floor — this student can\'t sit this exam`, attendancePct: pct, floor: minPct });
       }
       const comp = String(component ?? 'written').slice(0, 40);
       const r = await c.query(
@@ -127,17 +127,17 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT id, name, class_grade, status, weightage FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!e) return bad(reply, 'exam not found', 404);
-      if (e.status === 'published') return bad(reply, 'exam already published', 409);
+      if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
+      if (e.status === 'published') return bad(reply, 'This exam is already published', 409);
       const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
-      if (Math.round(total) !== 100) return bad(reply, `weightage_total_enforced: sums to ${total}, not 100`, 409);
+      if (Math.round(total) !== 100) return bad(reply, `Marks must add up to 100% — these add up to ${total}%`, 409);
       // weightage freezes one weightage_lock_days window before publication (IST-first)
-      if (e.weightage_locked) return bad(reply, 'weightage is frozen — inside the lock window', 409);
+      if (e.weightage_locked) return bad(reply, 'Weightage is locked right now — it can\'t be changed this close to the exam', 409);
       // kernel action codes are UNIQUE per (tenant, code) — recurring operations scope the
       // code per instance (dpdp composes per-kind; here per-exam)
       const open = (await c.query(`SELECT id FROM app.actions WHERE tenant_id=$1 AND code=$2 AND status='open' LIMIT 1`,
         [req.user.tenant_id, `exams.publish.${e.id}`])).rows[0];
-      if (open) return reply.code(409).send({ error: 'a publication approval is already open', actionId: open.id });
+      if (open) return reply.code(409).send({ error: 'A publication approval is already waiting', actionId: open.id });
       const act = await c.query(
         `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
          VALUES ($1,'exams.publish.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Assessment publication',false,'exam.published.v1',$5::jsonb) RETURNING id`,
@@ -160,14 +160,14 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT * FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!e) return bad(reply, 'exam not found', 404);
-      if (e.status === 'published') return bad(reply, 'exam already published', 409);
-      if (!e.action_id) return bad(reply, 'no publication action raised for this exam', 409);
+      if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
+      if (e.status === 'published') return bad(reply, 'This exam is already published', 409);
+      if (!e.action_id) return bad(reply, 'Publish it first — no approval was raised for this exam', 409);
       const act = (await q(`SELECT status, payload FROM app.actions WHERE id=$1 AND tenant_id=$2`, [e.action_id, req.user.tenant_id])).rows[0];
-      if (!act || act.status === 'open') return bad(reply, 'kernel approval required — decide the action first (/actions/:id/decide)', 409);
+      if (!act || act.status === 'open') return bad(reply, 'This needs approval first — decide it in the Approvals queue', 409);
       if (act.status === 'dismissed') return bad(reply, 'publication approval dismissed', 409);
       if (act.payload?.proposed_by === req.user.id) {
-        return reply.code(403).send({ error: 'proposer may not execute their own publication (segregation of duties)' });
+        return reply.code(403).send({ error: 'The person who raised this publication can\'t approve it — a second person must' });
       }
       // deterministic assembly: pure function of (marks, weightage, scale)
       const scale = (await q(`SELECT settings->>'grade_scale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
@@ -176,7 +176,7 @@ export function register(app, kernel) {
         [e.id, req.user.tenant_id])).rows;
       const students = [...new Set(marks.map((m) => m.student_id))];
       const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
-      if (Math.round(total) !== 100) return bad(reply, `weightage_total_enforced: sums to ${total}`, 409);
+      if (Math.round(total) !== 100) return bad(reply, `Marks must add up to 100% — these add up to ${total}%`, 409);
       const reports = students.map((sid) => {
         const comps = {};
         for (const m of marks.filter((x) => x.student_id === sid)) comps[m.component] = (Number(m.marks) / Number(m.max_marks)) * 100;
@@ -245,7 +245,7 @@ export function register(app, kernel) {
         [req.params.id, req.params.studentId, req.user.tenant_id])).rows[0];
       if (!r) return bad(reply, 'report not found (published exam?)', 404);
       const dup = (await c.query(`SELECT id FROM plugin_exams.moderation WHERE report_id=$1 AND status='proposed'`, [r.id])).rows[0];
-      if (dup) return reply.code(409).send({ error: 'a moderation proposal is already open', moderationId: dup.id });
+      if (dup) return reply.code(409).send({ error: 'A review proposal is already open for this report', moderationId: dup.id });
       const m = await c.query(
         `INSERT INTO plugin_exams.moderation (tenant_id, report_id, reason, proposed_by)
          VALUES ($1,$2,$3,$4) RETURNING id`,
@@ -260,16 +260,16 @@ export function register(app, kernel) {
 
   app.post(`/plugins/${ID}/moderations/:mid/decide`, { preHandler: [require(...MOD_TIER), uuidParams('mid'), lifecycleGate] }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
-    if (!['approved', 'rejected'].includes(decision)) return bad(reply, "decision must be 'approved' or 'rejected'");
+    if (!['approved', 'rejected'].includes(decision)) return bad(reply, "Decision must be approved or rejected");
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const m = (await c.query(`SELECT * FROM plugin_exams.moderation WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.mid, req.user.tenant_id])).rows[0];
-      if (!m) return bad(reply, 'moderation not found', 404);
+      if (!m) return bad(reply, 'We couldn\'t find that review', 404);
       const r = (await c.query(`SELECT id, digest FROM plugin_exams.report WHERE id=$1`, [m.report_id])).rows[0];
-      if (!r) return bad(reply, 'underlying report not found', 404);
-      if (m.status !== 'proposed') return bad(reply, `moderation already ${m.status}`, 409);
+      if (!r) return bad(reply, 'The original report is missing', 404);
+      if (m.status !== 'proposed') return bad(reply, `This review is already ${m.status}`, 409);
       if (m.proposed_by === req.user.id) {
-        return reply.code(403).send({ error: 'proposer may not decide their own moderation (segregation of duties)' });
+        return reply.code(403).send({ error: 'The person who proposed this review can\'t decide it — a second person must' });
       }
       if (decision === 'approved') {
         // report rows stay IMMUTABLE (INSERT+SELECT grants only): the approved adjustment
@@ -283,11 +283,11 @@ export function register(app, kernel) {
         const scale = (await q(`SELECT settings->>'grade_scale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
         const pct = Number(adj?.pct);
         if (!adj || typeof adj !== 'object' || !Number.isFinite(pct) || pct < 0 || pct > 100) {
-          return bad(reply, 'adjustedSnapshot.pct must be a finite number in [0,100]');
+          return bad(reply, 'The adjusted percentage must be a number from 0 to 100');
         }
         const corrected = { ...adj, pct, ...gradeOf(pct, scale) };
         if (adj.grade != null && adj.grade !== corrected.grade) {
-          return bad(reply, `grade mismatch: ${adj.grade} is not derivable from pct ${pct} on scale ${scale} (${corrected.grade})`);
+          return bad(reply, `${adj.grade} does not follow from ${pct}% on this scale (it works out to ${corrected.grade}) — grades are always recalculated`);
         }
         const overlay = { snapshot: corrected, correctsReportId: m.report_id,
           originalDigest: r.digest,

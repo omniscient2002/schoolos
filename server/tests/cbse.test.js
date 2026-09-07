@@ -31,7 +31,7 @@ describe('pack.cbse (wave-3 · 009 contract + 026 · rules not code)', () => {
   test('1 · registered-not-enabled: lifecycle gate 409; teacher/finance/parent 403 on every door', async () => {
     const pre = await app.inject({ method: 'GET', url: '/plugins/pack.cbse/rules', headers: H((await loginAs(app, 'coordinator@meridian.edu')).token) });
     assert.equal(pre.statusCode, 409);
-    assert.match(pre.json().error, /not enabled/);
+    assert.match(pre.json().error, /switched off/); // plain-language copy pass (gate)
     await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
       headers: H((await loginAs(app, 'owner@meridian.edu')).token), payload: { version: '1.0.0', class: 'C' } });
     for (const role of ['teacher@meridian.edu', 'finance@meridian.edu', 'parent@meridian.edu']) {
@@ -107,12 +107,12 @@ describe('pack.cbse (wave-3 · 009 contract + 026 · rules not code)', () => {
     const examId = exams.exams.find((e) => e.name === 'CBSE Good Plan').id;
     const gated = await app.inject({ method: 'GET', url: `/plugins/pack.cbse/export/oasis/${examId}`, headers: H(co.token) });
     assert.equal(gated.statusCode, 409);
-    assert.match(gated.json().error, /R6/);
+    assert.match(gated.json().error, /affiliation number/); // plain-language copy pass (was /R6/)
     await app.inject({ method: 'POST', url: '/plugins/pack.cbse/settings',
       headers: H(o.token), payload: { affiliation_no: '1130001', academic_year: '2026-27' } });
     const draft = await app.inject({ method: 'GET', url: `/plugins/pack.cbse/export/oasis/${examId}`, headers: H(co.token) });
     assert.equal(draft.statusCode, 409, 'draft exam never exports');
-    assert.match(draft.json().error, /not published/);
+    assert.match(draft.json().error, /Publish this exam first/); // plain-language copy pass (was /not published/)
     // publish via the kernel spine
     const pub = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/publish`, payload: {}, headers: H(co.token) });
     const principal = await loginAs(app, 'principal@meridian.edu');

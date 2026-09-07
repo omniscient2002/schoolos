@@ -155,7 +155,7 @@ export default function ParentChat() {
       </Card>
 
       <div className="u-xs u-faint" style={{ marginTop: 10, textAlign: 'center' }}>
-        Messages are part of the school record — visible in the audit ledger (Audit → Communication).
+        Messages are part of the school record — visible in the audit trail (Audit → Communication).
       </div>
     </div>
   );

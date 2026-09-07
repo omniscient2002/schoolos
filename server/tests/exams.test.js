@@ -38,7 +38,7 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     const pre = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
       payload: { name: 'T1', classGrade: '8', weightage: { written: 100 } }, headers: H(co.token) });
     assert.equal(pre.statusCode, 409);
-    assert.match(pre.json().error, /not enabled/);
+    assert.match(pre.json().error, /switched off/); // plain-language copy pass (gate)
     const parent = await loginAs(app, 'parent@meridian.edu');
     const p = await app.inject({ method: 'GET', url: '/plugins/exams.assessment/exams', headers: H(parent.token) });
     assert.equal(p.statusCode, 403);
@@ -53,7 +53,7 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     const bad = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
       payload: { name: 'Unit Test 1', classGrade: '8', weightage: { written: 60, oral: 30 } }, headers: H(co.token) });
     assert.equal(bad.statusCode, 409);
-    assert.match(bad.json().error, /weightage_total_enforced/);
+    assert.match(bad.json().error, /add up to 100%/); // plain-language copy pass (was weightage_total_enforced)
     const r = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
       payload: { name: 'Unit Test 1', classGrade: '8', weightage: { written: 70, oral: 30 } }, headers: H(co.token) });
     assert.equal(r.statusCode, 200);
@@ -180,7 +180,7 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     const denied = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/marks`,
       payload: { studentId: low.id, component: 'written', marks: 60, maxMarks: 100 }, headers: H(co.token) });
     assert.equal(denied.statusCode, 409, 'marks refused for below-floor attendance');
-    assert.ok(/below the 75% floor/.test(denied.json().error), 'refusal names the attendance floor');
+    assert.ok(/below the 75% floor/.test(denied.json().error), 'refusal names the attendance floor'); // message keeps the numbers
     // a student with guaranteed-above-floor attendance (30 present days) passes
     const high = students[1];
     await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)

@@ -23,15 +23,15 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/visits`, { preHandler: [require(...NURSE), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.studentId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(b.studentId)))
-      return bad(reply, 'studentId (uuid) required');
-    if (!b.complaint) return bad(reply, 'complaint required');
-    if (b.action && !ACTIONS.includes(b.action)) return bad(reply, `action must be one of ${ACTIONS.join(', ')}`);
+      return bad(reply, 'Please pick a student');
+    if (!b.complaint) return bad(reply, 'Please describe the complaint');
+    if (b.action && !ACTIONS.includes(b.action)) return bad(reply, 'Choose a valid outcome: rest, first aid, sent home or hospital referral');
     if (b.temperatureC != null && (typeof b.temperatureC !== 'number' || b.temperatureC < 30 || b.temperatureC > 45))
-      return bad(reply, 'temperatureC must be a plausible Celsius value (30–45)');
+      return bad(reply, 'Please enter a realistic temperature between 30 and 45°C');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const student = (await c.query(`SELECT id, name, guardian_phone FROM app.students WHERE id=$1 AND tenant_id=$2`,
         [b.studentId, req.user.tenant_id])).rows[0];
-      if (!student) return bad(reply, 'student not found', 404);
+      if (!student) return bad(reply, 'We couldn\'t find that student', 404);
       const action = b.action ?? 'first_aid';
       const v = (await c.query(
         `INSERT INTO plugin_clinic.visit (tenant_id, student_id, complaint, temperature_c, action, notes, logged_by)
@@ -55,13 +55,13 @@ export function register(app, kernel) {
   // append a correction — the original row is never rewritten (append-first)
   app.post(`/plugins/${ID}/visits/:id/correct`, { preHandler: [require(...NURSE), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
-    if (!b.correction) return bad(reply, 'correction text required');
-    if (b.action && !ACTIONS.includes(b.action)) return bad(reply, `action must be one of ${ACTIONS.join(', ')}`);
+    if (!b.correction) return bad(reply, 'Please describe the correction');
+    if (b.action && !ACTIONS.includes(b.action)) return bad(reply, 'Choose a valid outcome: rest, first aid, sent home or hospital referral');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const orig = (await c.query(
         `SELECT id, student_id, complaint, action FROM plugin_clinic.visit WHERE id=$1 AND tenant_id=$2`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!orig) return bad(reply, 'visit not found', 404);
+      if (!orig) return bad(reply, 'We couldn\'t find that clinic visit', 404);
       const action = b.action ?? orig.action;
       const corr = (await c.query(
         `INSERT INTO plugin_clinic.visit (tenant_id, student_id, complaint, temperature_c, action, notes, logged_by)
@@ -93,11 +93,11 @@ export function register(app, kernel) {
       const v = (await c.query(
         `SELECT id, student_id FROM plugin_clinic.visit WHERE id=$1 AND tenant_id=$2`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!v) return bad(reply, 'visit not found', 404);
+      if (!v) return bad(reply, 'We couldn\'t find that clinic visit', 404);
       const open = (await c.query(
         `SELECT id FROM plugin_clinic.sick_pass WHERE tenant_id=$1 AND visit_id=$2 AND status='active'`,
         [req.user.tenant_id, v.id])).rows[0];
-      if (open) return reply.code(409).send({ error: 'an active sick pass already exists for this visit', passId: open.id });
+      if (open) return reply.code(409).send({ error: 'This visit already has an active sick pass', passId: open.id });
       const ttl = await sickPassTtlHours(c, req.user.tenant_id);
       const validUntil = new Date(IST_NOW().getTime() + ttl * 3600 * 1000);
       const p = (await c.query(
@@ -136,8 +136,8 @@ export function register(app, kernel) {
       const p = (await c.query(
         `SELECT id, status FROM plugin_clinic.sick_pass WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
-      if (!p) return bad(reply, 'sick pass not found', 404);
-      if (p.status !== 'active') return bad(reply, `cannot revoke from status '${p.status}'`, 409);
+      if (!p) return bad(reply, 'We couldn\'t find that sick pass', 404);
+      if (p.status !== 'active') return bad(reply, `Only an active pass can be revoked (this one is ${p.status})`, 409);
       await c.query(`UPDATE plugin_clinic.sick_pass SET status='revoked', updated_at=now() WHERE id=$1`, [p.id]);
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Sick pass revoked', recordType: 'SickPass', recordRef: p.id,

@@ -48,7 +48,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     const r = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: { event: 'payment.captured', eventId: 'pay_U2_off' } });
     assert.equal(r.statusCode, 403);
-    assert.match(r.json().error, /not configured/);
+    assert.match(r.json().error, /not set up/); // plain-language copy pass (was /not configured/)
     const n = await sql(`SELECT count(*)::int n FROM plugin_upi.webhook_log`);
     assert.equal(n.rows[0].n, 0, 'no facts recorded while unconfigured');
   });
@@ -67,7 +67,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     const o = await loginAs(app, 'owner@meridian.edu');
     const preLink = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
     assert.equal(preLink.statusCode, 409, 'links door refuses while the plugin row is not enabled');
-    assert.match(preLink.json().error, /not enabled/);
+    assert.match(preLink.json().error, /switched off/); // plain-language copy pass (gate)
 
     // owner enables the rail (audited) — now the links door serves
     const en = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
@@ -109,14 +109,14 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     const staleR = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: stale, headers: { 'x-razorpay-signature': sigOf(stale) } });
     assert.equal(staleR.statusCode, 400);
-    assert.match(staleR.json().error, /stale/);
+    assert.match(staleR.json().error, /too old/); // plain-language copy pass (was /stale/)
 
     // FRESHNESS, future-dated (cycle-4 P2-A): +1h signed event → 400, not 200
     const future = payloadFor(paymentId, 'pay_U2_future', Math.floor(Date.now() / 1000) + 3600);
     const futureR = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: future, headers: { 'x-razorpay-signature': sigOf(future) } });
     assert.equal(futureR.statusCode, 400, 'future-dated events rejected (negative age is not an acceptance path)');
-    assert.match(futureR.json().error, /stale/);
+    assert.match(futureR.json().error, /too old/); // plain-language copy pass
 
     // valid fresh HMAC → fact recorded, verified
     const wh = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
@@ -156,7 +156,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
       payload: garbage, headers: { 'content-type': 'text/plain',
         'x-razorpay-signature': createHmac('sha256', TEST_SECRET).update(garbage).digest('hex') } });
     assert.equal(bad2.statusCode, 400, 'signed text/plain garbage → 400 (parse wrapped)');
-    assert.match(bad2.json().error, /malformed/);
+    assert.match(bad2.json().error, /could not be read/); // plain-language copy pass
   });
 
   test('4 · letter-first id regex: digit-run ids bounced at the enable door', async () => {

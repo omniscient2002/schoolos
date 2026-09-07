@@ -15,6 +15,7 @@ import { EvidenceChain, AiTraceCard, EventLine } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
 import { Slot } from '../plugins/Slot';
 import { Icon } from '../components/Icon';
+import { friendly } from '../lib/friendlyErrors';
 import { fmtDate, fmtDateShort, fmtTime, weekday } from '../lib/format';
 import type { ActionRecord, BusRoute } from '../types/domain';
 
@@ -204,7 +205,7 @@ export default function Today() {
     setLoading(true); setError(null);
     transportService.routes(session.campusScope)
       .then(r => { if (live) { setRoutesData(r); setLoading(false); } })
-      .catch(e => { if (live) { setError(String(e)); setLoading(false); } });
+      .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
     return () => { live = false; };
   }, [session.campusScope, session.roleId, tick]);
 
@@ -284,7 +285,7 @@ export default function Today() {
         icon: 'Flag',
         title: `Decision review — ${d.title}`,
         detail: d.expectedOutcome,
-        chips: [`${d.policy} · decided ${fmtDateShort(d.decidedOn)}`, 'School Memory'],
+        chips: [`${d.policy} · decided ${fmtDateShort(d.decidedOn)}`, 'AI memory'],
         due: dueIn(d.reviewOn),
         to: '/memory',
       }));
@@ -305,7 +306,7 @@ export default function Today() {
         icon: 'Money',
         title: `Term 2 collection at ${collection}% — down from 88% average`,
         detail: `${seed.FEE_STORY.failedCount} online payments failed this week; 41 of 47 belong to Route 7 households. 23 gateway successes await settlement-file import.`,
-        chips: ['Fee ledger · 10:12 · high', 'Gateway settlement diff · medium'],
+        chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
         badge: { label: 'Fee dip', tone: 'warning' },
         to: '/fees',
       },
@@ -424,7 +425,7 @@ export default function Today() {
           {
             id: 'fee-trend', icon: 'Money', title: `Collection ${collection}% this week vs 88% average`,
             detail: insFee.explanation,
-            chips: ['Fee ledger · 10:12 · high', 'Gateway settlement diff · medium'],
+            chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
             badge: { label: 'Dip', tone: 'warning' }, to: '/fees',
           },
           {
@@ -603,7 +604,7 @@ export default function Today() {
             <EvidenceChain
               title="How this briefing was assembled"
               steps={[
-                { label: 'Diff overnight deltas', detail: 'Attendance, fee ledger and transport GPS compared against 30-day baselines', source: 'Data plane · 07:55' },
+                { label: 'Diff overnight deltas', detail: 'Attendance, fees records and transport GPS compared against 30-day baselines', source: 'Data plane · 07:55' },
                 { label: 'Rank by impact × deadline', detail: 'Priority = affected students × policy exposure × SLA remaining', source: 'Constitution v2026.1' },
                 { label: 'Draft with citations', detail: 'Every claim above carries its source, timestamp and confidence', source: 'Frontier (reasoning) · ap-south-1' },
               ]}
@@ -612,7 +613,7 @@ export default function Today() {
               <AiTraceCard trace={{
                 trigger: 'Scheduled 07:55 daily digest (all roles)',
                 policy: 'Read-only assembly; no actions executed · Constitution v2026.1',
-                dataUsed: ['attendance (30d)', 'fee ledger (14d)', 'transport GPS + incidents', 'calendar + obligations'],
+                dataUsed: ['attendance (30d)', 'fees records (14d)', 'transport GPS + incidents', 'calendar + obligations'],
                 reasoningRole: 'Summarizer (read-only)',
                 action: 'None — briefing only; actions await your decision',
                 approvalStatus: 'Not required (read-only)',

@@ -69,7 +69,7 @@ export function register(app, kernel) {
   // deterministic-first candidate ranking (docs/11 §7): same-subject free teachers first
   app.get(`/plugins/${ID}/substitutions/suggest`, { preHandler: [require('coordinator','principal','owner','itadmin'), lifecycleGate] }, async (req, reply) => {
     const { absentTeacher, dayOfWeek } = req.query ?? {};
-    if (!absentTeacher) return reply.code(400).send({ error: 'absentTeacher required' });
+    if (!absentTeacher) return reply.code(400).send({ error: 'Pick the absent teacher' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const day = DAYS.includes(dayOfWeek) ? dayOfWeek : DAYS[(new Date().getDay() + 6) % 7];
       const missed = (await c.query(
@@ -106,7 +106,7 @@ export function register(app, kernel) {
 
   app.post(`/plugins/${ID}/attendance/autofill`, { preHandler: [require('teacher','coordinator','principal'), lifecycleGate] }, async (req, reply) => {
     const { date, grade, section, periodSeq } = req.body ?? {};
-    if (!date || !grade || !section) return reply.code(400).send({ error: 'date, grade, section required' });
+    if (!date || !grade || !section) return reply.code(400).send({ error: 'Date, class and section are required' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // Deterministic, idempotent, safe: insert ONLY for students with no attendance row
       // today (absent/present/human-marked rows are never touched — Attendance §1.1).

@@ -86,7 +86,7 @@ export default function Settings() {
                 <p className="u-small u-muted" style={{ lineHeight: 1.6 }}>
                   The pack pins regulatory defaults: quiet hours, consent for under-18 data processing, retention schedules, and inspection export formats. School-level entries in the Constitution layer on top and never weaken the floor.
                 </p>
-                <div style={{ marginTop: 10 }}><Button size="sm" variant="secondary" onClick={() => navigate('/constitution')}>View School Constitution</Button></div>
+                <div style={{ marginTop: 10 }}><Button size="sm" variant="secondary" onClick={() => navigate('/constitution')}>View school policies</Button></div>
               </div>
             </Card>
           </div>
@@ -248,7 +248,7 @@ export default function Settings() {
                   { k: 'Fee & payment records', v: '10 years (statutory)' },
                   { k: 'Parent chats', v: '90 days rolling' },
                   { k: 'AI traces & prompts', v: '180 days, then aggregate-only' },
-                  { k: 'Audit ledger', v: 'Permanent · append-only' },
+                  { k: 'Audit trail', v: 'Permanent · nothing can be edited or deleted' },
                 ]} />
               </div>
             </Card>

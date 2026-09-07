@@ -58,7 +58,7 @@ const API_KEYS = [
 const FLAGS = [
   { id: 'offline-mode', label: 'Offline mode', desc: 'Attendance and messages queue locally when the network drops, then sync.' },
   { id: 'live-events', label: 'Live event stream', desc: 'Operational events (attendance, payments, transport, maintenance) emit into the live stream.' },
-  { id: 'ai-shield', label: 'AI Shield — strict', desc: 'Block AI proposals that touch HUMAN-ONLY policies instead of escalating them.' },
+  { id: 'ai-shield', label: 'AI Shield — strict', desc: 'Block AI suggestions that need a human decision, instead of passing them on.' },
   { id: 'parent-digest', label: 'Parent digest v2', desc: 'Nightly batched WhatsApp digest per guardian; replaces per-event pings.' },
   { id: 'transport-leniency', label: 'Transport attendance leniency', desc: 'Students on verified-delayed routes are marked present until 09:30.' },
 ];
@@ -83,9 +83,9 @@ export default function ItAdmin() {
     { kind: 'Feature flag', name: 'offline-mode', value: 'on', scope: 'all campuses', lastChange: '8 days ago · IT admin', policy: 'Platform §3.2' },
     { kind: 'Feature flag', name: 'ai-shield (student queries)', value: 'on · strict', scope: 'student/parent surfaces', lastChange: '12 days ago · IT admin', policy: 'AI Gov §4.1' },
     { kind: 'AI capability', name: 'ask.investigate', value: 'allowed · cites evidence', scope: 'staff roles', lastChange: '15 days ago · principal', policy: 'AI Gov §2.3' },
-    { kind: 'AI capability', name: 'maintenance.priority', value: 'suggest · HUMAN-ONLY override floor', scope: 'facilities', lastChange: 'with v3 release', policy: 'Facilities §1.2' },
+    { kind: 'AI capability', name: 'maintenance.priority', value: 'suggests · a human always has the final say', scope: 'facilities', lastChange: 'with v3 release', policy: 'Facilities §1.2' },
     { kind: 'AI capability', name: 'reception.answer', value: 'allowed · grounded + consent line', scope: 'front desk', lastChange: 'with v3 release', policy: 'Front Desk §1.1' },
-    { kind: 'Policy version', name: 'School Constitution', value: 'v2026.1', scope: 'all campuses', lastChange: 'On record · board-approved', policy: 'Constitution' },
+    { kind: 'Policy version', name: 'School policies', value: 'v2026.1', scope: 'all campuses', lastChange: 'On record · board-approved', policy: 'School policies' },
     { kind: 'Integration scope', name: 'payments.gateway', value: 'read + reconcile', scope: 'finance', lastChange: '6 days ago · IT admin', policy: 'Fees §5.1' },
     { kind: 'Integration scope', name: 'whatsapp.business', value: 'send + receive · templates locked', scope: 'comms', lastChange: '6 days ago · IT admin', policy: 'Communication §1.2' },
   ];
@@ -120,7 +120,7 @@ export default function ItAdmin() {
         title="IT Admin"
         sub={isIt
           ? 'Platform posture for all three campuses. Key rotations, flag rollouts and session revocations are audited.'
-          : `Viewing as ${actorName}. In this demo role every control works and records to the audit ledger.`}
+          : `Viewing as ${actorName}. In this demo role every control works and records to the audit trail.`}
         actions={<Badge tone={isIt ? 'accent' : 'outline'} dot>{isIt ? 'Full access' : 'Demo role'}</Badge>}
       />
 
@@ -199,7 +199,7 @@ export default function ItAdmin() {
       </Section>
 
       {/* ---------- control plane registry ---------- */}
-      <Section title="Control plane" sub="One auditable registry of every governance object — flags, AI capability profiles, policy versions, integration scopes. Every change lands as a control_plane.changed event." style={{ marginBottom: 4 }}>
+      <Section title="Platform controls" sub="One activity log of every switch, AI rule and connection. Every change is recorded." style={{ marginBottom: 4 }}>
         <Card pad>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
@@ -234,7 +234,7 @@ export default function ItAdmin() {
       </Section>
 
       {/* ---------- feature flags ---------- */}
-      <Section title="Feature flags" sub="Staged rollouts across all campuses. Changes apply on the next request." style={{ marginBottom: 4 }}>
+      <Section title="Feature switches" sub="Rolled out campus by campus. Changes apply on the next refresh." style={{ marginBottom: 4 }}>
         <Card pad>
           {FLAGS.map((f, i) => (
             <div key={f.id} className="u-between" style={{ gap: 14, padding: '11px 0', borderBottom: i < FLAGS.length - 1 ? '1px solid var(--border-subtle)' : undefined }}>
@@ -308,7 +308,7 @@ export default function ItAdmin() {
         }
       >
         <p className="u-small" style={{ lineHeight: 1.6 }}>
-          Integrations using the old key keep working during the overlap. This action is recorded in the audit ledger
+          Integrations using the old key keep working during the overlap. This action is recorded in the audit trail
           with your name and the timestamp. Rotation does not interrupt {rotating?.name === 'Payment gateway' ? 'pending settlements' : 'in-flight jobs'}.
         </p>
       </Modal>

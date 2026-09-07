@@ -9,6 +9,20 @@ import { useKernel } from '../plugins/useKernel';
 import { CLASS_INFO, PERMISSION_INFO } from '../plugins/pluginTypes';
 import { BUILT_IN_CAPABILITIES } from '../plugins/pluginRegistry';
 import { LIVE_API, apiEnablePlugin, apiDisablePlugin } from '../services/liveApi';
+import { friendly } from '../lib/friendlyErrors';
+
+/* Live mode renders SERVER manifest names/descriptions verbatim; those are
+   contract prose, not copy. This display-only map keeps the cards plain for
+   both demo and live (unit 18, rule 4) — ids never change. */
+const FRIENDLY: Record<string, { name?: string; description?: string }> = {
+  'comms.whatsapp': { description: 'WhatsApp messages to parents — fee receipts, attendance notes and delay alerts, sent from approved templates only.' },
+  'payments.upi': { description: 'Collect fees with UPI payment links. Parents pay in one tap; the school office confirms the money arrived.' },
+  'transport.gps': { description: 'Bus GPS tracking + delay alerts. Parents are told automatically when a bus runs 10 minutes late.' },
+  'ops.timetable': { description: 'Class timetable & substitutions. Set the weekly grid and find a substitute teacher in one click.' },
+  'library': { description: 'Library books: catalog, issue and return, and overdue reminders. Switch it on and it appears in the menu; switch it off and it disappears.' },
+  'admissions.funnel': { description: 'Track admission enquiries from first call to enrolled. Keeps applicant details private and separate from student records.' },
+  'ops.visitors': { description: 'Visitor gate passes: the front desk prints a badge, and a student only leaves when the guardian confirms with a code. Safety first — release always needs verification.' },
+};
 
 export default function Plugins() {
   const { all, enabled, enable, disable, configured } = useKernel();
@@ -28,12 +42,12 @@ export default function Plugins() {
         if (on) await apiEnablePlugin(id, m.version, m.class, m.permissions);
         else await apiDisablePlugin(id);
       } catch (e) {
-        toast({ title: 'Server record failed', sub: (e as Error).message, tone: 'error' });
+        toast({ title: 'Could not save this change', sub: friendly((e as Error).message), tone: 'error' });
       }
     }
     toast({
-      title: on ? `${all.find(p => p.id === id)?.name} enabled` : `${all.find(p => p.id === id)?.name} disabled`,
-      sub: on ? 'Nav, routes and slots now include it · decision on the audit ledger' : 'Data retained · invisible everywhere · subscriptions stopped',
+      title: on ? `${all.find(p => p.id === id)?.name} switched on` : `${all.find(p => p.id === id)?.name} switched off`,
+      sub: on ? 'It now appears in the menu. This change is recorded in the activity log.' : 'Data is saved and the feature disappears until you switch it back on.',
       tone: on ? 'success' : 'info',
     });
     setBusy(null);
@@ -43,13 +57,13 @@ export default function Plugins() {
     <div style={{ maxWidth: 980, margin: '0 auto' }}>
       <PageHead
         title="Plugin Manager"
-        sub="Every plugin the school runs is a switch — not a feature request · core capabilities live below"
+        sub="Every extra feature is a simple on/off switch — core features are always on"
         actions={<Badge tone="outline" dot>{enabledCount} of {all.length} enabled</Badge>}
       />
 
-      <Card head="What the kernel always runs" sub="These are not pluggable — a school without them is not a school" style={{ marginBottom: 'var(--s-4)' }}>
+      <Card head="Always on" sub="The essential parts of SchoolOS — attendance, enrollment, fees, approvals and records. These are always on." style={{ marginBottom: 'var(--s-4)' }}>
         <KeyValue items={[
-          { k: 'Spine', v: 'Attendance · Enrollment · Fees & payments · Approvals · Audit ledger' },
+          { k: 'The essentials', v: 'Attendance · Enrollment · Fees & payments · Approvals · Activity log' },
           { k: 'Trust', v: 'Guardian verification · Communication receipts · Role scoping (RLS)' },
           { k: 'Platform', v: 'This Plugin Manager · entitlements · plugin audit' },
         ]} cols={1} />
@@ -68,15 +82,15 @@ export default function Plugins() {
                     <div className="u-col" style={{ gap: 2 }}>
                       <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 650 }}>{p.name}</span>
-                        <Badge tone="outline">class {p.class} · {CLASS_INFO[p.class].label}</Badge>
+                        <Badge tone="outline">{CLASS_INFO[p.class].label}</Badge>
                         <span className="u-xs u-faint u-mono">v{p.version}</span>
                         {configured[p.id] && (
-                          <span title="Settings saved for this plugin (values visible to owner/IT admin only)" className="u-xs" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-3)' }}>
+                          <span title="Settings saved for this feature (only the owner and IT admin can see the values)" className="u-xs" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-3)' }}>
                             <Icon.Check size={11} /> configured
                           </span>
                         )}
                       </div>
-                      <span className="u-small u-muted" style={{ lineHeight: 1.55 }}>{p.description}</span>
+                      <span className="u-small u-muted" style={{ lineHeight: 1.55 }}>{(FRIENDLY[p.id]?.description ?? p.description)}</span>
                     </div>
                   </div>
                   <Button size="sm" variant={on ? 'secondary' : 'primary'} loading={busy === p.id} onClick={() => toggle(p.id, !on)}>
@@ -89,7 +103,7 @@ export default function Plugins() {
                     <span key={per} title={PERMISSION_INFO[per]} className="u-xs u-mono" style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{per}</span>
                   ))}
                 </div>
-                <div className="u-xs u-faint">slots: {p.slots.join(' · ')}{p.eventSubscriptions?.length ? ` · subscribes: ${p.eventSubscriptions.join(', ')}` : ''}</div>
+                <div className="u-xs u-faint">Shows up in: {p.slots.join(' · ')}{p.eventSubscriptions?.length ? ` · reacts to: ${p.eventSubscriptions.join(', ')}` : ''}</div>
               </div>
             </Card>
           );
@@ -98,7 +112,7 @@ export default function Plugins() {
 
       {/* Built-in core capabilities — ruling 2026-09-06: the plugin grid shows
           ONLY server-registered plugins; core lives here, static, no switches. */}
-      <Card head="Built into the school core" sub="Core capabilities — always on, not pluggable, no server registration" style={{ marginTop: 'var(--s-4)' }}>
+      <Card head="Built into the school core" sub="Core capabilities — always on, included with SchoolOS" style={{ marginTop: 'var(--s-4)' }}>
         <div className="u-col" style={{ gap: 12 }}>
           {BUILT_IN_CAPABILITIES.map(c => {
             const I = Icon[c.icon as keyof typeof Icon] ?? Icon.Database;

@@ -73,6 +73,7 @@ const Settings = F(() => import('./screens/Settings'));
 const Group = F(() => import('./screens/Group'));
 const ItAdmin = F(() => import('./screens/ItAdmin'));
 const ParentHome = F(() => import('./screens/ParentHome'));
+const ParentComplaints = F(() => import('./screens/ParentComplaints'));
 const ParentChat = F(() => import('./screens/ParentChat'));
 const ParentFees = F(() => import('./screens/ParentFees'));
 const ParentAsk = F(() => import('./screens/ParentAsk'));
@@ -210,6 +211,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       }
     })();
     return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot-once effect; setRole is a stable setter, mounting must not re-run auth restore
   }, []);
 
   if (booting) {
@@ -241,7 +243,7 @@ function VisitorsHost() {
   const { isEnabled } = useKernel();
   return isEnabled('ops.visitors') ? <VisitorsBoard /> : (
     <PageShell>
-      <Empty icon={<Icon.Shield size={22} />} title="Visitors gate pass is not enabled" sub="The ops.visitors plugin is disabled for this school — enable it in Plugins to use the gate-pass desk." />
+      <Empty icon={<Icon.Shield size={22} />} title="Visitors gate pass is switched off" sub="Ask the school owner to switch it on in Modules. Your visitor records are saved and will be here when it is on." />
     </PageShell>
   );
 }
@@ -308,6 +310,7 @@ function AppRoutes() {
       <Route path="/it" element={<S><ItAdmin /></S>} />
       <Route path="/settings" element={<S><Settings /></S>} />
       <Route path="/parent" element={<S><ParentHome /></S>} />
+      <Route path="/parent/complaints" element={<S><ParentComplaints /></S>} />
       <Route path="/parent/chat" element={<S><ParentChat /></S>} />
       <Route path="/parent/fees" element={<S><ParentFees /></S>} />
       <Route path="/parent/ask" element={<S><ParentAsk /></S>} />

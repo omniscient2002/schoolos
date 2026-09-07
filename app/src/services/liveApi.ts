@@ -81,6 +81,10 @@ export const apiFeeObligations = (status?: string) =>
   call<{ obligations: Record<string, unknown>[] }>(`/fees/obligations${status ? `?status=${status}` : ''}`);
 export const apiWorkOrders = () => call<{ workOrders: Record<string, unknown>[]; slaPolicy: Record<string, { responseMins: number; resolveHours: number }> }>('/work-orders');
 export const apiCases = (status?: string) => call<{ cases: Record<string, unknown>[] }>(`/cases${status ? `?status=${status}` : ''}`);
+export const apiCreateCase = (body: { kind: string; title: string; detail?: string; priority?: string; origin?: string }) =>
+  call<{ case: Record<string, unknown> }>('/cases', { method: 'POST', body: JSON.stringify(body) });
+export const apiCase = (id: string) => call<{ case: Record<string, unknown> }>(`/cases/${id}`);
+export const apiMyCases = (status?: string) => call<{ cases: Record<string, unknown>[] }>(`/my-cases${status ? `?status=${status}` : ''}`);
 export const apiActions = (status?: string) => call<{ actions: Record<string, unknown>[] }>(`/actions${status ? `?status=${status}` : ''}`);
 export const apiDecideAction = (id: string, decision: 'approved' | 'dismissed', note?: string) =>
   call<{ ok: boolean; execution: unknown }>(`/actions/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, note }) });

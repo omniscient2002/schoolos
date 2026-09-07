@@ -155,9 +155,9 @@ export function KernelGate({ plugin, children }: { plugin: string; children: Rea
       <Empty
         titleAs="h1"
         icon={<Icon.Database size={22} />}
-        title={`${m?.name ?? plugin} is not enabled for your school`}
-        sub="This module is a plugin. An owner can switch it on in the Plugin Manager — data is retained when off, and nothing appears in nav, routes or attention while disabled."
-        action={<Link to="/plugins" className="btn btn-primary">Open Plugin Manager</Link>}
+        title={`This feature is switched off`}
+        sub={`${m?.name ?? plugin} is optional. Ask the school owner to switch it on. Nothing is lost while it is off — your data is saved, and it will come back when it is switched on.`}
+        action={<Link to="/plugins" className="btn btn-primary">Open Modules</Link>}
       />
     </div>
   );

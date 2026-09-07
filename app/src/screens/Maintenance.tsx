@@ -234,7 +234,7 @@ export default function Maintenance() {
                 />
                 <div className="divider" />
                 <p className="u-small u-muted" style={{ margin: 0 }}>
-                  Priority overrides are allowed for facilities and leadership and are always recorded in the audit ledger with a reason.
+                  Priority overrides are allowed for facilities and leadership and are always recorded in the audit trail with a reason.
                 </p>
               </Card>
               <Card head="Operating summary" sub="Read by the principal in ~20 seconds">

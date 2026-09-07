@@ -164,7 +164,7 @@ export default function WorkOrders() {
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
         <Stat label="Open jobs" value={open.length} sub={`${campusWos.length} total in scope`} onClick={() => { setView('list'); setStatus('open'); }} />
         <Stat label="Emergency / critical" value={emergencies} sub="safety and hygiene rules auto-escalate" />
-        <Stat label="SLA at risk" value={slaRisk} sub="response or resolution window closing" />
+        <Stat label="Deadline soon" value={slaRisk} sub="response or resolution window closing" />
         <Stat label="Avg resolution" value={resolvedWos.length ? `${avgHrs.toFixed(1)}h` : '—'} sub="reported → completed, resolved jobs" />
       </div>
 
