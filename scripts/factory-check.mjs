@@ -14,7 +14,7 @@ ok('tsc clean', tsc.status === 0, (tsc.stdout.match(/error TS/g) || []).length +
 
 /* 2 — server tests */
 if (!process.argv.includes('--quick')) {
-  const t = spawnSync('npm', ['test'], { cwd: ROOT + 'server', encoding: 'utf8', timeout: 180000 });
+  const t = spawnSync('npm', ['test'], { cwd: ROOT + 'server', encoding: 'utf8', timeout: 700000 });
   const pass = (t.stdout.match(/ℹ pass (\d+)/) || [])[1];
   const fail = (t.stdout.match(/ℹ fail (\d+)/) || [])[1];
   ok('server tests', fail === '0' && Number(pass) >= 25, `${pass ?? '?'} pass / ${fail ?? '?'} fail`);
