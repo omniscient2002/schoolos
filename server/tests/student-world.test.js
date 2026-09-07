@@ -26,12 +26,17 @@ before(async () => {
 });
 after(async () => { await app?.close(); });
 
+const loginCache = new Map();
 const login = async (email) => {
+  if (loginCache.has(email)) return loginCache.get(email); // /auth/login is rate-limited (20/min)
   const r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'schoolos-demo' }, headers: { 'content-type': 'application/json' } });
   assert.equal(r.statusCode, 200, `login ${email}: ${r.body}`);
-  return r.json();
+  const out = r.json();
+  loginCache.set(email, out);
+  return out;
 };
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const HB = (t) => ({ authorization: `Bearer ${t}` }); // bodyless calls must not send a JSON content-type
 
 test('home: own data only — shape + roster-wide string scan (no other student, no guardian PII)', async () => {
   const s = await login('student@meridian.edu');
@@ -106,29 +111,32 @@ test('mistakes: CRUD own-only — second student context cannot read or delete A
   if (b.statusCode !== 200) {
     await pool.query(
       `INSERT INTO app.users (tenant_id, email, name, role, password_hash, phone)
-       SELECT tenant_id, 'student-b@meridian.edu', $2, 'student', $3, '+919845000299'
+       SELECT tenant_id, $1, $2, 'student', $3, '+919845000299'
        FROM app.users WHERE email='student@meridian.edu'
-       ON CONFLICT DO NOTHING`, [other.name, hashPassword('schoolos-demo')]);
+       ON CONFLICT (tenant_id, email) DO NOTHING`,
+      ['student-b@meridian.edu', other.name, hashPassword('schoolos-demo')]);
   }
   const sb = await login('student-b@meridian.edu');
   const theirs = await app.inject({ method: 'GET', url: '/student/mistakes', headers: H(sb.token) });
   assert.equal(theirs.statusCode, 200);
   assert.ok(!JSON.stringify(theirs.json()).includes('Fractions'), 'student B cannot read student A mistake rows');
-  const del = await app.inject({ method: 'DELETE', url: `/student/mistakes/${row.id}`, headers: H(sb.token) });
+  const del = await app.inject({ method: 'DELETE', url: `/student/mistakes/${row.id}`, headers: HB(sb.token) });
   assert.equal(del.statusCode, 404, 'student B cannot delete student A row (owner-scoped)');
 
   // DB-layer pin: schoolos_app with the tenant GUC but WITHOUT schoolos.user_id sees nothing
   const bare = await pool.query(
     `BEGIN;
-     SELECT set_config('schoolos.tenant_id', (SELECT tenant_id FROM app.users WHERE email='student@meridian.edu'), true);
+     SELECT set_config('schoolos.tenant_id', (SELECT tenant_id FROM app.users WHERE email='student@meridian.edu')::text, true);
      SELECT set_config('schoolos.role', 'student', true);
      SET LOCAL ROLE schoolos_app;
      SELECT count(*)::int AS n FROM student.mistake_note;
      ROLLBACK;`);
-  assert.equal(bare.rows.find((r) => r.n != null)?.n ?? bare.rows.at(-2)?.n ?? 0, 0, 'owner_scoped RLS hides rows without the user GUC');
+  // multi-statement simple query returns an ARRAY of results
+  const flat = (Array.isArray(bare) ? bare : [bare]).flatMap((r) => r.rows ?? []);
+  assert.equal(flat.find((r) => r && r.n != null)?.n ?? 0, 0, 'owner_scoped RLS hides rows without the user GUC');
 
   // Aarav can delete own
-  const delOwn = await app.inject({ method: 'DELETE', url: `/student/mistakes/${row.id}`, headers: H(a.token) });
+  const delOwn = await app.inject({ method: 'DELETE', url: `/student/mistakes/${row.id}`, headers: HB(a.token) });
   assert.equal(delOwn.statusCode, 200, delOwn.body);
 });
 
@@ -183,13 +191,13 @@ test('print: student queues → staff queue sees name+kind → staff marks print
   assert.ok(seen, 'staff queue sees the job');
   assert.equal(seen.student_name, 'Aarav Sharma', 'job carries the student name');
   assert.ok(seen.class, 'job carries the class');
-  const done = await app.inject({ method: 'POST', url: `/student/print/${job.id}/done`, headers: H(t.token) });
+  const done = await app.inject({ method: 'POST', url: `/student/print/${job.id}/done`, headers: HB(t.token) });
   assert.equal(done.statusCode, 200, done.body);
   assert.equal(done.json().status, 'printed', 'staff discharge');
   const mine2 = await app.inject({ method: 'GET', url: '/student/print/mine', headers: H(a.token) });
   assert.equal(mine2.json().jobs.find((j) => j.id === job.id).status, 'printed', 'student sees printed');
 
-  const again = await app.inject({ method: 'POST', url: `/student/print/${job.id}/done`, headers: H(t.token) });
+  const again = await app.inject({ method: 'POST', url: `/student/print/${job.id}/done`, headers: HB(t.token) });
   assert.equal(again.statusCode, 404, 'printed is terminal — not re-dischargeable');
   const studentOnStaff = await app.inject({ method: 'GET', url: '/student/print/queue', headers: H(a.token) });
   assert.equal(studentOnStaff.statusCode, 403, 'students never see the staff queue');
@@ -244,12 +252,8 @@ test('wellbeing: student files (anonymous stores no identity) → staff read; te
 test('graceful degradation: homework door degrades when teacher.homework absent; splits digital/paper when present', async () => {
   const a = await login('student@meridian.edu');
   const { pool } = await import('../src/db.js');
-  const probe = await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='teacher' AND table_name='homework'`);
-  const created = !probe.rows.length; // 031 lane not landed → absent in a fresh test db
-  if (!created) {
-    await pool.query(`DROP TABLE IF EXISTS teacher.submission CASCADE`);
-    await pool.query(`DROP TABLE IF EXISTS teacher.homework CASCADE`);
-  }
+  // deterministic slate: no homework table regardless of what earlier runs left behind
+  await pool.query(`DROP TABLE IF EXISTS teacher.homework CASCADE`);
   // 1) absent → empty sections, never a 500
   const r1 = await app.inject({ method: 'GET', url: '/student/homework', headers: H(a.token) });
   assert.equal(r1.statusCode, 200, r1.body);
@@ -259,7 +263,7 @@ test('graceful degradation: homework door degrades when teacher.homework absent;
   assert.deepEqual(tasks1.json().tasks_view, [], 'tasks_view degrades to []');
 
   // 2) present (034-test shape + mode column) → digital/paper split; notebook detail = paper
-  await pool.query(`CREATE SCHEMA IF NOT EXISTS teacher`);
+  await pool.query(`DROP TABLE IF EXISTS teacher.homework CASCADE`);
   await pool.query(`CREATE TABLE teacher.homework (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, class_grade text,
     subject text, title text, detail text, mode text, due_at timestamptz,

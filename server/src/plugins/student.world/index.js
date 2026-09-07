@@ -90,10 +90,17 @@ export function register(app, kernel) {
       }
     })();
 
-  const tableExists = async (c, name) =>
-    !!(await c.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1`, [name])).rows.length;
-  const columnExists = async (c, table, column) =>
-    !!(await c.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2`, [table, column])).rows.length;
+  const tableExists = async (c, name) => {
+    const [schema, table] = name.includes('.') ? name.split('.') : ['public', name];
+    return !!(await c.query(
+      `SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2`, [schema, table])).rows.length;
+  };
+  const columnExists = async (c, table, column) => {
+    const [schema, t] = table.includes('.') ? table.split('.') : ['public', table];
+    return !!(await c.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name=$3`,
+      [schema, t, column])).rows.length;
+  };
 
   // ── IDENTITY PIN: student role → own app.students row (demo name-match, see header)
   const ownStudent = async (c, user) =>
@@ -120,13 +127,14 @@ export function register(app, kernel) {
        FROM teacher.homework
        WHERE tenant_id=$1 AND class_grade=$2 AND (status IS NULL OR status <> 'archived')
        ORDER BY due_at ASC NULLS LAST LIMIT 50`, [tenantId, grade]).catch(() => ({ rows: [] }))).rows;
-    const isPaper = (h) =>
-      (hasMode && String(h.mode ?? '').toLowerCase().includes('paper')) ||
-      /notebook|paper/i.test(String(h.detail ?? ''));
-    const digital = rows.filter((h) => !isPaper(h)).map((h) => ({
+    // StudentOS §1/§12: paper is the default medium — a homework row only lands in
+    // the digital list when the school EXPLICITLY labels it digital. Unlabelled
+    // rows (schools that never set mode) must never require an upload.
+    const isDigital = (h) => hasMode && String(h.mode ?? '').toLowerCase().includes('digital');
+    const digital = rows.filter((h) => isDigital(h)).map((h) => ({
       id: h.id, title: h.title, subject: h.subject, due_at: h.due_at, note: 'Submit online or show the teacher in class',
     }));
-    const paper = rows.filter((h) => isPaper(h)).map((h) => ({
+    const paper = rows.filter((h) => !isDigital(h)).map((h) => ({
       id: h.id, title: h.title, subject: h.subject, due_at: h.due_at, note: 'Complete in notebook — teacher marks receipt',
     }));
     return { digital, paper };

@@ -116,10 +116,13 @@ BEGIN
       USING (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)
       WITH CHECK (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)$f$, t);
   END LOOP;
-  -- §78/§79 session isolation: strictly-user-owned rows also require the owner GUC
+  -- §78/§79 session isolation: strictly-user-owned rows also require the owner GUC.
+  -- AS RESTRICTIVE is load-bearing: Postgres ORs permissive policies, so a permissive
+  -- owner_scoped would never bite (tenant_isolation alone would pass). RESTRICTIVE
+  -- ANDs it: a row must match the tenant AND its owner GUC.
   FOREACH t IN ARRAY ARRAY['mistake_note','flashcard','study_task'] LOOP
     EXECUTE format('DROP POLICY IF EXISTS owner_scoped ON student.%I', t);
-    EXECUTE format($f$CREATE POLICY owner_scoped ON student.%I
+    EXECUTE format($f$CREATE POLICY owner_scoped ON student.%I AS RESTRICTIVE
       USING (creator_user_id = current_setting('schoolos.user_id', true)::uuid)
       WITH CHECK (creator_user_id = current_setting('schoolos.user_id', true)::uuid)$f$, t);
   END LOOP;

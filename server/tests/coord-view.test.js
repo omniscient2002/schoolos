@@ -34,6 +34,17 @@ const login = async (email) => {
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
 const istDow = () => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(Date.now() + 5.5 * 3600 * 1000).getUTCDay()];
+// seed.js replays migrations only through 030 (031's demo teacher2 is not seeded),
+// so the fairness pins create their second teacher as a fixture here.
+const ensureSecondTeacher = async (pool, tenant) => {
+  const two = (await pool.query(`SELECT id, name FROM app.users WHERE tenant_id=$1 AND role='teacher' AND active ORDER BY name`, [tenant]));
+  if (two.rows.length >= 2) return two.rows;
+  await pool.query(
+    `INSERT INTO app.users (tenant_id, email, name, role, password_hash, active)
+     VALUES ($1,'cs1.teacher2@meridian.edu','A. Bhatia','teacher','x:0',true)
+     ON CONFLICT DO NOTHING`, [tenant]);
+  return (await pool.query(`SELECT id, name FROM app.users WHERE tenant_id=$1 AND role='teacher' AND active ORDER BY name`, [tenant])).rows;
+};
 
 test('role gates: teacher refused on every /coord door', async () => {
   const t = await login('teacher@meridian.edu');
@@ -56,8 +67,8 @@ test('coord home: staffing/gaps/approvals/delays/issues sections present; absenc
   // seed: t1 on approved sick leave today + one grid slot for today's day-of-week
   await pool.query(
     `INSERT INTO teacher.leave_request (tenant_id, teacher_id, kind, from_date, to_date, reason, status, decided_by, decided_at)
-     SELECT tenant_id, $2, 'sick', $3::date, $3::date, 'CS-1 seed: fever', 'approved', id, now()
-     FROM app.users WHERE email='owner@meridian.edu'`, [tenant, t1.id, today]);
+     SELECT tenant_id, $1, 'sick', $2::date, $2::date, 'CS-1 seed: fever', 'approved', id, now()
+     FROM app.users WHERE email='owner@meridian.edu'`, [t1.id, today]);
   const period = (await pool.query(`SELECT id FROM app.timetable_periods WHERE tenant_id=$1 ORDER BY sort_idx LIMIT 1`, [tenant])).rows[0];
   await pool.query(
     `INSERT INTO app.timetable_slots (tenant_id, period_id, day_of_week, subject, teacher_name)
@@ -109,7 +120,7 @@ test('curriculum monitor: weeks_behind computed from seeded progress rows', asyn
   }
   await pool.query(
     `INSERT INTO curriculum.progress (tenant_id, node_id, class_grade, covered_pct)
-     VALUES ($1,$2,'9',10) ON CONFLICT (tenant_id, node_id, class_grade) DO UPDATE SET covered_pct=10, updated_at=now()`,
+     VALUES ($1,$2,'9',40) ON CONFLICT (tenant_id, node_id, class_grade) DO UPDATE SET covered_pct=40, updated_at=now()`,
     [tenant, topicIds[0]]);
   const r = await app.inject({ method: 'GET', url: '/coord/curriculum-monitor', headers: H(c.token) });
   assert.equal(r.statusCode, 200, r.body);
@@ -117,11 +128,10 @@ test('curriculum monitor: weeks_behind computed from seeded progress rows', asyn
   assert.equal(body.available, true);
   const mine = body.monitor.find((m) => m.subject === 'CS1 Probe Subject' && m.class_grade === '9');
   assert.ok(mine, 'seeded subject×grade row present');
-  assert.equal(mine.covered_pct, 10, 'covered_pct is the seeded 10% average');
+  assert.equal(mine.covered_pct, 10, 'covered_pct is the seeded 10% average (40 on one of 4 topics)');
   assert.ok(body.pace.expected_pct >= 0 && body.pace.expected_pct <= 100, 'expected_pct is a term fraction');
   const expectedBehind = Math.max(0, Math.round(((body.pace.expected_pct - 10) / 100) * body.pace.term_weeks * 10) / 10);
-  assert.equal(mine.weeks_behind, expectedBehind, 'weeks_behind = (expected − covered)/100 × term weeks');
-  assert.equal(mine.revision_needed, expectedBehind >= 1, 'revision_needed flips at ≥ 1 week');
+  assert.equal(mine.weeks_behind, expectedBehind, 'weeks_behind = (expected − covered)/100 × term weeks');  assert.equal(mine.revision_needed, expectedBehind >= 1, 'revision_needed flips at ≥ 1 week');
   // the delay surfaces on home too (term elapsed > coverage in any realistic window)
   if (expectedBehind > 0) {
     const home = await app.inject({ method: 'GET', url: '/coord/home', headers: H(c.token) });
@@ -131,6 +141,9 @@ test('curriculum monitor: weeks_behind computed from seeded progress rows', asyn
 
 test('teacher workload: aggregates + overload flag, NO score/rank field', async () => {
   const c = await login('coordinator@meridian.edu');
+  const { pool } = await import('../src/db.js');
+  const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
+  await ensureSecondTeacher(pool, tenant);
   const r = await app.inject({ method: 'GET', url: '/coord/teacher-workload', headers: H(c.token) });
   assert.equal(r.statusCode, 200, r.body);
   const body = r.json();
@@ -154,10 +167,27 @@ test('duty allocate: picks the least-loaded candidate deterministically', async 
   const c = await login('coordinator@meridian.edu');
   const { pool } = await import('../src/db.js');
   const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
-  const tids = (await pool.query(`SELECT id, name FROM app.users WHERE tenant_id=$1 AND role='teacher' AND active ORDER BY name`, [tenant])).rows;
+  const tids = await ensureSecondTeacher(pool, tenant);
   if (tids.length < 2) return; // need two candidates for the fairness pin
   const [tA, tB] = tids;
   const dutyDate = new Date(Date.now() + 5.5 * 3600 * 1000 + 7 * 864e5).toISOString().slice(0, 10); // next week IST
+  // the duty roster plane ships with a sibling lane (never this migration) — build the
+  // fixture with the house RLS shape when absent (parent-family graceful-degradation
+  // precedent: tests may create the missing sibling shape to exercise the flow)
+  const hasDuty = (await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='duty' AND table_name='assignment'`)).rows.length > 0;
+  if (!hasDuty) {
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS duty`);
+    await pool.query(`CREATE TABLE duty.assignment (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id uuid NOT NULL, teacher_id uuid NOT NULL,
+      kind text NOT NULL, duty_date date NOT NULL, period text,
+      note text, allocated_by uuid, created_at timestamptz NOT NULL DEFAULT now())`);
+    await pool.query(`ALTER TABLE duty.assignment ENABLE ROW LEVEL SECURITY`);
+    await pool.query(`CREATE POLICY tenant_isolation ON duty.assignment
+      USING (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)
+      WITH CHECK (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)`);
+    await pool.query(`GRANT SELECT, INSERT ON duty.assignment TO schoolos_app`);
+  }
   // load A with 3 duties, B with 0 → the pick must be B
   for (let i = 0; i < 3; i++) {
     await pool.query(
@@ -319,7 +349,9 @@ test('copilot-lite: intents routed, honest unknown, budget 429', async () => {
 });
 
 test('graceful degradation: doors stay green when sibling-lane tables are absent', async () => {
-  const c = await login('coordinator@meridian.edu');
+  // the principal runs this suite-last pass (fresh copilot budget — the coordinator's
+  // 200/month ledger was deliberately exhausted by the budget test above)
+  const c = await login('principal@meridian.edu');
   const { pool } = await import('../src/db.js');
   // simulate a tenant where the sibling lanes have not been built (run LAST — fresh DB per run)
   await pool.query(`DROP TABLE IF EXISTS teacher.submission, teacher.homework, teacher.leave_request, teacher.concern_status_event, teacher.concern CASCADE`);
