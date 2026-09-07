@@ -81,6 +81,7 @@ const StudentHome = F(() => import('./screens/StudentHome'));
 const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
 const StudentAsk = F(() => import('./screens/StudentAsk'));
+const StudentHome2 = F(() => import('./screens/student/StudentHome2'));
 const NotFound = F(() => import('./screens/NotFound'));
 
 /* ---------- shared page frame ---------- */
@@ -316,6 +317,7 @@ function AppRoutes() {
       <Route path="/parent/fees" element={<S><ParentFees /></S>} />
       <Route path="/parent/ask" element={<S><ParentAsk /></S>} />
       <Route path="/student" element={<S><StudentHome /></S>} />
+      <Route path="/student/home2" element={<S><StudentHome2 /></S>} />
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
       <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
       <Route path="/student/ask" element={<S><StudentAsk /></S>} />

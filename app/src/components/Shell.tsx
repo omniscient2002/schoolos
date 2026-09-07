@@ -147,7 +147,8 @@ export function useNavItems(): NavItem[] {
       ];
     case 'student':
       return [
-        { to: '/student', label: 'My Day', icon: 'Today' },
+        { to: '/student/home2', label: 'My Day', icon: 'Today' },
+        { to: '/student', label: 'Home', icon: 'Today' },
         { to: '/student/learning', label: 'Learning', icon: 'Learning' },
         { to: '/student/portfolio', label: 'Portfolio', icon: 'Award' },
         library,

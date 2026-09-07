@@ -617,7 +617,7 @@ export async function listSubmissions(params: { homework?: string; state?: strin
     await waitF(340);
     const rows = fxSubmissions.filter(s =>
       (!params.homework || s.homework_id === params.homework) &&
-      (!params.state || params.state === 'all' || s.status === params.state));
+      (!params.state || params.state === 'all' || s.status === params.state || (params.state === 'reviewed' && s.status === 'graded')));
     return { submissions: rows };
   }).then(r => r.data);
 }

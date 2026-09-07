@@ -12,15 +12,17 @@
    the teacher never chases.
    ============================================================ */
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  Badge, Button, Card, DataTable, Empty, PageHead, Section, Stat, useToast,
+  Avatar, Badge, Button, Card, DataTable, Drawer, Empty, PageHead, Section, Stat, useToast,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
-import { fmtDate, fmtRelative } from '../../lib/format';
+import { fmtDate, fmtDateTime, fmtRelative } from '../../lib/format';
+import { friendly } from '../../lib/friendlyErrors';
 import { useStore } from '../../state/store';
 import {
-  createHomework, isFlowDoorLive, listHomework, teacherContext,
-  type NewHomework, type TeacherHomework,
+  createHomework, isFlowDoorLive, listHomework, listSubmissions, teacherContext,
+  type NewHomework, type TeacherHomework, type TeacherSubmission,
 } from '../../services/teacherFixtures';
 import { AsyncGate, dueState, FixtureTag, onEnter, TEACHER_STAFF_ROLES, useAsync, DeniedState } from './teacherKit';
 
@@ -46,8 +48,18 @@ function presetDate(p: (typeof DUE_PRESETS)[number]): Date {
   return d;
 }
 
+const SUB_STATE_LABEL: Record<TeacherSubmission['status'], { label: string; tone: 'info' | 'success' | 'warning' | 'danger' | 'neutral' }> = {
+  submitted: { label: 'Waiting for you', tone: 'info' },
+  late: { label: 'Late', tone: 'warning' },
+  reviewed: { label: 'Reviewed', tone: 'success' },
+  graded: { label: 'Graded', tone: 'success' },
+  resubmit_requested: { label: 'Resubmit asked', tone: 'warning' },
+  missing: { label: 'Not turned in', tone: 'danger' },
+};
+
 export default function Homework() {
   const toast = useToast();
+  const navigate = useNavigate();
   const { session, actorName } = useStore();
 
   const [cls, setCls] = useState(teacherContext.classes[0]);
@@ -57,8 +69,14 @@ export default function Homework() {
   const [attachment, setAttachment] = useState('');
   const [duePreset, setDuePreset] = useState('tomorrow');
   const [publishing, setPublishing] = useState(false);
+  const [summaryId, setSummaryId] = useState<string | null>(null);
 
   const list = useAsync(() => listHomework({ class: cls === 'all' ? undefined : cls }), [cls]);
+  const summary = useAsync(
+    () => (summaryId ? listSubmissions({ homework: summaryId }) : Promise.resolve({ submissions: [] as TeacherSubmission[] })),
+    [summaryId],
+  );
+  const summaryHw = useMemo(() => list.data?.homework.find(h => h.id === summaryId) ?? null, [list.data, summaryId]);
 
   const pickClass = (c: string) => {
     setCls(c);
@@ -85,7 +103,7 @@ export default function Homework() {
       setTitle(''); setDetail(''); setAttachment(''); setDuePreset('tomorrow');
       list.retry();
     } catch (e) {
-      toast({ title: 'Could not publish', sub: String(e).replace('Error: ', ''), tone: 'error' });
+      toast({ title: 'Could not publish', sub: friendly(e), tone: 'error' });
     } finally { setPublishing(false); }
   };
 
@@ -215,7 +233,7 @@ export default function Homework() {
               caption={`Homework list — ${rows.length} item${rows.length === 1 ? '' : 's'}`}
               rows={rows}
               rowKey={h => h.id}
-              onRowClick={() => { /* reviews live in the inbox; rows are informational */ }}
+              onRowClick={h => setSummaryId(h.id)}
               columns={[
                 {
                   key: 'title', label: 'Homework', sortable: true, sortValue: h => h.title,
@@ -260,6 +278,61 @@ export default function Homework() {
           Late and missing submissions surface in the inbox — reminders go out automatically, so no follow-up messages are needed.
         </div>
       </Section>
+      {/* ---- tap a homework → its submissions summary ---- */}
+      <Drawer
+        open={!!summaryId}
+        onClose={() => setSummaryId(null)}
+        title={summaryHw ? `Submissions — ${summaryHw.title}` : 'Submissions'}
+        sub={summaryHw ? `${summaryHw.class_grade} · due ${fmtDate(summaryHw.due_at)}` : ''}
+        footer={
+          <div className="u-between u-wrap" style={{ gap: 10, width: '100%' }}>
+            <span className="u-xs u-faint">Full review, grades and notes live in the inbox.</span>
+            <Button variant="primary" size="sm" icon={<Icon.Clipboard size={13} />} onClick={() => { setSummaryId(null); navigate('/teacher/submissions'); }}>
+              Open the review desk
+            </Button>
+          </div>
+        }
+      >
+        {summaryHw && (
+          <div className="u-col" style={{ gap: 14 }}>
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              <Stat label="Turned in" value={String((summaryHw.submission_counts?.submitted ?? 0) + (summaryHw.submission_counts?.late ?? 0))} sub="of the class" />
+              <Stat label="Waiting for you" value={String(Math.max(0, (summaryHw.submission_counts?.submitted ?? 0) + (summaryHw.submission_counts?.late ?? 0) - (summaryHw.submission_counts?.reviewed ?? 0)))} sub="Reviews take about 20s each" />
+              <Stat label="Late" value={String(summaryHw.submission_counts?.late ?? 0)} sub="Your call to accept" />
+              <Stat label="Not yet in" value={String(summaryHw.submission_counts?.missing ?? 0)} sub="Reminders run automatically" />
+            </div>
+
+            <AsyncGate
+              state={summary}
+              empty={<Empty icon={<Icon.Check size={20} />} title="Nothing to review yet" sub="Turned-in work appears here the moment a student sends it." />}
+            >
+              {data => (
+                <div className="u-col" style={{ gap: 8 }}>
+                  {data.submissions.map(s => (
+                    <Card key={s.id} pad>
+                      <div className="u-between u-wrap" style={{ gap: 8 }}>
+                        <div className="u-flex" style={{ gap: 9, minWidth: 0 }}>
+                          <Avatar name={s.student_name} size="sm" />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 570 }}>{s.student_name}</div>
+                            <div className="u-xs u-faint">
+                              {s.submitted_at ? `turned in ${fmtDateTime(s.submitted_at)}` : 'nothing received yet'}
+                              {s.grade != null ? ` · ${s.grade}/15` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <Badge tone={SUB_STATE_LABEL[s.status].tone} dot={s.status !== 'reviewed' && s.status !== 'graded'}>
+                          {SUB_STATE_LABEL[s.status].label}
+                        </Badge>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </AsyncGate>
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }

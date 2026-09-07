@@ -17,6 +17,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
+import { friendly } from '../../lib/friendlyErrors';
 import { useStore } from '../../state/store';
 import {
   isFlowDoorLive, listHomework, listSubmissions, reviewSubmission, teacherContext,
@@ -36,6 +37,7 @@ const STATE_BADGE: Record<TeacherSubmission['status'], { label: string; tone: 'i
   submitted: { label: 'Waiting for you', tone: 'info' },
   late: { label: 'Late', tone: 'warning' },
   reviewed: { label: 'Reviewed', tone: 'success' },
+  graded: { label: 'Graded', tone: 'success' },
   resubmit_requested: { label: 'Resubmit asked', tone: 'warning' },
   missing: { label: 'Missing', tone: 'danger' },
 };
@@ -58,9 +60,10 @@ export default function SubmissionsInbox() {
   /* drawer form */
   const [grade, setGrade] = useState('');
   const [feedback, setFeedback] = useState('');
-  const [decide, setDecide] = useState<'reviewed' | 'resubmit_requested'>('reviewed');
+  const [decide, setDecide] = useState<'reviewed' | 'graded' | 'resubmit_requested'>('reviewed');
   const [saving, setSaving] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkDone, setBulkDone] = useState(0);
 
   const hw = useAsync(() => listHomework(), []);
   const subs = useAsync(
