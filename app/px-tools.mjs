@@ -72,10 +72,13 @@ export async function gotoStable(page, url, waitMs = 1200) {
 /* Screenshot a page and decode it to an RGBA flat array — decode happens IN the
    browser (canvas drawImage), so no PNG library is needed. */
 export async function shoot(browser, url, opts = {}) {
-  const { width = 1440, height = 900, theme, clock } = opts;
+  const { width = 1440, height = 900, theme, clock, token } = opts;
   const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   if (clock) await freezeClock(page, clock);
+  /* seed an authenticated session BEFORE app scripts run — otherwise routes
+     bounce to /login and the proof measures the login page */
+  if (token) await page.addInitScript((t) => { try { localStorage.setItem('schoolos_token', t); } catch { /* fresh context */ } }, token);
   if (theme) {
     await page.addInitScript((t) => { try { localStorage.setItem('schoolos.theme', t); } catch { /* fresh context */ } }, theme);
   }
