@@ -150,6 +150,8 @@ export default function SubmissionsInbox() {
     } finally { setSaving(false); }
   };
 
+  if (!TEACHER_STAFF_ROLES.includes(session.roleId)) return <DeniedState role={session.roleId} />;
+
   return (
     <div>
       <PageHead

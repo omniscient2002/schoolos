@@ -158,9 +158,9 @@ export function register(app, kernel) {
           concernId: r.id, studentId: r.student_id, studentName: r.student_id ? nameById[r.student_id] ?? null : null,
           category: r.category, urgency: r.urgency, detail: r.detail, evidenceRef: r.evidence_ref,
           status: r.status, routedTo: r.routed_to, routedRole: r.routed_role,
-          outcome: r.outcome, outcomeNote: r.outcome_note, mine: r.filed_by ?? null ? undefined : undefined,
+          outcome: r.outcome, outcomeNote: r.outcome_note,
           createdAt: r.created_at,
-        })).map(({ mine, ...rest }) => rest),
+        })),
       };
     });
   });
@@ -630,7 +630,10 @@ export function register(app, kernel) {
 
   // slot board — staff see their school's board; parents see it without other
   // families' booking details
-  app.get('/ptm/slots', { preHandler: [require(...STAFF, 'parent'), lifecycleGate] }, async (req) => {
+  app.get('/ptm/slots', { preHandler: [require(...STAFF, 'parent'), lifecycleGate] }, async (req, reply) => {
+    const date = req.query.date;
+    if (date && !DATE.test(String(date))) return bad(reply, 'Date filter must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
         `SELECT sl.id, sl.teacher_id, u.name AS teacher_name, sl.slot_date, sl.start_time, sl.end_time, sl.status,
                 b.id AS booking_id, b.student_id, s.name AS student_name
