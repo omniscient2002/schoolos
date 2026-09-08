@@ -35,10 +35,11 @@ export async function buildApp(opts = {}) {
     try {
       const payload = await req.jwtVerify();
       req.auth = payload; // token claims (incl. jti) — DB row below is authoritative for identity
-      if (payload.jti) {
-        const rev = await q(`SELECT 1 FROM auth.revoked_token WHERE jti=$1`, [payload.jti]);
-        if (rev.rows[0]) return reply.code(401).send({ error: 'session ended — sign in again' });
-      }
+      // A3 hard rule: every token MUST carry a jti, else it can never be revoked
+      // (RT-7 P2-6). The pre-038 compat window is closed — re-login reissues tokens.
+      if (!payload.jti) return reply.code(401).send({ error: 'session ended — sign in again' });
+      const rev = await q(`SELECT 1 FROM auth.revoked_token WHERE jti=$1`, [payload.jti]);
+      if (rev.rows[0]) return reply.code(401).send({ error: 'session ended — sign in again' });
       const u = await q(`SELECT id, tenant_id, name, role, pg_role, email FROM app.users WHERE id=$1 AND active`, [payload.sub]);
       if (!u.rows[0]) return reply.code(401).send({ error: 'account disabled' });
       req.user = u.rows[0];
@@ -185,7 +186,7 @@ export async function buildApp(opts = {}) {
     reply.header('Clear-Site-Data', '"cache", "storage"');
     // A3: actually end the session — the jti is dead the moment this returns.
     if (req.auth?.jti) {
-      const exp = new Date(Date.now() + 13 * 3600 * 1000); // beyond the longest TTL we mint
+      const exp = req.auth.exp ? new Date(req.auth.exp * 1000) : new Date(Date.now() + 13 * 3600 * 1000);
       await q(`INSERT INTO auth.revoked_token (jti, tenant_id, exp) VALUES ($1,$2,$3)
                ON CONFLICT (jti) DO NOTHING`, [req.auth.jti, req.user.tenant_id, exp]);
       await q(`DELETE FROM auth.revoked_token WHERE exp < now()`); // opportunistic cleanup

@@ -51,7 +51,7 @@ test('A3 · logout revokes the exact token; nothing else', async () => {
 test('A3 · denylist self-cleans expired entries; legacy tokens (no jti) still authenticate', async () => {
   const legacy = app.jwt.sign({ sub: (await sql(`SELECT id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].id });
   const r = await app.inject({ method: 'GET', url: '/dataset', headers: H(legacy) });
-  assert.equal(r.statusCode, 200, 'pre-jti tokens remain valid (no regression)');
+  assert.equal(r.statusCode, 401, 'jti-less tokens are refused (RT-7 P2-6: an unverifiable-identity token can never be revoked)');
 
   const jti = 'test-expired-jti-00000000';
   await sql(`INSERT INTO auth.revoked_token (jti, exp) VALUES ($1, now() - interval '1 minute')`, [jti]);

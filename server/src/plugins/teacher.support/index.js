@@ -145,10 +145,10 @@ export function register(app, kernel) {
         `SELECT id, student_id, category, urgency, detail, evidence_ref, status, routed_to, routed_role, outcome, outcome_note, created_at
          FROM teacher.concern
          WHERE ($2::text IS NULL OR status=$2) AND (
-           CASE WHEN $3::bool THEN TRUE                       -- oversight tier: the board
-                ELSE (filed_by=$4::uuid OR routed_to=$4::uuid) END -- everyone else: own + routed-to-me
+           CASE WHEN $1::bool THEN TRUE                       -- oversight tier: the board
+                ELSE (filed_by=$3::uuid OR routed_to=$3::uuid) END -- everyone else: own + routed-to-me
          ) ORDER BY created_at DESC LIMIT 200`,
-        [req.user.tenant_id, status, oversight, req.user.id])).rows;
+        [oversight, status, req.user.id])).rows;
       const ids = [...new Set(rows.map((r) => r.student_id).filter(Boolean))];
       const names = ids.length ? (await c.query(`SELECT id, name FROM app.students WHERE id = ANY($1::uuid[])`, [ids])).rows : [];
       const nameById = Object.fromEntries(names.map((n) => [n.id, n.name]));
