@@ -165,7 +165,7 @@ function fixtureHome(): TeacherHomeAggregate {
   const now = new Date();
   const hm = now.getHours() * 60 + now.getMinutes();
   const slots = mySlotsToday();
-  const secOf = (slot: TimeSlot) => sectionLabel(slot.sectionId);
+  const secOf = (sectionId: string) => sectionLabel(sectionId);
 
   const current = slots.find(t => toMin(t.start) <= hm && hm < toMin(t.end));
   const upcoming = slots.filter(t => toMin(t.start) > hm);
@@ -683,7 +683,7 @@ export async function createLeave(body: { kind: LeaveKind; from_date: string; to
 
 /** GET /teacher/leave/mine (§4, frozen) */
 export async function listMyLeave(): Promise<{ requests: TeacherLeaveRequest[]; balances: LeaveBalance[] }> {
-  return flowRead('leave', '/teacher/leave/mine', async () => {
+  return flowRead<{ requests: TeacherLeaveRequest[]; balances: LeaveBalance[] }>('leave', '/teacher/leave/mine', async () => {
     await waitF(340);
     return {
       requests: fxLeave,
@@ -1094,6 +1094,17 @@ export const TREND_INFO: Record<MasteryTopic['trend'], { glyph: string; label: s
   dipping: { glyph: '▼', label: 'dipping', color: 'var(--danger)' },
 };
 
+/** Where an evidence row deep-links — plain label + teacher flow route
+ *  (routes follow components/teacher/TeacherNav.tsx). */
+export function evidenceLinkTarget(link: MasteryEvidence['link']): { to: string; label: string } {
+  switch (link) {
+    case 'homework': return { to: '/teacher/submissions', label: 'Open homework' };
+    case 'assessment': return { to: '/teacher/assessments', label: 'Open assessments' };
+    case 'observation': return { to: '/teacher/mastery', label: 'Open mastery map' };
+    case 'intervention': return { to: '/teacher/interventions', label: 'Open support plans' };
+  }
+}
+
 /** Plain staleness for A3 copy. Evidence ≥ 4 weeks old is expired. */
 export function staleness(date: string): { label: string; expired: boolean } {
   const weeks = Math.floor((Date.now() - new Date(date).getTime()) / (7 * 86400000));
@@ -1109,7 +1120,7 @@ export const liveEvidence = (t: MasteryTopic) => t.evidence.filter(e => !stalene
 function confidenceOf(ev: MasteryEvidence[]): number {
   const live = ev.filter(e => !staleness(e.observedAt).expired);
   if (!live.length) return 20;
-  const fresh = live.filter(e => staleness(e.observedAt).weeks === undefined ? false : Date.now() - new Date(e.observedAt).getTime() < 14 * 86400000).length;
+  const fresh = live.filter(e => Date.now() - new Date(e.observedAt).getTime() < 14 * 86400000).length;
   return Math.min(94, 46 + fresh * 16 + (live.length - 1) * 8);
 }
 
@@ -1188,7 +1199,7 @@ const MASTERY_PROFILES: Record<string, number> = { stu_1: 0, stu_2: 1, stu_3: 0,
 
 /** GET /mastery/student/:id?subject= (§4, frozen) — evidence-linked, decayed. */
 export async function getMasteryStudent(studentId: string, subject = 'Maths'): Promise<{ data: MasteryStudent | null; source: TeacherSource }> {
-  return flowRead('mastery_student', `/mastery/student/${encodeURIComponent(studentId)}?subject=${encodeURIComponent(subject)}`, async () => {
+  return flowRead<MasteryStudent>('mastery_student', `/mastery/student/${encodeURIComponent(studentId)}?subject=${encodeURIComponent(subject)}`, async () => {
     await waitF(320);
     const st = fxRoster.find(r => r.id === studentId);
     if (!st) throw new Error('That student is not on your class lists. Open a student from one of your own classes.');
@@ -1199,13 +1210,13 @@ export async function getMasteryStudent(studentId: string, subject = 'Maths'): P
       const level: MasteryLevel = live.length ? a.level : 'developing';
       return { nodeId: `m_${subject}_${i}`, topic: a.topic, unit: a.unit, level, confidence: confidenceOf(a.ev), trend: a.trend, evidence: a.ev };
     });
-    return { data: { studentId, name: st.name, classGrade: st.classGrade, topics }, source: 'fixture' as TeacherSource };
+    return { studentId, name: st.name, classGrade: st.classGrade, topics };
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }
 
 /** GET /mastery/class/:grade?subject= (§4, frozen) — one row per child, no ranking. */
 export async function getMasteryClass(classGrade: string, subject = 'Maths'): Promise<{ data: MasteryStudent[]; source: TeacherSource }> {
-  return flowRead('mastery_class', `/mastery/class/${encodeURIComponent(classGrade)}?subject=${encodeURIComponent(subject)}`, async () => {
+  return flowRead<MasteryStudent[]>('mastery_class', `/mastery/class/${encodeURIComponent(classGrade)}?subject=${encodeURIComponent(subject)}`, async () => {
     await waitF(360);
     return {
       data: rosterFor(classGrade).map(st => {
@@ -1217,7 +1228,6 @@ export async function getMasteryClass(classGrade: string, subject = 'Maths'): Pr
         });
         return { studentId: st.id, name: st.name, classGrade, topics };
       }),
-      source: 'fixture' as TeacherSource,
     };
   }).then(r => ({ data: r.data ?? [], source: r.source }));
 }
@@ -1244,7 +1254,7 @@ export const STORY_KIND_LABEL: Record<StoryKind, string> = {
 /** GET /progress/story/:studentId — PROPOSED door (builds from mastery.evidence
  *  + lesson + intervention events; freeze with TS-3 before W2). */
 export async function getProgressStory(studentId: string): Promise<{ data: { studentName: string; steps: StoryStep[] } | null; source: TeacherSource }> {
-  return flowRead('story', `/progress/story/${encodeURIComponent(studentId)}`, async () => {
+  return flowRead<{ studentName: string; steps: StoryStep[] }>('story', `/progress/story/${encodeURIComponent(studentId)}`, async () => {
     await waitF(340);
     const st = fxRoster.find(r => r.id === studentId);
     if (!st) throw new Error('That student is not on your class lists. Open a story from one of your own classes.');
@@ -1257,7 +1267,7 @@ export async function getProgressStory(studentId: string): Promise<{ data: { stu
       { id: 'ps6', at: dayF(-5, 9), kind: 'submission', sentence: 'Worksheet 4 came in on time with 6/7 correct.', evidenceRef: 'Homework · Fractions worksheet 4', evidenceLink: 'homework' },
       { id: 'ps7', at: dayF(-2, 11), kind: 'improvement', sentence: 'Explained equivalent fractions to a partner without help — mastery evidence.', evidenceRef: 'Observation · Class work', evidenceLink: 'observation' },
     ];
-    return { data: { studentName: st.name, steps }, source: 'fixture' as TeacherSource };
+    return { studentName: st.name, steps };
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }
 
@@ -1323,16 +1333,16 @@ function buildCurriculum(classGrade: string): CurriculumClass {
 
 /** GET /curriculum/tree?subject=&grade= (§4, frozen) — progress rides the tree read. */
 export async function getCurriculumTree(classGrade: string, subject = 'Maths'): Promise<{ data: CurriculumClass | null; source: TeacherSource }> {
-  return flowRead(`curriculum_${classGrade}`, `/curriculum/tree?subject=${encodeURIComponent(subject)}&grade=${encodeURIComponent(classGrade.split('-')[0] ?? '8')}`, async () => {
+  return flowRead<CurriculumClass>(`curriculum_${classGrade}`, `/curriculum/tree?subject=${encodeURIComponent(subject)}&grade=${encodeURIComponent(classGrade.split('-')[0] ?? '8')}`, async () => {
     await waitF(340);
     if (!fxCurriculum[classGrade]) fxCurriculum[classGrade] = buildCurriculum(classGrade);
-    return { data: fxCurriculum[classGrade], source: 'fixture' as TeacherSource };
+    return fxCurriculum[classGrade];
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }
 
 /** POST /curriculum/progress {node_id, class_grade, pct, evidence?} (§4, frozen). */
 export async function saveCurriculumProgress(nodeId: string, classGrade: string, pct: number): Promise<{ data: CurriculumClass | null; source: TeacherSource }> {
-  return flowWrite('curriculum', '/curriculum/progress', { method: 'POST', body: JSON.stringify({ node_id: nodeId, class_grade: classGrade, pct }) }, async () => {
+  return flowWrite<CurriculumClass>('curriculum', '/curriculum/progress', { method: 'POST', body: JSON.stringify({ node_id: nodeId, class_grade: classGrade, pct }) }, async () => {
     await waitF(300);
     if (!fxCurriculum[classGrade]) fxCurriculum[classGrade] = buildCurriculum(classGrade);
     const n = fxCurriculum[classGrade].units.find(u => u.id === nodeId);
@@ -1340,7 +1350,7 @@ export async function saveCurriculumProgress(nodeId: string, classGrade: string,
     n.coveredPct = pct;
     n.coveredBy = teacherContext.name;
     n.coveredAt = isoF(new Date());
-    return { data: fxCurriculum[classGrade], source: 'fixture' as TeacherSource };
+    return fxCurriculum[classGrade];
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }
 
@@ -1402,7 +1412,7 @@ function dimsFor(st: RosterStudent, profile: number): StudentDimensions {
 /** GET /analytics/class/:grade — PROPOSED composite door (mastery.class +
  *  homework completion + assessment patterns + readiness); freeze with TS-3. */
 export async function getClassAnalytics(classGrade: string): Promise<{ data: ClassAnalyticsData | null; source: TeacherSource }> {
-  return flowRead(`analytics_${classGrade}`, `/analytics/class/${encodeURIComponent(classGrade)}`, async () => {
+  return flowRead<ClassAnalyticsData>(`analytics_${classGrade}`, `/analytics/class/${encodeURIComponent(classGrade)}`, async () => {
     await waitF(380);
     const roster = rosterFor(classGrade);
     const dims = roster.map(st => dimsFor(st, MASTERY_PROFILES[st.id] ?? 1));
@@ -1438,7 +1448,6 @@ export async function getClassAnalytics(classGrade: string): Promise<{ data: Cla
           ],
         },
       },
-      source: 'fixture' as TeacherSource,
     };
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }
@@ -1516,16 +1525,16 @@ let fxInterventions: Intervention[] = [
 
 /** GET /interventions?student= (§4, frozen). */
 export async function getInterventions(studentId?: string): Promise<{ data: Intervention[]; source: TeacherSource }> {
-  return flowRead('interventions', `/interventions${studentId ? `?student=${encodeURIComponent(studentId)}` : ''}`, async () => {
+  return flowRead<Intervention[]>('interventions', `/interventions${studentId ? `?student=${encodeURIComponent(studentId)}` : ''}`, async () => {
     await waitF(340);
     const rows = studentId ? fxInterventions.filter(iv => iv.studentId === studentId) : fxInterventions;
-    return { data: rows, source: 'fixture' as TeacherSource };
+    return rows;
   }).then(r => ({ data: r.data ?? [], source: r.source }));
 }
 
 /** POST /interventions (§4, frozen) — new plans enter at "planned". */
 export async function createIntervention(body: { studentId: string; studentName: string; objective: string; activity: string; durationWeeks: number; owner: string }): Promise<{ data: Intervention; source: TeacherSource }> {
-  return flowWrite('interventions', '/interventions', { method: 'POST', body: JSON.stringify(body) }, async () => {
+  return flowWrite<Intervention>('interventions', '/interventions', { method: 'POST', body: JSON.stringify(body) }, async () => {
     await waitF(380);
     if (!body.studentId) throw new Error('Pick a student for this support plan.');
     if (!body.objective.trim()) throw new Error('Write the goal in one line — what should get better?');
@@ -1539,19 +1548,19 @@ export async function createIntervention(body: { studentId: string; studentName:
       events: [{ id: uidF('ive'), at: isoF(new Date()), by: body.owner, text: `Planned: ${body.activity.trim()} — first recheck in ${body.durationWeeks} weeks.`, evidenceRef: 'Teacher plan' }],
     };
     fxInterventions = [iv, ...fxInterventions];
-    return { data: iv, source: 'fixture' as TeacherSource };
+    return iv;
   }).then(r => ({ data: r.data, source: r.source }));
 }
 
 /** POST /interventions/:id/reassess (§4, frozen) + stage moves — append-only. */
 export async function moveIntervention(id: string, to: InterventionStage, note: string, evidenceRef?: string): Promise<{ data: Intervention | null; source: TeacherSource }> {
-  return flowWrite('interventions', `/interventions/${encodeURIComponent(id)}/reassess`, { method: 'POST', body: JSON.stringify({ to, note }) }, async () => {
+  return flowWrite<Intervention>('interventions', `/interventions/${encodeURIComponent(id)}/reassess`, { method: 'POST', body: JSON.stringify({ to, note }) }, async () => {
     await waitF(300);
     const iv = fxInterventions.find(x => x.id === id);
     if (!iv) throw new Error('That plan is no longer on the board.');
     if (!note.trim()) throw new Error('Add one line about what happened — the log only grows, so write it once.');
     iv.stage = to;
     iv.events = [...iv.events, { id: uidF('ive'), at: isoF(new Date()), by: teacherContext.name, text: note.trim(), evidenceRef }];
-    return { data: iv, source: 'fixture' as TeacherSource };
+    return iv;
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }

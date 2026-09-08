@@ -15,7 +15,7 @@
    - ROLES: the shared teacher-role allowlist (per lane, so a
      lane editing its own list cannot break another's).
    ============================================================ */
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Badge, Button, Card, Drawer, Empty, SkeletonCard } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';

@@ -32,7 +32,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 
 /* ---------- 12-state gate: skeleton / error / empty / content ---------- */
 export function AsyncGate<T>({ state, skeleton, empty, children }: {
-  state: { data: T | null; loading: boolean; error: string | null };
+  state: { data: T | null; loading: boolean; error: string | null; retry?: () => void };
   skeleton?: ReactNode;
   empty?: ReactNode;
   children: (data: T) => ReactNode;
@@ -47,9 +47,9 @@ export function AsyncGate<T>({ state, skeleton, empty, children }: {
 export function FixtureTag({ source }: { source: 'live' | 'fixture' }) {
   if (source === 'live') return null;
   return (
-    <Badge tone="outline" dot title="Sample data while the server door is being built. Switches to the real server automatically when the door is live.">
-      Demo data
-    </Badge>
+    <span title="Sample data while the server door is being built. Switches to the real server automatically when the door is live.">
+      <Badge tone="outline" dot>Demo data</Badge>
+    </span>
   );
 }
 

@@ -53,6 +53,13 @@ export function useNavItems(): NavItem[] {
       ];
     case 'coordinator':
       return [
+        /* CU-1 CoordinatorOS lane — Command Center first, then the desk surfaces */
+        { to: '/coord/home', label: 'Command Center', icon: 'Compass' },
+        { to: '/coord/substitutions', label: 'Substitutions', icon: 'Refresh' },
+        { to: '/coord/workload', label: 'Workload fairness', icon: 'Scale' },
+        { to: '/coord/curriculum', label: 'Curriculum monitor', icon: 'Learning' },
+        { to: '/coord/escalations', label: 'Escalations', icon: 'Flag' },
+        { to: '/coord/approvals', label: 'Approvals', icon: 'Clipboard' },
         { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
@@ -170,6 +177,8 @@ export function Sidebar() {
   const items = useNavItems();
   const groups = [
     { label: 'Daily operations', items: items.filter(i => ['Today', 'Needs your attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
+    /* CU-1: coordinator desk surfaces (nav items pointing at /coord/*) */
+    { label: 'Coordination', items: items.filter(i => i.to.startsWith('/coord')) },
     { label: 'Records', items: items.filter(i => ['People', 'Learning', 'Operations'].includes(i.label)) },
     { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'AI memory', 'Platform'].includes(i.label)) },
     { label: 'Your space', items: items.filter(i => ['Home', 'Messages', 'Fees', 'My Day', 'Portfolio'].includes(i.label)) },

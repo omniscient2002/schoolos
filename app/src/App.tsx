@@ -86,6 +86,13 @@ const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
 const StudentAsk = F(() => import('./screens/StudentAsk'));
 const StudentHome2 = F(() => import('./screens/student/StudentHome2'));
+/* CU-1 coordinator lane (CoordinatorOS) */
+const CoordHome = F(() => import('./screens/coord/CoordHome'));
+const CoordSubstitutions = F(() => import('./screens/coord/SubstitutionReview'));
+const CoordWorkload = F(() => import('./screens/coord/WorkloadBoard'));
+const CoordCurriculum = F(() => import('./screens/coord/CurriculumMonitor'));
+const CoordEscalations = F(() => import('./screens/coord/EscalationsQueue'));
+const CoordApprovals = F(() => import('./screens/coord/ApprovalCenter'));
 const NotFound = F(() => import('./screens/NotFound'));
 
 /* ---------- shared page frame ---------- */
@@ -153,7 +160,7 @@ function Guard({ children }: { children: React.ReactNode }) {
      sign-in must land on the calm surface) and the demo view switcher
      (staff previewing a light role sees the same gates). */
   const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people'];
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return (
       <PageShell>
@@ -329,6 +336,13 @@ function AppRoutes() {
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
       <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
       <Route path="/student/ask" element={<S><StudentAsk /></S>} />
+      {/* CU-1 coordinator lane — /coord/* is staff-gated via staffOnly '/coord' above */}
+      <Route path="/coord/home" element={<S><CoordHome /></S>} />
+      <Route path="/coord/substitutions" element={<S><CoordSubstitutions /></S>} />
+      <Route path="/coord/workload" element={<S><CoordWorkload /></S>} />
+      <Route path="/coord/curriculum" element={<S><CoordCurriculum /></S>} />
+      <Route path="/coord/escalations" element={<S><CoordEscalations /></S>} />
+      <Route path="/coord/approvals" element={<S><CoordApprovals /></S>} />
       <Route path="*" element={<S><NotFound /></S>} />
     </Routes>
   );
