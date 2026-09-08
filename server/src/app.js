@@ -6,7 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { pool, q, withUser } from './db.js';
 import { verifyPassword, ROLES } from './auth.js';
-import { scryptSync, timingSafeEqual, randomBytes } from 'node:crypto';
+import { scryptSync, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
 import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
 import { loadPlugins } from './plugins/loader.js';
@@ -28,9 +28,17 @@ export async function buildApp(opts = {}) {
   });
 
   // --- auth decoration ---
+  // Security matrix A3: every token carries a jti; a logged-out jti is refused here
+  // until natural expiry (038 auth.revoked_token). Verification failures never leak
+  // which check failed.
   app.decorate('authenticate', async (req, reply) => {
     try {
       const payload = await req.jwtVerify();
+      req.auth = payload; // token claims (incl. jti) — DB row below is authoritative for identity
+      if (payload.jti) {
+        const rev = await q(`SELECT 1 FROM auth.revoked_token WHERE jti=$1`, [payload.jti]);
+        if (rev.rows[0]) return reply.code(401).send({ error: 'session ended — sign in again' });
+      }
       const u = await q(`SELECT id, tenant_id, name, role, pg_role, email FROM app.users WHERE id=$1 AND active`, [payload.sub]);
       if (!u.rows[0]) return reply.code(401).send({ error: 'account disabled' });
       req.user = u.rows[0];
@@ -54,7 +62,7 @@ export async function buildApp(opts = {}) {
     if (!user || !verifyPassword(password, user.password_hash)) {
       return reply.code(401).send({ error: 'invalid credentials' });
     }
-    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name },
+    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name, jti: randomUUID() },
       user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>
       auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: 'Signed in', recordType: 'Auth', recordRef: user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `JWT issued${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
@@ -63,7 +71,7 @@ export async function buildApp(opts = {}) {
 
   // ---- full authentication (008): phone OTP · Google SSO · logout ----
   const issueSession = async (user, via) => {
-    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name },
+    const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name, jti: randomUUID() },
       user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>
       auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: `Signed in (${via})`, recordType: 'Auth', recordRef: via === 'phone' ? user.phone : user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `JWT issued${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
@@ -175,8 +183,15 @@ export async function buildApp(opts = {}) {
   });
   app.post('/auth/logout', { preHandler: app.authenticate }, async (req, reply) => {
     reply.header('Clear-Site-Data', '"cache", "storage"');
+    // A3: actually end the session — the jti is dead the moment this returns.
+    if (req.auth?.jti) {
+      const exp = new Date(Date.now() + 13 * 3600 * 1000); // beyond the longest TTL we mint
+      await q(`INSERT INTO auth.revoked_token (jti, tenant_id, exp) VALUES ($1,$2,$3)
+               ON CONFLICT (jti) DO NOTHING`, [req.auth.jti, req.user.tenant_id, exp]);
+      await q(`DELETE FROM auth.revoked_token WHERE exp < now()`); // opportunistic cleanup
+    }
     await withUser(req.user.tenant_id, req.user.role, (c) =>
-      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access) · StudentOS §78 shared computers', outcome: 'session ended · browser storage wipe requested (Clear-Site-Data)' }));
+      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access) · StudentOS §78 shared computers', outcome: 'session revoked (jti denylist) · browser storage wipe requested (Clear-Site-Data)' }));
     return { ok: true };
   });
 

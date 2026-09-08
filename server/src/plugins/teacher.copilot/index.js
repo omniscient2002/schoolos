@@ -206,15 +206,16 @@ export function register(app, kernel) {
 
     const df = st.derived_from ?? {};
     if (derived.basis === 'evidence') {
-      // fresh evidence governs; refresh when it moved (this is also the A3 recovery path)
-      if (st.level !== derived.level || st.confidence !== derived.confidence || df.basis !== 'evidence') {
+      // fresh evidence governs; refresh when it moved, or when the row still carries a
+      // decay marker (recovery rewrites derived_from to the clean evidence basis)
+      if (st.level !== derived.level || st.confidence !== derived.confidence || df.reason === 'evidence_expired') {
         await c.query(
           `UPDATE mastery.state SET level=$2, confidence=$3, derived_from=$4::jsonb,
              computed_at=now(), updated_at=now() WHERE id=$1`,
           [st.id, derived.level, derived.confidence, JSON.stringify(derived)]);
       }
       return { level: derived.level, confidence: derived.confidence, basis: 'evidence',
-        decayed: df.reason === 'evidence_expired', freshEvidence: fresh.length, expiredEvidence: 0,
+        decayed: false, freshEvidence: fresh.length, expiredEvidence: 0,
         recovered: df.reason === 'evidence_expired' };
     }
 
@@ -228,8 +229,10 @@ export function register(app, kernel) {
       `SELECT count(*)::int AS n FROM mastery.evidence
        WHERE student_id=$1 AND subject=$2 AND node_id=$3 AND expires_at IS NOT NULL AND expires_at <= $4`,
       [studentId, subject, node.id, now])).rows[0].n;
+    // LEVELS is ordered needs_support→developing→secure: sliding DOWN one step
+    // (secure→developing, developing→needs_support, floored at the bottom) = idx − 1
     const idx = LEVEL_STEP[st.level] ?? 0;
-    const down = LEVELS[Math.min(idx + 1, LEVELS.length - 1)];
+    const down = LEVELS[Math.max(idx - 1, 0)];
     await c.query(
       `UPDATE mastery.state SET level=$2, confidence='low',
          derived_from = derived_from || $3::jsonb, computed_at=now(), updated_at=now()
@@ -353,32 +356,43 @@ export function register(app, kernel) {
     });
 
     // pending submissions — from teacher.homework IF TS-1's tables exist (RLS of that
-    // lane applies; no explicit tenant filter — column shapes belong to the sibling lane)
+    // lane applies; no explicit tenant filter — column shapes belong to the sibling lane).
+    // 031 ships `created_by` as the authoring-teacher column; older drafts that named it
+    // `teacher_id` (or lanes that add it) are supported via a catalog column probe.
     const homework = await safeRead(async () => {
       if (!(await tableExists(c, 'teacher', 'homework'))) return { available: false, reason: 'not_built' };
+      const authorCol = (await c.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema='teacher' AND table_name='homework' AND column_name='teacher_id'
+         LIMIT 1`)).rows.length ? 'teacher_id' : 'created_by';
       const openHomework = (await c.query(
-        `SELECT count(*)::int AS n FROM teacher.homework WHERE teacher_id=$1 AND status='open'`,
+        `SELECT count(*)::int AS n FROM teacher.homework WHERE ${authorCol}=$1 AND status='open'`,
         [teacherId])).rows[0].n;
       let pending = 0, reviewed = 0;
       if (await tableExists(c, 'teacher', 'submission')) {
         pending = (await c.query(
           `SELECT count(*)::int AS n FROM teacher.submission s
            JOIN teacher.homework h ON h.id = s.homework_id
-           WHERE h.teacher_id=$1 AND s.status IN ('submitted','late')`, [teacherId])).rows[0].n;
+           WHERE h.${authorCol}=$1 AND s.status IN ('submitted','late')`, [teacherId])).rows[0].n;
         reviewed = (await c.query(
           `SELECT count(*)::int AS n FROM teacher.submission s
            JOIN teacher.homework h ON h.id = s.homework_id
-           WHERE h.teacher_id=$1 AND s.status='reviewed'`, [teacherId])).rows[0].n;
+           WHERE h.${authorCol}=$1 AND s.status='reviewed'`, [teacherId])).rows[0].n;
       }
       return { available: true, openHomework, pendingSubmissions: pending, reviewedSubmissions: reviewed };
     });
 
-    // open concerns — from teacher.concern IF TS-2's table exists
+    // open concerns — from teacher.concern IF TS-2's table exists. 032 ships `filed_by`
+    // (teachers file concerns); older `teacher_id`-shaped drafts are supported too.
     const concerns = await safeRead(async () => {
       if (!(await tableExists(c, 'teacher', 'concern'))) return { available: false, reason: 'not_built' };
+      const filerCol = (await c.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema='teacher' AND table_name='concern' AND column_name='teacher_id'
+         LIMIT 1`)).rows.length ? 'teacher_id' : 'filed_by';
       const rows = (await c.query(
         `SELECT id, category, urgency, status FROM teacher.concern
-         WHERE teacher_id=$1 AND status IN ('open','routed','in_support')
+         WHERE ${filerCol}=$1 AND status IN ('open','routed','in_support')
          ORDER BY CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at DESC
          LIMIT 20`, [teacherId])).rows;
       return { available: true, open: rows.length,
@@ -390,13 +404,14 @@ export function register(app, kernel) {
       const rows = (await c.query(
         `SELECT n.subject, n.grade,
                 count(DISTINCT n.id)::int AS total,
-                count(DISTINCT p.node_id) FILTER (WHERE p.covered_pct >= 100)::int AS covered
+                count(DISTINCT p.node_id) FILTER (WHERE p.covered_pct >= 100)::int AS covered,
+                count(DISTINCT p.node_id) FILTER (WHERE p.covered_pct > 0 AND p.covered_pct < 100)::int AS partial
          FROM curriculum.node n
          LEFT JOIN curriculum.progress p ON p.node_id = n.id AND p.class_grade = n.grade
          WHERE n.kind='topic'
          GROUP BY n.subject, n.grade ORDER BY n.subject, n.grade`)).rows;
       return { available: true, rows: rows.map((r) => ({ subject: r.subject, grade: r.grade,
-        covered: r.covered, total: r.total,
+        covered: r.covered, partial: r.partial, total: r.total,
         pacePct: r.total > 0 ? Math.round((r.covered / r.total) * 100) : 0 })) };
     });
 
@@ -407,10 +422,15 @@ export function register(app, kernel) {
       { kind: 'curriculum', table: 'curriculum.progress', available: pace.available === true },
     ];
 
+    // plain sentences (deterministic; missing neighbours are said plainly).
+    // pacePhrase uses total-touched coverage (full + partial) so a half-ticked topic
+    // isn't hidden behind the ≥100% bar; full-coverage counts stay in the payload.
+    const paceRows = (pace.rows ?? []).filter((r) => r.covered + r.partial > 0);
+    const pacePhrase = paceRows
+      .map((r) => `${r.subject} class ${r.grade} is ${r.pacePct}% covered (${r.covered + r.partial} of ${r.total} topics touched)`).join('; ');
+
     // plain sentences (deterministic; missing neighbours are said plainly)
     const sentences = [];
-    const pacePhrase = (pace.rows ?? []).filter((r) => r.covered > 0)
-      .map((r) => `${r.subject} class ${r.grade} is ${r.pacePct}% covered`).join('; ');
     if (when === 'eod') {
       if (timetable.available) sentences.push(`You have ${timetable.teachingToday} teaching period${timetable.teachingToday === 1 ? '' : 's'} today${timetable.currentPeriod ? `; the current period is ${timetable.currentPeriod.subject}` : ''}${timetable.nextPeriod ? `, next is ${timetable.nextPeriod.subject} at ${timetable.nextPeriod.start_time}` : timetable.currentPeriod ? ', and that is the last one' : ''}.`);
       else sentences.push('The timetable isn\'t reachable right now, so today\'s periods aren\'t shown.');
@@ -588,16 +608,19 @@ export function register(app, kernel) {
       const mSubject = SUBJECTS.find((s) => qLower.includes(s.toLowerCase()));
       const curriculumWords = ['curriculum', 'syllabus', 'coverage', 'pace', 'covered', 'chapter', 'tree'];
       const masteryWords = ['mastery', 'weak', 'needs support', 'struggl', 'behind', 'strong'];
-      const dayWords = ['today', 'period', 'timetable', 'teach', 'next class', 'schedule', 'my day', 'now'];
+      // NOTE: no bare 'teach' — abstract questions ("the meaning of teaching") must
+      // fall through to the honest fallback, not hijack the timetable branch.
+      const dayWords = ['today', 'period', 'timetable', 'next class', 'schedule', 'my day', 'teach today', 'teaching today', 'teach tomorrow'];
+      const isDayQ = dayWords.some((w) => qLower.includes(w)) || /\bdo i teach\b/.test(qLower);
 
       // 1 · curriculum pace
       if (!answer && curriculumWords.some((w) => qLower.includes(w))) {
         sources.push({ kind: 'curriculum', table: 'curriculum.progress' });
-        const rows = (brief.curriculumPace.rows ?? []).filter((r) => r.covered > 0);
+        const rows = (brief.curriculumPace.rows ?? []).filter((r) => r.covered + r.partial > 0);
         const pick = rows.find((r) => (!mSubject || r.subject === mSubject) && (!mGrade || r.grade === mGrade))
           ?? rows.find((r) => !mSubject || r.subject === mSubject);
         answer = pick
-          ? `${pick.subject} class ${pick.grade}: ${pick.covered} of ${pick.total} topics fully covered (${pick.pacePct}%). ${pick.pacePct < 50 ? 'Pace looks behind — plan a catch-up week or tick pending coverage.' : 'Pace looks healthy.'}`
+          ? `${pick.subject} class ${pick.grade}: ${pick.covered} of ${pick.total} topics fully covered (${pick.pacePct}%)${pick.partial > 0 ? `, ${pick.partial} partially ticked` : ''}. ${pick.pacePct < 50 ? 'Pace looks behind — plan a catch-up week or tick pending coverage.' : 'Pace looks healthy.'}`
           : `No curriculum coverage has been ticked yet${mSubject ? ` for ${mSubject}` : ''}${mGrade ? ` class ${mGrade}` : ''} — tick topics in the curriculum tree and the pace will show here.`;
       }
 
@@ -623,7 +646,7 @@ export function register(app, kernel) {
       }
 
       // 3 · today / timetable
-      if (!answer && dayWords.some((w) => qLower.includes(w))) {
+      if (!answer && isDayQ) {
         sources.push({ kind: 'timetable', table: 'app.timetable_slots', available: brief.timetable.available === true });
         answer = brief.timetable.available
           ? (brief.timetable.teachingToday > 0

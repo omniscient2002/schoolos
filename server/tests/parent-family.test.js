@@ -115,9 +115,18 @@ test('graceful degradation: doors work when TeacherOS tables are absent', async 
     assert.equal(r0.statusCode, 200, r0.body);
     for (const ch of r0.json().children) assert.equal(ch.assignments, null, 'assignments section degrades to null');
   } finally {
-    // restore the real 031 shapes so later tests (and reruns) see a TeacherOS-complete env
+    // restore the REAL 031 shapes (columns + app-role grants + RLS) so later tests
+    // and reruns see a TeacherOS-complete env — bare re-CREATE hides the tables from
+    // schoolos_app (no grants → invisible in information_schema → tableExists false).
     await pool.query(`CREATE TABLE IF NOT EXISTS teacher.homework (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, class_grade text, subject text, title text, detail text, attachment_ref text, due_at timestamptz, created_by uuid, status text DEFAULT 'open', created_at timestamptz DEFAULT now())`);
     await pool.query(`CREATE TABLE IF NOT EXISTS teacher.submission (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, homework_id uuid, student_id uuid, content_type text DEFAULT 'text', content text, status text DEFAULT 'submitted', grade text, feedback text, submitted_at timestamptz DEFAULT now(), reviewed_by uuid, reviewed_at timestamptz)`);
+    await pool.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON teacher.homework, teacher.submission TO schoolos_app`);
+    await pool.query(`ALTER TABLE teacher.homework ENABLE ROW LEVEL SECURITY`);
+    await pool.query(`ALTER TABLE teacher.submission ENABLE ROW LEVEL SECURITY`);
+    await pool.query(`DROP POLICY IF EXISTS tenant_scope ON teacher.homework`);
+    await pool.query(`DROP POLICY IF EXISTS tenant_scope ON teacher.submission`);
+    await pool.query(`CREATE POLICY tenant_scope ON teacher.homework USING (tenant_id = current_setting('schoolos.tenant_id')::uuid) WITH CHECK (tenant_id = current_setting('schoolos.tenant_id')::uuid)`);
+    await pool.query(`CREATE POLICY tenant_scope ON teacher.submission USING (tenant_id = current_setting('schoolos.tenant_id')::uuid) WITH CHECK (tenant_id = current_setting('schoolos.tenant_id')::uuid)`);
   }
   const r1 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
   assert.equal(r1.statusCode, 200, r1.body);

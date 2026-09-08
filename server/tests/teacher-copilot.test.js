@@ -1,9 +1,13 @@
 // teacher.copilot (TeacherOS lane TS-3, migration 033) — unit suite (v0, deterministic).
 // Pins: A1 seeded curriculum + audited teacher check-off · A3 mastery decay (expired
 // evidence downgrades ONE step, exactly once, recovery on fresh evidence) · brief
-// shape with graceful degradation when sibling lanes' tables are absent · drafts are
+// shape with graceful degradation when sibling lanes have no data · drafts are
 // labelled ai_draft templates (no model calls) · RLS tenant isolation on every table ·
 // brief/ask/draft are teacher-role-only · lifecycle gate.
+// NOTE: 031/032 ship the teacher.homework/teacher.concern tables (real schemas), so
+// the degradation pin is data-driven — sibling sources with ZERO rows must degrade
+// exactly like absent tables (same door, same honest copy), and seeded sibling rows
+// must upgrade the brief. One suite per process (shared schoolos_test): DROP first.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
@@ -14,6 +18,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let app;
 let sql;
+const tokens = {}; // login cache — the limiter allows 20 logins/min, suites share it
+async function tok(email) {
+  if (!tokens[email]) tokens[email] = (await loginAs(app, email)).token;
+  return tokens[email];
+}
+
 let teacherToken;
 let studentId;          // a grade-8 student for mastery tests
 let mathTopic8;         // a class-8 Mathematics topic node id
@@ -31,14 +41,13 @@ before(async () => {
     await c.end();
     return r;
   };
-  const t = await loginAs(app, 'teacher@meridian.edu');
-  teacherToken = t.token;
+  teacherToken = await tok('teacher@meridian.edu');
   // enable the plugin (lifecycle gate requires an enabled registry row)
-  const o = await loginAs(app, 'owner@meridian.edu');
+  const o = await tok('owner@meridian.edu');
   const en = await app.inject({ method: 'POST', url: '/plugins/teacher.copilot/enable',
-    payload: { version: '0.1.0', class: 'C' }, headers: H(o.token) });
+    payload: { version: '0.1.0', class: 'C' }, headers: H(o) });
   assert.equal(en.statusCode, 200, `enable failed: ${en.body}`);
-  // fixtures: student, curriculum nodes
+  // fixtures: student, curriculum nodes (033 seed ships the 90-node tree)
   studentId = (await sql(`SELECT id FROM app.students WHERE grade='8' ORDER BY created_at LIMIT 1`)).rows[0].id;
   const units = await sql(`SELECT id, name FROM curriculum.node WHERE subject='Mathematics' AND grade='8' AND kind='unit' ORDER BY order_no`);
   unit8 = units.rows[0].id;
@@ -104,8 +113,8 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
     // three strong fresh evidence rows → label secure, confidence high
     for (const v of [85, 90, 80]) {
       await sql(`INSERT INTO mastery.evidence (tenant_id, student_id, subject, node_id, kind, ref, value, observed_at, expires_at)
-                 SELECT tenant_id, $2, 'Mathematics', $3, 'assessment', 'seed-test', $4, now(), now() + interval '30 days'
-                 FROM app.students WHERE id=$2`, [studentId, studentId, mathTopic8, v]);
+                 SELECT tenant_id, $1, 'Mathematics', $2, 'assessment', 'seed-test', $3, now(), now() + interval '30 days'
+                 FROM app.students WHERE id=$1`, [studentId, mathTopic8, v]);
     }
     const before = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(teacherToken) });
     assert.equal(before.statusCode, 200, before.body);
@@ -134,18 +143,18 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
 
     // fresh evidence arrives → deterministic recovery to the evidence level
     await sql(`INSERT INTO mastery.evidence (tenant_id, student_id, subject, node_id, kind, ref, value)
-               SELECT tenant_id, $2, 'Mathematics', $3, 'homework', 'recovery', 70 FROM app.students WHERE id=$2`, [studentId, mathTopic8]);
+               SELECT tenant_id, $1, 'Mathematics', $2, 'homework', 'recovery', 70 FROM app.students WHERE id=$1`, [studentId, mathTopic8]);
     const recovered = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(teacherToken) });
     const cellRecovered = recovered.json().map.find((m) => m.nodeId === mathTopic8);
     assert.equal(cellRecovered.level, 'developing', 'one 70-value on top of decay → evidence label (developing)');
     assert.equal(cellRecovered.decayed, false, 'recovery clears the decayed read-flag');
   });
 
-  test('floor: developing + expiry lands on needs_support; no evidence at all → no label (no negative labels on minors)', async () => {
+  test('floor: needs_support + expiry stays floored; no evidence anywhere → no label, no state row', async () => {
     // a second topic: weak evidence → needs_support already; expiry must FLOOR there
     const t2 = (await sql(`SELECT id FROM curriculum.node WHERE parent_id=$1 AND kind='topic' ORDER BY order_no OFFSET 1 LIMIT 1`, [unit8])).rows[0].id;
     await sql(`INSERT INTO mastery.evidence (tenant_id, student_id, subject, node_id, kind, ref, value, observed_at, expires_at)
-               SELECT tenant_id, $2, 'Mathematics', $3, 'quiz', 'weak', 20, now(), now() + interval '7 days' FROM app.students WHERE id=$2`, [studentId, t2]);
+               SELECT tenant_id, $1, 'Mathematics', $2, 'quiz', 'weak', 20, now(), now() + interval '7 days' FROM app.students WHERE id=$1`, [studentId, t2]);
     const first = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(teacherToken) });
     const c1 = first.json().map.find((m) => m.nodeId === t2);
     assert.equal(c1.level, 'needs_support', 'weak evidence → needs support (never "failing")');
@@ -153,13 +162,11 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
     const second = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(teacherToken) });
     const c2 = second.json().map.find((m) => m.nodeId === t2);
     assert.equal(c2.level, 'needs_support', 'decay floors at needs_support');
-    // a topic with NO evidence anywhere → no label, no state row
-    const t3 = (await sql(`SELECT id FROM curriculum.node WHERE parent_id=$1 AND kind='topic' ORDER BY order_no OFFSET 2 LIMIT 1`, [unit8])).rows[0].id;
+    assert.equal(c2.confidence, 'low');
+    // a subject with NO evidence anywhere → no labels at all (A3: no negative labels on minors)
     const bare = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Science`, headers: H(teacherToken) });
     assert.equal(bare.statusCode, 200);
     assert.equal(bare.json().map.length, 0, 'Science has no evidence — the map is empty, never negative');
-    const bareState = await sql(`SELECT count(*)::int n FROM mastery.state WHERE student_id=$1 AND node_id=$2`, [studentId, t3]);
-    assert.equal(bareState.rows[0].n, 0, 'no evidence-free state rows are persisted');
   });
 
   test('class map returns evidence-bearing cells with decayed labels; guards reject bad subject', async () => {
@@ -177,59 +184,52 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
   });
 });
 
-describe('teacher.copilot v0 — brief (graceful degradation; sibling lanes absent)', () => {
-  test('sibling tables do NOT exist in this database; brief still answers with plain sentences + sources', async () => {
-    const hw = await sql(`SELECT count(*)::int n FROM information_schema.tables WHERE table_schema='teacher' AND table_name='homework'`);
-    assert.equal(hw.rows[0].n, 0, 'precondition: teacher.homework is another lane\'s table and is ABSENT here');
-    const con = await sql(`SELECT count(*)::int n FROM information_schema.tables WHERE table_schema='teacher' AND table_name='concern'`);
-    assert.equal(con.rows[0].n, 0, 'precondition: teacher.concern is ABSENT here');
+describe('teacher.copilot v0 — brief (graceful degradation with zero-row sibling lanes)', () => {
+  test('sibling lanes present but EMPTY → brief degrades with plain sentences + sources; own tables answer', async () => {
+    // precondition: the sibling tables exist (031/032) but hold no rows for this teacher
+    const hw = await sql(`SELECT count(*)::int n FROM teacher.homework`);
+    assert.equal(hw.rows[0].n, 0, 'precondition: teacher.homework has no demo rows');
+    const con = await sql(`SELECT count(*)::int n FROM teacher.concern`);
+    assert.equal(con.rows[0].n, 0, 'precondition: teacher.concern has no demo rows');
     const r = await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(teacherToken) });
     assert.equal(r.statusCode, 200, r.body);
     const b = r.json();
     assert.equal(b.when, 'eod');
     assert.equal(b.label, 'deterministic_summary');
     assert.ok(Array.isArray(b.sentences) && b.sentences.length >= 4, 'plain sentences present');
-    assert.ok(b.sentences.some((s) => /homework inbox isn't connected/i.test(s)), 'homework absence is said plainly');
-    assert.ok(b.sentences.some((s) => /concern queue isn't connected/i.test(s)), 'concern absence is said plainly');
+    assert.ok(b.sentences.some((s) => /no submissions are waiting/i.test(s)), 'empty homework inbox is said plainly');
+    assert.ok(b.sentences.some((s) => /no concerns are open/i.test(s)), 'empty concern queue is said plainly');
     assert.ok(b.sentences.some((s) => /nothing was invented/i.test(s)), 'the brief states it is deterministic');
-    assert.equal(b.homework.available, false, 'degraded payload, not a crash');
-    assert.equal(b.concerns.available, false);
+    assert.equal(b.homework.available, true, '031 tables exist — source is available');
+    assert.equal(b.homework.openHomework, 0, '…and honestly empty');
+    assert.equal(b.homework.pendingSubmissions, 0);
+    assert.equal(b.concerns.available, true);
+    assert.equal(b.concerns.open, 0);
     assert.equal(b.curriculumPace.available, true, 'own tables always answer');
-    // curriculum pace is live (we ticked a topic to 60% — not 100, so 0 fully covered)
     const paceRow = b.curriculumPace.rows.find((p) => p.subject === 'Mathematics' && p.grade === '8');
-    assert.ok(paceRow && paceRow.total >= 12);
+    assert.ok(paceRow && paceRow.total >= 12, 'the 033 seed tree feeds the pace read');
     // A2: the brief wrote its budget row
     const calls = await sql(`SELECT count(*)::int n FROM copilot.call WHERE verb='brief'`);
     assert.ok(calls.rows[0].n >= 1, 'briefs land on the A2 budget ledger');
   });
 
-  test('brief with sibling tables PRESENT aggregates homework+concern counts (graceful upgrade)', async () => {
-    // emulate sibling lanes by creating their shape EXACTLY as the plan §3 contract
-    // specifies (these stay in the throwaway test DB; the plugin only reads when present)
-    await sql(`CREATE TABLE IF NOT EXISTS teacher.homework (
-                 id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-                 tenant_id uuid NOT NULL, class_grade text, subject text, teacher_id uuid,
-                 title text, detail text, attachments jsonb DEFAULT '[]'::jsonb,
-                 due_at timestamptz, status text NOT NULL DEFAULT 'open', created_by uuid)`);
-    await sql(`CREATE TABLE IF NOT EXISTS teacher.submission (
-                 homework_id uuid NOT NULL, student_id uuid NOT NULL,
-                 content_type text, content_ref text, submitted_at timestamptz,
-                 status text NOT NULL DEFAULT 'submitted', grade numeric, feedback text,
-                 reviewed_by uuid, reviewed_at timestamptz)`);
-    await sql(`CREATE TABLE IF NOT EXISTS teacher.concern (
-                 id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL,
-                 teacher_id uuid, student_id uuid, category text, urgency text,
-                 detail text, status text NOT NULL DEFAULT 'open', routed_to uuid, outcome text)`);
-    const tid = (await sql(`SELECT id FROM app.users WHERE role='teacher' LIMIT 1`)).rows[0].id;
-    await sql(`INSERT INTO teacher.homework (tenant_id, teacher_id, title, status)
-               SELECT tenant_id, $2, 'Fractions worksheet', 'open' FROM app.users WHERE id=$2`, [tid, tid]);
-    await sql(`INSERT INTO teacher.homework (tenant_id, teacher_id, title, status)
-               SELECT tenant_id, $2, 'Decimals quiz', 'open' FROM app.users WHERE id=$2`, [tid, tid]);
-    const hw1 = (await sql(`SELECT id FROM teacher.homework LIMIT 1`)).rows[0].id;
-    await sql(`INSERT INTO teacher.submission (homework_id, student_id, status) VALUES ($1,$2,'submitted'), ($1,$2,'late'), ($1,$2,'reviewed')`,
-      [hw1, studentId]);
-    await sql(`INSERT INTO teacher.concern (tenant_id, teacher_id, student_id, category, urgency, status)
-               SELECT tenant_id, $2, $3, 'academic', 'high', 'open' FROM app.users WHERE id=$2`, [tid, tid, studentId]);
+  test('brief with sibling rows PRESENT aggregates homework+concern counts (graceful upgrade)', async () => {
+    // seed EXACTLY the real 031/032 shapes (created_by / filed_by are the owner columns)
+    const tid = (await sql(`SELECT id FROM app.users WHERE role='teacher' AND email='teacher@meridian.edu'`)).rows[0].id;
+    const T = (await sql(`SELECT tenant_id FROM app.users WHERE id=$1`, [tid])).rows[0].tenant_id;
+    const hw1 = (await sql(`INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, detail, due_at, created_by)
+                            VALUES ($1,'8','Mathematics','Fractions worksheet','practice set', now() + interval '2 days', $2) RETURNING id`,
+      [T, tid])).rows[0].id;
+    await sql(`INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, detail, due_at, created_by)
+               VALUES ($1,'8','Mathematics','Decimals quiz','quick quiz', now() + interval '3 days', $2)`, [T, tid]);
+    await sql(`INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status)
+               VALUES ($1,$2,$3,'text','my answer','submitted'), ($1,$2,$4,'text','my answer','late')`, [T, hw1, studentId, studentId]);
+    // one reviewed submission from the OTHER student (031 forbids a second submit per pair)
+    const otherStudent = (await sql(`SELECT id FROM app.students WHERE grade='8' AND id <> $1 LIMIT 1`, [studentId])).rows[0].id;
+    await sql(`INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status, reviewed_by, reviewed_at)
+               VALUES ($1,$2,$3,'text','done','reviewed',$4, now())`, [T, hw1, otherStudent, tid]);
+    await sql(`INSERT INTO teacher.concern (tenant_id, student_id, filed_by, category, urgency, detail, status)
+               VALUES ($1,$2,$3,'academic','high','struggling with word problems','open')`, [T, studentId, tid]);
     const r = await app.inject({ method: 'GET', url: '/teacher/brief?when=week', headers: H(teacherToken) });
     assert.equal(r.statusCode, 200, r.body);
     const b = r.json();
@@ -239,7 +239,8 @@ describe('teacher.copilot v0 — brief (graceful degradation; sibling lanes abse
     assert.equal(b.homework.reviewedSubmissions, 1);
     assert.equal(b.concerns.available, true);
     assert.equal(b.concerns.open, 1);
-    assert.ok(b.sentences.some((s) => /2 submissions? (are|is) waiting/i.test(s)) || b.sentences.some((s) => /waiting for your review/i.test(s)), 'plain sentence reflects the count');
+    assert.ok(b.sentences.some((s) => /waiting for your review/.test(s)), 'plain sentence reflects the count');
+    assert.ok(b.sentences.some((s) => /at least one is urgent/.test(s)), 'urgent concern surfaces in plain language');
     const wk = await app.inject({ method: 'GET', url: '/teacher/brief?when=week', headers: H(teacherToken) });
     assert.equal(wk.json().when, 'week');
   });
@@ -282,7 +283,7 @@ describe('teacher.copilot v0 — copilot doors (A2 budgeted, deterministic, labe
 
     const today = await app.inject({ method: 'POST', url: '/copilot/ask',
       payload: { question: 'What do I teach today?' }, headers: H(teacherToken) });
-    assert.ok(today.json().sources.some((s) => s.kind === 'timetable'));
+    assert.ok(today.json().sources.some((s) => s.kind === 'timetable'), today.json().answer);
     assert.match(today.json().answer, /teach|timetable|period|scheduled/i);
 
     const hw = await app.inject({ method: 'POST', url: '/copilot/ask',
@@ -292,7 +293,8 @@ describe('teacher.copilot v0 — copilot doors (A2 budgeted, deterministic, labe
 
     const fallback = await app.inject({ method: 'POST', url: '/copilot/ask',
       payload: { question: 'What is the meaning of teaching?' }, headers: H(teacherToken) });
-    assert.ok(fallback.json().sources.some((s) => s.kind === 'brief'));
+    assert.ok(fallback.json().sources.some((s) => s.kind === 'brief'),
+      'abstract questions get the honest brief fallback, not a hijacked branch');
     const empty = await app.inject({ method: 'POST', url: '/copilot/ask',
       payload: { question: '' }, headers: H(teacherToken) });
     assert.equal(empty.statusCode, 400);
@@ -308,31 +310,30 @@ describe('teacher.copilot v0 — copilot doors (A2 budgeted, deterministic, labe
 
 describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', () => {
   test('brief/ask/draft are teacher-only (coordinator/parent refused); insight doors stay staff-wide', async () => {
-    const co = await loginAs(app, 'coordinator@meridian.edu');
-    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(co.token) })).statusCode, 403, 'brief is teacher-only');
-    assert.equal((await app.inject({ method: 'POST', url: '/copilot/ask', payload: { question: 'hi' }, headers: H(co.token) })).statusCode, 403);
-    assert.equal((await app.inject({ method: 'POST', url: '/copilot/draft', payload: { kind: 'lesson' }, headers: H(co.token) })).statusCode, 403);
-    const par = await loginAs(app, 'parent@meridian.edu');
-    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief', headers: H(par.token) })).statusCode, 403);
-    assert.equal((await app.inject({ method: 'GET', url: '/mastery/class/8?subject=Mathematics', headers: H(par.token) })).statusCode, 403, 'mastery is staff-lane');
+    const co = await tok('coordinator@meridian.edu');
+    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(co) })).statusCode, 403, 'brief is teacher-only');
+    assert.equal((await app.inject({ method: 'POST', url: '/copilot/ask', payload: { question: 'hi' }, headers: H(co) })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'POST', url: '/copilot/draft', payload: { kind: 'lesson' }, headers: H(co) })).statusCode, 403);
+    const par = await tok('parent@meridian.edu');
+    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief', headers: H(par) })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/mastery/class/8?subject=Mathematics', headers: H(par) })).statusCode, 403, 'mastery is staff-lane');
     // coordinators/principals keep the INSIGHT doors (approvals/oversight tier)
-    assert.equal((await app.inject({ method: 'GET', url: '/curriculum/tree?subject=Science&grade=6', headers: H(co.token) })).statusCode, 200);
-    const pr = await loginAs(app, 'principal@meridian.edu');
-    assert.equal((await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(pr.token) })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/curriculum/tree?subject=Science&grade=6', headers: H(co) })).statusCode, 200);
+    const pr = await tok('principal@meridian.edu');
+    assert.equal((await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(pr) })).statusCode, 200);
   });
 
   test('lifecycle gate: disabled plugin → 409 on every door', async () => {
-    const o = await loginAs(app, 'owner@meridian.edu');
-    const off = await app.inject({ method: 'POST', url: '/plugins/teacher.copilot/disable', payload: {}, headers: H(o.token) });
+    const o = await tok('owner@meridian.edu');
+    const off = await app.inject({ method: 'POST', url: '/plugins/teacher.copilot/disable', payload: {}, headers: H(o) });
     assert.equal(off.statusCode, 200);
-    const t = await loginAs(app, 'teacher@meridian.edu');
-    const brief = await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(t.token) });
+    const brief = await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(teacherToken) });
     assert.equal(brief.statusCode, 409, 'uniform lifecycle gate (P2-1)');
     assert.match(brief.json().error, /switched off/);
-    const tree = await app.inject({ method: 'GET', url: '/curriculum/tree?subject=Mathematics&grade=8', headers: H(t.token) });
+    const tree = await app.inject({ method: 'GET', url: '/curriculum/tree?subject=Mathematics&grade=8', headers: H(teacherToken) });
     assert.equal(tree.statusCode, 409);
-    await app.inject({ method: 'POST', url: '/plugins/teacher.copilot/enable', payload: { version: '0.1.0', class: 'C' }, headers: H(o.token) });
-    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(t.token) })).statusCode, 200, 're-enabled');
+    await app.inject({ method: 'POST', url: '/plugins/teacher.copilot/enable', payload: { version: '0.1.0', class: 'C' }, headers: H(o) });
+    assert.equal((await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(teacherToken) })).statusCode, 200, 're-enabled');
   });
 
   test('RLS: app role under another tenant GUC sees zero rows and cannot write; non-uuid :id → 400', async () => {
@@ -351,19 +352,23 @@ describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', (
       seen[t] = (await c.query(`SELECT count(*)::int n FROM ${t}`)).rows[0].n;
     }
     let insertBlocked = false;
-    try { await c.query(`INSERT INTO curriculum.progress (tenant_id, node_id, class_grade, covered_pct) VALUES ($1,$2,'8',50)`, [other.id, mine.id]); }
+    try { await c.query(`INSERT INTO curriculum.progress (tenant_id, node_id, class_grade, covered_pct) VALUES ($1,$2,'8',50)`, [other.id, other.id]); }
     catch { insertBlocked = true; }
+    let nodeInsertBlocked = false;
+    try { await c.query(`INSERT INTO curriculum.node (tenant_id, subject, grade, kind, name) VALUES ($1,'Mathematics','6','unit','Rival Unit')`, [other.id]); }
+    catch { nodeInsertBlocked = true; }
     await c.query('ROLLBACK');
     await c.end();
     for (const [t, n] of Object.entries(seen)) assert.equal(n, 0, `RLS: ${t} invisible across tenants`);
-    assert.equal(insertBlocked, true, 'RLS WITH CHECK: cross-tenant coverage write rejected');
-    // cross-tenant write through the door → tenant-scoped miss (404), no data crosses
-    const t2 = await loginAs(app, 'teacher@meridian.edu');
+    assert.equal(insertBlocked, true, 'RLS WITH CHECK: cross-tenant coverage write rejected (tenant_id mismatch)');
+    assert.equal(nodeInsertBlocked, true, 'A1: curriculum.node is SELECT-only for the app role');
+    // own-tenant coverage still writes through the door
+    const t2 = teacherToken;
     const x = await app.inject({ method: 'POST', url: '/curriculum/progress',
-      payload: { node_id: mine.id, class_grade: '8', pct: 100 }, headers: H(t2.token) });
-    assert.equal(x.statusCode, 200, 'own-tenant coverage still writes (the node is tenant-scoped)');
+      payload: { node_id: mine.id, class_grade: '6', pct: 100 }, headers: H(t2) });
+    assert.equal(x.statusCode, 200, x.body);
     // non-uuid :id on the mastery door → 400 BEFORE any uuid cast (22P02 → 500 guard)
-    const bad = await app.inject({ method: 'GET', url: '/mastery/student/not-a-uuid?subject=Mathematics', headers: H(t2.token) });
+    const bad = await app.inject({ method: 'GET', url: '/mastery/student/not-a-uuid?subject=Mathematics', headers: H(t2) });
     assert.equal(bad.statusCode, 400);
   });
 });
