@@ -74,7 +74,7 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 | RT-7cyc7/B9 concern routing 42501 since 032 (SELECT…FOR UPDATE needs UPDATE grant) | 032 granted SELECT,INSERT only | migration 039 grants UPDATE on concern tables | b9-confidentiality 6/6 |
 | RT-7cyc7/B9 concerns list 42P18 (unused $1) | param list misaligned after tiering | rebound $1=oversight,$2=status,$3=user | b9 tiered-visibility pin |
 
-**RT-7 cycle 7 policy decision (#5)**: kernel decide — a principal deciding a coordinator-owned action is **by-design** (owner>principal outranks coordinator owners; the board structure mirrors school reality). The SoD that IS contractual: filer≠router≠decider within the same concern (pinned), coordinator self-approval (pinned), finance actions owner-only (pinned).
+**RT-7 cycle 7 #5 — implemented, not waived**: kernel decide now REFUSES a principal approving a coordinator-owned action (403 "Segregation of duties — ask the owner to decide this"), keyed on owner_role + approval-only so principal-owned flows (dpdp SARs, cbse publications, principal dismissal) are untouched. Contractual SoD elsewhere: filer≠router within a concern (pinned), coordinator self-approval (pinned), finance actions owner-only (pinned).
 
 ## 7. Remaining open (prioritized)
 1. ~~A3 JWT revocation/rotation~~ — DONE (038 + jti mandatory + regression suite)
