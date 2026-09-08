@@ -9,6 +9,10 @@ export const pool = new pg.Pool({
   idleTimeoutMillis: 30_000,
   idle_in_transaction_session_timeout: 60_000,
   statement_timeout: 15_000,
+  // Server-level default: FOR UPDATE doors (and any other blocked acquisition)
+  // fail with 55P03 after 5s instead of queueing behind a stuck holder (ops audit
+  // P1-8 follow-up). Individual queries can still opt into longer waits.
+  options: '-c lock_timeout=5s',
 });
 
 pool.on('error', (err) => {

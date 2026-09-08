@@ -28,6 +28,26 @@ const REVIEW_STATUSES = ['reviewed', 'graded', 'resubmit_requested'];
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 
+// Attachment hardening (server-hardening lane): attachment_ref is stored verbatim
+// and is a future render-as-link surface for students. The Homework UI contract is
+// "a file name or link" — so accept plain names and http(s) URLs ONLY, and refuse
+// every other scheme (javascript:/data:/vbscript: stored-XSS vehicles), protocol-
+// relative "//host" links and control-character payloads. Invalid ⇒ 400, not silent.
+const safeAttachmentRef = (raw) => {
+  if (raw == null) return { ok: true, value: null };
+  const s = String(raw).trim();
+  if (!s) return { ok: true, value: null };
+  if (s.length > 500) return { ok: false };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+    try {
+      const u = new URL(s); // throws on garbage; normalizes/validates the scheme
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false };
+    } catch { return { ok: false }; }
+  } else if (s.startsWith('//')) return { ok: false };
+  if (/[\u0000-\u001f\u007f]/.test(s)) return { ok: false };
+  return { ok: true, value: s };
+};
+
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, q } = kernel;
   const lifecycleGate = makeLifecycleGate(q, ID);
@@ -39,12 +59,14 @@ export function register(app, kernel) {
     if (!b.subject || !String(b.subject).trim()) return bad(reply, 'Choose the subject');
     if (!b.title || !String(b.title).trim()) return bad(reply, 'Please add a short title');
     if (!b.due_at || Number.isNaN(new Date(b.due_at).getTime())) return bad(reply, 'Pick a due date and time');
+    const attach = safeAttachmentRef(b.attachment_ref ?? b.attachment);
+    if (!attach.ok) return bad(reply, 'That attachment isn\'t allowed — paste a plain file name or an http(s) link');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const row = (await c.query(
         `INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, detail, attachment_ref, due_at, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, class_grade, subject, title, due_at, status, created_at`,
         [req.user.tenant_id, String(b.class_grade).slice(0, 20), String(b.subject).slice(0, 60), String(b.title).slice(0, 200),
-         b.detail ? String(b.detail).slice(0, 4000) : null, b.attachment_ref ? String(b.attachment_ref).slice(0, 500) : null,
+         b.detail ? String(b.detail).slice(0, 4000) : null, attach.value,
          new Date(b.due_at).toISOString(), req.user.id])).rows[0];
       await emitEvent(c, req.user.tenant_id, { type: 'classroom', label: `Homework posted: ${b.subject} — ${String(b.title).slice(0, 80)}`, ref: row.id },
         'homework.v1', { homeworkId: row.id, classGrade: row.class_grade, subject: row.subject, dueAt: row.due_at, createdBy: req.user.id });

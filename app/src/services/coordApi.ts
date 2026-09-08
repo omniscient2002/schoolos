@@ -19,6 +19,8 @@ const BASE = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080
 /* Same wire convention as services/liveApi.ts (bearer token, JSON, verbatim
    server error strings — friendlyErrors rewrites only at display time).
    Kept local so this file adds nothing to other lanes' surfaces. */
+import { redirectToLoginWithReturn } from './liveApi';
+
 async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('schoolos_token');
   const res = await fetch(`${BASE}${path}`, {
@@ -33,7 +35,7 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (res.status === 401 && !path.startsWith('/auth/')) {
     localStorage.removeItem('schoolos.session');
     localStorage.removeItem('schoolos_token');
-    window.location.href = '/login';
+    redirectToLoginWithReturn();
     throw new Error('session expired');
   }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

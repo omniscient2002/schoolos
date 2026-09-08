@@ -10,7 +10,7 @@
    plausibly emits (strings OR objects) and return strict UI
    types. WRITE wrappers post the frozen bodies verbatim.
    ============================================================ */
-import { setToken, LIVE_BASE } from './liveApi';
+import { setToken, LIVE_BASE, redirectToLoginWithReturn } from './liveApi';
 
 /* ---------- transport ----------
    Same contract as liveApi.call() — Bearer from localStorage, JSON
@@ -33,7 +33,7 @@ async function studentCall<T>(path: string, opts: RequestInit = {}): Promise<T> 
     // session expired or revoked — clear and let the AuthGate take over
     localStorage.removeItem('schoolos.session');
     setToken(null);
-    window.location.href = '/login';
+    redirectToLoginWithReturn();
     throw new Error('session expired');
   }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

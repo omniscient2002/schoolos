@@ -1,12 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
-import { LIVE_API } from '../services/liveApi';
+import { LIVE_API, redirectToLoginWithReturn } from '../services/liveApi';
 import { Avatar, Dropdown, Empty } from './ui';
 import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
 import { fmtRelative } from '../lib/format';
 import { useKernelNav } from '../plugins/useKernel';
+import { useSession } from '../App';
+import { DEMO_MODE } from '../lib/demoMode';
+
+/* P0 fix 2c: chrome identity comes from the authenticated session
+   (useSession — the live /me user); demoAccounts personas render only
+   under VITE_DEMO_MODE=1. */
+const roleTitle = (r: string): string => r.charAt(0).toUpperCase() + r.slice(1);
+
+function useChromeIdentity(): { name: string; title: string; email: string } {
+  const { session } = useStore();
+  const live = useSession();
+  const demoPersona = DEMO_MODE ? demoAccounts.find(a => a.id === session.roleId) : null;
+  return demoPersona
+    ? { name: demoPersona.name, title: demoPersona.title, email: demoPersona.email }
+    : { name: live.name, title: roleTitle(live.role), email: live.email };
+}
 
 /* ================= Role-aware navigation ================= */
 export interface NavItem { to: string; label: string; icon: keyof typeof Icon; badge?: number; plugin?: string; }
@@ -167,7 +183,9 @@ export function useNavItems(): NavItem[] {
       ];
   }
   })();
-  return useKernelNav(items);
+  /* P0 fix 2a: the Demo nav entry is a demo affordance — outside
+     VITE_DEMO_MODE=1 the /demo routes don't exist, so never offer the link. */
+  return useKernelNav(items.filter(i => DEMO_MODE || i.to !== '/demo'));
 }
 
 /* ================= Sidebar ================= */
@@ -210,15 +228,14 @@ export function Sidebar() {
 }
 
 function SidebarFooter() {
-  const { session, actorName } = useStore();
-  const account = demoAccounts.find(a => a.id === session.roleId)!;
+  const identity = useChromeIdentity();
   return (
     <div style={{ padding: 10, borderTop: '1px solid var(--border-subtle)' }}>
       <Link to="/settings" className="nav-item" style={{ width: '100%' }}>
-        <Avatar name={actorName} size="sm" />
+        <Avatar name={identity.name} size="sm" />
         <span className="u-truncate" style={{ textAlign: 'left', flex: 1 }}>
-          <span className="u-truncate" style={{ display: 'block', fontSize: 'var(--text-sm)', fontWeight: 570 }}>{account.name}</span>
-          <span className="u-truncate u-xs u-faint" style={{ display: 'block' }}>{account.title}</span>
+          <span className="u-truncate" style={{ display: 'block', fontSize: 'var(--text-sm)', fontWeight: 570 }}>{identity.name}</span>
+          <span className="u-truncate u-xs u-faint" style={{ display: 'block' }}>{identity.title}</span>
         </span>
         <Icon.Settings size={14} />
       </Link>
@@ -312,22 +329,22 @@ export function NotificationsBell() {
 
 /* ================= Profile ================= */
 export function ProfileMenu() {
-  const { session, actorName, setRole } = useStore();
+  const { session, setRole } = useStore();
   const navigate = useNavigate();
-  const account = demoAccounts.find(a => a.id === session.roleId)!;
+  const identity = useChromeIdentity();
   return (
     <Dropdown width={300} label="Account menu" trigger={() => (
       <button className="u-flex iconbtn" style={{ gap: 8, padding: '3px 6px' }} aria-label="Account menu">
-        <Avatar name={actorName} size="sm" />
+        <Avatar name={identity.name} size="sm" />
         <Icon.ChevronDown size={13} />
       </button>
     )}>
       {close => (
         <>
           <div style={{ padding: '8px 10px' }}>
-            <div style={{ fontWeight: 620 }}>{account.name}</div>
-            <div className="u-xs u-muted">{account.title}</div>
-            <div className="u-xs u-faint">{account.email}</div>
+            <div style={{ fontWeight: 620 }}>{identity.name}</div>
+            <div className="u-xs u-muted">{identity.title}</div>
+            <div className="u-xs u-faint">{identity.email}</div>
           </div>
           <div role="none" className="dropdown-sep" />
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
@@ -335,20 +352,29 @@ export function ProfileMenu() {
             try { if (LIVE_API) await (await import('../services/liveApi')).apiLogoutAudit(); } catch { /* ledger best-effort */ }
             localStorage.removeItem('schoolos.session');
             (await import('../services/liveApi')).apiLogout();
-            window.location.href = '/login';
+            /* same login-door convention as the 401 path: the next sign-in
+               returns the user to the screen they signed out of. */
+            redirectToLoginWithReturn();
           }}><Icon.Shield size={14} /> Sign out</button>
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit trail</button>
-          <div role="none" className="dropdown-sep" />
-          <div role="none" className="dropdown-label">Switch demo role</div>
-          <div className="scroll-thin" style={{ maxHeight: 260, overflowY: 'auto' }}>
-            {demoAccounts.map(a => (
-              <button key={a.id} role="menuitem" className="dropdown-item" style={a.id === session.roleId ? { background: 'var(--accent-weak)' } : undefined} onClick={() => { setRole(a.id); close(); }}>
-                <Avatar name={a.name} size="sm" />
-                <span className="u-truncate" style={{ flex: 1 }}>{a.title}</span>
-                {a.id === session.roleId && <Icon.Check size={13} />}
-              </button>
-            ))}
-          </div>
+          {/* P0 fix 2d: the "Switch demo role" persona switcher exists only
+              under VITE_DEMO_MODE=1 — an authenticated production session
+              has nothing to switch to. */}
+          {DEMO_MODE && (
+            <>
+              <div role="none" className="dropdown-sep" />
+              <div role="none" className="dropdown-label">Switch demo role</div>
+              <div className="scroll-thin" style={{ maxHeight: 260, overflowY: 'auto' }}>
+                {demoAccounts.map(a => (
+                  <button key={a.id} role="menuitem" className="dropdown-item" style={a.id === session.roleId ? { background: 'var(--accent-weak)' } : undefined} onClick={() => { setRole(a.id); close(); }}>
+                    <Avatar name={a.name} size="sm" />
+                    <span className="u-truncate" style={{ flex: 1 }}>{a.title}</span>
+                    {a.id === session.roleId && <Icon.Check size={13} />}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
     </Dropdown>

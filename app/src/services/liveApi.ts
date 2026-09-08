@@ -18,6 +18,16 @@ export interface ApiUser { id: string; name: string; role: string; email: string
 
 let token: string | null = localStorage.getItem('schoolos_token');
 
+/* P0 fix 4: every 401 session-reset carries the user back to the login
+   screen WITH the screen they were on, so a mid-task session expiry
+   returns them where they were after signing in again (Login honors the
+   `return` query param; default /today). Shared by all four fetch
+   wrappers (liveApi, coordApi, parentApi, studentApi). */
+export function redirectToLoginWithReturn(): void {
+  const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  window.location.href = `/login?return=${encodeURIComponent(here || '/')}`;
+}
+
 export function setToken(t: string | null) {
   token = t;
   if (t) localStorage.setItem('schoolos_token', t);
@@ -38,7 +48,7 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
     // session expired or revoked — clear and let the AuthGate take over
     localStorage.removeItem('schoolos.session');
     setToken(null);
-    window.location.href = '/login';
+    redirectToLoginWithReturn();
     throw new Error('session expired');
   }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

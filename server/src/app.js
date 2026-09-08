@@ -5,7 +5,7 @@ import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { pool, q, withUser } from './db.js';
-import { verifyPassword, ROLES } from './auth.js';
+import { verifyPassword, dummyVerify, ROLES } from './auth.js';
 import { scryptSync, timingSafeEqual, randomBytes, randomUUID, randomInt } from 'node:crypto';
 import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
@@ -67,9 +67,13 @@ export async function buildApp(opts = {}) {
     if (!email || !password) return reply.code(400).send({ error: 'email and password required' });
     const u = await q(`SELECT id, tenant_id, name, role, email, password_hash FROM app.users WHERE lower(email)=lower($1) AND active`, [email]);
     const user = u.rows[0];
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    if (!user) {
+      // Timing-equalization: burn the same scrypt cost as a real verify so
+      // response time doesn't reveal whether the email exists (RT-7cyc8 P2-16).
+      dummyVerify(password);
       return reply.code(401).send({ error: 'invalid credentials' });
     }
+    if (!verifyPassword(password, user.password_hash)) return reply.code(401).send({ error: 'invalid credentials' });
     const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name, jti: randomUUID() },
       user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>

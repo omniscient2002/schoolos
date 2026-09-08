@@ -15,6 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // decision — do not extend this list without a threat-model note.
 export const PUBLIC_ALLOWLIST = [
   { path: '/health', why: 'liveness probe, no data' },
+  { path: '/ready', why: 'readiness probe (503 unless DB answers) — no data, orchestration-only' },
   { path: '/auth/login', why: 'credential exchange (rate-limited 20/min)' },
   { path: '/auth/otp/request', why: 'OTP issue (rate-limited 5/min)' },
   { path: '/auth/otp/verify', why: 'OTP exchange (rate-limited 10/min)' },

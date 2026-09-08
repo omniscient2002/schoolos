@@ -13,7 +13,7 @@
    re-implements the identical contract on LIVE_BASE rather
    than widening that file's exports.
    ============================================================ */
-import { LIVE_BASE, setToken } from './liveApi';
+import { LIVE_BASE, setToken, redirectToLoginWithReturn } from './liveApi';
 
 async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('schoolos_token');
@@ -30,7 +30,7 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
     // session expired or revoked — clear and let the AuthGate take over
     localStorage.removeItem('schoolos.session');
     setToken(null);
-    window.location.href = '/login';
+    redirectToLoginWithReturn();
     throw new Error('session expired');
   }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

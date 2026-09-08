@@ -30,7 +30,7 @@
    labelled Demo data", never "fake the data".
    ============================================================ */
 import * as seed from '../data/dataset';
-import { LIVE_API, LIVE_BASE } from './liveApi';
+import { LIVE_API, LIVE_BASE, setToken, redirectToLoginWithReturn } from './liveApi';
 import type { TimeSlot } from '../types/domain';
 
 /* ============================================================
@@ -119,6 +119,16 @@ async function call<T>(path: string): Promise<T> {
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
   });
   const body = await res.json().catch(() => ({}));
+  /* P0 fix 3: a 401 is session expiry, never a card error — clear the
+     session and hand back to the login screen (keeping the current
+     location as ?return=), exactly like liveApi's transport. Teacher
+     screens must never render a raw "HTTP 401". */
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    localStorage.removeItem('schoolos.session');
+    setToken(null);
+    redirectToLoginWithReturn();
+    throw new Error('session expired');
+  }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
   return body as T;
 }
@@ -510,6 +520,13 @@ async function flowCall<T>(path: string, opts: RequestInit = {}): Promise<T> {
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.headers ?? {}) },
   });
   const body = await res.json().catch(() => ({}));
+  /* Same 401 session-reset contract as `call` above (P0 fix 3). */
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    localStorage.removeItem('schoolos.session');
+    setToken(null);
+    redirectToLoginWithReturn();
+    throw new Error('session expired');
+  }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
   return body as T;
 }

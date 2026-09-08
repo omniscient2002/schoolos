@@ -3,11 +3,13 @@
    Shown whenever there is no valid session. All three methods run
    against the live API — the server is the only authentication brain.
    ============================================================ */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
+import { DEMO_MODE } from '../lib/demoMode';
 
 type Method = 'password' | 'phone' | 'google';
 /* Display-only credential cheat-sheet. Authentication always hits the server. */
@@ -28,6 +30,17 @@ const ROLES = [
 
 export interface SessionUser { name: string; role: string; email: string }
 export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) => Promise<void> | void }) {
+  const navigate = useNavigate();
+  /* P0 fix 4: the 401 handlers redirect to /login?return=<path>; after a
+     successful sign-in the user lands where they were headed (default /today). */
+  const [params] = useSearchParams();
+  const returnTo = useMemo(() => {
+    const raw = params.get('return');
+    if (!raw) return '/today';
+    /* only accept in-app absolute paths — never an off-site redirect */
+    if (!raw.startsWith('/') || raw.startsWith('//')) return '/today';
+    return raw;
+  }, [params]);
   const [method, setMethod] = useState<Method>('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -72,7 +85,12 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
   const fail = (m: string) => { setError(m); setBusy(false); };
   const run = async (fn: () => Promise<{ name: string; role: string; email: string }>) => {
     setBusy(true); setError(null);
-    try { await onAuthed(await fn()); } catch (e: unknown) { fail(friendly((e as Error).message || 'sign-in failed')); }
+    try {
+      await onAuthed(await fn());
+      /* session is set in AuthGate → land on the originally requested
+         screen (or /today when there is no return parameter). */
+      navigate(returnTo, { replace: true });
+    } catch (e: unknown) { fail(friendly((e as Error).message || 'sign-in failed')); }
   };
 
   const submitPassword = () => {
@@ -192,28 +210,33 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
           </div>
         )}
 
-        <div className="login-roles">
-          <div className="login-roles-title">Try SchoolOS: pick a role</div>
-          <div className="login-roles-grid">
-            {ROLES.map(r => (
-              <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>
-                <b>{r.role}</b><span>{r.name}</span>
-                <code>{r.email}</code>
-              </button>
-            ))}
-          </div>
-          <div className="login-hint">Password for all: <code>schoolos-demo</code> · phone logins use the numbers below</div>
-          <details className="login-phones">
-            <summary>Phone numbers (OTP method)</summary>
-            <div className="login-phones-grid">
-              {[['Principal', '+919845000101'], ['Coordinator', '+919845000102'], ['Finance', '+919845000103'], ['Admissions', '+919845000104'], ['Transport', '+919845000105'], ['Facilities', '+919845000106'], ['Technician', '+919845000107'], ['Teacher', '+919845000108'], ['IT Admin', '+919845000109'], ['Parent', '+919845000201'], ['Student', '+919845000202'], ['Owner', '+919845000301']].map(([r, p]) => (
-                <button key={p} className="login-role" onClick={() => { setMethod('phone'); setPhone(p); }}>
-                  <b>{r}</b><code>{p}</code>
+        {/* P0 fix 2a: the demo credential grid (and the demo password it
+            fills) renders ONLY under VITE_DEMO_MODE=1 — production sign-in
+            is credentials-only. */}
+        {DEMO_MODE && (
+          <div className="login-roles">
+            <div className="login-roles-title">Try SchoolOS: pick a role</div>
+            <div className="login-roles-grid">
+              {ROLES.map(r => (
+                <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>
+                  <b>{r.role}</b><span>{r.name}</span>
+                  <code>{r.email}</code>
                 </button>
               ))}
             </div>
-          </details>
-        </div>
+            <div className="login-hint">Password for all: <code>schoolos-demo</code> · phone logins use the numbers below</div>
+            <details className="login-phones">
+              <summary>Phone numbers (OTP method)</summary>
+              <div className="login-phones-grid">
+                {[['Principal', '+919845000101'], ['Coordinator', '+919845000102'], ['Finance', '+919845000103'], ['Admissions', '+919845000104'], ['Transport', '+919845000105'], ['Facilities', '+919845000106'], ['Technician', '+919845000107'], ['Teacher', '+919845000108'], ['IT Admin', '+919845000109'], ['Parent', '+919845000201'], ['Student', '+919845000202'], ['Owner', '+919845000301']].map(([r, p]) => (
+                  <button key={p} className="login-role" onClick={() => { setMethod('phone'); setPhone(p); }}>
+                    <b>{r}</b><code>{p}</code>
+                  </button>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
 
         <div className="login-foot">
           <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit trail

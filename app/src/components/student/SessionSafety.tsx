@@ -14,7 +14,7 @@
    (no-store + Clear-Site-Data on logout are server-side).
    ============================================================ */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiLogoutAudit, setToken } from '../../services/liveApi';
+import { apiLogoutAudit, setToken, redirectToLoginWithReturn } from '../../services/liveApi';
 import { Button } from '../ui';
 import { Icon } from '../Icon';
 import { fmtTime } from '../../lib/format';
@@ -40,7 +40,7 @@ export function SessionSafety({ idleMinutes = 10, signedInAt = null }: {
     localStorage.removeItem('schoolos.session');
     setToken(null);
     setGone(true);
-    window.location.href = '/login';
+    redirectToLoginWithReturn();
   }, []);
 
   useEffect(() => {

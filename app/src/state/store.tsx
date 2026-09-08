@@ -52,7 +52,10 @@ const initialState: DomainState = {
   chat: seed.guardianChat,
   audit: seed.auditEntries,
   events: [],
-  offlineQueue: 12,
+  /* P0 fix 5: the queue starts EMPTY. A seeded 12 fabricated "12 offline
+     changes queued" for every fresh session; only real offline/queue
+     dispatches grow it, and SyncBanner renders only when it is non-zero. */
+  offlineQueue: 0,
   syncing: false,
 };
 

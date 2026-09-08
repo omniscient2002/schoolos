@@ -13,6 +13,17 @@ import { useLiveEventBridge } from './components/Maint';
 import { AiDock } from './components/AiDock';
 import { SkeletonCard } from './components/ui';
 import { Icon } from './components/Icon';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { TeacherProvider } from './state/teacherContext';
+
+/* P0 fix 2a: demo gating. This file reads the flag INLINE (not via
+   lib/demoMode, which is the canonical gate for Shell/Login) on purpose:
+   Vite replaces `import.meta.env.VITE_DEMO_MODE` per-file at build time,
+   so in a production build this folds to `false` BEFORE Rollup's
+   tree-shaking — the /demo* + /live lazy chunks are then eliminated from
+   dist entirely, not merely gated at runtime. Dev keeps the flag via
+   app/.env.development. */
+const DEMO_BUILD = import.meta.env.VITE_DEMO_MODE === '1';
 
 /* ---------- lazy screens ---------- */
 const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
@@ -47,11 +58,6 @@ const MaintIntelligence = F(() => import('./screens/MaintIntelligence'));
 const MaintMap = F(() => import('./screens/MaintMap'));
 const Reception = F(() => import('./screens/Reception'));
 const Migration = F(() => import('./screens/Migration'));
-const Demo = F(() => import('./screens/Demo'));
-const DemoDay = F(() => import('./screens/DemoDay'));
-const DemoParent = F(() => import('./screens/DemoParent'));
-const DemoSummary = F(() => import('./screens/DemoSummary'));
-const LiveMode = F(() => import('./screens/LiveMode'));
 const PluginsScreen = F(() => import('./screens/Plugins'));
 const Library = F(() => import('./screens/Library'));
 const ReportIssue = F(() => import('./screens/ReportIssue'));
@@ -102,6 +108,16 @@ const CoordCurriculum = F(() => import('./screens/coord/CurriculumMonitor'));
 const CoordEscalations = F(() => import('./screens/coord/EscalationsQueue'));
 const CoordApprovals = F(() => import('./screens/coord/ApprovalCenter'));
 const NotFound = F(() => import('./screens/NotFound'));
+/* Demo screens (P0 fix 2a): under a production build (no VITE_DEMO_MODE)
+   DEMO_BUILD folds to false at build time, so these ternaries collapse and
+   Rollup tree-shakes the Demo/LiveMode chunks out of dist entirely — no
+   demo screen code ships at all. The /demo* + /live routes are also
+   unregistered below, so this is belt-and-braces. */
+const Demo = DEMO_BUILD ? lazy(() => import('./screens/Demo')) : NotFound;
+const DemoDay = DEMO_BUILD ? lazy(() => import('./screens/DemoDay')) : NotFound;
+const DemoParent = DEMO_BUILD ? lazy(() => import('./screens/DemoParent')) : NotFound;
+const DemoSummary = DEMO_BUILD ? lazy(() => import('./screens/DemoSummary')) : NotFound;
+const LiveMode = DEMO_BUILD ? lazy(() => import('./screens/LiveMode')) : NotFound;
 
 /* ---------- shared page frame ---------- */
 function PageShell({ children }: { children: React.ReactNode }) {
@@ -140,12 +156,17 @@ function SyncBanner() {
     window.addEventListener('online', on); window.addEventListener('offline', off);
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
+  /* P0 fix 5: offlineQueue starts at 0 — no fabricated "12 queued".
+     The banner shows only the honest offline notice, or a real queue
+     built up by actual offline/queue dispatches this session. */
   if (!online || domain.offlineQueue > 0) {
     return (
       <div className="u-flex" style={{ gap: 8, padding: '7px 20px', background: 'var(--warning-weak)', borderBottom: '1px solid var(--warning-weak-2)', fontSize: 'var(--text-sm)' }}>
         <Icon.Offline size={14} style={{ color: 'var(--warning)' }} />
         <span style={{ flex: 1 }}>
-          {online ? `${domain.offlineQueue} offline changes queued (attendance, notes, messages) — syncing…` : 'You are offline. Attendance and messages are queued on this device and will sync automatically.'}
+          {online
+            ? `${domain.offlineQueue} offline change${domain.offlineQueue === 1 ? '' : 's'} queued (attendance, notes, messages) — syncing…`
+            : 'You are offline. Attendance and messages are queued on this device and will sync automatically.'}
         </span>
         {online && <button className="btn btn-secondary btn-sm" onClick={() => dispatchFlush()}>Sync now</button>}
       </div>
@@ -168,7 +189,10 @@ function Guard({ children }: { children: React.ReactNode }) {
      sign-in must land on the calm surface) and the demo view switcher
      (staff previewing a light role sees the same gates). */
   const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard'];
+  /* staffOnly drift fix (P0): /plugins, /settings, /library were missing and
+     every parent/student route probe answered with the real screen; /live is
+     staff-only regardless (its route additionally only exists in demo mode). */
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return (
       <PageShell>
@@ -305,11 +329,15 @@ function AppRoutes() {
       <Route path="/maintenance/map" element={<S><MaintMap /></S>} />
       <Route path="/reception" element={<S><Reception /></S>} />
       <Route path="/migration" element={<S><Migration /></S>} />
-      <Route path="/demo" element={<S><Demo /></S>} />
-      <Route path="/demo/day" element={<S><DemoDay /></S>} />
-      <Route path="/demo/parent" element={<S><DemoParent /></S>} />
-      <Route path="/demo/summary" element={<S><DemoSummary /></S>} />
-      <Route path="/live" element={<LiveMode />} />
+      {/* Demo surfaces (P0 fix 2a): /demo* + /live render ONLY under the
+          explicit VITE_DEMO_MODE=1 runtime flag — a production build gets
+          no demo routes (unknown path falls through to NotFound). /live
+          additionally sits behind the Guard (staffOnly '/live'). */}
+      {DEMO_BUILD && <Route path="/demo" element={<S><Demo /></S>} />}
+      {DEMO_BUILD && <Route path="/demo/day" element={<S><DemoDay /></S>} />}
+      {DEMO_BUILD && <Route path="/demo/parent" element={<S><DemoParent /></S>} />}
+      {DEMO_BUILD && <Route path="/demo/summary" element={<S><DemoSummary /></S>} />}
+      {DEMO_BUILD && <Route path="/live" element={<S><LiveMode /></S>} />}
       <Route path="/plugins" element={<S><PluginsScreen /></S>} />
       <Route path="/library" element={<S><KernelGate plugin="library"><Library /></KernelGate></S>} />
       <Route path="/maintenance/report" element={<S><ReportIssue /></S>} />
@@ -412,18 +440,28 @@ function Frame() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <KernelProvider>
-        <StoreProvider>
-          <ToastProvider>
-            <BootGate>
-              <AuthGate>
-                <Frame />
-              </AuthGate>
-            </BootGate>
-          </ToastProvider>
-        </StoreProvider>
-      </KernelProvider>
-    </BrowserRouter>
+    /* P0 fix 1: the root ErrorBoundary wraps the WHOLE router so any
+       render crash keeps the tree mounted and shows the calm fallback
+       instead of unmounting to a white screen. */
+    <ErrorBoundary>
+      <BrowserRouter>
+        <KernelProvider>
+          <StoreProvider>
+            <ToastProvider>
+              <BootGate>
+                <AuthGate>
+                  {/* P0 fix 1: TeacherProvider is mounted once, around the whole
+                      session frame — every /teacher screen's useTeacher() has a
+                      provider and the white-screen throw never fires. */}
+                  <TeacherProvider>
+                    <Frame />
+                  </TeacherProvider>
+                </AuthGate>
+              </BootGate>
+            </ToastProvider>
+          </StoreProvider>
+        </KernelProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
