@@ -41,6 +41,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Waits for the api container (which runs bootstrap+migrate) to be healthy,
+      # so on a fresh stack the schema always exists before the first tick.
+      api:
+        condition: service_healthy
     # The event spine's delivery worker — REQUIRED in every environment, not a
     # demo extra: without it outbox rows are written but never relayed. Poll
     # cadence/backoff are tunable via OUTBOX_* envs (see scripts/outbox-worker.js).
