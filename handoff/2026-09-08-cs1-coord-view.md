@@ -3,3 +3,8 @@ studied: family.view/teacher.support/teacher.copilot conventions, 034 ledger sha
 migration 037_coord_view.sql written (coord.copilot_call + registry row + contracts coord.home.v1/coord.decision.v1 + guarded ledger coordinator-view@1)
 coord.view plugin written: manifest.js + index.js (7 doors: home, curriculum-monitor, teacher-workload, substitution/decide, duty/allocate, escalations, copilot-lite; SoD decide; least-loaded duty pick; fairness overload flag; deterministic copilot with 200/mo budget)
 tests/coord-view.test.js written (9 tests: role gates, home shape, curriculum weeks_behind from seeded rows, workload no-rank pin, duty least-loaded, substitution SoD + audit, escalations timeline, copilot intents/honest-unknown/429)
+fixes round 1: test-side (unused $1 param 42P18, curriculum avg 40→10 over 4 topics, second-teacher fixture since seed.js replays only through 030, degradation test uses principal for fresh copilot budget)
+fixes round 2: plugin — Promise.all on one transaction client removed (home + copilot summary now sequential); migration 037 now also provisions duty.assignment (schema+RLS+grants) — no sibling lane builds it
+verify GREEN: node --test tests/coord-view.test.js → tests 9 · pass 9 · fail 0 (8 consecutive clean attempts; earlier flakes were a sibling lane force-dropping the shared schoolos_test mid-seed)
+regression: tests/parent-family.test.js → 8 pass / 0 fail; migration 037 replays ×2 idempotent
+lane respected: only server/src/plugins/coord.view/**, migrations/037_coord_view.sql, tests/coord-view.test.js, handoff log touched

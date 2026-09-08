@@ -166,7 +166,9 @@ export default function EscalationsQueue() {
               placeholder="What was tried, what changed, what the next desk should watch for…"
             />
             <div className="u-xs u-faint" style={{ marginTop: 6, lineHeight: 1.55 }}>
-              The queue refreshes from the server when you hand off — the server remains the source of truth for resolution state.
+              v1 surfaces the full timeline here; resolution itself is recorded at the routing desk
+              (family request or concern record). Copy your note and paste it into that resolution —
+              nothing is closed silently from this screen.
             </div>
           </>
         )}
@@ -174,16 +176,17 @@ export default function EscalationsQueue() {
           <Button variant="ghost" onClick={() => setHandoffFor(null)}>Cancel</Button>
           <Button
             variant="primary" disabled={!note.trim()}
-            onClick={() => {
+            onClick={async () => {
+              try { await navigator.clipboard.writeText(note.trim()); } catch { /* clipboard unavailable — the text stays editable */ }
               toast({
-                title: 'Handoff note drafted',
-                sub: 'Resolution is recorded through the school desk — your note is included with the record.',
+                title: 'Handoff note copied',
+                sub: 'Paste it into the routing desk\u2019s resolution record so the handover is written down, not remembered.',
                 tone: 'info',
               });
               setHandoffFor(null); setNote('');
             }}
           >
-            Resolve & hand off
+            Copy handoff note
           </Button>
         </div>
       </Modal>
