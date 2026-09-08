@@ -7,8 +7,13 @@ const req = (name, fallback) => {
 };
 const int = (v, dflt) => (v ? parseInt(v, 10) : dflt);
 
+// WORKER_ROLE=1 marks non-HTTP processes (outbox relay) that need only
+// DATABASE_URL: HTTP-surface guards (CORS allowlist) and session secrets
+// (JWT_SECRET) don't apply to them and must not crash-loop the event spine
+// (re-scan cycle-2 P0: the compose outbox worker died on both guards).
+const isWorker = process.env.WORKER_ROLE === '1';
 const isProd = (process.env.NODE_ENV ?? 'development') === 'production';
-if (isProd) {
+if (isProd && !isWorker) {
   // ops audit P1-19: production must never run on dev defaults.
   if ((process.env.DATABASE_URL ?? '').includes('127.0.0.1:5432') || (process.env.DATABASE_URL ?? '').includes('localhost:5432'))
     throw new Error('NODE_ENV=production with a localhost DATABASE_URL — point DATABASE_URL at the real cluster');
@@ -49,6 +54,12 @@ export const config = {
 };
 
 // RTR-001 RT-001: refuse to boot production on a default/known secret.
-if (config.env === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
+// (Workers hold no signing key — they only read the database.)
+if (config.env === 'production' && !isWorker && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
   throw new Error('JWT_SECRET must be set (≥32 chars) outside development');
+}
+// OTP TTL misconfig guard (re-scan cycle-2 P2): 0/NaN would bind NULL into a
+// NOT NULL expires_at → 500 on every /auth/otp/request.
+if (!(config.otp.ttlMs > 0)) {
+  throw new Error(`OTP_TTL_MS must be a positive integer (got "${process.env.OTP_TTL_MS ?? 'unset'}")`);
 }

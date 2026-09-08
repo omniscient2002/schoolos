@@ -37,6 +37,7 @@ services:
     build: .
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      WORKER_ROLE: "1" # non-HTTP process: no JWT/CORS surface, skips those guards
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
     depends_on:
       db:
