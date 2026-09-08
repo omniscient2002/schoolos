@@ -103,4 +103,31 @@ describe('security invariants (RTR-001 regressions)', () => {
     }
     await c.end();
   });
+
+  test('RT-7 #5: principal cannot approve a coordinator-owned action (staff leave); owner still may', async () => {
+    const { randomUUID } = await import('node:crypto');
+    const { pool } = await import('../src/db.js');
+    const user = (email) => pool.query(`SELECT id, tenant_id, role, name FROM app.users WHERE email=$1`, [email]).then((r) => r.rows[0]);
+    // tokens minted directly — Track F above deliberately exhausts the /auth/login bucket
+    const tokenFor = (u) => app.jwt.sign({ sub: u.id, role: u.role, tenant: u.tenant_id, name: u.name, jti: randomUUID() });
+    const tenant = (await user('owner@meridian.edu')).tenant_id;
+    const teacher = (await pool.query(`SELECT id FROM app.users WHERE tenant_id=$1 AND email='teacher@meridian.edu'`, [tenant])).rows[0].id;
+    // coordinator-owned approval actions exactly as teacher.classroom raises staff leave
+    const mk = (code) => pool.query(
+      `INSERT INTO app.actions (tenant_id, code, kind, title, status, owner, owner_role, payload)
+       VALUES ($1,$2,'approval','Staff leave (RT-7)','open','Coordinator','coordinator',$3::jsonb) RETURNING id`,
+      [tenant, code, JSON.stringify({ kind: 'task', proposed_by: teacher })]).then((r) => r.rows[0].id);
+    const a1 = await mk('sec.rt7.leave.prin');
+    const a2 = await mk('sec.rt7.leave.owner');
+    const denied = await app.inject({ method: 'POST', url: `/actions/${a1}/decide`, payload: { decision: 'approved', note: 'principal stamp' }, headers: { authorization: `Bearer ${tokenFor(await user('principal@meridian.edu'))}` } });
+    assert.equal(denied.statusCode, 403, `principal approval of coordinator-owned action refused (got ${denied.statusCode}: ${denied.body})`);
+    assert.match(denied.json().error, /Segregation of duties — ask the owner to decide this/);
+    const row = await pool.query(`SELECT status FROM app.actions WHERE id=$1`, [a1]);
+    assert.equal(row.rows[0].status, 'open', 'no side effects — action stays pending');
+    // the owner keeps full authority over the coordinator desk's actions
+    const ok = await app.inject({ method: 'POST', url: `/actions/${a2}/decide`, payload: { decision: 'approved', note: 'owner authority' }, headers: { authorization: `Bearer ${tokenFor(await user('owner@meridian.edu'))}` } });
+    assert.equal(ok.statusCode, 200, ok.body);
+    const done = await pool.query(`SELECT status FROM app.actions WHERE id=$1`, [a2]);
+    assert.equal(done.rows[0].status, 'approved', 'owner decision recorded');
+  });
 });

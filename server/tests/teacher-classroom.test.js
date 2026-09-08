@@ -219,3 +219,17 @@ test('migration 031 replays idempotently ×2 (registry, contracts, ledger stay s
   assert.equal(ledger.rows[0].n, 1, 'guarded ledger entry singleton');
   assert.equal(users.rows[0].n, 2, 'demo cast fixtures singleton');
 });
+
+test('RT-7 #3: cross-class submit refused — a grade-8 student cannot submit a grade-6 homework', async () => {
+  const r = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '6', subject: 'Science', title: 'Cross-class gate probe', due_at: future(2) } });
+  assert.equal(r.statusCode, 200, r.body);
+  const hw6 = r.json().homeworkId;
+  const s = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/homework/${hw6}/submit`, headers: H(student.token),
+    payload: { content_type: 'text', content: 'wrong class' } });
+  assert.equal(s.statusCode, 400, `cross-class submit refused (got ${s.statusCode}: ${s.body})`);
+  assert.equal(s.json().error, 'This homework is for a different class');
+  const view = await app.inject({ method: 'GET', url: `/plugins/teacher.classroom/homework/${hw6}`, headers: H(teacher.token) });
+  assert.equal(view.statusCode, 200, view.body);
+  assert.equal(view.json().submissions.length, 0, 'no submission row was created');
+});

@@ -327,6 +327,16 @@ export function register(app, kernel) {
       if (a.owner_role !== 'coordinator') {
         return bad(reply, `Substitution actions are decided by the coordinator authority (this one is owned by ${a.owner_role})`, 403);
       }
+      // RT-7 #4: decide-door aliasing guard — this desk decides SUBSTITUTION actions
+      // only. The code must carry the substitution segment ('sub', fixture precedent
+      // 'cs1.sub.ok') or the payload must pin kind='substitution'. Anything else
+      // (staff leave, publications, SARs …) is refused here with NO side effects, so
+      // foreign desks can never be decided — or event-stamped — through this door.
+      const subKind = /(^|[.-])sub($|[.-])/.test(String(a.code ?? '').toLowerCase())
+        || (a.payload && typeof a.payload === 'object' && a.payload.kind === 'substitution');
+      if (!subKind) {
+        return bad(reply, 'This decision belongs to a different desk', 409);
+      }
       // SoD (routes.js decide rule): the proposer can never approve their own proposal
       const p = (a.payload && typeof a.payload === 'object') ? a.payload : {};
       if (b.decision === 'approved' && p.proposed_by === req.user.id) {
@@ -362,14 +372,17 @@ export function register(app, kernel) {
     if (!candidates.length || candidates.some((x) => !UUID.test(x))) return bad(reply, 'Send at least one valid candidate teacher ID');
     if (b.period != null && String(b.period).length > 40) return bad(reply, 'Period is too long');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // RT-7 #6: honesty ordering — report a missing duty data plane (409, designed
+      // copy) BEFORE validating candidates, so a disabled lane never masquerades as
+      // bad input.
+      if (!(await tableExists(c, 'duty', 'assignment'))) {
+        return bad(reply, 'The duty roster data plane is not built yet — allocation is unavailable', 409);
+      }
       const staff = (await c.query(
         `SELECT id, name FROM app.users
          WHERE tenant_id=$1 AND role='teacher' AND active AND id = ANY($2::uuid[]) ORDER BY name`,
         [req.user.tenant_id, candidates])).rows;
       if (staff.length !== candidates.length) return bad(reply, 'Every candidate must be an active teacher of this school', 400);
-      if (!(await tableExists(c, 'duty', 'assignment'))) {
-        return bad(reply, 'The duty roster data plane is not built yet — allocation is unavailable', 409);
-      }
       const loads = (await c.query(
         `SELECT teacher_id, count(*)::int AS n FROM duty.assignment WHERE tenant_id=$1 GROUP BY teacher_id`,
         [req.user.tenant_id])).rows;

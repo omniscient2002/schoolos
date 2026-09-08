@@ -400,8 +400,16 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       const a = (await c.query(`SELECT * FROM app.actions WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!a) return bad(reply, 'not found', 404);
       if (a.status !== 'open') return bad(reply, `action already ${a.status}`, 409);
-      // RTR-001 RT-002: segregation of duties — only the owning authority decides,
-      // and the proposer can never approve their own proposal.
+      // RTR-001 RT-002 + RT-7 #5: segregation of duties — only the owning authority
+      // decides, the proposer can never approve their own proposal, and the principal
+      // may not rubber-stamp the coordinator desk's own actions (staff leave et al):
+      // those need the coordinator or the owner. Principal-owned actions (DPDP SARs,
+      // exam publications) and owner overrides are untouched; dismissal stays open to
+      // the principal (coord-view pin: another authority may reject).
+      const coordDeskPrincipalStamp = decision === 'approved' && req.user.role === 'principal' && a.owner_role === 'coordinator';
+      if (coordDeskPrincipalStamp) {
+        return bad(reply, 'Segregation of duties — ask the owner to decide this', 403);
+      }
       const ownerOk = a.owner_role === req.user.role || ['owner','principal'].includes(req.user.role) && a.owner_role !== 'finance';
       if (!ownerOk) return bad(reply, `only the owning authority (${a.owner_role}) may decide this action`, 403);
       if (a.payload && typeof a.payload === 'object' && a.payload.proposed_by === req.user.id && decision === 'approved')

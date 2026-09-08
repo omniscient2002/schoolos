@@ -96,9 +96,23 @@ export function register(app, kernel) {
     if (!b.content || !String(b.content).trim()) return bad(reply, 'Your submission is empty — add your work first');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const hw = (await c.query(
-        `SELECT id, title, subject, due_at, status FROM teacher.homework WHERE id=$1 AND status='open'`,
+        `SELECT id, title, subject, class_grade, due_at, status FROM teacher.homework WHERE id=$1 AND status='open'`,
         [req.params.id])).rows[0];
       if (!hw) return bad(reply, 'We couldn\'t find that homework', 404);
+      // RT-7 #3: class gate — homework belongs to one class. Resolve the submitting
+      // student's roster grade via the 034 name-match bridge (submissions key the USER
+      // id; the roster has no user link yet). Fail CLOSED when the name has no roster
+      // row in the homework's grade — including the zero-match and wrong-grade-only
+      // cases — so a wrong-class submission is never accepted by default. When the
+      // seed's rotated names repeat across grades (grade-8 AND grade-10 Diya Nairs),
+      // the homework's own class is the deciding scope; no data leaks in any branch.
+      const inClass = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students
+         WHERE tenant_id=$1 AND lower(name) = lower($2) AND grade = $3`,
+        [req.user.tenant_id, req.user.name, hw.class_grade])).rows[0].n;
+      if (inClass === 0) {
+        return bad(reply, 'This homework is for a different class');
+      }
       const late = new Date() > new Date(hw.due_at);
       await c.query('SAVEPOINT submit_once');
       try {

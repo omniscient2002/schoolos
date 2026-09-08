@@ -255,6 +255,35 @@ test('substitution decide: decision recorded + audited + sub.assign.v1; SoD self
   assert.equal(row2.rows[0].status, 'dismissed', 'rejection recorded (kernel status vocabulary)');
 });
 
+test('RT-7 #4: decide-door aliasing refused — a staff-leave action is not a substitution', async () => {
+  const c = await login('coordinator@meridian.edu');
+  const t = await login('teacher@meridian.edu');
+  const { pool } = await import('../src/db.js');
+  // classroom plugin rides its own lifecycle door (registry row from migration 031)
+  const owner = await login('owner@meridian.edu');
+  const en = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/enable', headers: H(owner.token), payload: { version: '1.0.0', class: 'C' } });
+  assert.equal(en.statusCode, 200, en.body);
+  // raise a real staff-leave action through the classroom door (code teacher.leave.<uuid>)
+  const lv = await app.inject({ method: 'POST', url: '/teacher/leave', headers: H(t.token),
+    payload: { kind: 'sick', from_date: istToday(), to_date: istToday(), reason: 'aliasing probe' } });
+  assert.equal(lv.statusCode, 200, lv.body);
+  const actionId = lv.json().actionId;
+  assert.ok(/^[0-9a-f-]{36}$/.test(String(actionId)), 'leave raised a kernel action');
+  // the coordinator tries to approve it through the substitution desk
+  const r = await app.inject({ method: 'POST', url: '/coord/substitution/decide', headers: H(c.token),
+    payload: { action_id: actionId, decision: 'approved', note: 'aliasing probe' } });
+  assert.equal(r.statusCode, 409, `aliasing refused (got ${r.statusCode}: ${r.body})`);
+  assert.equal(r.json().error, 'This decision belongs to a different desk');
+  // NO side effects: the action is still open and the leave still pending
+  const row = await pool.query(`SELECT status FROM app.actions WHERE id=$1`, [actionId]);
+  assert.equal(row.rows[0].status, 'open', 'action untouched');
+  const leave = await pool.query(`SELECT status FROM teacher.leave_request WHERE id=$1`, [lv.json().requestId]);
+  assert.equal(leave.rows[0].status, 'pending', 'leave stays pending');
+  // no substitution event was emitted for the foreign action
+  const ev = await pool.query(`SELECT 1 FROM app.outbox WHERE topic='sub.assign.v1' AND payload::text LIKE $1`, ['%' + actionId + '%']);
+  assert.equal(ev.rows.length, 0, 'no sub.assign.v1 for a leave action');
+});
+
 test('escalations: list + append-only timeline + authority-scoped student identity', async () => {
   const c = await login('coordinator@meridian.edu');
   const { pool } = await import('../src/db.js');
