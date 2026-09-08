@@ -137,7 +137,8 @@ function WorkloadCard({ r }: { r: CoordWorkloadRow }) {
           ? <Badge tone="warning" dot>Carrying extra load — consider sharing the next duty</Badge>
           : <span className="u-xs u-faint">within threshold</span>}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 8 }}>
+      {/* 5-up at 1440, wraps gracefully at 768 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))', gap: 8 }}>
         {metrics.map(m => (
           <div key={m.label} style={{ minWidth: 0 }}>
             <div className="u-xs" style={{ fontWeight: 600, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--text-3)' }}>{m.label}</div>

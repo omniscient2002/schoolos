@@ -25,7 +25,6 @@
    states render through the honest StateNotice.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import { useTeacher } from '../state/teacherContext';
 import { PageHead, Card, Badge, Button, Empty, Section } from '../components/ui';

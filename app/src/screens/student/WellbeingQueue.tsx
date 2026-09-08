@@ -22,7 +22,7 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Tabs,
+  PageHead, Card, Stat, Badge, Empty, ErrorState, SkeletonCard, DataTable, Tabs,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
@@ -115,7 +115,6 @@ function parseRows(raw: unknown): WellbeingRow[] {
 }
 
 export default function WellbeingQueue() {
-  const toast = useToast();
   const { session } = useStore();
   const live = useSession();
   const allowed = STAFF_ROLES.includes(live.role) || STAFF_ROLES.includes(session.roleId);

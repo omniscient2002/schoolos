@@ -1218,8 +1218,7 @@ export async function getMasteryStudent(studentId: string, subject = 'Maths'): P
 export async function getMasteryClass(classGrade: string, subject = 'Maths'): Promise<{ data: MasteryStudent[]; source: TeacherSource }> {
   return flowRead<MasteryStudent[]>('mastery_class', `/mastery/class/${encodeURIComponent(classGrade)}?subject=${encodeURIComponent(subject)}`, async () => {
     await waitF(360);
-    return {
-      data: rosterFor(classGrade).map(st => {
+    return rosterFor(classGrade).map(st => {
         const arcs = topicsFor(st.id, MASTERY_PROFILES[st.id] ?? 1);
         const topics: MasteryTopic[] = arcs.map((a, i) => {
           const live = a.ev.filter(e => !staleness(e.observedAt).expired);
@@ -1227,8 +1226,7 @@ export async function getMasteryClass(classGrade: string, subject = 'Maths'): Pr
           return { nodeId: `m_${subject}_${i}`, topic: a.topic, unit: a.unit, level, confidence: confidenceOf(a.ev), trend: a.trend, evidence: a.ev };
         });
         return { studentId: st.id, name: st.name, classGrade, topics };
-      }),
-    };
+      });
   }).then(r => ({ data: r.data ?? [], source: r.source }));
 }
 
@@ -1417,8 +1415,7 @@ export async function getClassAnalytics(classGrade: string): Promise<{ data: Cla
     const roster = rosterFor(classGrade);
     const dims = roster.map(st => dimsFor(st, MASTERY_PROFILES[st.id] ?? 1));
     return {
-      data: {
-        classGrade, subject: 'Maths',
+      classGrade, subject: 'Maths',
         topicNeeds: [
           { topic: 'Word problems', needsSupport: 4, of: roster.length },
           { topic: 'Simple equations', needsSupport: 3, of: roster.length },
@@ -1447,7 +1444,6 @@ export async function getClassAnalytics(classGrade: string): Promise<{ data: Cla
             'Fractions are strong for most of the class, which the next unit builds on.',
           ],
         },
-      },
     };
   }).then(r => ({ data: r.data ?? null, source: r.source }));
 }

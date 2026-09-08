@@ -18,7 +18,7 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Tabs,
+  PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';

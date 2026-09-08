@@ -193,7 +193,7 @@ function ClassView({ classGrade }: { classGrade: string }) {
             render: r => <span className="u-flex" style={{ gap: 8, alignItems: 'center' }}><Avatar name={r.name} size="sm" />{r.name}</span>,
           },
           ...topicCols.map((t, i) => ({
-            key: `t_${i}`, label: t.topic, sortable: true, align: 'center' as const satisfies 'left' | 'right' | undefined,
+            key: `t_${i}`, label: t.topic, sortable: true,
             sortValue: (r: MasteryStudent) => LEVEL_ORDER[r.topics[i]?.level ?? 'developing'],
             render: (r: MasteryStudent) => {
               const topic = r.topics[i];
@@ -213,7 +213,7 @@ function ClassView({ classGrade }: { classGrade: string }) {
             },
           })),
           {
-            key: 'trend', label: 'Trend', sortable: true, width: 120, align: 'center',
+            key: 'trend', label: 'Trend', sortable: true, width: 120,
             sortValue: (r: MasteryStudent) => r.topics.filter(t => t.trend === 'improving').length,
             render: (r: MasteryStudent) => {
               const up = r.topics.filter(t => t.trend === 'improving').length;
@@ -251,7 +251,7 @@ function ClassView({ classGrade }: { classGrade: string }) {
 
 export default function MasteryMap() {
   const [view, setView] = useState('student');
-  const [classGrade, setClassGrade] = useState('8-B');
+  const [classGrade] = useState('8-B'); /* single-class demo — picker is fixed per plan */
   const roster = useMemo(() => rosterFor(classGrade), [classGrade]);
   const [studentId, setStudentId] = useState(roster[0]?.id ?? 'stu_1');
 
