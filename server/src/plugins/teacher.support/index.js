@@ -67,7 +67,7 @@ export function register(app, kernel) {
       try {
         await c.query('BEGIN');
         await c.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [tenantId]);
-        await c.query(`SELECT set_config('schoolos.user_id', $2, true)`, [userId]);
+        await c.query(`SELECT set_config('schoolos.user_id', $1, true)`, [userId]); // own statement → $1 (a lone $2 with one value is the 42P18 trap)
         await c.query(`SELECT set_config('schoolos.role', 'teacher', true)`);
         await c.query('SET LOCAL ROLE schoolos_app');
         const out = await fn(c);

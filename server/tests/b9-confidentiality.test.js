@@ -187,8 +187,12 @@ test('B9 · PTM notes strictly teacher-private — door 403 + RLS user-pin (defe
   const setg = async (u) => {
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await c.connect();
+    await c.query('BEGIN');
+    await c.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [(await sql(`SELECT tenant_id FROM app.users WHERE id=$1`, [u])).rows[0].tenant_id]);
     await c.query(`SELECT set_config('schoolos.user_id', $1, true)`, [u]);
+    await c.query('SET LOCAL ROLE schoolos_app'); // RLS applies to the app role, not the connection owner
     const r = await c.query(`SELECT count(*)::int n FROM teacher.note`);
+    await c.query('ROLLBACK');
     await c.end();
     return r.rows[0].n;
   };
