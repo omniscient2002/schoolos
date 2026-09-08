@@ -1,0 +1,13 @@
+POST /transport/events
+GET /work-orders
+GET /actions
+POST /actions/:id/decide
+GET /events
+GET /communications
+GET /plugins/comms.whatsapp/templates
+GET /plugins/comms.whatsapp/receipts
+GET /plugins/ops.timetable/grid
+GET /safety/box
+POST /safety/box/:id/close
+POST /plugins/transport.gps/positions
+GET /plugins/transport.gps/positions

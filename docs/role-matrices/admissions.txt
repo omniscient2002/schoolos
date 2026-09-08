@@ -1,0 +1,7 @@
+POST /students
+GET /actions
+POST /actions/:id/decide
+GET /events
+GET /plugins/ops.timetable/grid
+GET /safety/box
+POST /safety/box/:id/close
