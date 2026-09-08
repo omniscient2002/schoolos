@@ -177,6 +177,7 @@ test('duty allocate: picks the least-loaded candidate deterministically', async 
   const hasDuty = (await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='duty' AND table_name='assignment'`)).rows.length > 0;
   if (!hasDuty) {
     await pool.query(`CREATE SCHEMA IF NOT EXISTS duty`);
+    await pool.query(`GRANT USAGE ON SCHEMA duty TO schoolos_app`);
     await pool.query(`CREATE TABLE duty.assignment (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       tenant_id uuid NOT NULL, teacher_id uuid NOT NULL,

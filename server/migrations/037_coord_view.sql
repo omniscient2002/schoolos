@@ -38,6 +38,35 @@ CREATE POLICY coord_copilot_call_tenant_isolation ON coord.copilot_call
   USING (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('schoolos.tenant_id', true)::uuid);
 
+-- ── 1b. duty.assignment — the duty-roster plane (consumed by the coord fairness
+--         view + allocation door). A rostering FACT table: who carries which duty
+--         on which day. Fairness framing lives in the doors (least-loaded pick,
+--         overload flag) — the table stores no scores and never will.
+CREATE SCHEMA IF NOT EXISTS duty;
+GRANT USAGE ON SCHEMA duty TO schoolos_app;
+
+CREATE TABLE IF NOT EXISTS duty.assignment (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid NOT NULL REFERENCES app.tenants(id),
+  teacher_id   uuid NOT NULL,                    -- app.users.id (no hard FK — plugin isolation)
+  kind         text NOT NULL CHECK (kind IN ('duty','invigilation','event','exam')),
+  duty_date    date NOT NULL,
+  period       text,
+  note         text,
+  allocated_by uuid,                             -- app.users.id of the allocating coordinator
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+-- one assignment per teacher/kind/day/period (period NULLs stay distinct)
+CREATE UNIQUE INDEX IF NOT EXISTS duty_assignment_slot_key
+  ON duty.assignment (tenant_id, teacher_id, kind, duty_date, COALESCE(period, ''));
+CREATE INDEX IF NOT EXISTS duty_assignment_load_idx ON duty.assignment (tenant_id, teacher_id, duty_date);
+GRANT SELECT, INSERT ON duty.assignment TO schoolos_app;
+ALTER TABLE duty.assignment ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS duty_assignment_tenant_isolation ON duty.assignment;
+CREATE POLICY duty_assignment_tenant_isolation ON duty.assignment
+  USING (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('schoolos.tenant_id', true)::uuid);
+
 -- ── 2. RLS for sibling tables the app role reads on coord doors ─────────────────
 -- curriculum tables exist only from 033 onward; probe before guarding (034 rule).
 DO $$ BEGIN

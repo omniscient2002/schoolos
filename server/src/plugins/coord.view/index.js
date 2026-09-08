@@ -266,12 +266,12 @@ export function register(app, kernel) {
 
   app.get('/coord/home', { preHandler: [require(...AUTHORITY), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const [{ staffing, gaps }, monitor, approvals, issues] = await Promise.all([
-        staffingToday(c, req.user.tenant_id),
-        curriculumMonitor(c, req.user.tenant_id),
-        pendingApprovals(c, req.user.tenant_id),
-        openIssues(c, req.user.tenant_id),
-      ]);
+      // sequential on the ONE transaction client (Promise.all would interleave queries
+      // on a shared connection — pg deprecation + ordering hazards)
+      const { staffing, gaps } = await staffingToday(c, req.user.tenant_id);
+      const monitor = await curriculumMonitor(c, req.user.tenant_id);
+      const approvals = await pendingApprovals(c, req.user.tenant_id);
+      const issues = await openIssues(c, req.user.tenant_id);
       const curriculumDelays = monitor.monitor
         .filter((m) => m.weeks_behind > 0)
         .map(({ class_grade, subject, covered_pct, expected_pct, weeks_behind }) =>
@@ -524,9 +524,10 @@ export function register(app, kernel) {
       return { answer, data: { absent: away, uncovered_gaps: gaps.length, gaps }, sources: [src('plugin_hr.leave / teacher.leave_request', 'absence facts for today'), src('app.timetable_slots', "today's grid")] };
     }
     if (intent === 'summary') {
-      const [{ staffing, gaps }, approvals, issues, monitor] = await Promise.all([
-        staffingToday(c, tenantId), pendingApprovals(c, tenantId), openIssues(c, tenantId), curriculumMonitor(c, tenantId),
-      ]);
+      const { staffing, gaps } = await staffingToday(c, tenantId);
+      const approvals = await pendingApprovals(c, tenantId);
+      const issues = await openIssues(c, tenantId);
+      const monitor = await curriculumMonitor(c, tenantId);
       const away = staffing.filter((s) => s.status !== 'present').length;
       const delays = monitor.monitor.filter((m2) => m2.weeks_behind > 0).length;
       const answer = `Today: ${away} staff away, ${gaps.length} uncovered period${gaps.length === 1 ? '' : 's'}, ${approvals.length} approval${approvals.length === 1 ? '' : 's'} waiting on you, ${issues.length} open concern${issues.length === 1 ? '' : 's'}, and ${monitor.available ? `${delays} class×subject pair${delays === 1 ? '' : 's'} behind the term pace` : 'no curriculum data yet'}.`;

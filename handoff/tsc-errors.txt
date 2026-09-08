@@ -1,0 +1,75 @@
+src/screens/TeacherHome.tsx(28,1): error TS6133: 'useNavigate' is declared but its value is never read.
+src/screens/student/PrintQueue.tsx(21,94): error TS6133: 'Tabs' is declared but its value is never read.
+src/screens/student/WellbeingQueue.tsx(25,32): error TS6133: 'Button' is declared but its value is never read.
+src/screens/student/WellbeingQueue.tsx(118,9): error TS6133: 'toast' is declared but its value is never read.
+src/screens/teacher/CurriculumProgress.tsx(130,9): error TS6133: 'toast' is declared but its value is never read.
+src/screens/teacher/DutyWorkload.tsx(51,9): error TS6133: 'w' is declared but its value is never read.
+src/screens/teacher/DutyWorkload.tsx(152,23): error TS2339: Property 'map' does not exist on type '{ duties: DutyAssignment[]; }'.
+src/screens/teacher/DutyWorkload.tsx(152,27): error TS7006: Parameter 'd' implicitly has an 'any' type.
+src/screens/teacher/DutyWorkload.tsx(153,29): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<DutyKind, { label: string; icon: "Message" | "CreditCard" | "Compass" | "Grid" | "Book" | "Users" | "Shield" | "Bus" | "Wrench" | "Award" | "ArrowRight" | "Home" | "ArrowDown" | ... 63 more ... | "Scale"; tone: "info" | ... 3 more ... | "accent"; }>'.
+src/screens/teacher/DutyWorkload.tsx(154,30): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{ Today: (p: IconProps) => Element; Attention: (p: IconProps) => Element; Ask: (p: IconProps) => Element; Next: (p: IconProps) => Element; ... 72 more ...; Scale: (p: IconProps) => Element; }'.
+src/screens/teacher/Homework.tsx(233,48): error TS2339: Property 'length' does not exist on type '{ homework: TeacherHomework[]; }'.
+src/screens/teacher/Homework.tsx(233,67): error TS2339: Property 'length' does not exist on type '{ homework: TeacherHomework[]; }'.
+src/screens/teacher/Homework.tsx(234,15): error TS2740: Type '{ homework: TeacherHomework[]; }' is missing the following properties from type 'TeacherHomework[]': length, pop, push, concat, and 35 more.
+src/screens/teacher/InsightsShared.tsx(18,10): error TS6133: 'useState' is declared but its value is never read.
+src/screens/teacher/InsightsShared.tsx(25,45): error TS2305: Module '"../../services/teacherFixtures"' has no exported member 'evidenceLinkTarget'.
+src/screens/teacher/MasteryMap.tsx(195,11): error TS2322: Type '{ key: string; label: string; sortable: boolean; align: "center"; sortValue: (r: MasteryStudent) => number; render: (r: MasteryStudent) => React.JSX.Element; }' is not assignable to type '{ key: string; label: ReactNode; render?: ((row: MasteryStudent) => ReactNode) | undefined; width?: string | number | undefined; align?: "left" | "right" | undefined; sortable?: boolean | undefined; sortValue?: ((row: MasteryStudent) => string | number) | undefined; }'.
+  Types of property 'align' are incompatible.
+    Type '"center"' is not assignable to type '"left" | "right" | undefined'.
+src/screens/teacher/MasteryMap.tsx(216,71): error TS2322: Type '"center"' is not assignable to type '"left" | "right" | undefined'.
+src/screens/teacher/MasteryMap.tsx(254,22): error TS6133: 'setClassGrade' is declared but its value is never read.
+src/screens/teacher/SubmissionsInbox.tsx(66,10): error TS6133: 'bulkDone' is declared but its value is never read.
+src/screens/teacher/SubmissionsInbox.tsx(288,46): error TS2339: Property 'length' does not exist on type '{ submissions: TeacherSubmission[]; }'.
+src/screens/teacher/SubmissionsInbox.tsx(288,64): error TS2339: Property 'length' does not exist on type '{ submissions: TeacherSubmission[]; }'.
+src/screens/teacher/SubmissionsInbox.tsx(289,15): error TS2740: Type '{ submissions: TeacherSubmission[]; }' is missing the following properties from type 'TeacherSubmission[]': length, pop, push, concat, and 35 more.
+src/screens/teacher/SubmissionsInbox.tsx(344,27): error TS6133: 's' is declared but its value is never read.
+src/screens/teacher/teacherKit.tsx(41,98): error TS2339: Property 'retry' does not exist on type '{ data: T | null; loading: boolean; error: string | null; }'.
+src/screens/teacher/teacherKit.tsx(50,31): error TS2322: Type '{ children: string; tone: "outline"; dot: true; title: string; }' is not assignable to type 'IntrinsicAttributes & { tone?: "success" | "info" | "ai" | "neutral" | "danger" | "warning" | "accent" | "outline" | undefined; dot?: boolean | undefined; children: ReactNode; className?: string | undefined; }'.
+  Property 'title' does not exist on type 'IntrinsicAttributes & { tone?: "success" | "info" | "ai" | "neutral" | "danger" | "warning" | "accent" | "outline" | undefined; dot?: boolean | undefined; children: ReactNode; className?: string | undefined; }'.
+src/services/teacherFixtures.ts(177,27): error TS2345: Argument of type 'string' is not assignable to parameter of type 'TimeSlot'.
+src/services/teacherFixtures.ts(182,77): error TS2345: Argument of type 'string' is not assignable to parameter of type 'TimeSlot'.
+src/services/teacherFixtures.ts(185,140): error TS2345: Argument of type 'string' is not assignable to parameter of type 'TimeSlot'.
+src/services/teacherFixtures.ts(686,3): error TS2322: Type '{ requests: TeacherLeaveRequest[]; balances: LeaveBalance[]; } | { requests: TeacherLeaveRequest[]; balances: { kind: string; entitled: number; used: number; carried: number; }[]; }' is not assignable to type '{ requests: TeacherLeaveRequest[]; balances: LeaveBalance[]; }'.
+  Type '{ requests: TeacherLeaveRequest[]; balances: { kind: string; entitled: number; used: number; carried: number; }[]; }' is not assignable to type '{ requests: TeacherLeaveRequest[]; balances: LeaveBalance[]; }'.
+    Types of property 'balances' are incompatible.
+      Type '{ kind: string; entitled: number; used: number; carried: number; }[]' is not assignable to type 'LeaveBalance[]'.
+        Type '{ kind: string; entitled: number; used: number; carried: number; }' is not assignable to type 'LeaveBalance'.
+          Types of property 'kind' are incompatible.
+            Type 'string' is not assignable to type 'LeaveKind'.
+src/services/teacherFixtures.ts(1112,58): error TS2339: Property 'weeks' does not exist on type '{ label: string; expired: boolean; }'.
+src/services/teacherFixtures.ts(1191,3): error TS2322: Type '{ data: MasteryStudent | null; source: TeacherSource; } | { data: { data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: MasteryStudent | null; source: TeacherSource; }'.
+  Type '{ data: { data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: MasteryStudent | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }; source: TeacherSource; }' is missing the following properties from type 'MasteryStudent': studentId, name, classGrade, topics
+src/services/teacherFixtures.ts(1208,3): error TS2322: Type '{ data: MasteryStudent[]; source: TeacherSource; } | { data: { data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }[]; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: MasteryStudent[]; source: TeacherSource; }'.
+  Type '{ data: { data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }[]; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: MasteryStudent[]; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: { studentId: string; name: string; classGrade: string; topics: MasteryTopic[]; }[]; source: TeacherSource; }' is missing the following properties from type 'MasteryStudent[]': length, pop, push, concat, and 35 more.
+src/services/teacherFixtures.ts(1247,3): error TS2322: Type '{ data: { studentName: string; steps: StoryStep[]; } | null; source: TeacherSource; } | { data: { data: { studentName: string; steps: StoryStep[]; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: { studentName: string; steps: StoryStep[]; } | null; source: TeacherSource; }'.
+  Type '{ data: { data: { studentName: string; steps: StoryStep[]; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: { studentName: string; steps: StoryStep[]; } | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: { studentName: string; steps: StoryStep[]; }; source: TeacherSource; }' is missing the following properties from type '{ studentName: string; steps: StoryStep[]; }': studentName, steps
+src/services/teacherFixtures.ts(1326,3): error TS2322: Type '{ data: CurriculumClass | null; source: TeacherSource; } | { data: { data: CurriculumClass; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: CurriculumClass | null; source: TeacherSource; }'.
+  Type '{ data: { data: CurriculumClass; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: CurriculumClass | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: CurriculumClass; source: TeacherSource; }' is missing the following properties from type 'CurriculumClass': classGrade, subject, pacing, pacingWeeks, and 2 more.
+src/services/teacherFixtures.ts(1335,3): error TS2322: Type '{ data: CurriculumClass | null; source: TeacherSource; } | { data: { data: CurriculumClass; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: CurriculumClass | null; source: TeacherSource; }'.
+  Type '{ data: { data: CurriculumClass; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: CurriculumClass | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: CurriculumClass; source: TeacherSource; }' is missing the following properties from type 'CurriculumClass': classGrade, subject, pacing, pacingWeeks, and 2 more.
+src/services/teacherFixtures.ts(1405,3): error TS2322: Type '{ data: ClassAnalyticsData | null; source: TeacherSource; } | { data: { data: { classGrade: string; subject: string; topicNeeds: { topic: string; needsSupport: number; of: number; }[]; ... 4 more ...; readiness: { ...; }; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: ClassAnalyticsData | null; source: TeacherSource; }'.
+  Type '{ data: { data: { classGrade: string; subject: string; topicNeeds: { topic: string; needsSupport: number; of: number; }[]; improving: StudentDimensions[]; checkIn: StudentDimensions[]; homework: { ...; }[]; errorPatterns: { ...; }[]; readiness: { ...; }; }; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: ClassAnalyticsData | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: { classGrade: string; subject: string; topicNeeds: { topic: string; needsSupport: number; of: number; }[]; improving: StudentDimensions[]; checkIn: StudentDimensions[]; homework: { ...; }[]; errorPatterns: { ...; }[]; readiness: { ...; }; }; source: TeacherSource; }' is missing the following properties from type 'ClassAnalyticsData': classGrade, subject, topicNeeds, improving, and 4 more.
+src/services/teacherFixtures.ts(1519,3): error TS2322: Type '{ data: Intervention[]; source: TeacherSource; } | { data: { data: Intervention[]; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention[]; source: TeacherSource; }'.
+  Type '{ data: { data: Intervention[]; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention[]; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: Intervention[]; source: TeacherSource; }' is missing the following properties from type 'Intervention[]': length, pop, push, concat, and 35 more.
+src/services/teacherFixtures.ts(1528,3): error TS2322: Type '{ data: Intervention; source: TeacherSource; } | { data: { data: Intervention; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention; source: TeacherSource; }'.
+  Type '{ data: { data: Intervention; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: Intervention; source: TeacherSource; }' is missing the following properties from type 'Intervention': id, studentId, studentName, objective, and 7 more.
+src/services/teacherFixtures.ts(1548,3): error TS2322: Type '{ data: Intervention | null; source: TeacherSource; } | { data: { data: Intervention; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention | null; source: TeacherSource; }'.
+  Type '{ data: { data: Intervention; source: TeacherSource; }; source: TeacherSource; }' is not assignable to type '{ data: Intervention | null; source: TeacherSource; }'.
+    Types of property 'data' are incompatible.
+      Type '{ data: Intervention; source: TeacherSource; }' is missing the following properties from type 'Intervention': id, studentId, studentName, objective, and 7 more.

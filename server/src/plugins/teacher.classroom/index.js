@@ -167,14 +167,20 @@ export function register(app, kernel) {
       return withUser(req.user.tenant_id, req.user.role, async (c) => {
       let rows;
       if (state === 'missing') {
-        // roster students of the class whose due date passed with no submission on file
+        // roster students of the class whose due date passed with no submission on file.
+        // Submissions key the student USER id — bridge roster↔user by the 034 name-match
+        // convention so a student who DID submit never appears missing.
         rows = (await c.query(
           `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
              st.id AS student_id, st.name AS student_name
            FROM teacher.homework h
            JOIN app.students st ON st.grade = h.class_grade
            WHERE h.created_by = $1 AND h.status='open' AND h.due_at < now()
-             AND NOT EXISTS (SELECT 1 FROM teacher.submission s WHERE s.homework_id = h.id AND s.student_id = st.id)
+             AND NOT EXISTS (
+               SELECT 1 FROM teacher.submission s
+               LEFT JOIN app.users su ON su.id = s.student_id
+               WHERE s.homework_id = h.id
+                 AND (s.student_id = st.id OR lower(su.name) = lower(st.name)))
            ORDER BY h.due_at ASC, st.name ASC LIMIT 200`, [req.user.id])).rows;
       } else {
         const where = state === 'pending' ? `s.status IN ('submitted','late')`
@@ -182,10 +188,10 @@ export function register(app, kernel) {
           : `s.status = 'late'`;
         rows = (await c.query(
           `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
-             s.id AS submission_id, s.student_id, s.status, s.submitted_at, st.name AS student_name
+             s.id AS submission_id, s.student_id, s.status, s.submitted_at, su.name AS student_name
            FROM teacher.homework h
            JOIN teacher.submission s ON s.homework_id = h.id
-           LEFT JOIN app.students st ON st.id = s.student_id
+           LEFT JOIN app.users su ON su.id = s.student_id
            WHERE h.created_by = $1 AND ${where}
            ORDER BY h.due_at ASC, s.submitted_at DESC LIMIT 200`, [req.user.id])).rows;
       }
@@ -230,16 +236,18 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
         `SELECT r.id, r.kind, r.from_date, r.to_date, r.reason, r.status, r.decided_at, r.note,
-           a.status AS action_status, a.decision_note
+           a.status AS action_status, a.decision_note, a.decided_by AS action_decided_by, a.decided_at AS action_decided_at
          FROM teacher.leave_request r
          LEFT JOIN app.actions a ON a.code = 'teacher.leave.' || r.id::text
          WHERE r.teacher_id=$1 ORDER BY r.created_at DESC LIMIT 50`, [req.user.id])).rows;
       // mirror the kernel decision into the row (idempotent; the action row is the truth)
       for (const r of rows) {
         if (r.status === 'pending' && r.action_status === 'approved')
-          await c.query(`UPDATE teacher.leave_request SET status='approved', decided_at=now() WHERE id=$1 AND status='pending'`, [r.id]);
+          await c.query(`UPDATE teacher.leave_request SET status='approved', decided_by=$2, decided_at=COALESCE($3, now())
+            WHERE id=$1 AND status='pending'`, [r.id, r.action_decided_by, r.action_decided_at]);
         else if (r.status === 'pending' && r.action_status === 'dismissed')
-          await c.query(`UPDATE teacher.leave_request SET status='rejected', decided_at=now() WHERE id=$1 AND status='pending'`, [r.id]);
+          await c.query(`UPDATE teacher.leave_request SET status='rejected', decided_by=$2, decided_at=COALESCE($3, now())
+            WHERE id=$1 AND status='pending'`, [r.id, r.action_decided_by, r.action_decided_at]);
       }
       const fresh = (await c.query(
         `SELECT id, kind, from_date, to_date, reason, status, decided_at, note FROM teacher.leave_request

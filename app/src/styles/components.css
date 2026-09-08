@@ -744,3 +744,14 @@ table.data tbody tr.row-click { cursor: pointer; }
 }
 .sort-btn .sort-ind { display: inline-flex; color: var(--accent-text); }
 @media (pointer: coarse) { .sort-btn { min-height: 44px; } }
+
+/* ============ CU-1 coordinator lane ============ */
+/* Curriculum monitor print: the printed sheet replaces the screen chrome */
+.coord-print-sheet { display: none; }
+@media print {
+  .coord-screen-only { display: none !important; }
+  .coord-print-sheet { display: block !important; }
+  .sidebar, .topbar, .page-head-actions, .ai-dock, .mobile-tabbar { display: none !important; }
+  body { background: #fff; color: #111; }
+  .coord-print-sheet table th, .coord-print-sheet table td { color: #111 !important; }
+}
