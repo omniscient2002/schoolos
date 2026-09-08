@@ -13,7 +13,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
 import { getCurriculumMonitor, type CoordCurriculumMonitor as MonitorData, type CoordCurriculumRow } from '../../services/coordApi';
-import { useCoordAccess, useCoordData, CoordDenied, BackToCommandCenter, CoordBanner } from './shared';
+import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
 const fmtClass = (g: string | null) => (g ? `Grade ${g}` : 'Class —');
 

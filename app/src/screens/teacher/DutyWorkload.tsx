@@ -48,7 +48,6 @@ export default function DutyWorkload() {
   const duties = roster.data?.duties ?? [];
   const upcoming = duties.filter(d => new Date(`${d.date}T23:59`).getTime() >= Date.now());
   const done = duties.filter(d => new Date(`${d.date}T23:59`).getTime() < Date.now());
-  const w = load.data?.workload;
 
   const copyRoster = async () => {
     const text = duties.map(d => `${fmtDate(d.date)} ${d.time} — ${DUTY_META[d.kind].label} · ${d.place}`).join('\n');
@@ -147,7 +146,7 @@ export default function DutyWorkload() {
               />
             }
           >
-            {rows => (
+            {({ duties: rows }) => (
               <div className="u-col" style={{ gap: 10 }}>
                 {rows.map(d => {
                   const m = DUTY_META[d.kind];

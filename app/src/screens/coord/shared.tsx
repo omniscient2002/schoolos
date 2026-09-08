@@ -6,11 +6,9 @@
    empty / denied the same way.
    ============================================================ */
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useSession } from '../../App';
 import { Empty } from '../../components/ui';
 import { Icon } from '../../components/Icon';
-import { friendly } from '../../lib/friendlyErrors';
 
 /** server AUTHORITY set (coord.view index.js) — the UI mirrors it, the server decides */
 export const COORD_AUTHORITY = ['coordinator', 'principal'];
@@ -50,13 +48,6 @@ export function CoordPrivacyNote({ children }: { children: React.ReactNode }) {
       <span>{children}</span>
     </div>
   );
-}
-
-/** Back-link to the Command Center (used as the detail screens' page-head back target). */
-export function BackToCommandCenter() {
-  return <Link to="/coord/home" className="u-small u-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 32, padding: '0 4px' }}>
-    <Icon.ChevronLeft size={13} /> Command Center
-  </Link>;
 }
 
 /* local async pattern (per APP-SPEC, same idiom as Insights/ActionCenter) */

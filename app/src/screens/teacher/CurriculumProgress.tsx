@@ -127,7 +127,6 @@ function TopicRow({ node, classGrade, onSaved }: {
 }
 
 export default function CurriculumProgress() {
-  const toast = useToast();
   const [classGrade, setClassGrade] = useState('8-B');
   const state = useAsync(() => getCurriculumTree(classGrade), [classGrade]);
   const data = state.data?.data ?? null;

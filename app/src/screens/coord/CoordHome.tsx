@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  PageHead, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard,
+  PageHead, Card, Badge, Button, Empty, ErrorState, SkeletonCard,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';

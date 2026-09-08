@@ -9,7 +9,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  PageHead, Card, Badge, Button, Empty, ErrorState, SkeletonCard, Modal, DataTable, useToast,
+  PageHead, Card, Button, Empty, ErrorState, SkeletonCard, Modal, DataTable, useToast,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
@@ -17,7 +17,7 @@ import {
   getCoordHome, decideSubstitution,
   type CoordHome, type CoordPendingApproval,
 } from '../../services/coordApi';
-import { useCoordAccess, useCoordData, CoordDenied, BackToCommandCenter, CoordBanner } from './shared';
+import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
 const isSubstitutionKind = (a: CoordPendingApproval) =>
   a.kind === 'substitution' || /substitut|cover|absen/i.test(a.title);

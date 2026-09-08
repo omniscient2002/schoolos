@@ -63,7 +63,7 @@ export default function SubmissionsInbox() {
   const [decide, setDecide] = useState<'reviewed' | 'graded' | 'resubmit_requested'>('reviewed');
   const [saving, setSaving] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [bulkDone, setBulkDone] = useState(0);
+  const [, setBulkDone] = useState(0); /* write-only tick — the completion toast reports the count */
 
   const hw = useAsync(() => listHomework(), []);
   const subs = useAsync(
@@ -283,7 +283,7 @@ export default function SubmissionsInbox() {
             )
           }
         >
-          {rows => (
+          {({ submissions: rows }) => (
             <DataTable<TeacherSubmission>
               caption={`Submissions — ${rows.length} row${rows.length === 1 ? '' : 's'}, ${TABS.find(t => t.id === tab)?.label ?? ''} view`}
               rows={rows}
@@ -341,7 +341,7 @@ export default function SubmissionsInbox() {
                 },
                 {
                   key: 'open', label: '', align: 'right',
-                  render: s => <span className="u-small" style={{ color: 'var(--accent)', fontWeight: 600 }}>Review <Icon.ChevronRight size={12} style={{ display: 'inline' }} /></span>,
+                  render: () => <span className="u-small" style={{ color: 'var(--accent)', fontWeight: 600 }}>Review <Icon.ChevronRight size={12} style={{ display: 'inline' }} /></span>,
                 },
               ]}
             />

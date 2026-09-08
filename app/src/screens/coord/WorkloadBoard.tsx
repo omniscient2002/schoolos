@@ -13,7 +13,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
 import { getTeacherWorkload, type CoordTeacherWorkload, type CoordWorkloadRow } from '../../services/coordApi';
-import { useCoordAccess, useCoordData, CoordDenied, BackToCommandCenter, CoordBanner } from './shared';
+import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
 export default function WorkloadBoard() {
   const { allowed } = useCoordAccess();

@@ -228,7 +228,7 @@ export default function Homework() {
             />
           }
         >
-          {rows => (
+          {({ homework: rows }) => (
             <DataTable<TeacherHomework>
               caption={`Homework list — ${rows.length} item${rows.length === 1 ? '' : 's'}`}
               rows={rows}

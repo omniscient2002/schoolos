@@ -193,7 +193,7 @@ function ClassView({ classGrade }: { classGrade: string }) {
             render: r => <span className="u-flex" style={{ gap: 8, alignItems: 'center' }}><Avatar name={r.name} size="sm" />{r.name}</span>,
           },
           ...topicCols.map((t, i) => ({
-            key: `t_${i}`, label: t.topic, sortable: true, align: 'center' as const,
+            key: `t_${i}`, label: t.topic, sortable: true, align: 'center' as const satisfies 'left' | 'right' | undefined,
             sortValue: (r: MasteryStudent) => LEVEL_ORDER[r.topics[i]?.level ?? 'developing'],
             render: (r: MasteryStudent) => {
               const topic = r.topics[i];

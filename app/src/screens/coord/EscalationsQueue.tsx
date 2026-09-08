@@ -16,7 +16,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
 import { getEscalations, type CoordEscalations, type CoordEscalation } from '../../services/coordApi';
-import { useCoordAccess, useCoordData, CoordDenied, BackToCommandCenter, CoordBanner } from './shared';
+import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
 const fmtWhen = (iso: string) => {
   const d = new Date(iso);

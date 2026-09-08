@@ -66,12 +66,20 @@ export function register(app, kernel) {
           [ch.id, req.user.tenant_id])).rows[0]?.status ?? null;
         let assignments = null;
         if (hasHw) {
+          // roster↔user bridge (034 name-match convention): classroom submissions key the
+          // student USER id; family.child_link keys the roster id. Match either — a row is
+          // the child's only when ids collide or the submitter user carries the child's name.
           assignments = (await c.query(
             `SELECT h.id, h.title, h.subject, h.due_at, sub.status AS submission_status, sub.grade
              FROM teacher.homework h
-             LEFT JOIN teacher.submission sub ON sub.homework_id=h.id AND sub.student_id=$1
+             LEFT JOIN teacher.submission sub ON sub.homework_id=h.id
+               AND (sub.student_id=$1
+                    OR EXISTS (SELECT 1 FROM app.users su
+                               WHERE su.id = sub.student_id AND su.tenant_id=$3
+                               AND lower(su.name) = lower($4)))
              WHERE h.class_grade=$2 AND h.tenant_id=$3 AND h.due_at > now() - interval '7 days'
-             ORDER BY h.due_at ASC LIMIT 20`, [ch.id, ch.grade, req.user.tenant_id])).rows;
+             ORDER BY h.due_at ASC LIMIT 20`,
+            [ch.id, ch.grade, req.user.tenant_id, ch.name])).rows;
         }
         const consents = (await c.query(
           `SELECT id, kind, title, due_at, status FROM family.consent
@@ -108,10 +116,18 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id]);
       for (const a of att.rows) events.push({ at: a.date, kind: 'attendance', text: a.status === 'present' ? 'Present' : a.status === 'absent' ? 'Absent' : `Attendance: ${a.status}` });
       if (await tableExists(c, 'teacher.submission')) {
+        // roster↔user bridge: submissions key the student USER id (031); the child here is
+        // a roster id. Match the roster id OR the child-named student user (034 convention).
+        const child = (await c.query(`SELECT name FROM app.students WHERE id=$1 AND tenant_id=$2`,
+          [req.params.id, req.user.tenant_id])).rows[0];
         const sub = await c.query(
           `SELECT sub.submitted_at, sub.status, h.title, h.subject FROM teacher.submission sub
-           JOIN teacher.homework h ON h.id=sub.homework_id WHERE sub.student_id=$1 AND sub.tenant_id=$2
-           ORDER BY sub.submitted_at DESC LIMIT 30`, [req.params.id, req.user.tenant_id]);
+           JOIN teacher.homework h ON h.id=sub.homework_id
+           WHERE sub.tenant_id=$2 AND (sub.student_id=$1
+                 OR ($3::text IS NOT NULL AND EXISTS (SELECT 1 FROM app.users su
+                        WHERE su.id = sub.student_id AND su.tenant_id=$2
+                        AND lower(su.name) = lower($3))))
+           ORDER BY sub.submitted_at DESC LIMIT 30`, [req.params.id, req.user.tenant_id, child?.name ?? null]);
         for (const s of sub.rows) events.push({ at: s.submitted_at, kind: 'homework', text: `${s.subject}: ${s.title} — ${s.status}` });
       }
       const rep = await c.query(

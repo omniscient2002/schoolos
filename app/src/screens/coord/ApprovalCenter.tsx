@@ -24,7 +24,7 @@ import {
   getCoordHome, decideSubstitution, decideGenericAction,
   type CoordHome, type CoordPendingApproval,
 } from '../../services/coordApi';
-import { useCoordAccess, useCoordData, CoordDenied, BackToCommandCenter, CoordBanner } from './shared';
+import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
 const isSubstitutionKind = (a: CoordPendingApproval) =>
   a.kind === 'substitution' || /substitut|cover|absen/i.test(a.title);
