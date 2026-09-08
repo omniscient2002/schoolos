@@ -21,6 +21,9 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      # config.js refuses CORS_ORIGINS="*" in production — pass the operator's
+      # allowlist through (comma-separated); see server/.env.example.
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in production}
       PORT: "8080"
     depends_on:
       db:
@@ -30,6 +33,20 @@ services:
     # seed.js TRUNCATEs tenant data and installs demo credentials. For a local demo
     # stack use `docker compose --profile demo up` which runs the demo-init service.
     command: sh -c "node scripts/bootstrap.js && node scripts/migrate.js && node src/index.js"
+  outbox:
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+    depends_on:
+      db:
+        condition: service_healthy
+    # The event spine's delivery worker — REQUIRED in every environment, not a
+    # demo extra: without it outbox rows are written but never relayed. Poll
+    # cadence/backoff are tunable via OUTBOX_* envs (see scripts/outbox-worker.js).
+    command: node scripts/outbox-worker.js
+    restart: unless-stopped
+
   demo-init:
     profiles: [demo]
     build: .

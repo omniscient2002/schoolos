@@ -98,15 +98,15 @@ export async function buildApp(opts = {}) {
     const user = u.rows[0] ?? null;
     // Uniform response shape — phone enumeration must not distinguish
     // registered from unregistered numbers.
-    const body = { sent: true, expiresInSeconds: 300, devEcho: config.otp.devEcho };
+    const body = { sent: true, expiresInSeconds: Math.round(config.otp.ttlMs / 1000), devEcho: config.otp.devEcho };
     if (user) {
       const code = String(randomInt(100000, 1000000)); // CSPRNG — Math.random is not a secret source (ops.visitors precedent)
       const salt = randomBytes(16).toString('hex');
       const hash = scryptSync(code, salt, 64).toString('hex');
       // kernel path: the OTP vault denies the app role entirely (RLS policy) —
       // only the owner connection may write verification secrets.
-      await q(`INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + interval '5 minutes')`,
-        [user.tenant_id, phone, `${salt}:${hash}`]);
+      await q(`INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + make_interval(secs => $4))`,
+        [user.tenant_id, phone, `${salt}:${hash}`, config.otp.ttlMs / 1000]);
       req.log.warn({ phone: phone.slice(-4), msg: 'OTP issued' });
       if (config.otp.devEcho) body.devCode = code; // dev-only echo, opt-in via OTP_DEV_ECHO
     }
@@ -125,13 +125,13 @@ export async function buildApp(opts = {}) {
     const otp = user ? await q(`SELECT id, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE phone=$1 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1`, [phone]) : { rows: [] };
     const row = otp.rows[0];
     if (!row) return deny();
-    if (new Date(row.expires_at) < new Date()) return deny();
+    if (new Date(row.expires_at) < new Date()) return deny(); // expiry uses config.otp.ttlMs
     if (row.attempts >= config.otp.maxAttempts) return deny();
     const [salt, hash] = row.code_hash.split(':');
     const ok = (() => { try { return timingSafeEqual(scryptSync(String(code), salt, 64), Buffer.from(hash, 'hex')); } catch { return false; } })();
     if (!ok) {
       await q(`UPDATE app.auth_otps SET attempts = attempts + 1 WHERE id=$1`, [row.id]);
-      return reply.code(401).send({ error: 'invalid code' });
+      return deny(); // same copy as every other failure — no oracle at all
     }
     await q(`UPDATE app.auth_otps SET consumed_at = now() WHERE id=$1`, [row.id]);
     return issueSession(user, 'phone');

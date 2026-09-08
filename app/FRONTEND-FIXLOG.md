@@ -51,3 +51,13 @@ No server, `tests/b9`, migrations, or repo-doc changes. Server test suite NOT ru
 - Server test suite intentionally NOT executed (lane law: other lanes share the DB). No files outside `app/` touched.
 
 **Files changed (13):** `app/src/App.tsx`, `app/src/components/Shell.tsx`, `app/src/components/ErrorBoundary.tsx` (new), `app/src/components/student/SessionSafety.tsx`, `app/src/screens/Login.tsx`, `app/src/lib/demoMode.ts` (new), `app/src/services/liveApi.ts`, `app/src/services/coordApi.ts`, `app/src/services/parentApi.ts`, `app/src/services/studentApi.ts`, `app/src/services/teacherFixtures.ts`, `app/src/state/store.tsx`, `app/.env.development` (new).
+
+## 2026-09-09 — Re-scan cycle-1 P3 fix: light-role dead-end on staff routes
+
+### Fix 7 — Guard dead-end for authenticated parents/students (App.tsx Guard)
+- `src/App.tsx` Guard: when the **authenticated** role is light (`live.role` is parent/student) and the path is `staffOnly`, the Guard now **redirects to the role's home** (`/parent/family` / `/student/home2`, `replace`) instead of rendering the "Not available on this account" dead end. Rationale: post-login landing is `/today` (the default `returnTo`), so every real parent/student sign-in previously ended on a locked screen whose guidance referenced the demo role switcher — which exists only under `VITE_DEMO_MODE=1`.
+- The demo-preview path is unchanged: a staff member previewing a light role via the switcher (`session.roleId` light, `live.role` staff) still gets the informative locked screen with the "switch back" copy.
+- No loop risk: neither `/parent/family` nor `/student/home2` is in `staffOnly`; redirect fires only on `staffOnly` paths.
+- Verified: `npx tsc -b --force` exit 0; no other files touched.
+
+**Files changed (1):** `app/src/App.tsx`.

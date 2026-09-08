@@ -194,6 +194,17 @@ function Guard({ children }: { children: React.ReactNode }) {
      staff-only regardless (its route additionally only exists in demo mode). */
   const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
+    /* Re-scan P3 fix: an AUTHENTICATED parent/student who deep-links (or lands
+       post-login — the default returnTo is /today) on a staff surface is
+       redirected to their own home instead of meeting a dead-end "Not
+       available" screen whose guidance pointed at the demo role switcher
+       (which exists only under VITE_DEMO_MODE=1). The demo-preview path
+       (staff member previewing a light role via the switcher) keeps the
+       informative locked screen below — it needs the "switch back" copy. */
+    const liveIsLight = ['parent', 'student'].includes(live.role);
+    if (liveIsLight) {
+      return <Navigate to={live.role === 'student' ? '/student/home2' : '/parent/family'} replace />;
+    }
     return (
       <PageShell>
         <div className="empty" style={{ padding: '80px 0' }}>

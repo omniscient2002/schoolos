@@ -34,18 +34,22 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTR-001 RT-005: parents are scoped to their own child via the guardian record;
       // teachers/technicians get the roster WITHOUT guardian contact details.
-      const parentName = req.user.role === 'parent' ? req.user.name : null;
       const showPhones = STAFF_ROSTER.has(req.user.role);
+      // RT-7cyc8 P3: parents are structurally scoped via family.child_link
+      // (rename-proof) — NOT guardian_name matching. $6 is the caller's user id
+      // for parents; staff pass NULL and the LEFT JOIN keeps every student.
       const r = await c.query(
-        `SELECT id, admission_no, name, grade, section, guardian_name,
-                ${showPhones ? 'guardian_phone' : 'NULL::text AS guardian_phone'},
-                bus_route, status, source, source_ref
-         FROM app.students
-         WHERE ($1::text IS NULL OR grade=$1) AND ($2::text IS NULL OR section=$2)
-           AND ($3::text IS NULL OR name ILIKE '%'||$3||'%' OR admission_no ILIKE '%'||$3||'%')
-           AND ($6::text IS NULL OR guardian_name = $6)
-         ORDER BY grade, section, name LIMIT $4 OFFSET $5`,
-        [grade ?? null, section ?? null, search ?? null, Math.min(+limit, 500), +offset, parentName]);
+        `SELECT s.id, s.admission_no, s.name, s.grade, s.section, s.guardian_name,
+                ${showPhones ? 's.guardian_phone' : 'NULL::text AS guardian_phone'},
+                s.bus_route, s.status, s.source, s.source_ref
+         FROM app.students s
+         LEFT JOIN family.child_link cl ON cl.student_id = s.id AND cl.user_id = $6::uuid
+         WHERE s.status='active' AND ($1::text IS NULL OR s.grade=$1) AND ($2::text IS NULL OR s.section=$2)
+           AND ($3::text IS NULL OR s.name ILIKE '%'||$3||'%' OR s.admission_no ILIKE '%'||$3||'%')
+           AND ($6::uuid IS NULL OR cl.user_id IS NOT NULL)
+         ORDER BY s.grade, s.section, s.name LIMIT $4 OFFSET $5`,
+        [grade ?? null, section ?? null, search ?? null, Math.min(+limit, 500), +offset,
+         req.user.role === 'parent' ? req.user.id : null]);
       for (const row of r.rows) if (!showPhones) delete row.guardian_phone;
       return { students: r.rows };
     });
@@ -417,7 +421,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/actions/:id/decide', { preHandler: me }, async (req, reply) => {
+  app.post('/actions/:id/decide', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
     if (!['approved','dismissed'].includes(decision)) return bad(reply, "decision must be 'approved' or 'dismissed'");
     // P2-3 (cycle 5): non-uuid :id hit the SELECT with 22P02 → raw 500; format-guard
