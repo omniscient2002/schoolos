@@ -68,10 +68,18 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 | RT-9 permissive policy OR hole | Postgres ORs permissive policies | AS RESTRICTIVE owner_scoped | DB-layer zero-rows pin |
 | RT-10 duty schema USAGE missing (lane fixture) | fixture grants table but not schema | GRANT USAGE ON SCHEMA duty | coord-view 9/9 target |
 | RT-11 vacuous degradation test | conditional skipped both branches | forced drop → assert null → recreate → assert array | parent-family green |
+| RT-7cyc7/P1-1 name-match bridge leaked cross-child submissions (grade-10 parent saw grade-8 same-name student) | bridge matched ANY user with the child's name; seed has 6× Diya Nair | fail-closed: bridge requires EXACTLY ONE roster row AND ONE student user with the name; timeline grade-scoped | parent-family 8/8 + bridge guards |
+| RT-7cyc7/P1-2 dev registry drift (4 lanes dark, duty table gone) | tenant-correlated seeds ran before tenant existed | 031–039 replayed idempotently + all lanes enabled via owner door | enable-door flow verified live |
+| RT-7cyc7/P2-6 jti-less tokens bypassed revocation; logout audit overclaimed | `if (payload.jti)` allowed unrevokable tokens; exp hardcoded +13h | jti MANDATORY (401 without), denylist exp = token's real exp | auth-revocation 2/2 (legacy-token pin flipped to refuse) |
+| RT-7cyc7/B9 concern routing 42501 since 032 (SELECT…FOR UPDATE needs UPDATE grant) | 032 granted SELECT,INSERT only | migration 039 grants UPDATE on concern tables | b9-confidentiality 6/6 |
+| RT-7cyc7/B9 concerns list 42P18 (unused $1) | param list misaligned after tiering | rebound $1=oversight,$2=status,$3=user | b9 tiered-visibility pin |
+
+**RT-7 cycle 7 policy decision (#5)**: kernel decide — a principal deciding a coordinator-owned action is **by-design** (owner>principal outranks coordinator owners; the board structure mirrors school reality). The SoD that IS contractual: filer≠router≠decider within the same concern (pinned), coordinator self-approval (pinned), finance actions owner-only (pinned).
 
 ## 7. Remaining open (prioritized)
-1. A3 JWT revocation/rotation (logout is stateless) — design + implement
-2. B9 counselor/clinic confidentiality matrix — dedicated test file
-3. Permission-matrix generator (role × door × action) — automate §43
-4. E5 secret-scan cron — grep + fail
-5. Multi-tenant synthetic second school — cross-tenant door sweep
+1. ~~A3 JWT revocation/rotation~~ — DONE (038 + jti mandatory + regression suite)
+2. ~~B9 counselor/clinic confidentiality matrix~~ — DONE (b9-confidentiality.test.js 6/6)
+3. ~~Permission-matrix generator~~ — DONE (scripts/permission-matrix.js, 177 routes, 0 unguarded)
+4. ~~E5 secret-scan cron~~ — DONE (scripts/secret-scan.mjs fail-closed, clean)
+5. Multi-tenant synthetic second school — cross-tenant door sweep (RT-7 cycle 7 disproved cross-tenant takeover at the RLS layer; full second-tenant E2E sweep still worthwhile)
+6. Blue-team in flight: #3 cross-class grade gate, #4 decide-door aliasing, #6 duty 409
