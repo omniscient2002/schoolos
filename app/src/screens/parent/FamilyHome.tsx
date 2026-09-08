@@ -43,7 +43,7 @@ function istHour(): number {
 function targetOf(ref: string, kind?: string): string | null {
   const s = `${kind ?? ''} ${ref}`.toLowerCase();
   if (s.includes('consent')) return '/parent/consents';
-  if (s.includes('homework') || s.includes('assignment')) return '/parent/assignments';
+  if (s.includes('homework') || s.includes('assignment')) return '/parent/family';
   if (s.includes('payment') || s.includes('fee')) return '/parent/fees';
   if (s.includes('leave') || s.includes('request') || s.includes('form') || s.includes('ptm')) return '/parent/requests';
   return null;
@@ -202,7 +202,7 @@ export default function FamilyHome() {
                       <span className="u-faint" style={{ flexShrink: 0, marginLeft: 'auto' }}>{a.due ? fmtDateShort(a.due) : 'due soon'}</span>
                     </div>
                   ))}
-                  {hw.length > 3 && <Link to="/parent/assignments" className="u-xs" style={{ minHeight: 32, display: 'inline-flex', alignItems: 'center' }}>+{hw.length - 3} more — see all</Link>}
+                  {hw.length > 3 && <Link to="/parent/family" className="u-xs" style={{ minHeight: 32, display: 'inline-flex', alignItems: 'center' }}>+{hw.length - 3} more — see all</Link>}
                 </div>
               )}
             </div>

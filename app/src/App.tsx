@@ -86,6 +86,14 @@ const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
 const StudentAsk = F(() => import('./screens/StudentAsk'));
 const StudentHome2 = F(() => import('./screens/student/StudentHome2'));
+/* StudentOS staff desks (SU-3): print center + wellbeing + noticeboard */
+const PrintQueue = F(() => import('./screens/student/PrintQueue'));
+const WellbeingQueue = F(() => import('./screens/student/WellbeingQueue'));
+const Noticeboard = F(() => import('./screens/student/Noticeboard'));
+/* TeacherOS: home command center + classroom P6 doors (TU lanes) */
+const TeacherHome = F(() => import('./screens/TeacherHome'));
+const TeacherHomework = F(() => import('./screens/teacher/Homework'));
+const SubmissionsInbox = F(() => import('./screens/teacher/SubmissionsInbox'));
 /* CU-1 coordinator lane (CoordinatorOS) */
 const CoordHome = F(() => import('./screens/coord/CoordHome'));
 const CoordSubstitutions = F(() => import('./screens/coord/SubstitutionReview'));
@@ -160,7 +168,7 @@ function Guard({ children }: { children: React.ReactNode }) {
      sign-in must land on the calm surface) and the demo view switcher
      (staff previewing a light role sees the same gates). */
   const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord'];
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return (
       <PageShell>
@@ -336,6 +344,14 @@ function AppRoutes() {
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
       <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
       <Route path="/student/ask" element={<S><StudentAsk /></S>} />
+      {/* TeacherOS: command center + P6 classroom doors (staff-gated) */}
+      <Route path="/teacher" element={<S><TeacherHome /></S>} />
+      <Route path="/teacher/homework" element={<S><TeacherHomework /></S>} />
+      <Route path="/teacher/submissions" element={<S><SubmissionsInbox /></S>} />
+      {/* StudentOS staff desks — paper-first ops behind the student surface (staff-gated) */}
+      <Route path="/print-queue" element={<S><PrintQueue /></S>} />
+      <Route path="/wellbeing-queue" element={<S><WellbeingQueue /></S>} />
+      <Route path="/noticeboard" element={<S><Noticeboard /></S>} />
       {/* CU-1 coordinator lane — /coord/* is staff-gated via staffOnly '/coord' above */}
       <Route path="/coord/home" element={<S><CoordHome /></S>} />
       <Route path="/coord/substitutions" element={<S><CoordSubstitutions /></S>} />
