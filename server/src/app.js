@@ -6,7 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { pool, q, withUser } from './db.js';
 import { verifyPassword, ROLES } from './auth.js';
-import { scryptSync, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
+import { scryptSync, timingSafeEqual, randomBytes, randomUUID, randomInt } from 'node:crypto';
 import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
 import { loadPlugins } from './plugins/loader.js';
@@ -53,6 +53,13 @@ export async function buildApp(opts = {}) {
     const r = await q('SELECT 1 AS ok').catch(() => null);
     return { status: r ? 'ok' : 'degraded', db: !!r, time: new Date().toISOString() };
   });
+  // Readiness for orchestrators (ops audit P0-4): 503 unless the DB actually answers.
+  // /health stays 200-degraded for humans; THIS is what HEALTHCHECK/LBs must poll.
+  app.get('/ready', async (_req, reply) => {
+    const r = await q('SELECT 1 AS ok').catch(() => null);
+    if (!r) return reply.code(503).send({ ready: false, reason: 'database unreachable' });
+    return { ready: true };
+  });
 
   // --- login (no auth) ---
   app.post('/auth/login', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
@@ -89,7 +96,7 @@ export async function buildApp(opts = {}) {
     // registered from unregistered numbers.
     const body = { sent: true, expiresInSeconds: 300, devEcho: config.otp.devEcho };
     if (user) {
-      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const code = String(randomInt(100000, 1000000)); // CSPRNG — Math.random is not a secret source (ops.visitors precedent)
       const salt = randomBytes(16).toString('hex');
       const hash = scryptSync(code, salt, 64).toString('hex');
       // kernel path: the OTP vault denies the app role entirely (RLS policy) —
@@ -106,13 +113,16 @@ export async function buildApp(opts = {}) {
     const { phone, code } = req.body ?? {};
     if (!phone || !code) return reply.code(400).send({ error: 'phone and code required' });
     const u = await q(`SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active`, [phone]);
-    if (!u.rows[0]) return reply.code(401).send({ error: 'invalid code' });
+    // Uniform failure copy for EVERY path — registered/unregistered/expired/missing
+    // code all look identical from outside (phone-enumeration defense, RT-7cyc8).
+    const DENIED = { error: 'that code didn’t work — request a new one and try again' };
+    const deny = () => reply.code(401).send(DENIED);
     const user = u.rows[0];
-    const otp = await q(`SELECT id, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE phone=$1 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1`, [phone]);
+    const otp = user ? await q(`SELECT id, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE phone=$1 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1`, [phone]) : { rows: [] };
     const row = otp.rows[0];
-    if (!row) return reply.code(401).send({ error: 'no active code — request a new one' });
-    if (new Date(row.expires_at) < new Date()) return reply.code(401).send({ error: 'code expired — request a new one' });
-    if (row.attempts >= config.otp.maxAttempts) return reply.code(429).send({ error: 'too many attempts — request a new code' });
+    if (!row) return deny();
+    if (new Date(row.expires_at) < new Date()) return deny();
+    if (row.attempts >= config.otp.maxAttempts) return deny();
     const [salt, hash] = row.code_hash.split(':');
     const ok = (() => { try { return timingSafeEqual(scryptSync(String(code), salt, 64), Buffer.from(hash, 'hex')); } catch { return false; } })();
     if (!ok) {
@@ -128,6 +138,12 @@ export async function buildApp(opts = {}) {
   app.get('/auth/google/start', async (req, reply) => {
     if (!googleConfigured()) return reply.code(503).send({ error: 'Google SSO not configured (set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI)' });
     const state = randomBytes(16).toString('hex');
+    // P1-8: state is stored server-side (short TTL) and verified in the callback —
+    // generated-but-unvalidated state = login CSRF.
+    await q(`INSERT INTO app.oauth_states (state, created_at) VALUES ($1, now()) ON CONFLICT (state) DO NOTHING`, [state]).catch(async () => {
+      await q(`CREATE TABLE IF NOT EXISTS app.oauth_states (state text PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now())`);
+      await q(`INSERT INTO app.oauth_states (state) VALUES ($1) ON CONFLICT (state) DO NOTHING`, [state]);
+    });
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.searchParams.set('client_id', config.google.clientId);
     url.searchParams.set('redirect_uri', config.google.redirectUri);
@@ -141,8 +157,10 @@ export async function buildApp(opts = {}) {
 
   app.get('/auth/google/callback', async (req, reply) => {
     if (!googleConfigured()) return reply.code(503).send({ error: 'Google SSO not configured' });
-    const { code } = req.query ?? {};
-    if (!code) return reply.code(400).send({ error: 'missing code' });
+    const { code, state } = req.query ?? {};
+    if (!code || !state) return reply.code(400).send({ error: 'missing code or state' });
+    const st = await q(`DELETE FROM app.oauth_states WHERE state=$1 AND created_at > now() - interval '10 minutes' RETURNING state`, [String(state)]);
+    if (!st.rows[0]) return reply.code(401).send({ error: 'expired login attempt — start again' });
     try {
       const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },

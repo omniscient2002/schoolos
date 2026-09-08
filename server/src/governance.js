@@ -10,7 +10,15 @@ export async function checkEventBudget(client, tenantId, pluginId, payloadBytes 
   const budget = { ...DEFAULTS, ...(p.rows[0].event_budget ?? {}) };
   const breaker = p.rows[0].breaker_state ?? {};
   if (breaker.open === true) {
-    return { allowed: false, code: 'BREAKER_OPEN', since: breaker.opened_at ?? null };
+    // ops audit P1-12: half-open recovery — a tripped breaker self-heals after a
+    // 5-minute cooldown instead of staying open until manual SQL.
+    if (breaker.opened_at && Date.now() - new Date(breaker.opened_at).getTime() > 5 * 60_000) {
+      await client.query(
+        `UPDATE app.plugins SET breaker_state = jsonb_build_object('open', false, 'recovered_at', now())
+         WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, pluginId]);
+    } else {
+      return { allowed: false, code: 'BREAKER_OPEN', since: breaker.opened_at ?? null };
+    }
   }
   if (payloadBytes > budget.payload_max_bytes) {
     return { allowed: false, code: 'PAYLOAD_TOO_LARGE', limit: budget.payload_max_bytes };

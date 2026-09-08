@@ -55,7 +55,8 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTR-001 RT-005: a parent may only open their own child's record.
       if (req.user.role === 'parent') {
-        const own = await c.query(`SELECT id FROM app.students WHERE id=$1 AND guardian_name=$2`, [req.params.id, req.user.name]);
+        // RT-7cyc8 P1-9: structural guardian binding (family.child_link), NOT name matching.
+        const own = await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, req.params.id]);
         if (!own.rows[0]) return bad(reply, 'not found', 404);
       }
       const s = await c.query(`SELECT * FROM app.students WHERE id=$1`, [req.params.id]);
@@ -92,6 +93,17 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.get('/attendance', { preHandler: me }, async (req) => {
     const { date = new Date().toISOString().slice(0,10), grade, section } = req.query;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (req.user.role === 'parent') {
+        // RT-7cyc8 P1-9: a guardian reads attendance for their own children only.
+        const r = await c.query(
+          `SELECT s.id, s.admission_no, s.name, s.grade, s.section, a.status, a.note
+           FROM family.child_link cl
+           JOIN app.students s ON s.id = cl.student_id AND s.status='active'
+           LEFT JOIN app.attendance a ON a.student_id = s.id AND a.school_date = $2::date
+           WHERE cl.user_id = $1
+           ORDER BY s.grade, s.section, s.name LIMIT 50`, [req.user.id, date]);
+        return { date, rows: r.rows, scoped: 'own_children' };
+      }
       const r = await c.query(
         `SELECT s.id, s.admission_no, s.name, s.grade, s.section, a.status, a.note
          FROM app.students s
@@ -143,12 +155,29 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.get('/fees/obligations', { preHandler: me }, async (req) => {
     const { studentId, status } = req.query;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // RT-7cyc8 P1-9: guardians are structurally scoped to their own children
+      // (family.child_link) — a parent-supplied studentId for another child is refused.
+      let scope = studentId ?? null;
+      if (req.user.role === 'parent') {
+        const kids = await c.query(
+          `SELECT cl.student_id FROM family.child_link cl WHERE cl.user_id=$1`, [req.user.id]);
+        const mine = kids.rows.map((k) => k.student_id);
+        if (scope && !mine.includes(scope)) return { obligations: [], scoped: 'own_children' };
+        if (!scope && mine.length) scope = null; // unfiltered → constrain to own children below
+        const list = scope ? [scope] : mine;
+        const r2 = await c.query(
+          `SELECT o.*, s.name AS student_name, s.grade, s.section
+           FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
+           WHERE o.student_id = ANY($1::uuid[]) AND ($2::text IS NULL OR o.status=$2)
+           ORDER BY o.due_on NULLS LAST LIMIT 500`, [list, status ?? null]);
+        return { obligations: r2.rows, scoped: 'own_children' };
+      }
       const r = await c.query(
         `SELECT o.*, s.name AS student_name, s.grade, s.section
          FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
          WHERE ($1::uuid IS NULL OR o.student_id=$1) AND ($2::text IS NULL OR o.status=$2)
          ORDER BY o.due_on NULLS LAST LIMIT 500`,
-        [studentId ?? null, status ?? null]);
+        [scope, status ?? null]);
       return { obligations: r.rows };
     });
   });
@@ -378,7 +407,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ actions (approvals) ============
-  app.get('/actions', { preHandler: me }, async (req) => {
+  app.get('/actions', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req) => {
     const { status } = req.query;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
@@ -442,7 +471,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // ============ events / notifications / communications / audit / memory ============
-  app.get('/events', { preHandler: me }, async (req) => {
+  app.get('/events', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req) => {
     const since = req.query.since ? new Date(req.query.since) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
@@ -473,7 +502,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.get('/audit', { preHandler: me }, async (req) => {
+  app.get('/audit', { preHandler: require('owner','principal','itadmin','finance') }, async (req) => {
     const limit = Math.min(parseInt(req.query.limit ?? '100', 10), 500);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
@@ -483,7 +512,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.get('/memory', { preHandler: me }, async (req) => {
+  app.get('/memory', { preHandler: require('owner','principal','itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`SELECT * FROM app.memory_entries ORDER BY decided_at DESC LIMIT 100`);
       return { entries: r.rows };

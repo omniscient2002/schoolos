@@ -14,7 +14,10 @@ try {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {
     app.log.info(`${sig} — shutting down`);
-    await app.close();
+    setTimeout(() => { app.log.error('graceful close hung — forcing exit'); process.exit(1); }, 15000).unref();
+    try { await app.close(); } catch (e) { app.log.error(e); }
     process.exit(0);
   });
 }
+process.on('unhandledRejection', (err) => app.log.error({ err }, 'unhandled rejection'));
+process.on('uncaughtException', (err) => { app.log.error({ err }, 'uncaught exception — exiting'); process.exit(1); });

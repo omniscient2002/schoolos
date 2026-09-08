@@ -5,6 +5,7 @@ import { config } from './config.js';
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   max: 20,
+  connectionTimeoutMillis: 5000, // fail fast under DB outage (ops audit P1-6)
   idleTimeoutMillis: 30_000,
   idle_in_transaction_session_timeout: 60_000,
   statement_timeout: 15_000,

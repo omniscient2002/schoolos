@@ -7,6 +7,17 @@ const req = (name, fallback) => {
 };
 const int = (v, dflt) => (v ? parseInt(v, 10) : dflt);
 
+const isProd = (process.env.NODE_ENV ?? 'development') === 'production';
+if (isProd) {
+  // ops audit P1-19: production must never run on dev defaults.
+  if ((process.env.DATABASE_URL ?? '').includes('127.0.0.1:5432') || (process.env.DATABASE_URL ?? '').includes('localhost:5432'))
+    throw new Error('NODE_ENV=production with a localhost DATABASE_URL — point DATABASE_URL at the real cluster');
+  if ((process.env.CORS_ORIGINS ?? '*') === '*')
+    throw new Error('NODE_ENV=production requires an explicit CORS_ORIGINS allowlist (got "*")');
+  if ((process.env.SEED_GUARD ?? '') !== 'strict' && process.env.SEED_GUARD !== undefined)
+    throw new Error('SEED_GUARD must be "strict" in production');
+}
+
 export const config = {
   env: req('NODE_ENV', 'development'),
   port: int(process.env.PORT, 8080),

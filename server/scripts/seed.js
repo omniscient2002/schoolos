@@ -8,6 +8,16 @@ import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.js';
 import { hashPassword } from '../src/auth.js';
 
+
+// ── P0 guard (ops audit): seed wipes tenant data. Refuse in production unless
+// the operator passes --i-know-this-wipes-data explicitly.
+if ((process.env.NODE_ENV === 'production' || process.env.SEED_GUARD === 'strict')
+    && !process.argv.includes('--i-know-this-wipes-data')) {
+  console.error('REFUSING to seed: NODE_ENV=production would TRUNCATE tenant data.\n'
+    + 'For a deliberate demo reset re-run with: node scripts/seed.js --i-know-this-wipes-data');
+  process.exit(1);
+}
+
 const client = new pg.Client({ connectionString: config.databaseUrl });
 await client.connect();
 

@@ -18,7 +18,7 @@ services:
   api:
     build: .
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       PORT: "8080"
@@ -26,8 +26,21 @@ services:
       db:
         condition: service_healthy
     ports: ["8080:8080"]
-    # one-shot provisioning then serve:
-    command: sh -c "node scripts/migrate.js && node scripts/bootstrap.js && node scripts/seed.js && node src/index.js"
+    # prod semantics: migrate (idempotent) + serve. NEVER seed in production —
+    # seed.js TRUNCATEs tenant data and installs demo credentials. For a local demo
+    # stack use `docker compose --profile demo up` which runs the demo-init service.
+    command: sh -c "node scripts/bootstrap.js && node scripts/migrate.js && node src/index.js"
+  demo-init:
+    profiles: [demo]
+    build: .
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "node scripts/bootstrap.js && node scripts/seed.js"
+    restart: "no"
 
 volumes:
   pgdata:

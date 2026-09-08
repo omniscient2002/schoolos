@@ -4,12 +4,13 @@ import { config } from '../src/config.js';
 
 // same host/db as DATABASE_URL, but as the superuser (role + grant management)
 const adminUrl = process.env.ADMIN_DATABASE_URL
-  ?? config.databaseUrl.replace(/\/\/[^@]+@/, '//postgres@');
+  ?? (() => { const u = new URL(config.databaseUrl); u.username = 'postgres'; u.password = process.env.ADMIN_PASSWORD ?? ''; return u.toString(); })();
 const client = new pg.Client({ connectionString: adminUrl });
 await client.connect();
 const res = await client.query(`SELECT 1 FROM pg_roles WHERE rolname='schoolos_app'`);
 if (res.rowCount === 0) {
-  await client.query(`CREATE ROLE schoolos_app LOGIN PASSWORD 'schoolos_app_pw' NOINHERIT`);
+  const appRolePw = process.env.APP_ROLE_PASSWORD ?? 'schoolos_app_pw';
+    await client.query(`CREATE ROLE schoolos_app LOGIN PASSWORD '${appRolePw.replace(/'/g, "''")}' NOINHERIT`);
   console.log('created role schoolos_app');
 }
 await client.query(`GRANT USAGE ON SCHEMA app TO schoolos_app`);
