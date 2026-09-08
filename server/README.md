@@ -85,6 +85,6 @@ GET  /health
 
 - **Grant ordering:** always `migrate → bootstrap → seed`. Bootstrap grants `ON ALL TABLES`, so it must run after tables exist (re-run after adding migrations).
 - **Migrations:** tracked in `app.schema_migrations`; runner is idempotent.
-- **Outbox:** `app.outbox` rows are written transactionally with events; a worker consumes `WHERE processed_at IS NULL` (worker process is Phase 2 of the build plan — `docs/08`).
+- **Outbox:** `app.outbox` rows are written transactionally with events; a worker consumes `WHERE processed_at IS NULL` (worker process is shipped (`scripts/outbox-worker.js` — compose `outbox` service, `npm run worker`; retries with backoff, parks poison rows) — `docs/08`).
 - **Secrets:** set `JWT_SECRET` in any shared environment; `.env` is dev-only.
 - **Logs:** structured pino; `level:50` lines are errors with stack + reqId.

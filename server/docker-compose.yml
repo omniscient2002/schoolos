@@ -51,6 +51,10 @@ services:
     # cadence/backoff are tunable via OUTBOX_* envs (see scripts/outbox-worker.js).
     command: node scripts/outbox-worker.js
     restart: unless-stopped
+    # image-level HEALTHCHECK probes :8080/ready, which no worker listens on —
+    # silence the permanent "unhealthy" noise (worker liveness = restart policy).
+    healthcheck:
+      disable: true
 
   demo-init:
     profiles: [demo]

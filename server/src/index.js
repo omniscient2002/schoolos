@@ -2,6 +2,11 @@
 import { buildApp } from './app.js';
 import { config } from './config.js';
 
+if (process.env.WORKER_ROLE === '1') {
+  console.error('WORKER_ROLE=1 on the HTTP entrypoint — the API would boot with prod guards disabled. Use scripts/outbox-worker.js for workers.');
+  process.exit(1);
+}
+
 const app = await buildApp();
 try {
   await app.listen({ port: config.port, host: config.host });
