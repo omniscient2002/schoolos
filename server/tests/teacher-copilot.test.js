@@ -141,12 +141,14 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
     assert.equal(cellAgain.level, 'developing', 'no double-sliding on later reads');
     assert.equal(cellAgain.confidence, 'low');
 
-    // fresh evidence arrives → deterministic recovery to the evidence level
+    // fresh evidence arrives → deterministic recovery: fresh evidence ALONE governs
+    // (the expired rows stop counting entirely), so [70] → secure — the decayed
+    // 'developing' label did not freeze the cell
     await sql(`INSERT INTO mastery.evidence (tenant_id, student_id, subject, node_id, kind, ref, value)
                SELECT tenant_id, $1, 'Mathematics', $2, 'homework', 'recovery', 70 FROM app.students WHERE id=$1`, [studentId, mathTopic8]);
     const recovered = await app.inject({ method: 'GET', url: `/mastery/student/${studentId}?subject=Mathematics`, headers: H(teacherToken) });
     const cellRecovered = recovered.json().map.find((m) => m.nodeId === mathTopic8);
-    assert.equal(cellRecovered.level, 'developing', 'one 70-value on top of decay → evidence label (developing)');
+    assert.equal(cellRecovered.level, 'secure', 'fresh evidence alone governs after expiry: [70] → secure');
     assert.equal(cellRecovered.decayed, false, 'recovery clears the decayed read-flag');
   });
 
@@ -177,8 +179,9 @@ describe('teacher.copilot v0 — mastery (A3: labels decay with evidence)', () =
     assert.ok(body.students > 0);
     assert.ok(body.cells.length >= 2, 'the cells we seeded appear on the class map');
     const mine = body.cells.filter((c) => c.studentId === studentId);
-    assert.ok(mine.some((c) => c.topicId === mathTopic8 && c.level === 'developing'));
-    assert.ok(mine.some((c) => c.level === 'needs_support'));
+    // mathTopic8 recovered to secure (fresh evidence governs); t2 decayed to needs_support
+    assert.ok(mine.some((c) => c.topicId === mathTopic8 && c.level === 'secure'), 'recovered cell reads secure on the class map');
+    assert.ok(mine.some((c) => c.level === 'needs_support'), 'decayed cell reads needs_support on the class map');
     const bad = await app.inject({ method: 'GET', url: '/mastery/class/8?subject=History', headers: H(teacherToken) });
     assert.equal(bad.statusCode, 400);
   });
@@ -214,35 +217,39 @@ describe('teacher.copilot v0 — brief (graceful degradation with zero-row sibli
   });
 
   test('brief with sibling rows PRESENT aggregates homework+concern counts (graceful upgrade)', async () => {
-    // seed EXACTLY the real 031/032 shapes (created_by / filed_by are the owner columns)
+    // seed EXACTLY the real 031/032 shapes (created_by / filed_by are the owner columns;
+    // 031 pins UNIQUE(homework_id, student_id) — one submission per student per homework)
     const tid = (await sql(`SELECT id FROM app.users WHERE role='teacher' AND email='teacher@meridian.edu'`)).rows[0].id;
     const T = (await sql(`SELECT tenant_id FROM app.users WHERE id=$1`, [tid])).rows[0].tenant_id;
+    const peers = (await sql(`SELECT id FROM app.students WHERE grade='8' ORDER BY created_at LIMIT 3`)).rows.map((r) => r.id);
     const hw1 = (await sql(`INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, detail, due_at, created_by)
                             VALUES ($1,'8','Mathematics','Fractions worksheet','practice set', now() + interval '2 days', $2) RETURNING id`,
       [T, tid])).rows[0].id;
     await sql(`INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, detail, due_at, created_by)
                VALUES ($1,'8','Mathematics','Decimals quiz','quick quiz', now() + interval '3 days', $2)`, [T, tid]);
     await sql(`INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status)
-               VALUES ($1,$2,$3,'text','my answer','submitted'), ($1,$2,$4,'text','my answer','late')`, [T, hw1, studentId, studentId]);
-    // one reviewed submission from the OTHER student (031 forbids a second submit per pair)
-    const otherStudent = (await sql(`SELECT id FROM app.students WHERE grade='8' AND id <> $1 LIMIT 1`, [studentId])).rows[0].id;
+               VALUES ($1,$2,$3,'text','my answer','submitted')`, [T, hw1, peers[0]]);
+    await sql(`INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status)
+               VALUES ($1,$2,$3,'text','my answer','late')`, [T, hw1, peers[1]]);
     await sql(`INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status, reviewed_by, reviewed_at)
-               VALUES ($1,$2,$3,'text','done','reviewed',$4, now())`, [T, hw1, otherStudent, tid]);
+               VALUES ($1,$2,$3,'text','done','reviewed',$4, now())`, [T, hw1, peers[2], tid]);
     await sql(`INSERT INTO teacher.concern (tenant_id, student_id, filed_by, category, urgency, detail, status)
                VALUES ($1,$2,$3,'academic','high','struggling with word problems','open')`, [T, studentId, tid]);
-    const r = await app.inject({ method: 'GET', url: '/teacher/brief?when=week', headers: H(teacherToken) });
-    assert.equal(r.statusCode, 200, r.body);
-    const b = r.json();
-    assert.equal(b.homework.available, true, 'sibling presence upgrades the brief');
-    assert.equal(b.homework.openHomework, 2);
-    assert.equal(b.homework.pendingSubmissions, 2, 'submitted+late count as pending');
-    assert.equal(b.homework.reviewedSubmissions, 1);
-    assert.equal(b.concerns.available, true);
-    assert.equal(b.concerns.open, 1);
-    assert.ok(b.sentences.some((s) => /waiting for your review/.test(s)), 'plain sentence reflects the count');
-    assert.ok(b.sentences.some((s) => /at least one is urgent/.test(s)), 'urgent concern surfaces in plain language');
+    const eod = await app.inject({ method: 'GET', url: '/teacher/brief?when=eod', headers: H(teacherToken) });
+    assert.equal(eod.statusCode, 200, eod.body);
+    const eb = eod.json();
+    assert.equal(eb.homework.pendingSubmissions, 2, 'submitted+late count as pending');
+    assert.equal(eb.homework.reviewedSubmissions, 1);
+    assert.equal(eb.homework.openHomework, 2);
+    assert.equal(eb.concerns.open, 1);
+    assert.ok(eb.sentences.some((s) => /waiting for your review/.test(s)), 'eod sentence reflects the count');
+    assert.ok(eb.sentences.some((s) => /at least one is urgent/.test(s)), 'urgent concern surfaces in plain language');
     const wk = await app.inject({ method: 'GET', url: '/teacher/brief?when=week', headers: H(teacherToken) });
-    assert.equal(wk.json().when, 'week');
+    assert.equal(wk.statusCode, 200);
+    const b = wk.json();
+    assert.equal(b.when, 'week');
+    assert.equal(b.homework.available, true, 'sibling presence upgrades the brief');
+    assert.ok(b.sentences.some((s) => /2 still need review/.test(s)), 'week sentence reflects the count');
   });
 });
 
@@ -306,6 +313,18 @@ describe('teacher.copilot v0 — copilot doors (A2 budgeted, deterministic, labe
     assert.equal(usage.json().budgetClass, 'teacher_tier');
     assert.ok(usage.json().used >= 5);
   });
+
+  test('brief param handling is deterministic (?when=bogus → eod); ask guards 500-char limit', async () => {
+    const bogus = await app.inject({ method: 'GET', url: '/teacher/brief?when=bogus', headers: H(teacherToken) });
+    assert.equal(bogus.statusCode, 200, 'unknown when falls back, never 500');
+    assert.equal(bogus.json().when, 'eod', 'deterministic default: eod');
+    const missing = await app.inject({ method: 'GET', url: '/teacher/brief', headers: H(teacherToken) });
+    assert.equal(missing.json().when, 'eod', 'missing when defaults to eod');
+    const long = await app.inject({ method: 'POST', url: '/copilot/ask',
+      payload: { question: 'x'.repeat(501) }, headers: H(teacherToken) });
+    assert.equal(long.statusCode, 400, 'ask length guard (plain-language refusal)');
+    assert.match(long.json().error, /500 characters/);
+  });
 });
 
 describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', () => {
@@ -341,7 +360,8 @@ describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', (
       `INSERT INTO app.tenants (id, slug, name, config)
        VALUES (gen_random_uuid(), 'ts3-rival-' || floor(random()*1e6)::text, 'TS3 Rival School', '{}'::jsonb)
        RETURNING id`)).rows[0];
-    const mine = (await sql(`SELECT n.id FROM curriculum.node n WHERE n.kind='topic' LIMIT 1`)).rows[0];
+    const mine = (await sql(`SELECT n.id, n.grade FROM curriculum.node n WHERE n.kind='topic' LIMIT 1`)).rows[0];
+    const meridianT = (await sql(`SELECT tenant_id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].tenant_id;
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await c.connect();
     await c.query('BEGIN');
@@ -351,24 +371,25 @@ describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', (
     for (const t of ['curriculum.node', 'curriculum.progress', 'mastery.evidence', 'mastery.state', 'copilot.call']) {
       seen[t] = (await c.query(`SELECT count(*)::int n FROM ${t}`)).rows[0].n;
     }
+    // WITH CHECK pin: write OUR tenant_id while the session GUC is the rival's → policy rejects
     let insertBlocked = false;
-    try { await c.query(`INSERT INTO curriculum.progress (tenant_id, node_id, class_grade, covered_pct) VALUES ($1,$2,'8',50)`, [other.id, other.id]); }
+    try { await c.query(`INSERT INTO curriculum.progress (tenant_id, node_id, class_grade, covered_pct) VALUES ($1,$2,'8',50)`, [meridianT, mine.id]); }
     catch { insertBlocked = true; }
+    // A1 pin: curriculum.node is SELECT-only for the app role (authoring rides migrations)
     let nodeInsertBlocked = false;
     try { await c.query(`INSERT INTO curriculum.node (tenant_id, subject, grade, kind, name) VALUES ($1,'Mathematics','6','unit','Rival Unit')`, [other.id]); }
     catch { nodeInsertBlocked = true; }
     await c.query('ROLLBACK');
     await c.end();
     for (const [t, n] of Object.entries(seen)) assert.equal(n, 0, `RLS: ${t} invisible across tenants`);
-    assert.equal(insertBlocked, true, 'RLS WITH CHECK: cross-tenant coverage write rejected (tenant_id mismatch)');
+    assert.equal(insertBlocked, true, 'RLS WITH CHECK: cross-tenant coverage write rejected (tenant_id/GUC mismatch)');
     assert.equal(nodeInsertBlocked, true, 'A1: curriculum.node is SELECT-only for the app role');
-    // own-tenant coverage still writes through the door
-    const t2 = teacherToken;
+    // own-tenant coverage still writes through the door (class_grade matches the node's grade)
     const x = await app.inject({ method: 'POST', url: '/curriculum/progress',
-      payload: { node_id: mine.id, class_grade: '6', pct: 100 }, headers: H(t2) });
+      payload: { node_id: mine.id, class_grade: mine.grade, pct: 100 }, headers: H(teacherToken) });
     assert.equal(x.statusCode, 200, x.body);
     // non-uuid :id on the mastery door → 400 BEFORE any uuid cast (22P02 → 500 guard)
-    const bad = await app.inject({ method: 'GET', url: '/mastery/student/not-a-uuid?subject=Mathematics', headers: H(t2) });
+    const bad = await app.inject({ method: 'GET', url: '/mastery/student/not-a-uuid?subject=Mathematics', headers: H(teacherToken) });
     assert.equal(bad.statusCode, 400);
   });
 });
