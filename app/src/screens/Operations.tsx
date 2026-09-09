@@ -47,6 +47,9 @@ interface Vendor {
 }
 
 function buildAssets(): Asset[] {
+  /* Empty-world law: assets derive from the tenant's own routes; a school with
+     no routes and no dataset assets simply has no asset rows — never demo buses. */
+  if (!seed.busRoutes.length) return [];
   const BUS_NO = [3, 5, 8, 9, 11, 12, 14, 17, 19, 22];
   const rng = makeRng(9090);
   const rows: Asset[] = [];
@@ -82,6 +85,9 @@ function buildAssets(): Asset[] {
 }
 
 function buildVendors(): Vendor[] {
+  /* Empty-world law: vendor contracts are demo-world backdrop. A real school
+     starts with none — the register fills as they add assets/vendors. */
+  if (!seed.busRoutes.length && !seed.assets.length) return [];
   const rng = makeRng(9091);
   const defs: { name: string; service: string; contact: string; days: number; covered: number }[] = [
     { name: 'Meridian School Bus Service', service: 'Bus fleet operation & maintenance', contact: '+91 98220 41187', days: 45, covered: 10 },
@@ -153,6 +159,9 @@ export default function Operations() {
     return billed ? Math.round((paid / billed) * 1000) / 10 : 0;
   }, [fees.data]);
 
+  /* A world exists only when the tenant has records — briefing/evidence chain
+     narrate records; without any, they are skipped entirely. */
+  const HAS_WORLD = seed.students.length > 0 || seed.cases.length > 0 || seed.incidents.length > 0 || seed.documents.length > 0 || seed.leads.length > 0 || seed.busRoutes.length > 0;
   const live = useMemo(() => {
     const openLeads = seed.leads.filter(l => l.campus === campus && !['enrolled', 'rejected', 'withdrawn'].includes(l.stage)).length;
     const delayedRoutes = seed.busRoutes.filter(r => r.campus === campus && r.status === 'delayed').length;
@@ -170,16 +179,16 @@ export default function Operations() {
   }, [campus, domain.cases]);
 
   const cards: DomainCardDef[] = useMemo(() => [
-    { key: 'fees', title: 'Fees', icon: Icon.Money, to: '/fees', summary: `${fmtPct(collectionPct, 1)} collected across all terms`, count: 47, countLabel: 'failed payments', tone: 'warning' },
+    { key: 'fees', title: 'Fees', icon: Icon.Money, to: '/fees', summary: `${fmtPct(collectionPct, 1)} collected across all terms`, count: seed.feeObligations.filter(f => f.status === 'failed').length, countLabel: 'failed payments', tone: 'warning' },
     { key: 'admissions', title: 'Admissions', icon: Icon.Graduation, to: '/admissions', summary: `${live.openLeads} open leads in the funnel`, count: live.openLeads, countLabel: 'open leads', tone: 'accent' },
-    { key: 'transport', title: 'Transport', icon: Icon.Bus, to: '/transport', summary: live.delayedRoutes > 0 ? 'Bus 14 (Route 7) delayed +13 min' : 'All routes on time', count: live.delayedRoutes, countLabel: 'routes delayed', tone: live.delayedRoutes > 0 ? 'warning' : 'success' },
+    { key: 'transport', title: 'Transport', icon: Icon.Bus, to: '/transport', summary: live.delayedRoutes > 0 ? `${live.delayedRoutes} route${live.delayedRoutes > 1 ? 's' : ''} running late` : seed.busRoutes.length ? 'All routes on time' : 'No routes yet', count: live.delayedRoutes, countLabel: 'routes delayed', tone: live.delayedRoutes > 0 ? 'warning' : 'success' },
     { key: 'documents', title: 'Documents', icon: Icon.Document, to: '/documents', summary: `${live.docsExpiring} certificates expiring in 30 days`, count: live.docsExpiring, countLabel: 'expiring', tone: live.docsExpiring > 0 ? 'warning' : 'success' },
     { key: 'facilities', title: 'Maintenance & Facilities', icon: Icon.Building, to: '/maintenance', summary: `${openMaint} open work order${openMaint === 1 ? '' : 's'} across buildings and assets`, count: openMaint, countLabel: 'open jobs', tone: 'accent' },
-    { key: 'hr', title: 'HR', icon: Icon.People, to: '/operations/hr', summary: '3 staff on leave today · 1 substitution pending', count: 1, countLabel: 'subs pending', tone: 'accent' },
+    { key: 'hr', title: 'HR', icon: Icon.People, to: '/operations/hr', summary: seed.staff.length ? `${seed.staff.length} staff on record` : 'No staff records yet', count: seed.staff.length ? 1 : 0, countLabel: 'roster', tone: 'accent' },
     { key: 'calendar', title: 'Calendar', icon: Icon.Calendar, to: '/calendar', summary: live.nextEvent ? `Next: ${live.nextEvent.title} · ${fmtRelative(live.nextEvent.on)}` : 'No upcoming events', count: seed.calendarEvents.filter(e => e.campus === campus || e.campus === 'all').length, countLabel: 'this term', tone: 'accent' },
     { key: 'cases', title: 'Cases', icon: Icon.Clipboard, to: '/cases', summary: `${live.casesInProgress} in progress · ${live.openCases} open overall`, count: live.openCases, countLabel: 'open', tone: live.openCases > 3 ? 'warning' : undefined },
     { key: 'incidents', title: 'Incidents', icon: Icon.Alert, to: '/incidents', summary: `${live.incidentsInProgress} being worked, ${live.openIncidents} unresolved`, count: live.openIncidents, countLabel: 'open', tone: live.openIncidents > 0 ? 'warning' : 'success' },
-    { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · 5 vendor contracts on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined },
+    { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · ${VENDORS.length} vendor contract${VENDORS.length === 1 ? '' : 's'} on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined },
   ], [campus, collectionPct, live, openMaint]);
 
   const openCard = (c: DomainCardDef) => {
@@ -207,7 +216,9 @@ export default function Operations() {
       </div>
 
       {/* ---- Operations briefing ---- */}
-      <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
+      {/* Empty-world law: the briefing narrates RECORDS; with no records there
+          is nothing to narrate — the card is skipped, not filled with demo copy. */}
+      {HAS_WORLD && <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
         <div className="u-col" style={{ gap: 12 }}>
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="ai-chip"><Icon.Sparkle size={12} /> Operations briefing</span>
@@ -232,7 +243,7 @@ export default function Operations() {
           />
           <AiTraceCard trace={BRIEFING_TRACE} />
         </div>
-      </Card>
+      </Card>}
 
       {/* ---- Domain cards ---- */}
       <Section
@@ -273,7 +284,7 @@ export default function Operations() {
       <div ref={assetsRef}>
         <Section
           title="Asset register"
-          sub="Group-level register · buses and lab equipment. Bus 14 is in the workshop; repair is scheduled for Saturday."
+          sub={ASSETS.length ? 'Group-level register · buses and lab equipment.' : 'Buses, lab equipment and facilities you register — nothing here yet.'}
           actions={<Badge tone="warning" dot>{ASSETS.filter(a => a.status !== 'In service').length} due for service</Badge>}
           style={{ marginTop: 8 }}
         >
@@ -306,7 +317,7 @@ export default function Operations() {
       {/* ---- Vendor list ---- */}
       <Section
         title="Vendor contracts"
-        sub="Five active service contracts. AquaSure's RO contract lapsed 6 days ago — renewal workflow wf_5 holds the open owner task."
+        sub={VENDORS.length ? `${VENDORS.length} active service contracts.` : 'Service contracts for your assets appear here as you add them.'}
         style={{ marginTop: 8 }}
       >
         <div className="grid grid-3">
@@ -323,7 +334,7 @@ export default function Operations() {
               </div>
             </Card>
           ))}
-          <Card pad style={{ borderStyle: 'dashed' }}>
+          {VENDORS.length > 0 && <Card pad style={{ borderStyle: 'dashed' }}>
             <div className="u-col" style={{ gap: 6 }}>
               <span className="u-upper">Contract renewals</span>
               <span className="u-small u-muted">
@@ -337,13 +348,13 @@ export default function Operations() {
                 }}>Record renewal review</Button>
               </div>
             </div>
-          </Card>
+          </Card>}
         </div>
       </Section>
 
       <div style={{ height: 24 }} />
       <div className="u-xs u-faint" style={{ textAlign: 'center' }}>
-        {fees.loading ? 'Computing collection…' : `${fmtMoneyShort((fees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} received on this campus · register compiled from seed records`}
+        {fees.loading ? 'Computing collection…' : `${fmtMoneyShort((fees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} received on this campus · compiled from live fee records`}
       </div>
     </div>
   );

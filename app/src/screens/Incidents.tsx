@@ -179,7 +179,7 @@ export default function Incidents() {
                               {CAMPUS_LABEL[inc.campus]} · {inc.owner}
                             </div>
                             <div className="u-xs u-faint">Opened {fmtRelative(inc.openedOn)}</div>
-                            {inc.id === 'inc_1' && (
+                            {inc.id === 'inc_1' && seed.incidents.some(i => i.id === 'inc_1') && (
                               <div className="u-xs" style={{ marginTop: 5, color: 'var(--accent-text)', fontWeight: 600 }}>Bus 14 — flagship incident, 6-step timeline inside</div>
                             )}
                           </div>

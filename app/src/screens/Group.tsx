@@ -296,6 +296,7 @@ export default function Group() {
               triggers and local quiet hours are honored at runtime; every run is audit-logged on its campus.
             </div>
           </Card>
+          {seed.busRoutes.some(r => r.status === 'delayed') ? (
           <Card>
             <div className="u-flex" style={{ gap: 8, marginBottom: 6 }}>
               <Icon.Flag size={15} style={{ color: 'var(--warning)' }} />
@@ -310,6 +311,15 @@ export default function Group() {
             </ul>
             <div className="u-xs u-faint" style={{ marginTop: 7 }}>Exceptions auto-expire in 30 days.</div>
           </Card>
+          ) : (
+          <Card>
+            <div className="u-flex" style={{ gap: 8, marginBottom: 6 }}>
+              <Icon.Flag size={15} style={{ color: 'var(--warning)' }} />
+              <span style={{ fontWeight: 620 }}>Campus-level exceptions</span>
+            </div>
+            <div className="u-small u-muted">None open. Time-boxed exceptions (transport leniency, staffing cadences) appear here while active.</div>
+          </Card>
+          )}
         </div>
       </Section>
     </>

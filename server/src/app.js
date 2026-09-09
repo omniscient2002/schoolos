@@ -298,6 +298,9 @@ export async function buildApp(opts = {}) {
         cases: [], actionItems: [], decisions: [], meetings: [], memoryDocs: [],
         policies: [], workflows: [], workflowRuns: [], obligations: [], calendarEvents: [],
         healthIssues: [], notifications: [], auditEntries: [], insights: [],
+        assets: [], vendors: [], maintPlans: [], inspections: [], inventory: [],
+        technicians: [], calls: [], gatePasses: [], visitors: [], deskIntents: [],
+        guardianIdByStudent: {}, SCENARIOS: [],
         aiUsage: { totalCalls: 0, tokens: 0, byFeature: [] }, models: [], guardianChat: [],
       };
       for (const k of Object.keys(empty)) if (empty[k] === undefined) delete empty[k];

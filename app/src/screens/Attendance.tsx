@@ -93,7 +93,9 @@ export default function Attendance() {
   const section = seed.sections.find(s => s.id === sectionId);
   const sectionLabel = section ? `Grade ${section.grade}-${section.name}` : sectionId;
   const classTeacher = section ? seed.findPerson(section.classTeacherId) : undefined;
-  const isAnomaly = sectionId === 'north-g8-b';
+  /* Empty-world law: the Bus-14 anomaly banner narrates the demo world's
+     incident; only render when that section actually exists in the tenant. */
+  const isAnomaly = sectionId === 'north-g8-b' && seed.sections.some(sec => sec.id === 'north-g8-b');
 
   /* ---- async register load (seed access behind a Promise) ---- */
   const register = useAsync<RegisterData>(async () => {

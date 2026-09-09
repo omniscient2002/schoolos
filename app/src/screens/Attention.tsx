@@ -94,7 +94,6 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
       chips: ['Attendance register · 08:40 · high', 'Route roster overlap · medium'],
       evidence: [
         { label: 'Presence by section (today)', detail: flaggedSections.map(x => `${x.s.grade}-${x.s.name} ${x.a.pct}%`).join(' · ') },
-        { label: 'Bus 14 route roster', detail: '38 riders; 15 of 20 absent 8-B students ride Route 7' },
       ],
       suggested: [
         { id: 's1', label: 'Open attendance follow-up', type: 'investigate', detail: 'Call list with reasons and guardian status', posture: 'APPROVAL' },
@@ -120,8 +119,7 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
       priority: 'high',
       chips: ['GPS monitor · 07:42 · high', 'Driver radio · 07:51 · high'],
       evidence: [
-        { label: 'Route 7 — Bus 14', detail: 'Coolant leak repaired Tuesday; pre-route inspection active (dec_4)' },
-        { label: 'Guardian notifications', detail: `${delayed.reduce((a, r) => a + r.students, 0)} queued 07:57, delivered` },
+        { label: 'Guardian notifications', detail: `${delayed.reduce((a, r) => a + r.students, 0)} queued on delay detection, delivered` },
       ],
       suggested: [
         { id: 'b1', label: 'Confirm repair status with workshop', type: 'task', detail: 'Quote received; repair scheduled Saturday', posture: 'AUTO' },
@@ -138,17 +136,17 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
   /* fees: failed payment cluster */
   const failed = seed.feeObligations.filter(f => f.status === 'failed');
   if (failed.length) {
+    /* Empty-world law: narrate the REAL ledger — no demo cluster copy. */
     out.push({
       id: 'sig-fee',
       kind: 'exception',
-      title: `${seed.FEE_STORY.failedCount} failed Term-2 payments cluster on Route 7 households`,
-      detail: '41 of 47 failures belong to Route 7 families. Collection sits at 82.3% vs the 88% four-week average; 23 further gateway successes await settlement-file import.',
-      why: 'A single combined message (bus + payment) historically recovers ~60% within 48h — but bulk messaging requires your approval (Communication §2.1).',
+      title: `${failed.length} failed payment${failed.length === 1 ? '' : 's'} need attention`,
+      detail: 'Failed payments await retry or guardian assistance.',
+      why: 'A single combined message historically recovers ~60% within 48h — but bulk messaging requires your approval (Communication §2.1).',
       priority: 'high',
-      chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
+      chips: ['Fees records · live', 'Gateway settlement · live'],
       evidence: [
-        { label: 'Collection trend (14 days)', detail: '88 → 82.3% · dip begins with the Bus 14 breakdown' },
-        { label: 'Failure cluster', detail: '47 failures · 41 share Route 7 · avg ticket ₹57,457' },
+        { label: 'Failed ledger rows', detail: `${failed.length} obligation${failed.length === 1 ? '' : 's'} in 'failed' state` },
       ],
       suggested: [
         { id: 'f1', label: 'Approve payment-assistance message (41 guardians)', type: 'message', detail: 'Draft ready · WhatsApp · English + Hindi', posture: 'APPROVAL' },

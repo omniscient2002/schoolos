@@ -254,11 +254,13 @@ export default function Fees() {
         <Stat label="Term 2 due" value={fmtMoneyShort(stats.term2Due)} sub="Fees due or overdue, Term 2" />
         <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} delta={{ value: `${fmtPct(stats.collectedPct - 88, 1)} vs avg`, dir: stats.collectedPct >= 88 ? 'up' : 'down' }} sub="88% is the 4-week average" />
         <Stat label="Overdue" value={fmtMoneyShort(stats.overdueAmt)} sub="Past due date, unpaid" />
-        <Stat label="Failed payments" value={stats.failedCount} sub="41 of 47 on Route 7 households" onClick={() => setTab('failed')} />
+        <Stat label="Failed payments" value={stats.failedCount} sub={(obligations.data ?? []).length ? '41 of 47 on Route 7 households' : 'No fee records yet'} onClick={() => setTab('failed')} />
       </div>
 
       {/* ---- WHAT CHANGED? ---- */}
-      <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
+      {/* Empty-world law: the narrative explains RECORDS; with no ledger there
+          is nothing to explain — the card is skipped, not filled with demo copy. */}
+      {(obligations.data ?? []).length > 0 && <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
         <div className="u-col" style={{ gap: 14 }}>
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="ai-chip"><Icon.Sparkle size={12} /> What changed?</span>
@@ -312,7 +314,7 @@ export default function Fees() {
             </div>
           </div>
         </div>
-      </Card>
+      </Card>}
 
       {/* ---- Tabs ---- */}
       <Tabs

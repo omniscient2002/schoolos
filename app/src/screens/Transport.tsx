@@ -283,18 +283,18 @@ export default function Transport() {
         sub={isTransportRole
           ? 'Your live board — routes, vehicles and the families waiting on them. Guardian notifications fire automatically per Transport §3.1.'
           : 'Live route status, capacity and today\'s transport cases. Delays over 10 minutes notify guardians automatically (Transport §3.1).'}
-        actions={
+        actions={r7 ? (
           <Button variant="secondary" icon={<Icon.Zap size={14} />} loading={simulating} onClick={simulateDelay}>
             Simulate Bus 14 delay
           </Button>
-        }
+        ) : undefined}
       />
 
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Routes active" value={routeList.length} sub={`${delayed.length} delayed · ${routeList.filter(r => r.status === 'maintenance').length} in maintenance`} />
         <Stat label="Students riding" value={studentsOnRoutes} sub={`${atCapacity} routes above 90% capacity`} />
-        <Stat label="Bus 14 delay" value={`+${r7Delay} min`} sub={r7Delay > 10 ? 'Guardians notified · leniency till 09:30' : 'Within notification threshold'} />
+        {r7 && <Stat label="Bus 14 delay" value={`+${r7Delay} min`} sub={r7Delay > 10 ? 'Guardians notified · leniency till 09:30' : 'Within notification threshold'} />}
         <Stat label="Transport cases" value={transportCases.length} sub={`${transportCases.filter(c => c.status !== 'resolved' && c.status !== 'closed').length} open`} onClick={() => navigate('/cases')} />
       </div>
 

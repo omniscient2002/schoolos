@@ -222,12 +222,17 @@ export default function Cases() {
                 case reaches a queue, so the owner starts with the full picture.
               </p>
               <EvidenceChain
-                title="Triage chain — case_1 (Bus 14 complaint)"
-                steps={[
+                title={domain.cases.some(c => c.id === 'case_1') ? 'Triage chain — case_1 (Bus 14 complaint)' : 'Triage chain — how cases are processed'}
+                steps={domain.cases.some(c => c.id === 'case_1') ? [
                   { label: 'Origin', detail: 'WhatsApp inbound · guardian thread · received 08:15 (inside allowed hours)', source: 'Communication log' },
                   { label: 'Language', detail: 'Detected: English · Hindi template attached for the reply', source: 'Reply classifier · Fast model' },
                   { label: 'Sentiment', detail: 'Frustrated — third contact about the same route this week', source: 'Sentiment scorer' },
                   { label: 'Linked records', detail: 'Bus 14 · Route 7 · Attendance 8-B · incident inc_1', source: 'Record linker · verified IDs', refType: 'transport' },
+                ] : [
+                  { label: 'Origin', detail: 'Channel and timestamp checked against communication windows', source: 'Communication log' },
+                  { label: 'Language', detail: 'Detected per message; the guardian\u2019s template language is attached to the reply', source: 'Reply classifier · Fast model' },
+                  { label: 'Sentiment', detail: 'Scored to raise priority when a guardian contacts us repeatedly', source: 'Sentiment scorer' },
+                  { label: 'Linked records', detail: 'Ledger entries, routes and prior cases attach automatically', source: 'Record linker · verified IDs' },
                 ]}
               />
             </div>
