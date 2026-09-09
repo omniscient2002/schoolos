@@ -22,6 +22,7 @@ export const PUBLIC_ALLOWLIST = [
   { path: '/auth/google/start', why: 'OAuth redirect' },
   { path: '/auth/google/callback', why: 'OAuth callback' },
   { path: '/auth/google/demo', why: 'demo-mode SSO' },
+  { path: '/onboard/signup', why: 'self-serve tenant onboarding (053): creates an EMPTY tenant + first owner only; kill-switch SELF_SIGNUP_ENABLED, rate-limited 3/min, hash-chained audit from row one; NO data access' },
   { path: '/plugins/payments.upi/webhook', why: 'HMAC-signature verified in-handler (UPI_WEBHOOK_SECRET), raw-body parser' },
   { path: '/plugins/payments.razorpay/webhook', why: 'HMAC-signature verified in-handler (RAZORPAY_WEBHOOK_SECRET / settings webhook_secret), raw-body parser, replay dedupe' },
 ];

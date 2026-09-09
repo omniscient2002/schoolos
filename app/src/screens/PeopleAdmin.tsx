@@ -21,6 +21,7 @@ import {
   adminResetPassword, adminTransferStudent, adminImportStudents,
   type AdminUser, type ImportReport, type ImportOkRow, type ImportFailRow,
 } from '../services/adminApi';
+import { apiOnboardStatus, type OnboardStatus } from '../services/onboardingApi';
 
 const ROLE_OPTIONS = ['principal', 'coordinator', 'finance', 'admissions', 'transport', 'facilities', 'technician', 'teacher', 'itadmin', 'parent'];
 const ROLE_LABEL: Record<string, string> = {
@@ -62,6 +63,17 @@ export default function PeopleAdmin() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [report, setReport] = useState<ImportReport | null>(null);
+
+  /* owner setup checklist (Platform §1.1) — a fresh school shows what's left */
+  const [setup, setSetup] = useState<OnboardStatus | null>(null);
+  useEffect(() => {
+    if (live.role !== 'owner') return;
+    let dead = false;
+    apiOnboardStatus()
+      .then(r => { if (!dead) setSetup(r); })
+      .catch(() => { /* checklist is optional sugar — never blocks the console */ });
+    return () => { dead = true; };
+  }, [live.role, tick]);
 
   useEffect(() => {
     let dead = false;
@@ -134,6 +146,25 @@ export default function PeopleAdmin() {
         sub="Create accounts, suspend or restore access, move students between classes, and bring in students from a spreadsheet"
         actions={<Badge tone="accent" dot>people.admin</Badge>}
       />
+
+      {setup && !setup.checklist.every(c => c.done) && (
+        <Card style={{ marginBottom: 'var(--s-4)' }} head="Setting up your school" sub="Tick these off and your school is fully running — your IT admin can help with all of them.">
+          <div style={{ display: 'grid', gap: 8 }}>
+            {setup.checklist.map(c => (
+              <a key={c.id} href={c.href} style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}>
+                <span style={{
+                  width: 20, height: 20, borderRadius: 10, flexShrink: 0, display: 'grid', placeItems: 'center',
+                  border: `1.5px solid ${c.done ? 'var(--ok, #1a7f37)' : 'var(--line)'}`,
+                  background: c.done ? 'var(--ok-weak, rgba(26,127,55,.12))' : 'transparent',
+                  color: 'var(--ok, #1a7f37)', fontSize: 12,
+                }}>{c.done ? '✓' : ''}</span>
+                <span style={{ fontSize: 13.5, color: c.done ? 'var(--text-2)' : 'var(--text-1)', textDecoration: c.done ? 'line-through' : 'none' }}>{c.label}</span>
+                {!c.done && <span style={{ marginLeft: 'auto', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 600 }}>Go →</span>}
+              </a>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <div className="seg" role="tablist" style={{ display: 'flex', gap: 8, marginBottom: 'var(--s-4)' }}>
         {([['accounts', 'Accounts'], ['transfer', 'Change a class'], ['import', 'Import students']] as [Pane, string][])

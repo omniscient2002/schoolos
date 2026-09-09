@@ -188,6 +188,12 @@ Every module below ships **disabled**; an owner/itadmin enables it (`POST /plugi
 ### The decoupling contract (how "not every student comes in a bus" works)
 - `GET /capabilities` (any authenticated user) reports which rails are configured and which plugins are enabled. The frontend (`capabilitiesApi.ts`) memoizes it once per session; optional surfaces (library, transport, payments, files, People console) render **only when enabled**, and the nav simply omits them otherwise. A school without buses, without a library, or without an SMS provider sees none of those screens — nothing errors, nothing half-appears.
 
+### Platform onboarding (2026-09-09, `/onboard`) — how a school joins
+- **Anyone** (the future school owner) can self-signup at `/onboard` → their school + their owner account are created together (one audited transaction). They are signed in immediately. The door is rate-limited 3/min and can be paused platform-wide (`SELF_SIGNUP_ENABLED=false` → clear copy, 403).
+- **The owner's first job is delegation**: the setup checklist's step 1 is creating the **IT admin** — from then on the IT admin can provision every other role (owner keeps everything; owner-creation through normal doors remains structurally impossible).
+- **Duplicate email across schools**: allowed at signup (accounts are per-tenant); at login the platform refuses to guess — 409 with choose-your-school guidance instead of a silent wrong-school sign-in.
+- **School profile** (name/address/board/phone/campuses) is owner-editable later at `POST /onboard/school`, audited.
+
 ## Cross-role one-line differences (verified)
 
 | Action | owner | principal | coordinator | finance | teacher | itadmin | parent | student |

@@ -29,6 +29,8 @@ const DEMO_BUILD = import.meta.env.VITE_DEMO_MODE === '1';
 const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
 
 const Login = lazy(() => import('./screens/Login'));
+/* self-serve school signup — public door (Platform §1.1, migration 053) */
+const Onboard = lazy(() => import('./screens/Onboard'));
 const Today = F(() => import('./screens/Today'));
 const Attention = F(() => import('./screens/Attention'));
 const Ask = F(() => import('./screens/Ask'));
@@ -455,6 +457,51 @@ function Frame() {
   );
 }
 
+/* Public self-serve signup door (Platform §1.1): /onboard renders OUTSIDE the
+   session tree — a brand-new school owner has no session yet. Everything else
+   renders the normal gated app. */
+function OnboardOrApp() {
+  const { pathname } = useLocation();
+  if (pathname === '/onboard') {
+    return (
+      <KernelProvider>
+        <StoreProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/onboard" element={<Suspense fallback={<div style={{ minHeight: '100vh' }} />}><Onboard /></Suspense>} />
+              <Route path="*" element={<Navigate to="/onboard" replace />} />
+            </Routes>
+          </ToastProvider>
+        </StoreProvider>
+      </KernelProvider>
+    );
+  }
+  return <SessionApp />;
+}
+
+/* The normal gated app tree (was the direct body of App before the /onboard
+   public door was added — same providers, unchanged). */
+function SessionApp() {
+  return (
+    <KernelProvider>
+      <StoreProvider>
+        <ToastProvider>
+          <BootGate>
+            <AuthGate>
+              {/* P0 fix 1: TeacherProvider is mounted once, around the whole
+                  session frame — every /teacher screen's useTeacher() has a
+                  provider and the white-screen throw never fires. */}
+              <TeacherProvider>
+                <Frame />
+              </TeacherProvider>
+            </AuthGate>
+          </BootGate>
+        </ToastProvider>
+      </StoreProvider>
+    </KernelProvider>
+  );
+}
+
 export default function App() {
   return (
     /* P0 fix 1: the root ErrorBoundary wraps the WHOLE router so any
@@ -462,22 +509,7 @@ export default function App() {
        instead of unmounting to a white screen. */
     <ErrorBoundary>
       <BrowserRouter>
-        <KernelProvider>
-          <StoreProvider>
-            <ToastProvider>
-              <BootGate>
-                <AuthGate>
-                  {/* P0 fix 1: TeacherProvider is mounted once, around the whole
-                      session frame — every /teacher screen's useTeacher() has a
-                      provider and the white-screen throw never fires. */}
-                  <TeacherProvider>
-                    <Frame />
-                  </TeacherProvider>
-                </AuthGate>
-              </BootGate>
-            </ToastProvider>
-          </StoreProvider>
-        </KernelProvider>
+        <OnboardOrApp />
       </BrowserRouter>
     </ErrorBoundary>
   );

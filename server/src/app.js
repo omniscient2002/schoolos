@@ -9,6 +9,7 @@ import { verifyPassword, dummyVerify, ROLES } from './auth.js';
 import { scryptSync, timingSafeEqual, randomBytes, randomUUID, randomInt } from 'node:crypto';
 import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
+import { registerOnboarding } from './onboarding.js';
 import { loadPlugins } from './plugins/loader.js';
 
 // Wave C metrics (GET /metrics): in-memory process counters + a 60s flush into
@@ -71,7 +72,16 @@ export async function buildApp(opts = {}) {
   app.post('/auth/login', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { email, password } = req.body ?? {};
     if (!email || !password) return reply.code(400).send({ error: 'email and password required' });
-    const u = await q(`SELECT id, tenant_id, name, role, email, password_hash FROM app.users WHERE lower(email)=lower($1) AND active`, [email]);
+    const u = await q(`SELECT id, tenant_id, name, role, email, password_hash FROM app.users WHERE lower(email)=lower($1) AND active ORDER BY created_at`, [email]);
+    // Self-serve onboarding (053) allows the same email in several schools.
+    // One match signs in; several MUST NOT pick arbitrarily — the person
+    // chooses their school (409 with guidance), never a wrong-tenant login.
+    if (u.rows.length > 1) {
+      return reply.code(409).send({
+        error: 'This email is used in more than one school on this platform. Sign in from your school\'s own sign-in page, or ask the school office which school your account belongs to.',
+        multiTenant: true, schools: u.rows.length,
+      });
+    }
     const user = u.rows[0];
     if (!user) {
       // Timing-equalization: burn the same scrypt cost as a real verify so
@@ -235,6 +245,10 @@ export async function buildApp(opts = {}) {
   });
 
   await registerRoutes(app, { withUser, auditLog, emitEvent, ROLES });
+  // Self-serve school onboarding (053): the one sanctioned runtime tenant path.
+  // Mounted beside the core routes (before plugins) so /onboard/* exists even
+  // when every plugin is disabled — a brand-new school has none enabled.
+  registerOnboarding(app);
 
   // --- plugin factory (docs/11 §2.2): the ONE registration point ---
   // Every plugin lives in src/plugins/<id>/ with manifest.js + index.js exporting

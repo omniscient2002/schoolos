@@ -4,7 +4,7 @@
    against the live API — the server is the only authentication brain.
    ============================================================ */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
@@ -240,6 +240,10 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
 
         <div className="login-foot">
           <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit trail
+        </div>
+        {/* self-serve signup (Platform §1.1): owners start their school here */}
+        <div style={{ textAlign: 'center', marginTop: 10, fontSize: 13 }}>
+          Starting a new school? <Link to="/onboard" style={{ color: 'var(--accent-text)', fontWeight: 600 }}>Set it up here</Link>
         </div>
       </div>
     </div>
