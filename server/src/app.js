@@ -304,7 +304,8 @@ export async function buildApp(opts = {}) {
         assets: [], vendors: [], maintPlans: [], inspections: [], inventory: [],
         technicians: [], calls: [], gatePasses: [], visitors: [], deskIntents: [],
         guardianIdByStudent: {}, SCENARIOS: [],
-        aiUsage: { totalCalls: 0, tokens: 0, byFeature: [] }, models: [], guardianChat: [],
+        aiUsage: { days: [], byFeature: [], latency: { p50: 0, p95: 0 }, failureRate: 0, monthSpend: 0, budget: 0 },
+        models: [], guardianChat: [],
       };
       for (const k of Object.keys(empty)) if (empty[k] === undefined) delete empty[k];
       return empty;

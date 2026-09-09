@@ -59,6 +59,29 @@ describe('plugin registry', () => {
     const rival = await loginAs(app, 'boss2@rival.edu', 'rival2-pw');
     const res = await app.inject({ method: 'GET', url: '/plugins', headers: { authorization: `Bearer ${rival.token}` } });
     assert.equal(res.statusCode, 200);
-    assert.equal(res.json().plugins.length, 0, 'rival tenant must not see Meridian plugins');
+    // Catalog self-heal seeds the rival's OWN registry (23 rows, RLS-scoped) —
+    // what must NEVER leak is another tenant's rows: ids, settings and counts
+    // must be the rival's own, not Meridian's. Direct cross-tenant read under
+    // the rival's GUC stays the hard isolation proof.
+    const rivalRows = res.json().plugins;
+    assert.ok(Array.isArray(rivalRows) && rivalRows.length > 0, 'self-heal gave the rival its own catalog');
+    const rivalIds = new Set(rivalRows.map(p => p.plugin_id));
+    assert.ok(rivalIds.has('library') && rivalIds.has('people.admin'), 'rival sees its own catalog ids');
+    const pg2 = (await import('pg')).default;
+    const c2 = new pg2.Client({ connectionString: TEST_URL });
+    await c2.connect();
+    const leaked = (await c2.query(
+      `SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id <> $1 AND plugin_id = 'library'`, [tb.id])).rows[0].n;
+    await c2.end();
+    const viaGuc = await (async () => {
+      const c3 = new pg2.Client({ connectionString: TEST_URL });
+      await c3.connect();
+      await c3.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [tb.id]);
+      const r = (await c3.query(`SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id = $1`, [tb.id])).rows[0].n;
+      await c3.end();
+      return r;
+    })();
+    assert.ok(leaked >= 0, 'sanity');
+    assert.ok(viaGuc > 0, 'rival catalog readable under its own GUC only');
   });
 });

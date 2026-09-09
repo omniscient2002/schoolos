@@ -21,17 +21,21 @@ interface SessionRow {
   device: string; campus: CampusId; status: 'active' | 'expired';
 }
 const DEVICES = ['Chrome · macOS', 'Safari · iPhone', 'Edge · Windows', 'SchoolOS App · Android', 'Firefox · Ubuntu', 'Chrome · Windows'];
-const SESSION_ROWS: SessionRow[] = Array.from({ length: 10 }, (_, i) => {
+const SESSION_ROWS: SessionRow[] = (() => {
   const pool = [...seed.teachers, ...seed.staff];
-  const person = pool[(i * 7 + rng.int(0, 2)) % pool.length];
+  /* Empty-world law: no people → no synthetic session rows. */
+  if (!pool.length) return [] as SessionRow[];
+  return Array.from({ length: 10 }, (_, i) => {
+    const person = pool[(i * 7 + rng.int(0, 2)) % pool.length];
   const lastActive = new Date(Date.now() - rng.int(2, 900) * 60000);
   return {
     id: `sess_${i + 1}`, person,
     role: person.role ?? (person.type === 'staff' ? 'Admin Staff' : 'Teacher'),
-    lastActive, device: rng.pick(DEVICES), campus: person.campus,
-    status: rng.chance(0.7) ? 'active' : 'expired',
-  };
-});
+      lastActive, device: rng.pick(DEVICES), campus: person.campus,
+      status: rng.chance(0.7) ? 'active' : 'expired',
+    };
+  });
+})();
 
 const spark = (seedN: number) => {
   const r = makeRng(seedN);

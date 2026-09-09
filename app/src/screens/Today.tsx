@@ -480,8 +480,8 @@ export default function Today() {
       headSub = `${weekday(now)} · ${fmtDate(now)} · IT administration · ${campusLabel}`;
       stats = [
         { label: 'Data health score', value: String(score), sub: `${seed.healthIssues.filter(i => i.status === 'open').length} open issues`, to: '/data-health' },
-        { label: 'AI spend this month', value: fmtMoneyShortLocal(seed.aiUsage.monthSpend), sub: `of ${fmtMoneyShortLocal(seed.aiUsage.budget)} budget`, to: '/ai-usage' },
-        { label: 'AI failure rate', value: `${seed.aiUsage.failureRate}%`, sub: `p95 latency ${seed.aiUsage.latency.p95}ms`, to: '/ai-usage' },
+        { label: 'AI spend this month', value: fmtMoneyShortLocal(seed.aiUsage.monthSpend), sub: seed.aiUsage.budget ? `of ${fmtMoneyShortLocal(seed.aiUsage.budget)} budget` : 'No AI usage yet', to: '/ai-usage' },
+        { label: 'AI failure rate', value: `${seed.aiUsage.failureRate}%`, sub: seed.aiUsage.days.length ? `p95 latency ${seed.aiUsage.latency.p95}ms` : 'No AI usage yet', to: '/ai-usage' },
         { label: 'Open items', value: String(openCount), sub: 'Across all roles', to: '/action-center' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'across roles — priority-ranked', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions).slice(0, 3)] });

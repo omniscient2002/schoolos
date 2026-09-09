@@ -158,7 +158,9 @@ export interface AiUsageShape {
   monthSpend: number;
   budget: number;
 }
-export let aiUsage: AiUsageShape = {} as never;
+export let aiUsage: AiUsageShape = {
+  days: [], byFeature: [], latency: { p50: 0, p95: 0 }, failureRate: 0, monthSpend: 0, budget: 0,
+} as never;
 export interface ModelRow { name: string; provider: string; region: string; usedFor: string; posture: string; cost: string; latency?: string; status?: string; }
 export let models: ModelRow[] = [] as never;
 export let guardianChat: ChatMsg[] = [] as never;

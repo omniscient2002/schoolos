@@ -181,7 +181,7 @@ export default function AiGovernance() {
               <div className="u-between">
                 <div>
                   <div style={{ fontSize: 'var(--text-xl)', fontWeight: 650, letterSpacing: '-0.02em' }}>₹{fmtNum(seed.aiUsage.monthSpend)}</div>
-                  <div className="u-small u-muted">Month spend vs ₹{fmtNum(seed.aiUsage.budget)} budget ({Math.round((seed.aiUsage.monthSpend / seed.aiUsage.budget) * 100)}%)</div>
+                  <div className="u-small u-muted">{seed.aiUsage.budget ? `Month spend vs ₹${fmtNum(seed.aiUsage.budget)} budget (${Math.round((seed.aiUsage.monthSpend / seed.aiUsage.budget) * 100)}%)` : 'No AI spend recorded yet'}</div>
                 </div>
                 <Sparkline points={seed.aiUsage.days.map(d => d.cost)} width={110} height={34} />
               </div>

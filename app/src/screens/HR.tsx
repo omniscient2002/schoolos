@@ -57,6 +57,8 @@ function buildLeaveRequests(): LeaveRequest[] {
     { type: 'casual', daysAhead: 11, span: 3, status: 'pending', sub: true, reason: 'Sister\'s wedding' },
     { type: 'sick', daysAhead: -9, span: 1, status: 'rejected', sub: false, reason: 'Requested during exam duty — moved to next week' },
   ];
+  /* Empty-world law: no teachers → no synthetic leave rows. */
+  if (!pool.length) return [];
   return defs.map((d, i) => {
     const t = pool[i % pool.length];
     return {
