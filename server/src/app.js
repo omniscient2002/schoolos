@@ -278,7 +278,30 @@ export async function buildApp(opts = {}) {
     const t = await q(`SELECT name, slug, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id]).catch(() => ({ rows: [] }));
     const tn = t.rows[0];
     if (tn && tn.slug !== 'meridian') {
-      return { ...datasetPayload, SCHOOL: { ...datasetPayload.SCHOOL, name: tn.name, short: tn.name.split(' ')[0], established: null, board: tn.config?.board ?? null } };
+      // NON-DEMO TENANTS GET AN EMPTY WORLD: a self-signup school must see
+      // blank screens with only ITS OWN live records — never the demo school's
+      // students/timetable/fees. Shape stays identical so every screen's
+      // empty-state renders naturally; /onboard/status powers what's next.
+      const cfg = tn.config ?? {};
+      const ownCampus = (cfg.campuses?.length ? cfg.campuses : [{ id: 'main', name: `${tn.name} — Main`, shortName: 'Main' }]).map((c, i) => ({
+        id: c.id ?? `campus-${i + 1}`, name: c.name ?? c, shortName: c.shortName ?? String(c.name ?? c).split(' ')[0],
+        students: 0, capacity: null, hue: 'var(--campus-a)',
+      }));
+      const empty = {
+        ...datasetPayload,
+        SCHOOL: { name: tn.name, short: tn.name.split(' ')[0], established: null, board: cfg.board ?? null },
+        campuses: ownCampus,
+        TERM_DAYS: [],
+        students: [], teachers: [], staff: [], guardians: [], guardianLinks: [],
+        sections: [], timetable: [], busRoutes: [], attendance: [],
+        feeObligations: [], payments: [], leads: [], documents: [], incidents: [],
+        cases: [], actionItems: [], decisions: [], meetings: [], memoryDocs: [],
+        policies: [], workflows: [], workflowRuns: [], obligations: [], calendarEvents: [],
+        healthIssues: [], notifications: [], auditEntries: [], insights: [],
+        aiUsage: { totalCalls: 0, tokens: 0, byFeature: [] }, models: [], guardianChat: [],
+      };
+      for (const k of Object.keys(empty)) if (empty[k] === undefined) delete empty[k];
+      return empty;
     }
     return datasetPayload;
   });

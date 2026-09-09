@@ -4,9 +4,10 @@
    When the backend arrives, repositories in /services swap to
    API implementations and this store thins out.
    ============================================================ */
-import { createContext, useContext, useMemo, useReducer, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useReducer, useState, type ReactNode } from 'react';
 import type { ActionRecord, CampusId, ChatMsg, LiveEvent, Notification, RoleId, SchoolCase, WorkOrderRecord, WOStatus } from '../types/domain';
 import * as seed from '../data/dataset';
+import { datasetReady, campuses } from '../data/dataset';
 import { actionItems as seedActions } from '../data/dataset';
 import { workOrders as seedWOs } from '../data/dataset';
 
@@ -190,7 +191,15 @@ export const DEMO_STUDENT_ID = seed.DEMO_STUDENT.id;
 export const DEMO_GUARDIAN_ID = seed.DEMO_GUARDIAN?.id ?? '';
 
 export function StoreProvider({ children }: { children: ReactNode }) {
+  // activeCampus starts at the demo's 'north' but snaps to the tenant's own
+  // first campus as soon as the (tenant-scoped) dataset is hydrated.
   const [session, setSession] = useState<Session>({ roleId: 'principal', campusScope: 'all', activeCampus: 'north' });
+  useEffect(() => {
+    if (!datasetReady()) return;
+    setSession((s: Session) => (campuses.length && !campuses.some(c => c.id === s.activeCampus)
+      ? { ...s, activeCampus: campuses[0].id as CampusId }
+      : s));
+  }, [datasetReady()]);
   const [domain, dispatch] = useReducer(reducer, initialState);
   storeDispatchRef.current = dispatch;
 
