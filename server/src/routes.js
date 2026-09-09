@@ -2,6 +2,7 @@
 // caller's tenant + role in session. Mutations write the audit ledger.
 import { randomUUID } from 'node:crypto';
 import { linkLineage, requestAudit } from './audit.js';
+import { ensurePluginCatalog } from './plugin-catalog.js';
 import { checkEventBudget } from './governance.js';
 import { q } from './db.js';
 
@@ -573,6 +574,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
 
   app.get('/plugins', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      /* Self-heal: a tenant provisioned before catalog-seeding landed has zero
+         registry rows — seed them so the plugin manager has real switches. */
+      await ensurePluginCatalog(c, req.user.tenant_id);
       // `enabled` is the resync flag the kernel mirror reads on mount
       // (app/src/plugins/useKernel.tsx): the 14-state lifecycle (docs/12) has
       // three enabled-equivalent states — registered/draft/… normalize to false.

@@ -102,13 +102,13 @@ export default function Ask() {
         ? ['Show me the attendance trend for my class', 'Draft the parent message', 'What needs my approval today?']
         : session.roleId === 'facilities' || session.roleId === 'technician'
           ? ['What maintenance problems need my attention?', 'Which assets are becoming unreliable?', 'Which maintenance jobs are running out of time?', 'Why does the science lab AC keep failing?']
-          : ['Why are 8-B absences rising?', 'What maintenance problems need my attention?', 'Which assets are becoming unreliable?', 'Why did maintenance costs increase this month?'];
+          : ['How is attendance trending this week?', 'Which fees are overdue?', 'What needs my attention today?', 'Which documents are expiring soon?'];
 
   const examples = [
-    { icon: 'Users' as const, tone: 'var(--warning)', title: 'Why are 8-B absences rising?', sub: 'Investigates registers, transport GPS and message logs with evidence.' },
-    { icon: 'Wrench' as const, tone: 'var(--ai-text)', title: 'Which assets are becoming unreliable?', sub: 'Reads failure history, repair spend and preventive adherence per asset.' },
-    { icon: 'Money' as const, tone: 'var(--accent)', title: 'Why did maintenance costs increase this month?', sub: 'Traces spend to repeat repairs — not new incidents.' },
-    { icon: 'Bus' as const, tone: 'var(--info)', title: 'Which maintenance jobs are running out of time?', sub: 'Checks every open work order against its response promise.' },
+    { icon: 'Users' as const, tone: 'var(--warning)', title: 'How is attendance trending this week?', sub: 'Investigates today\u2019s registers against recent trends with evidence.' },
+    { icon: 'Money' as const, tone: 'var(--accent)', title: 'Which fees are overdue?', sub: 'Reads the obligations ledger and groups by term and class.' },
+    { icon: 'Wrench' as const, tone: 'var(--ai-text)', title: 'What needs my attention today?', sub: 'Ranks open exceptions by impact and response promise.' },
+    { icon: 'Bus' as const, tone: 'var(--info)', title: 'Which documents are expiring soon?', sub: 'Checks the document registry for the next 30 days.' },
   ];
 
   return (

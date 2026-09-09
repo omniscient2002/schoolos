@@ -5,6 +5,7 @@
    API implementations and this store thins out.
    ============================================================ */
 import { createContext, useContext, useEffect, useMemo, useReducer, useState, type ReactNode } from 'react';
+import { sessionUserName } from '../services/sessionIdentity';
 import type { ActionRecord, CampusId, ChatMsg, LiveEvent, Notification, RoleId, SchoolCase, WorkOrderRecord, WOStatus } from '../types/domain';
 import * as seed from '../data/dataset';
 import { datasetReady, campuses } from '../data/dataset';
@@ -207,7 +208,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const account = demoAccounts.find(a => a.id === session.roleId)!;
     return {
       session,
-      actorName: account.name,
+      actorName: sessionUserName() ?? account.name,
       setRole: r => setSession((s: Session) => ({ ...s, roleId: r, campusScope: ROLE_CAMPUS[r], activeCampus: ROLE_CAMPUS[r] === 'all' ? s.activeCampus : ROLE_CAMPUS[r] as CampusId })),
       setActiveCampus: c => setSession((s: Session) => ({ ...s, activeCampus: c })),
       domain,

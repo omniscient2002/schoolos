@@ -7,7 +7,8 @@
    ============================================================ */
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { FIRST_PARTY_PLUGINS, KERNEL_VERSION } from './pluginRegistry';
-import { LIVE_BASE } from '../services/liveApi';
+import { LIVE_API, LIVE_BASE, apiEnablePlugin } from '../services/liveApi';
+import { useSession } from '../App';
 import type { PluginManifest } from './pluginTypes';
 import { Empty } from '../components/ui';
 import { Icon } from '../components/Icon';
@@ -147,8 +148,22 @@ function pluginForPath(path: string): string | null {
 
 /** Gate a route on plugin enablement. */
 export function KernelGate({ plugin, children }: { plugin: string; children: ReactNode }) {
-  const { isEnabled, manifestFor } = useKernel();
+  const { isEnabled, manifestFor, enable } = useKernel();
+  const session = useSession();
   const m = manifestFor(plugin);
+  const [turning, setTurning] = useState(false);
+  /* The owner (or IT admin) can turn a module on from right here — 'ask the
+     school owner' must never dead-end the person who IS the owner. */
+  const canTurnOn = session.role === 'owner' || session.role === 'itadmin';
+  const turnOn = async () => {
+    if (!m) return;
+    setTurning(true);
+    try {
+      if (LIVE_API) await apiEnablePlugin(m.id, m.version, m.class, m.permissions);
+      enable(m.id);
+    } catch { /* the Modules page shows the server's reason; local flip below still applies */ enable(m.id); }
+    setTurning(false);
+  };
   if (isEnabled(plugin)) return <>{children}</>;
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', paddingTop: 'var(--s-8)' }}>
@@ -156,8 +171,13 @@ export function KernelGate({ plugin, children }: { plugin: string; children: Rea
         titleAs="h1"
         icon={<Icon.Database size={22} />}
         title={`This feature is switched off`}
-        sub={`${m?.name ?? plugin} is optional. Ask the school owner to switch it on. Nothing is lost while it is off — your data is saved, and it will come back when it is switched on.`}
-        action={<Link to="/plugins" className="btn btn-primary">Open Modules</Link>}
+        sub={`${m?.name ?? plugin} is optional. Nothing is lost while it is off — your data is saved, and it will come back when it is switched on.`}
+        action={
+          <div className="u-flex" style={{ gap: 10, flexWrap: 'wrap' }}>
+            {canTurnOn && m && <button className="btn btn-primary" disabled={turning} onClick={turnOn}>{turning ? 'Turning on…' : `Turn on ${m.name}`}</button>}
+            <Link to="/plugins" className="btn btn-ghost">Open Modules</Link>
+          </div>
+        }
       />
     </div>
   );

@@ -18,6 +18,7 @@
 //   · auto-login returns the same { token, user } shape as /auth/login
 import { randomUUID } from 'node:crypto';
 import { auditLog, emitEvent } from './audit.js';
+import { ensurePluginCatalog } from './plugin-catalog.js';
 import { q, withUser } from './db.js';
 import { hashPassword } from './auth.js';
 
@@ -92,6 +93,12 @@ export function registerOnboarding(app) {
         `INSERT INTO app.users (tenant_id, email, name, role, password_hash, active)
          VALUES ($1,$2,$3,'owner',$4,true) RETURNING id, email, name, role, tenant_id`,
         [t.id, ownerEmail, ownerName, passwordHash])).rows[0];
+      /* Every school is born with its full plugin catalog (docs/12): rows land
+         'registered' — the plugin manager has real switches on day one and
+         enabling stays an audited owner action. RLS on app.plugins checks
+         schoolos.tenant_id, so scope the transaction to the new tenant first. */
+      await client.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [t.id]);
+      await ensurePluginCatalog(client, t.id);
       await auditLog(client, t.id, {
         actor: ownerName, actorRole: 'platform', action: 'Tenant onboarded (self-signup)',
         recordType: 'Tenant', recordRef: `${t.slug} · ${ownerEmail}`,

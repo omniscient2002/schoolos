@@ -159,6 +159,7 @@ export default function Insights() {
   }, [session.roleId]);
 
   /* seed-computed stats */
+  const term2Exists = seed.feeObligations.length > 0 || seed.attendance.length > 0;
   const stats = useMemo(() => {
     const term2 = seed.feeObligations.filter(f => f.term === 'Term 2 2026-27');
     const billed = term2.reduce((a, f) => a + f.amount, 0);
@@ -220,15 +221,15 @@ export default function Insights() {
         <Stat
           label="Collection rate — Term 2"
           value={`${stats.rate}%`}
-          delta={{ value: 'vs 88% 4-wk avg', dir: 'down' }}
-          sub={`${stats.failed} failed payments · 41 on Route 7`}
+          delta={term2Exists ? { value: `${stats.failed} failed payment${stats.failed === 1 ? '' : 's'}`, dir: stats.failed > 0 ? 'down' : 'up' } : undefined}
+          sub={term2Exists ? 'From live fee obligations' : 'No fee records yet'}
           onClick={() => navigate('/fees')}
         />
         <Stat
           label="Attendance health today"
           value={`${stats.presence}%`}
           delta={{ value: stats.flagged ? `${stats.flagged} section${stats.flagged > 1 ? 's' : ''} flagged` : 'all sections nominal', dir: stats.flagged ? 'down' : 'up' }}
-          sub="Grade 8-B cluster tracks the Bus 14 disruption"
+          sub={term2Exists ? 'From live attendance records' : 'No attendance records yet'}
           onClick={() => navigate('/attendance')}
         />
         {stats.wl && (

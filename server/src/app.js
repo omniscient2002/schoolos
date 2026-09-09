@@ -268,7 +268,10 @@ export async function buildApp(opts = {}) {
   // --- dataset: the demo domain, server-owned (see src/generated/) ---
   const { dataset } = await import('./dataset.js');
   let datasetPayload = null;
-  app.get('/dataset', { preHandler: app.authenticate }, async (req) => {
+  app.get('/dataset', { preHandler: app.authenticate }, async (req, reply) => {
+    // The dataset is per-tenant and changes with enablement/records — a browser
+    // must never serve it from cache (stale demo blob = 'old data' reports).
+    reply.header('cache-control', 'no-store');
     if (!datasetPayload) datasetPayload = dataset();
     // Tenant identity override: the school block MUST be the caller's own
     // school (self-signup schools saw the demo brand). The rest of the blob

@@ -252,7 +252,7 @@ export default function Fees() {
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Term 2 due" value={fmtMoneyShort(stats.term2Due)} sub="Fees due or overdue, Term 2" />
-        <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} delta={{ value: `${fmtPct(stats.collectedPct - 88, 1)} vs avg`, dir: stats.collectedPct >= 88 ? 'up' : 'down' }} sub="88% is the 4-week average" />
+        <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} sub="Share of billed amount collected" />
         <Stat label="Overdue" value={fmtMoneyShort(stats.overdueAmt)} sub="Past due date, unpaid" />
         <Stat label="Failed payments" value={stats.failedCount} sub={(obligations.data ?? []).length ? '41 of 47 on Route 7 households' : 'No fee records yet'} onClick={() => setTab('failed')} />
       </div>
@@ -264,8 +264,8 @@ export default function Fees() {
         <div className="u-col" style={{ gap: 14 }}>
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
             <span className="ai-chip"><Icon.Sparkle size={12} /> What changed?</span>
-            <Badge tone="warning" dot>collection 82.3% vs 88% avg</Badge>
-            <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Fee review · recomputed hourly from the ledger</span>
+            <Badge tone="warning" dot>collection {fmtPct(stats.collectedPct, 1)} · this ledger</Badge>
+            <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Fee review · recomputed from the ledger</span>
           </div>
 
           <div className="grid grid-2" style={{ alignItems: 'start' }}>

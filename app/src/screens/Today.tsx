@@ -310,12 +310,15 @@ export default function Today() {
       badge: { label: 'Anomaly', tone: 'danger' },
       to: '/attention',
     } : null;
+    const failedCount = (seed.feeObligations ?? []).filter(f => f.status === 'failed').length;
     const chgFee: BriefItem | null = insFee ? {
       id: 'chg-fee',
       icon: 'Money',
-      title: `Term 2 collection at ${collection}% — down from 88% average`,
-      detail: `${seed.FEE_STORY.failedCount} online payments failed this week; 41 of 47 belong to Route 7 households. 23 gateway successes await settlement-file import.`,
-      chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
+      title: `Term 2 collection at ${collection}%${failedCount ? ` — ${failedCount} failed payment${failedCount === 1 ? '' : 's'}` : ''}`,
+      detail: failedCount
+        ? `${failedCount} online payment${failedCount === 1 ? '' : 's'} failed this week and await retry or guardian assistance.`
+        : 'No failed payments on record this week.',
+      chips: ['Fees records · live', 'Gateway settlement · live'],
       badge: { label: 'Fee dip', tone: 'warning' },
       to: '/fees',
     } : null;
@@ -436,9 +439,9 @@ export default function Today() {
         id: 'collections', label: 'Collections', sub: 'Fee movement overnight',
         items: [
           {
-            id: 'fee-trend', icon: 'Money', title: `Collection ${collection}% this week vs 88% average`,
-            detail: insFee.explanation,
-            chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
+            id: 'fee-trend', icon: 'Money', title: `Collection ${collection}% this week`,
+            detail: 'Fee movement recomputed from the live obligations ledger.',
+            chips: ['Fees records · live'],
             badge: { label: 'Dip', tone: 'warning' }, to: '/fees',
           },
           {
@@ -497,7 +500,7 @@ export default function Today() {
       stats = [
         { label: 'WOC — coverage', value: woc != null ? `${woc.toFixed(1)}%` : '—', spark: wocSeries.length ? <Sparkline points={wocSeries} color="var(--accent)" /> : undefined, sub: `Weekly Operating Coverage · ${seed.campuses.reduce((a, c) => a + (c.students ?? 0), 0)} students`, to: '/attendance' },
         { label: 'Open actions', value: String(openCount), sub: `${criticalCount} critical · ${highCount} high priority`, to: '/action-center' },
-        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? '47 failed · 41 on Route 7 households' : 'No fee records yet', to: '/fees' },
+        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? `${(seed.feeObligations ?? []).filter(f => f.status === 'failed').length} failed payments on record` : 'No fee records yet', to: '/fees' },
         { label: 'Transport on time', value: `${onTimePct}%`, sub: r7 ? (r7.status === 'delayed' ? `Bus 14 delayed +${r7.delayMins ?? 13} min` : 'All routes nominal') : 'No routes yet', to: '/transport' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'priority-ranked, oldest deadline first', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });

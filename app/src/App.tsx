@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect, useState, createContext, useContext } from 'react';
+import { setSessionIdentity } from './services/sessionIdentity';
 import { KernelProvider, KernelGate, useKernel } from './plugins/useKernel';
 import './plugins/registerWidgets';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
@@ -268,7 +269,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
            the authenticated identity (unit-14 finding). Auth validation itself
            is unchanged: only a live /me answer establishes a session, and token
            handling (setToken/call) is untouched. */
-        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email, school: me.school }); }
+        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email, school: me.school }); setSessionIdentity({ name: me.name, email: me.email }); }
       } catch {
         localStorage.removeItem('schoolos.session');
         localStorage.removeItem('schoolos_token');
@@ -288,7 +289,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setRole(mapAccountRole(s.role)); setSession(s); }} />;
+  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setRole(mapAccountRole(s.role)); setSession(s); setSessionIdentity(s); }} />;
   return (
     <SessionCtx.Provider value={session}>
       {children}

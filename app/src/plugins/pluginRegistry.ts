@@ -64,7 +64,7 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     permissions: ['events.emit', 'audit.request', 'attendance.write'],
     slots: ['settings', 'reports', 'attention'],
     widgets: [{ slot: 'attention', id: 'timetable.substitutions', title: 'Timetable substitutions feed' }],
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     id: 'library',
@@ -78,7 +78,7 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     slots: ['nav', 'route', 'attention'],
     routes: [{ path: '/library', label: 'Library' }],
     widgets: [{ slot: 'attention', id: 'library.overdue', title: 'Overdue library books' }],
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   /* library is the proof plugin and ranks LAST on slot surfaces: the docs/10 §6
      ration (max 2 widgets per slot) is consumed by the production rails first */
@@ -113,7 +113,7 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     permissions: ['events.emit', 'audit.request'],
     slots: ['settings', 'reports'],
     routes: [{ path: '/visitors', label: 'Visitors' }],
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   /* ── build-out wave D mirrors (server plugins, same registry contract) ── */
   {
@@ -127,7 +127,7 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     permissions: ['users.write', 'students.write', 'events.emit', 'audit.request'],
     slots: ['settings', 'reports'],
     routes: [{ path: '/people-admin', label: 'People console' }],
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     id: 'files.store',
@@ -139,7 +139,7 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     kernel: '>=1.0.0 <2.0.0',
     permissions: ['files.write', 'files.read', 'events.emit', 'audit.request'],
     slots: ['settings'],
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     id: 'payments.razorpay',
