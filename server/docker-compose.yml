@@ -33,6 +33,31 @@ services:
     # seed.js TRUNCATEs tenant data and installs demo credentials. For a local demo
     # stack use `docker compose --profile demo up` which runs the demo-init service.
     command: sh -c "node scripts/bootstrap.js && node scripts/migrate.js && node src/index.js"
+
+  # Wave C: one-shot data-retention pass (Wave B's worker, added here because it
+  # did not exist). Non-secret owner cleanup only — GPS positions past their 30-day
+  # retention (020), expired/consumed login OTPs from the kernel vault
+  # (app.auth_otps, RLS-denied to the app role by 008, hence owner path), expired
+  # revoked-token denylist rows (038) and expired pre-auth OAuth states (040).
+  # Runs after api healthy so the schema always exists. Plugin-schedule retention
+  # (manifest retention.on_uninstall: export_then_purge_30d) is NOT covered —
+  # per-plugin purge rules are unimplemented. Re-run manually with:
+  #   docker compose run --rm retention
+  # Cron alternative (host cron): see the header of scripts/retention-worker.js.
+  retention:
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      WORKER_ROLE: "1" # non-HTTP process: no JWT/CORS surface, skips those guards
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    command: node scripts/retention-worker.js
+    restart: "no"
+
   outbox:
     build: .
     environment:
@@ -53,6 +78,35 @@ services:
     restart: unless-stopped
     # image-level HEALTHCHECK probes :8080/ready, which no worker listens on —
     # silence the permanent "unhealthy" noise (worker liveness = restart policy).
+    healthcheck:
+      disable: true
+
+  comms-dispatcher:
+    build: .
+    environment:
+      # NODE_ENV=development on purpose (demo-init parity): this worker reads
+      # config.js ONLY for DATABASE_URL; staying out of production mode skips the
+      # CORS/JWT prod guards that would crash-loop a non-HTTP process — the same
+      # reasoning WORKER_ROLE implements for the outbox relay. Retention (Wave B)
+      # owns worker prod-hardening; revisit then.
+      NODE_ENV: development
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+    depends_on:
+      db:
+        condition: service_healthy
+      # Same ordering contract as the outbox relay: bootstrap+migrate run in the
+      # api container, so the 043 dispatch columns must exist before the first
+      # poll (the dispatcher also self-ensures them at startup as a guard).
+      api:
+        condition: service_healthy
+    # The Communication Orchestrator's queue drain (Wave A): drains
+    # app.communications status='queued' through the rails (rails.sms /
+    # rails.whatsapp; log-only for unrail'd channels). REQUIRED wherever comms
+    # sends are approved — without it queued rows sit undelivered
+    # (docs/DATA-FLOW §20). Poll cadence/backoff tunable via COMMS_* envs
+    # (see scripts/comms-dispatcher.js).
+    command: node scripts/comms-dispatcher.js
+    restart: unless-stopped
     healthcheck:
       disable: true
 

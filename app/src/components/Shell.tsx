@@ -32,6 +32,11 @@ export function useNavItems(): NavItem[] {
   const role = session.roleId;
   const kernel = { to: '/plugins', label: 'Modules', icon: 'Layers' as const };
   const library = { to: '/library', label: 'Library', icon: 'Book' as const, plugin: 'library' };
+  /* build-out wave D: People console (people.admin plugin) + System services
+     (owner/itadmin core surface for rails/plugins/queues) — plugin-gated so
+     disabled modules never appear in the menu. */
+  const peopleAdmin = { to: '/people-admin', label: 'People console', icon: 'Users' as const, plugin: 'people.admin' };
+  const rails = { to: '/rails', label: 'System services', icon: 'Shield' as const };
   const openActions = domain.actions.filter(a => a.status === 'open').length;
   const openWOs = domain.workOrders.filter(w => !['resolved', 'closed', 'cancelled'].includes(w.status)).length;
 
@@ -119,7 +124,9 @@ export function useNavItems(): NavItem[] {
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/group', label: 'Group', icon: 'Building' },
         library,
+        peopleAdmin,
         kernel,
+        rails,
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
@@ -139,7 +146,9 @@ export function useNavItems(): NavItem[] {
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/it', label: 'Platform', icon: 'Shield' },
         { to: '/memory', label: 'AI memory', icon: 'Memory' },
+        peopleAdmin,
         kernel,
+        rails,
       ];
     case 'facilities':
       return [

@@ -8,7 +8,9 @@
 - **NOT IMPLEMENTED** — expected capability is absent.
 - **UNKNOWN** — cannot be established from the available code.
 
-Sources: `server/src/app.js`, `server/src/db.js`, `server/src/auth.js`, `server/src/audit.js`, `server/src/governance.js`, `server/src/routes.js`, `server/src/plugins/*/index.js`, `server/src/plugins/_shared/lifecycle-gate.js`, `server/migrations/001–042`, `server/scripts/{bootstrap,migrate,seed,outbox-worker,permission-matrix}.js`, `app/src/**`. Cross-checks: `docs/PERMISSION-MATRIX.md` (generated, 178 routes), live psql probes, live API curls.
+> **BUILD-OUT WAVE UPDATE (2026-09-09)** — the capability gaps this document originally catalogued have been closed. RLS coverage grew 73→**86** policies on 70→**83** tables (the 9 naked tables now carry policies); the **SMS / WhatsApp / Razorpay rails** are implemented as settings-driven plugins with a queue dispatcher (`server/scripts/comms-dispatcher.js`); the **library plugin**, **file storage** (`files.store`), the **people console** (`people.admin`: provisioning / suspension / password reset / class transfer with enrollment history / CSV import), the **retention worker**, **security headers on every response**, **GET /metrics** and **GET /capabilities** (the frontend decoupling contract) all exist. Every new module ships disabled; an owner enables it per school (`POST /plugins/:id/enable`), unconfigured rails degrade gracefully (orders door → 503 with guidance, webhooks fail-closed, dispatcher drains to log-only). Route census is now **200 routes · 171 role-gated · 19 auth-only · 10 public · 0 unguarded** (`docs/PERMISSION-MATRIX.md`). A `logger` provider is the default for SMS/WhatsApp — real delivery activates when a provider URL + auth header are entered in plugin settings (labelled below where this matters). Sections marked ✓B have been updated for the build-out.
+
+Sources: `server/src/app.js`, `server/src/db.js`, `server/src/auth.js`, `server/src/audit.js`, `server/src/governance.js`, `server/src/routes.js`, `server/src/plugins/*/index.js`, `server/src/plugins/_shared/lifecycle-gate.js`, `server/migrations/001–052`, `server/scripts/{bootstrap,migrate,seed,outbox-worker,comms-dispatcher,retention-worker,permission-matrix}.js`, `app/src/**`. Cross-checks: `docs/PERMISSION-MATRIX.md` (generated, 200 routes), live psql probes, live API curls.
 
 ---
 
@@ -168,8 +170,8 @@ Concrete trace for `GET /students` with Rahul & Priya in School A and Arjun & Sn
 
 **Multiple layers stack**: (1) role gate at the door, (2) handler-level scoping (own children / own homework / own cases), (3) RLS at the database, (4) FORCE RLS even against owner-path bugs, (5) unique constraints including tenant_id so IDs can't collide across schools.
 
-**Where isolation is thinner — flagged honestly**:
-- Nine tables have **no RLS**: `app.oauth_states`, `app.schema_migrations`, `app.tenants`, `auth.revoked_token`, `plugin_dpdp.consent`, `plugin_dpdp.sar`, `plugin_admissions.lead`, `plugin_admissions.stage_history`, `plugin_visitors.visit` (live query). Of these, the dpdp/admissions/visitors tables hold PII and rely on **application-level scoping only** (dpdp uses DPO-role doors; admissions masks PII per role but its tables are readable by the app role from any code path). This is the largest structural gap in the isolation story — **PARTIALLY IMPLEMENTED** isolation for plugin PII tables.
+**Where isolation is thinner — flagged honestly** (updated by the build-out):
+- ~~Nine tables have no RLS~~ → **CLOSED (build-out, migration 049)**: RLS now covers `plugin_dpdp.consent`, `plugin_dpdp.sar`, `plugin_admissions.lead`, `plugin_admissions.stage_history`, `plugin_visitors.visit` (the verbatim 001 tenant-isolation policy), `app.tenants` (self-row policy), `auth.revoked_token` (defense in depth), `app.oauth_states` (`USING(true)` for the app role — no tenant_id by design: pre-auth single-use states with a 10-min TTL), `app.schema_migrations` (`USING(false)` — app role blind; migrate.js runs as owner). Verified live: **86 policies / 83 RLS-forced tables** (was 73/70). All plugin PII writes were already through `withUser` — RLS now enforces what WHERE-clauses only promised. `app.oauth_states`, `app.schema_migrations`, `app.tenants`, `auth.revoked_token`, `plugin_dpdp.consent`, `plugin_dpdp.sar`, `plugin_admissions.lead`, `plugin_admissions.stage_history`, `plugin_visitors.visit` (live query). Of these, the dpdp/admissions/visitors tables hold PII and rely on **application-level scoping only** (dpdp uses DPO-role doors; admissions masks PII per role but its tables are readable by the app role from any code path). This is the largest structural gap in the isolation story — **PARTIALLY IMPLEMENTED** isolation for plugin PII tables.
 - The owner path (`q()`, BYPASSRLS) is legitimately required for the OTP vault, OAuth state, webhook tenant resolution, exam grade-scale reads — each such use is individually scoped by hand-written WHEREs; audits confirm tenant filters, but the guardrail is code review, not the database.
 
 ---
@@ -178,7 +180,7 @@ Concrete trace for `GET /students` with Rahul & Priya in School A and Arjun & Sn
 
 Imagine the database holds 10,000 students from 50 schools. A row of `app.students` is like a file whose folder is stamped with the school's ID. RLS is a rule *inside the filing cabinet itself*: **"no matter who asks or how cleverly, a drawer only opens for rows whose school-stamp equals the stamp the session presented."**
 
-- **Which tables**: 70 tables carry 73 policies; 72 are `FOR ALL` (SELECT+INSERT+UPDATE+DELETE in one), 1 is SELECT-only (`app.capability_contracts` — read-only contract mirror). Verified live via pg_policies.
+- **Which tables**: 83 RLS-forced tables carry 86 policies (build-out included); the bulk are `FOR ALL` tenant-isolation policies, plus the SELECT-only contract mirror and the special policies of §7. Verified live via pg_policies.
 - **Policy shape** (verbatim from the live DB): `USING (tenant_id = current_setting('schoolos.tenant_id', true)::uuid)` — the same expression serves as WITH CHECK, so inserts/updates with a foreign tenant_id are rejected too.
 - **How the school is identified**: the application sets a transaction-local GUC `schoolos.tenant_id` at `BEGIN` (`db.js:52`); `true` = transaction-local, so a connection reuse can never leak a previous tenant's stamp.
 - **INSERT/UPDATE/DELETE control**: same policy for all commands; additionally the app role's privileges are individually tuned — e.g. no INSERT/UPDATE/DELETE on `app.audit_log` at all (write only via `audit_append`), no UPDATE/DELETE on append-only event tables (`concern_status_event`, `family.request_event` — appendix-style histories).
@@ -220,15 +222,16 @@ Imagine the database holds 10,000 students from 50 schools. A row of `app.studen
 | What | Where | Reality |
 |---|---|---|
 | Outbox relay worker | `scripts/outbox-worker.js` | **IMPLEMENTED** — `FOR UPDATE SKIP LOCKED`, per-row attempts bump, exponential backoff via `next_attempt_at` (mig 042), poison rows parked after 8 attempts, compose service ordered after api health |
-| Event consumers | — | **PARTIALLY IMPLEMENTED** — the only subscriber is a durable log line; no external delivery |
-| Scheduled jobs / cron | — | **NOT IMPLEMENTED** (accounting.tally's declared export scheduler and all retention purges are absent) |
-| Webhook processor | `payments.upi` webhook | **IMPLEMENTED** — synchronous, idempotent, fact-recording only |
+| Event consumers | — | **PARTIALLY IMPLEMENTED** — the durable log line, plus the comms dispatcher (below) consuming the queue spine |
+| Scheduled jobs | `scripts/comms-dispatcher.js`, `scripts/retention-worker.js` | **IMPLEMENTED** (build-out) — the dispatcher drains the message queue (SKIP LOCKED, backoff, park-after-8); the retention worker purges GPS positions >30d, consumed/expired OTPs >7d, expired revoked tokens and stale OAuth states; both run as compose services (cron documented in the worker headers); accounting.tally's export scheduler remains **NOT IMPLEMENTED** |
+| Message queue dispatcher | `scripts/comms-dispatcher.js` | **IMPLEMENTED** (build-out) — claims `status='queued'` comms rows, resolves the channel rail (sms → rails.sms, whatsapp → rails.whatsapp, anything else → log-only), stamps `sent`/`sent_at` on success, `attempts`/`last_error`/`next_attempt_at` backoff on failure, parks after 8 as `failed`; a school with no provider configured never blocks the queue — rows drain log-only |
+| Webhook processor | `payments.upi` + `payments.razorpay` webhooks | **IMPLEMENTED** — synchronous, idempotent, fact-recording only (identical gate stacks: boot-refusal without secret, raw-bytes HMAC, freshness, replay dedupe) |
 | Retries | outbox (`next_attempt_at`), plugin SAVEPOINT-retry on duplicate keys (3 sites), client refetch-on-mount | no general retry infra |
 | Why they exist | outbox = at-least-once spine so future rails (WhatsApp/email) can attach without rewriting emitters | |
 
 # 12. Event-driven data movement
 
-`emitEvent` always writes **two rows atomically** (`src/audit.js:29-41`): an `app.events` row (the human-readable spine: type/label/severity/ref) and an `app.outbox` row (the machine envelope: topic, payload, event_id, schema_version, correlation/causation ids). **Real topics** (measured, 40+): `homework.v1`, `submission.v1`, `concern.filed.v1|routed.v1|closed.v1`, `safety.report.filed.v1`, `doubt.*.v1`, `ptm.booked.v1`, `family.consent.v1|request.v1`, `child.leave.requested.v1`, `student.print.v1|wellbeing.v1`, `sub.assign.v1`, `duty.assigned.v1`, `payment.link.created`, gateway `payment.captured`, `exam.marks.updated.v1|exam.published.v1`, `admission.enquiry.captured|stage.transitioned|offer.accepted`, `consent.recorded.v1`, `sar.opened.v1|fulfilled.v1`, `visitor.*.v1`, `gps.position`, `substitution.assigned`, `attendance.autofilled`, `cbse.obligation.due.v1`, `clinic.*.v1`.
+`emitEvent` always writes **two rows atomically** (`src/audit.js:29-41`): an `app.events` row (the human-readable spine: type/label/severity/ref) and an `app.outbox` row (the machine envelope: topic, payload, event_id, schema_version, correlation/causation ids). **Real topics** (measured, 40+): `homework.v1`, `submission.v1`, `concern.filed.v1|routed.v1|closed.v1`, `safety.report.filed.v1`, `doubt.*.v1`, `ptm.booked.v1`, `family.consent.v1|request.v1`, `child.leave.requested.v1`, `student.print.v1|wellbeing.v1`, `sub.assign.v1`, `duty.assigned.v1`, `payment.link.created`, gateway `payment.captured`, `exam.marks.updated.v1|exam.published.v1`, `admission.enquiry.captured|stage.transitioned|offer.accepted`, `consent.recorded.v1`, `sar.opened.v1|fulfilled.v1`, `visitor.*.v1`, `gps.position`, `substitution.assigned`, `attendance.autofilled`, `cbse.obligation.due.v1`, `clinic.*.v1` — plus build-out topics: `people.user.created|people.student.transferred|people.import.completed`, `library.book.added|loan.issued|loan.returned|book.retired`, `files.stored.v1`, `razorpay.order.created` (gateway `payment.captured/failed` on the razorpay webhook).
 
 **Who listens**: the outbox worker (logs) — and *code-level* consumers: `ops.timetable` consumes `hr.leave` facts via its `absence_feed` setting; `accounting.tally` reads kernel payment facts. **What the listener changes**: today nothing beyond the relay log. `GET /events` exposes the spine to staff, and `app.event_action_link` stores lineage (event → action → downstream event) — the wiring for "this approval happened because that event raised it" exists; correlation ids are reserved but **not yet populated by callers** (UNKNOWN-future → declared-but-unused).
 
@@ -250,13 +253,14 @@ Example that IS real: teacher posts homework → `homework.v1` outbox row (verif
 
 **Nothing is cached between requests** — a changed underlying row changes every door's next answer immediately. The only "cache-like" objects are the exam publish snapshot (deliberate, historical) and the in-process `/dataset` memo (demo data, per-process, `app.js:238-244`).
 
-# 14. File / document data flow
+# 14. File / document data flow ✓B
 
-**NOT IMPLEMENTED as storage**: there is no upload endpoint, no object storage, no multipart parser (except the payments raw-buffer JSON parser), no malware/size/type controls. What exists:
-- `attachment_ref` on homework: a *validated string* — plain file name or http(s) URL; `javascript:`/`data:`/protocol-relative refused (`teacher.classroom:36-49`).
-- `app.migration_sources` records *references* to external data sources for the migration wizard (rows, not files).
-- Students "documents" screen renders demo data only.
-**If it existed hypothetically** the audit/event wrapping would apply as to any write; today the honest answer is: files do not flow through SchoolOS yet.
+**IMPLEMENTED (build-out) — the `files.store` plugin** (migrations 048, `src/plugins/files.store/index.js`):
+- **Upload**: `POST /plugins/files.store/upload` (staff: owner/principal/coordinator/teacher/itadmin/facilities) — JSON base64 primary lane + multipart accepted on the same door; 5MB cap; mime whitelist (pdf/png/jpeg/webp/csv/docx) **with extension agreement** (a .exe dressed as a pdf → 415); sha256 over the exact bytes; bytes stored under `server/storage/<tenant_id>/` (env `FILES_DIR`), which is **never web-served** — downloads only through the permission-checked door; metadata row in `app.files` (scope general|homework|student, optional ref_id); event `files.stored.v1` + audit in the same transaction.
+- **Download**: `GET /plugins/files.store/:id/download` — uploader + owner/principal/itadmin always; `scope=student` additionally admits that child's guardians (`family.child_link`) and the student themself (name-match pin); everyone else → 403 **with an audited refusal** (risk medium); every successful download is audited (risk low); content-disposition stream.
+- **List**: `GET /plugins/files.store?scope=&refId=` — metadata only, non-admin staff pinned to their own uploads.
+- **UI**: Documents surface wired through `adminApi.files*`; the plugin ships disabled and disappears from nav when off.
+Still true: homework `attachment_ref` remains a validated name/URL string; `app.migration_sources` still stores references, not files.
 
 # 15. External integrations (every direction)
 
@@ -265,9 +269,11 @@ Example that IS real: teacher posts homework → `homework.v1` outbox row (verif
 | Google (OAuth) | External → SchoolOS | `/auth/google/start|callback`; state stored server-side, single-use 10-min TTL; token exchange + userinfo; account must pre-exist by email | **IMPLEMENTED** |
 | UPI payment gateway | External → SchoolOS | `POST /plugins/payments.upi/webhook` — raw-bytes HMAC, freshness window, replay dedupe; tenant from payment row | **IMPLEMENTED** |
 | UPI payment gateway | SchoolOS → External | `upi://pay?...` deep link built for the parent (`payments.upi:57`) | **IMPLEMENTED** (link only) |
-| WhatsApp BSP | SchoolOS → External | templates + receipts tables; **NO sender** — kernel stamps rows 'delivered' itself | **NOT IMPLEMENTED** |
-| SMS | both | config key + dev echo only | **NOT IMPLEMENTED** |
+| WhatsApp BSP | SchoolOS → External | `rails.whatsapp` plugin: settings-driven provider (`logger` default / `http-generic` when a BSP URL + auth header are configured), DLT template registry reuse from comms.whatsapp; the comms dispatcher drains queued rows through it | **IMPLEMENTED** (build-out; provider creds are per-school settings) |
+| SMS | SchoolOS → External | `rails.sms` plugin: E.164 recipients, dedupKey-approved sends, `logger` default / `http-generic` provider on settings; dispatcher-drained | **IMPLEMENTED** (build-out; provider creds are per-school settings) |
 | Tally accounting | SchoolOS → External | export door renders voucher text from payments+audit (no push) | **PARTIALLY IMPLEMENTED** |
+| Razorpay | External → SchoolOS | `POST /plugins/payments.razorpay/webhook` — identical gate stack to UPI (boot-refusal, raw-bytes HMAC on X-Razorpay-Signature, freshness window, replay dedupe on (tenant, event_id)); records facts in `plugin_razorpay.order_log`, **never settles** — kernel confirm stays the only settlement | **IMPLEMENTED** (build-out) |
+| Razorpay | SchoolOS → External | `POST /plugins/payments.razorpay/orders` — creates a gateway order via the Razorpay REST API (settings key_id/key_secret or env); unconfigured → 503 with operator guidance, nothing half-created | **IMPLEMENTED** (build-out) |
 | GPS devices | External → SchoolOS | `POST /plugins/transport.gps/positions` (role-gated API, not device protocol) + governance budget/breaker | **IMPLEMENTED** (API-level) |
 | Biometric/RFID/government | — | none | **NOT IMPLEMENTED** |
 | CBSE OASIS export | SchoolOS → External | export door (board-tier) | **PARTIALLY IMPLEMENTED** (format door, no transmission) |
@@ -323,7 +329,7 @@ Every meaningful write calls `auditLog` (kernel) or `requestAudit` (plugin) **in
 # 20. Notifications
 
 - **In-app**: `app.notifications` rows (`user_id` recipient or NULL = broadcast; group, title, body, ref, read_at). Read door is own-only + broadcast (`routes.js:488-493`); mark-read only own (`:495-500`). Written e.g. when an approved action is kind 'task' (`routes.js:465-470`).
-- **Messages/letters**: `app.communications` rows with template + body + status. **Honesty rule post-audit**: approval creates them as `status='queued'` (`routes.js:425-429` area); **no provider drains them** — kernel-approved 'message' execution and the WhatsApp plugin stamp 'delivered' in-INSERT (`routes.js:457-461`, `comms.whatsapp:41-`), which the ops audit flagged and the queue-status rename fixed for new rows. **NOT IMPLEMENTED: email, SMS, push, WhatsApp actual delivery.**
+- **Messages/letters ✓B**: `app.communications` rows with template + body + status. **The queue now has a consumer (build-out)**: `scripts/comms-dispatcher.js` claims queued rows (`FOR UPDATE SKIP LOCKED`), resolves the rail per channel (sms → `rails.sms.sendSms`, whatsapp → `rails.whatsapp.sendWhatsapp`, no recipient → log-only drain so data gaps never poison the queue), stamps `sent`+`sent_at` on success and `attempts`/`last_error`/`next_attempt_at` (exponential backoff, park-after-8 → `failed`) otherwise. With no provider configured the **logger** provider still 'sends' (structured, secret-free log line, tail-only recipient) so schools see the full flow before buying anything; configuring a BSP URL + auth header in plugin settings switches the same rows to real delivery. **Still NOT IMPLEMENTED: email, push, and any provider credential by default.**
 - Visitor pickup OTPs surface **in-app** (or dev echo) — no SMS (`ops.visitors:142-160`).
 
 
@@ -336,7 +342,7 @@ Relationships are kept consistent by **foreign keys + unique constraints + singl
 | Pair | Mechanism | When one side changes |
 |---|---|---|
 | Student ↔ Parent | `family.child_link` row (UNIQUE tenant+user+student) | Link rows are added/removed; student row untouched; parent doors re-join live |
-| Student ↔ Class/Section | columns on `app.students` (current state only) | Update changes future read-time scoping; history tables untouched |
+| Student ↔ Class/Section | columns on `app.students` **+ `app.enrollment_history` (build-out, migration 046)** | The `people.admin` transfer door writes the history row and flips the student **in one transaction** — a transfer without its history row cannot exist |
 | Homework ↔ Submission | FK + UNIQUE(homework_id, student_id) | 2nd submit → 409 via SAVEPOINT retry (`teacher.classroom:139-150`) |
 | Payment ↔ Obligation | FK + partial unique on open payments + `paid_cents` CHECK | confirm updates obligation inside the confirm tx (`routes.js:223-226`) |
 | Route ↔ Stops | `route_stops → routes ON DELETE CASCADE` | Deleting a route removes its stops |
@@ -346,9 +352,9 @@ Relationships are kept consistent by **foreign keys + unique constraints + singl
 
 # 22. Historical vs current data
 
-- **Current state only**: `app.students.grade/section` (no enrollment-history table — **NOT IMPLEMENTED**), `app.routes`, `app.timetable_*` (current periods; substitutions are date-keyed history).
-- **History by design**: `app.attendance` (per school_date), `teacher.submission` (status trail + reviewed_at), `plugin_exams.report` (frozen snapshot + digest at publish), `concern_status_event` / `family.request_event` / `wo_events` (append-only event tables), `plugin_admissions.stage_history` (CASCADE), GPS positions (retention promised, purge **NOT IMPLEMENTED**), and the crown ledger `app.audit_log`.
-- **Why it matters**: a 2025 report must never show 2026's class — protected for exams (snapshot) and attendance (date-keyed); a "class 8 roster in 2025" report is **impossible to reconstruct** because roster history doesn't exist (**NOT IMPLEMENTED** — flag for anyone promising year-on-year analytics).
+- **Current state only**: `app.routes`, `app.timetable_*` (current periods; substitutions are date-keyed history). Student class history is **IMPLEMENTED (build-out)**: `app.enrollment_history` (append-only, SELECT/INSERT-only grants) records every grade/section move via the people.admin transfer door.
+- **History by design**: `app.attendance` (per school_date), `teacher.submission` (status trail + reviewed_at), `plugin_exams.report` (frozen snapshot + digest at publish), `concern_status_event` / `family.request_event` / `wo_events` (append-only event tables), `plugin_admissions.stage_history` (CASCADE), GPS positions (purge **IMPLEMENTED (build-out)**: retention-worker deletes >30d), and the crown ledger `app.audit_log`.
+- **Why it matters**: a 2025 report must never show 2026's class — protected for exams (snapshot) and attendance (date-keyed); a "class 8 roster in 2025" report was previously impossible to reconstruct; the build-out's `app.enrollment_history` makes **from → to reconstruction** possible going forward (pre-history rows before the build-out remain unreconstructable — honest boundary).
 - Audit rows reference records by `record_ref` id + text summary, so even deactivated students leave a readable trail.
 
 # 23. Corrections and mistakes
@@ -358,7 +364,7 @@ Relationships are kept consistent by **foreign keys + unique constraints + singl
 # 24. Deletion and cascading effects
 
 **"Student leaves the school"** (soft-deactivation is the pattern):
-- User account: `active=false` (login then fails with 'account disabled' — `app.js:44`).
+- User account: `active=false` via the **people.admin suspend door (build-out)** — `POST /plugins/people.admin/users/:id/suspend` (owner/itadmin; owner accounts protected; audit + event); login then fails with 'account disabled' (`app.js:44`). Re-activation is the paired door.
 - Student profile: `status` flipped from 'active' (every roster/door filters `status='active'`); no dedicated deactivation door in routes.js (**NOT IMPLEMENTED** as a one-click flow; the mechanism exists and is used by seed/SQL).
 - Enrollment/attendance/grades/fees: **retained** (no FK CASCADE from students anywhere — verified: all student FKs are ON DELETE NO ACTION) — history survives.
 - Documents: none exist. Messages: retained. Audit logs: **immutable, retained forever**.
@@ -368,7 +374,7 @@ Relationships are kept consistent by **foreign keys + unique constraints + singl
 # 25. End-to-end journeys (condensed but complete)
 
 1. **New school joins**: INSERT `app.tenants` (slug UNIQUE) → bootstrap grants to `schoolos_app` → seed/staff provisioning (manual; **NOT IMPLEMENTED**: self-serve tenant onboarding) → plugins enabled per tenant via `POST /plugins/:id/enable` (owner/itadmin, registry is truth) → audit from row one.
-2. **School creates a teacher**: INSERT `app.users` role teacher (no UI door — **PARTIALLY IMPLEMENTED**: users are seeded/administered outside the app) → password scrypt N=2^17 → audit if written via helpers.
+2. **School creates a teacher**: **IMPLEMENTED (build-out)** — `POST /plugins/people.admin/users` (owner/itadmin; owner-role creation structurally refused + audited high-risk) → scrypt temp password shown once (`force_change` stamped) → People console screen does the same without any API knowledge.
 3. **Teacher logs in**: `/auth/login` (20/min) → verify → token minted → 'Signed in' audit row → frontend AuthGate `/me` → staff shell.
 4. **Student admitted**: §3.
 5. **Parent linked**: `family.child_link` row (034) — seeded today; **NOT IMPLEMENTED**: self-serve claim flow.
@@ -465,7 +471,13 @@ Records that reference Rahul (all keyed by `student_id` or `family.child_link.st
    /audit 4 roles)             │                        (no sender)
                         outbox worker (SKIP LOCKED,
                         backoff, park) → durable log
-                        (external subscribers: none yet)
+                        comms dispatcher (SKIP LOCKED,
+                        backoff, park) → rails.sms /
+                        rails.whatsapp (settings-driven
+                        providers; logger default)
+                        retention worker (purges: gps
+                        30d · otps 7d · revoked tokens
+                        · oauth states)   [build-out]
 ```
 
 # 30. Role-based data journeys (verified against doors)
@@ -548,7 +560,7 @@ Name changes: `app.students.name` is duplicated into `audit_log` rows as *text a
 
 # 37. Import / migration journeys
 
-The migration wizard (`app.migration_sources`, `/migration/sources*`, `/migration/activate`) tracks *source records* and stages (connected→validated→activated) with a trust-receipt event (`migration.activated`, `routes.js:688-698`) and sums obligations — but **bulk row import (CSV/Excel) is NOT IMPLEMENTED**: no file parsing exists anywhere. Seed (`scripts/seed.js`) is the only bulk loader, refused under NODE_ENV=production.
+The migration wizard (`app.migration_sources`, `/migration/sources*`, `/migration/activate`) tracks *source records* and stages (connected→validated→activated) with a trust-receipt event (`migration.activated`, `routes.js:688-698`). **CSV student import is now IMPLEMENTED (build-out)**: `POST /plugins/people.admin/import/students` (owner/principal/coordinator/admissions) — header-driven CSV (name, grade, section required; admission_no auto `IMP-…` spine when absent), 500-row + 2MB caps, per-row SAVEPOINT, full `{ok[], failed[{row,error}], total}` report with human line numbers; bad rows are reported, never thrown. The People console screen reads the file client-side and renders the report. Seed (`scripts/seed.js`) remains the demo loader, refused under NODE_ENV=production.
 
 # 38. Data consistency
 
@@ -579,6 +591,11 @@ The migration wizard (`app.migration_sources`, `/migration/sources*`, `/migratio
 | Gateway | /plugins/payments.upi/webhook | settlement facts | 6-gate HMAC | plugin_upi.webhook_log (+payments context) | none (facts only) |
 | Ops worker | outbox poll | relay | scripts/outbox-worker.js | outbox attempts/processed | durable log |
 | Admin | /plugins/:id/enable/disable/settings | registry | routes.js | app.plugins | drain protocol, audit |
+| Owner/IT | /plugins/people.admin/* (build-out) | accounts, class moves, CSV roster | people.admin doors | app.users, app.enrollment_history, app.students | events+audit, People console UI |
+| Staff | /plugins/library/* (build-out) | books, loans, fines | library doors | library.book, library.loan | events, overdue chase, student "My books" |
+| Staff | /plugins/files.store/* (build-out) | document bytes (5MB, whitelisted) | files.store doors | app.files + storage dir | scoped audited downloads |
+| Gateway | /plugins/payments.razorpay/webhook (build-out) | settlement facts | raw-bytes HMAC | plugin_razorpay.order_log/+webhook_log | facts only (kernel confirm settles) |
+| Any staff | /plugins/payments.razorpay/orders (build-out) | gateway order | Razorpay REST + FOR UPDATE | order_log + app.payments('initiated') | event razorpay.order.created |
 
 ## Table B — Major entities (created by / stored / read)
 
@@ -621,6 +638,11 @@ The migration wizard (`app.migration_sources`, `/migration/sources*`, `/migratio
 | Visitor pickup OTP | vault row | verify door | consume on success |
 | gps delay ≥ threshold | kernel approval action | transport/principal decide | queued guardian notice |
 | Outbox failure | attempts/backoff/park | worker | last_error, halted retries |
+| Queued comms row (any source) | comms dispatcher claim | rail by channel (sms/whatsapp/log-only) | sent+sent_at, or backoff → parked failed |
+| files upload | files.stored.v1 | event spine | metadata + sha256 |
+| student transfer | people.student.transferred | decision boards | history row + flip in ONE tx |
+| retention pass | purge counts (gps/otps/revoked/oauth) | ops log + compose retention service | retention honored per manifest |
+| Razorpay order | razorpay.order.created → gateway webhook facts | staff confirm | order_log status; NEVER self-settles |
 
 ## Table E — Security boundaries
 
@@ -658,4 +680,4 @@ See §33-34 table — one row per entity; the pattern is: **one writable table p
 
 In simple language: your piece of information enters through one door, is stamped with *who you are* and *which school* it belongs to, and is written into that school's own drawer — together, in one unbreakable motion, with its entry in the tamper-evident registry book and its announcement in the event tray. From there it can surface in any report, dashboard, brief, or approval board that *joins* it — never as a copy that can drift — but every one of those surfaces asks the database again, every time, three questions: *is your role on the list for this door, is this record yours to see, and does your school own this row?* A wrong role gets a polite refusal; a wrong owner gets a blank; a wrong school gets nothing at all, because the filing cabinet itself enforces the wall. The information can trigger queued letters and approval tasks; it cannot be edited into history — corrections are new facts, and erasure is a governed, audited exception — and nothing it created for the wrong person can be reached even by a forged request, because the checks are re-run inside the database, not just at the front desk.
 
-Technically: door guard (`require`) → handler scoping (ownership/SoD) → `withUser` GUCs + `SET LOCAL ROLE schoolos_app` → FORCE RLS `tenant_id = current_setting('schoolos.tenant_id')` → atomic COMMIT of data + `audit_append` hash-chain row + `emitEvent` outbox row → read doors re-derive everything per request → the only background consumer (outbox worker) handles delivery pacing, not visibility. The honest gaps that remain are catalogued in §7 (9 tables without RLS), §14 (no file storage), §15 (no outbound senders), §20 (notifications queued, never delivered), §22 (no enrollment history), §25.15 (no account-suspension door) — each labeled above with evidence.
+Technically: door guard (`require`) → handler scoping (ownership/SoD) → `withUser` GUCs + `SET LOCAL ROLE schoolos_app` → FORCE RLS `tenant_id = current_setting('schoolos.tenant_id')` → atomic COMMIT of data + `audit_append` hash-chain row + `emitEvent` outbox row → read doors re-derive everything per request → the only background consumer (outbox worker) handles delivery pacing, not visibility. The build-out closed the original gap list (9 naked RLS tables ✓§7, file storage ✓§14, outbound rails ✓§15/§20, enrollment history ✓§22, account provisioning/suspension ✓§25) — what remains honest today: SMS/WhatsApp/Razorpay ship configured *off* with a logger provider (real delivery needs per-school credentials in plugin settings); AI copilots remain deliberately rule-based (product ruling, tokens stay 0); no PWA/i18n; tokens live in localStorage (XSS mitigations only); accounting.tally export scheduling is still absent; attendance class-ownership scoping beyond the register door is still role-trust.

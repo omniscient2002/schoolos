@@ -4,6 +4,7 @@
 const ID = 'payments.upi';
 export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { installRawJsonParser } from '../_shared/raw-body-parser.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 
 export function register(app, kernel) {
@@ -11,18 +12,11 @@ export function register(app, kernel) {
   const lifecycleGate = makeLifecycleGate(kernel.q, ID);
 
   // ── Raw-bytes capture (redteam P0-1): real Razorpay HMACs are computed over the
-  // wire bytes — re-serialized JSON will never verify. This JSON parser stores the
-  // untouched body on req.rawBody (Buffer) and still yields req.body for every
-  // route; malformed JSON is a 400, never a 500 (redteam P1-2).
-  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
-    req.rawBody = body;
-    try {
-      done(null, JSON.parse(body.toString('utf8')));
-    } catch (err) {
-      err.statusCode = 400;
-      done(err, undefined);
-    }
-  });
+  // wire bytes — re-serialized JSON will never verify. Now the SHARED parser
+  // (_shared/raw-body-parser.js): Wave A adds payments.razorpay, and Fastify
+  // refuses a second application/json parser — install-once keeps both rails'
+  // webhooks byte-exact regardless of loader mount order.
+  installRawJsonParser(app);
 
   // ── Boot guard (redteam P0-1): a money rail must not serve forged facts. If any
   // tenant has payments.upi enabled, the HMAC secret is mandatory at boot — the

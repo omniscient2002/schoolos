@@ -10,6 +10,9 @@ server/logs/
 logs/
 *.log
 
+# uploaded file bytes (files.store) — metadata lives in Postgres, bytes never in git
+server/storage/
+
 # QA artifacts & local tooling
 shots/
 *.png

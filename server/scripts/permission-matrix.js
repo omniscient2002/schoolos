@@ -23,6 +23,7 @@ export const PUBLIC_ALLOWLIST = [
   { path: '/auth/google/callback', why: 'OAuth callback' },
   { path: '/auth/google/demo', why: 'demo-mode SSO' },
   { path: '/plugins/payments.upi/webhook', why: 'HMAC-signature verified in-handler (UPI_WEBHOOK_SECRET), raw-body parser' },
+  { path: '/plugins/payments.razorpay/webhook', why: 'HMAC-signature verified in-handler (RAZORPAY_WEBHOOK_SECRET / settings webhook_secret), raw-body parser, replay dedupe' },
 ];
 
 const GUARD_RE = /preHandler:\s*(\[[^\]]*\]|[\w$.]+(?:\(([^()]|\([^()]*\))*\))?)/s;

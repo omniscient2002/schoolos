@@ -11,6 +11,12 @@ import { auditLog, emitEvent, requestAudit } from './audit.js';
 import { registerRoutes } from './routes.js';
 import { loadPlugins } from './plugins/loader.js';
 
+// Wave C metrics (GET /metrics): in-memory process counters + a 60s flush into
+// app.ops_counters (migration 050) so the monotonic totals survive a restart.
+// Counters are advisory ops data — they ride the owner path and are never
+// request-critical, so flush failures are swallowed.
+const metrics = { requestsTotal: 0, errorsTotal: 0, startedAt: Date.now() };
+
 export async function buildApp(opts = {}) {
   // RTR-001 Track F: trustProxy is opt-in via env. Hardcoding true made req.ip
   // XFF-derived, so rotating a spoofed X-Forwarded-For defeated every limiter.
@@ -203,6 +209,16 @@ export async function buildApp(opts = {}) {
   app.addHook('onSend', async (req, reply) => {
     const path = (req.raw?.url || '').split('?')[0];
     if (/^\/(auth|me|parent|student)(\/|$)/.test(path)) reply.header('cache-control', 'no-store');
+    // Wave C: security headers on every response (verified: Fastify onSend hooks
+    // apply to all routes regardless of registration order). HSTS only when TLS
+    // is actually enforced at the proxy (FORCES_HTTPS=true) — TLS terminates
+    // there, and STS on a plain-HTTP deployment would brick local development.
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('x-frame-options', 'DENY');
+    reply.header('referrer-policy', 'strict-origin-when-cross-origin');
+    reply.header('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+    if (process.env.FORCES_HTTPS === 'true') reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    metrics.requestsTotal += 1; // one response = one served request (wave-c)
   });
   app.post('/auth/logout', { preHandler: app.authenticate }, async (req, reply) => {
     reply.header('Clear-Site-Data', '"cache", "storage"');
@@ -243,13 +259,101 @@ export async function buildApp(opts = {}) {
     return datasetPayload;
   });
 
+  // --- capabilities door (Wave C decoupling contract): ONE endpoint the UI asks
+  // "what is configured / what is enabled" — features are hidden client-side from
+  // this answer, never hard-coded. configured = operator env/settings present;
+  // enabled = app.plugins registry status (owner-path q() is fine: registry rows
+  // only, and the caller's own tenant scopes the read).
+  app.get('/capabilities', { preHandler: app.authenticate }, async (req) => {
+    const reg = await q(`SELECT plugin_id, status, settings FROM app.plugins WHERE tenant_id=$1`, [req.user.tenant_id]).catch(() => ({ rows: [] }));
+    const byId = Object.fromEntries(reg.rows.map((r) => [r.plugin_id, r]));
+    const on = (id) => ['enabled', 'active', 'degraded'].includes(byId[id]?.status);
+    const s = (id) => byId[id]?.settings ?? {};
+    return {
+      rails: {
+        // rails.sms is settings-driven (provider 'logger' default, 'http-generic'
+        // over env) — configured = operator env OR the rail enabled with settings.
+        sms: {
+          configured: !!process.env.SMS_PROVIDER || on('rails.sms'),
+          provider: process.env.SMS_PROVIDER ?? s('rails.sms').provider ?? null,
+        },
+        whatsapp: {
+          configured: on('comms.whatsapp') && !!(s('comms.whatsapp').bsp_provider ?? process.env.WHATSAPP_BSP_PROVIDER),
+          provider: s('comms.whatsapp').bsp_provider ?? process.env.WHATSAPP_BSP_PROVIDER ?? null,
+        },
+        razorpay: { configured: !!(process.env.RAZORPAY_KEY_ID ?? s('payments.upi').key_id) },
+        files: { configured: true }, // artifact store is kernel-native (docs/12 §3)
+        // no library plugin is registered yet (Waves A/B own it) → false until it lands
+        library: { enabled: on('library.core') },
+        transport: { enabled: on('transport.gps') },
+      },
+    };
+  });
+
+  // --- /metrics door (Wave C): Prometheus text format, owner/itadmin only.
+  // Reads the in-memory counters + live DB depths; app.ops_counters rows are the
+  // persisted flush state (migration 050). Counters were deliberately kept in
+  // memory — an UPDATE per response would be far too hot.
+  app.get('/metrics', { preHandler: requireRole('owner', 'itadmin') }, async (_req, reply) => {
+    const d = await q(`SELECT
+        (SELECT count(*)::int FROM app.outbox WHERE processed_at IS NULL)    AS outbox_pending,
+        (SELECT count(*)::int FROM app.communications WHERE status='queued') AS comms_queued,
+        (SELECT count(*)::int FROM app.events WHERE created_at > now() - interval '1 hour') AS events_last_hour,
+        (SELECT count(*)::int FROM app.schema_migrations)                    AS schema_migrations
+      `).catch(() => null);
+    // separate read: survives 050 not yet being applied in an environment
+    const persisted = await q(`SELECT name, value FROM app.ops_counters`).catch(() => ({ rows: [] }));
+    const row = d?.rows[0];
+    const lines = [
+      '# TYPE schoolos_uptime_seconds gauge',
+      `schoolos_uptime_seconds ${Math.floor((Date.now() - metrics.startedAt) / 1000)}`,
+      '# TYPE schoolos_requests_total counter',
+      `schoolos_requests_total ${metrics.requestsTotal}`,
+      '# TYPE schoolos_errors_total counter',
+      `schoolos_errors_total ${metrics.errorsTotal}`,
+      '# TYPE schoolos_pg_pool_total gauge',
+      `schoolos_pg_pool_total ${pool.totalCount ?? 0}`,
+      '# TYPE schoolos_pg_pool_idle gauge',
+      `schoolos_pg_pool_idle ${pool.idleCount ?? 0}`,
+      '# TYPE schoolos_pg_pool_waiting gauge',
+      `schoolos_pg_pool_waiting ${pool.waitingCount ?? 0}`,
+    ];
+    if (row) {
+      lines.push(
+        '# TYPE schoolos_outbox_pending gauge', `schoolos_outbox_pending ${row.outbox_pending}`,
+        '# TYPE schoolos_comms_queued gauge', `schoolos_comms_queued ${row.comms_queued}`,
+        '# TYPE schoolos_events_last_hour gauge', `schoolos_events_last_hour ${row.events_last_hour}`,
+        '# TYPE schoolos_schema_migrations gauge', `schoolos_schema_migrations ${row.schema_migrations}`);
+      for (const { name, value } of persisted.rows) {
+        lines.push(`# TYPE schoolos_${name} counter`, `schoolos_${name} ${value}`);
+      }
+    }
+    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(lines.join('\n') + '\n');
+  });
+
+  // Persist the hot counters every 60s (best-effort; cleared in onClose so the
+  // process — and every test run — can actually exit). Boot-seed merges the
+  // persisted totals so restarts continue the monotonic series, never regress it.
+  q(`SELECT name, value FROM app.ops_counters`).then((r) => {
+    for (const { name, value } of r.rows) {
+      if (name === 'requests_total') metrics.requestsTotal = Math.max(metrics.requestsTotal, Number(value) || 0);
+      if (name === 'errors_total') metrics.errorsTotal = Math.max(metrics.errorsTotal, Number(value) || 0);
+    }
+  }).catch(() => { /* fresh table or DB not ready — start from zero */ });
+  const flushTimer = setInterval(() => {
+    q(`INSERT INTO app.ops_counters (name, value) VALUES ('requests_total', $1), ('errors_total', $2)
+       ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [metrics.requestsTotal, metrics.errorsTotal]).catch(() => {});
+  }, 60_000);
+  flushTimer.unref?.();
+
   // --- error handler ---
   app.setErrorHandler((err, req, reply) => {
     const code = err.statusCode ?? 500;
-    if (code >= 500) req.log.error(err);
+    if (code >= 500) { req.log.error(err); metrics.errorsTotal += 1; } // wave-c: 5xx only
     reply.code(code).send({ error: code >= 500 ? 'internal error' : err.message });
   });
 
-  app.addHook('onClose', async () => { await pool.end(); });
+  app.addHook('onClose', async () => { clearInterval(flushTimer); await pool.end(); });
   return app;
 }

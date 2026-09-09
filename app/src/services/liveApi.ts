@@ -78,6 +78,13 @@ export const apiLogoutAudit = () => call<{ ok: boolean }>('/auth/logout', { meth
 /* The demo domain dataset — server-owned (server/src/generated). */
 export const apiDataset = () => call<Record<string, unknown>>('/dataset');
 export const apiMe = () => call<ApiUser>('/me');
+/* Generic GET escape hatch for small service modules (capabilitiesApi) that
+   share the single fetch brain instead of spawning another wrapper. */
+export const apiGet = <T,>(path: string) => call<T>(path);
+/* Generic POST escape hatch (adminApi + rails screens) — same brain, one token
+   source, one 401 return-to-login path for the whole app. */
+export const apiPost = <T,>(path: string, body?: unknown) =>
+  call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 
 /* ---- read APIs (shape-compatible with the mock service layer) ---- */
 export const apiStudents = (params: Record<string, string> = {}) =>

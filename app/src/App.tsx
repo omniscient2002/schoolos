@@ -59,7 +59,6 @@ const MaintMap = F(() => import('./screens/MaintMap'));
 const Reception = F(() => import('./screens/Reception'));
 const Migration = F(() => import('./screens/Migration'));
 const PluginsScreen = F(() => import('./screens/Plugins'));
-const Library = F(() => import('./screens/Library'));
 const ReportIssue = F(() => import('./screens/ReportIssue'));
 const HR = F(() => import('./screens/HR'));
 const CalendarScreen = F(() => import('./screens/CalendarScreen'));
@@ -78,6 +77,9 @@ const AiUsage = F(() => import('./screens/AiUsage'));
 const Settings = F(() => import('./screens/Settings'));
 const Group = F(() => import('./screens/Group'));
 const ItAdmin = F(() => import('./screens/ItAdmin'));
+const PeopleAdmin = F(() => import('./screens/PeopleAdmin'));
+const LibraryLive = F(() => import('./screens/LibraryLive'));
+const RailsBoard = F(() => import('./screens/RailsBoard'));
 const ParentHome = F(() => import('./screens/ParentHome'));
 const ParentComplaints = F(() => import('./screens/ParentComplaints'));
 const ParentChat = F(() => import('./screens/ParentChat'));
@@ -350,7 +352,11 @@ function AppRoutes() {
       {DEMO_BUILD && <Route path="/demo/summary" element={<S><DemoSummary /></S>} />}
       {DEMO_BUILD && <Route path="/live" element={<S><LiveMode /></S>} />}
       <Route path="/plugins" element={<S><PluginsScreen /></S>} />
-      <Route path="/library" element={<S><KernelGate plugin="library"><Library /></KernelGate></S>} />
+      {/* live admin/ops surfaces (build-out wave D): real doors behind the
+          plugin gates — the demo Library remains the fallback when off */}
+      <Route path="/people-admin" element={<S><KernelGate plugin="people.admin"><PeopleAdmin /></KernelGate></S>} />
+      <Route path="/library" element={<S><KernelGate plugin="library"><LibraryLive /></KernelGate></S>} />
+      <Route path="/rails" element={<S><RailsBoard /></S>} />
       <Route path="/maintenance/report" element={<S><ReportIssue /></S>} />
       <Route path="/operations/hr" element={<S><HR /></S>} />
       <Route path="/calendar" element={<S><CalendarScreen /></S>} />

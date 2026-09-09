@@ -9,7 +9,8 @@ export type PluginClass = 'A' | 'B' | 'C' | 'D' | 'E';
 export type PluginPermission =
   | 'students.read' | 'attendance.read' | 'attendance.write'
   | 'fees.read' | 'fees.write' | 'audit.request' | 'events.emit'
-  | 'actions.raise' | 'comms.send' | 'memory.write';
+  | 'actions.raise' | 'comms.send' | 'memory.write'
+  | 'students.write' | 'users.write' | 'files.read' | 'files.write' | 'payments.write';
 
 export type SlotId = 'nav' | 'route' | 'dashboard' | 'attention' | 'today' | 'student-record' | 'settings' | 'reports';
 
@@ -50,4 +51,9 @@ export const PERMISSION_INFO: Record<PluginPermission, string> = {
   'actions.raise': 'Ask a person to approve something',
   'comms.send': 'Send messages to parents and staff (with delivery receipts)',
   'memory.write': 'Save notes to the AI memory',
+  'students.write': 'Change student records',
+  'users.write': 'Create and manage staff/parent accounts',
+  'files.read': 'Read stored documents',
+  'files.write': 'Upload documents',
+  'payments.write': 'Create and track online payments',
 };

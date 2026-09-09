@@ -1,6 +1,6 @@
 # SchoolOS — Complete Role Capability Matrix
 
-**Method**: every door below is extracted from the generated permission matrix (`docs/PERMISSION-MATRIX.md`, 178 routes, 0 unguarded) and cross-checked against the door implementations (`server/src/routes.js`, `server/src/plugins/*/index.js`) and the frontend routing map (`app/src/App.tsx:307-403`). In-handler conditions (ownership, SoD, scoping) are cited to code. Labels: **IMPLEMENTED** / **PARTIALLY IMPLEMENTED** / **NOT IMPLEMENTED** / **MOCK** (frontend screen runs on demo dataset, not live doors).
+**Method**: every door below is extracted from the generated permission matrix (`docs/PERMISSION-MATRIX.md`, now **200 routes** after the build-out, 0 unguarded) and cross-checked against the door implementations (`server/src/routes.js`, `server/src/plugins/*/index.js`) and the frontend routing map (`app/src/App.tsx:307-403`). In-handler conditions (ownership, SoD, scoping) are cited to code. Labels: **IMPLEMENTED** / **PARTIALLY IMPLEMENTED** / **NOT IMPLEMENTED** / **MOCK** (frontend screen runs on demo dataset, not live doors).
 
 **Shared facts for every role** (from `src/app.js`, `src/db.js`, `src/auth.js`):
 - Login: `POST /auth/login` (20/min), OTP `POST /auth/otp/request|verify` (5/min, 10/min; **no SMS sender** — dev echo only), Google SSO `/auth/google/start|callback` (account must pre-exist by email), logout `POST /auth/logout` (revokes the token's `jti`).
@@ -152,6 +152,42 @@ Session: **30m TTL** (`STUDENT_SESSION_TTL`), every `/student/*` response gets `
 
 ---
 
+## Build-out additions (2026-09-09 — the new modules, role by role)
+
+Every module below ships **disabled**; an owner/itadmin enables it (`POST /plugins/:id/enable`), and the nav item appears via the kernel mirror. Unconfigured rails degrade gracefully — the System services screen (`/rails`) shows what is connected in plain words.
+
+### Owner (new doors)
+- **People console** (`/people-admin`, plugin `people.admin`): provision staff/parent accounts (temp password shown once, `force_change` stamped; owner-role creation structurally refused + audited high-risk), suspend / re-activate accounts (owner accounts protected), reset passwords, **transfer a student between classes** (history row + student flip in ONE transaction), **CSV student import** (per-row report, 500-row cap), enrollment-history read. Owner + IT admin only for accounts; transfer/import also principal/coordinator(/admissions for import).
+- **Library** (`/library`, live): catalog (add/retire), issue (availability-gated 409), return (deterministic fine `floor(days_late) × fine_per_day_cents`, default ₹5/day), overdue chase list. Staff = owner/principal/coordinator/facilities.
+- **Files** (`files.store`): upload (5MB, mime+extension whitelist, sha256), metadata list, audited downloads (students' files also open to that child's guardians and the student).
+- **Razorpay fees** (`payments.razorpay`): create gateway orders (finance/owner/principal) — unconfigured → 503 with guidance; webhook records facts only; **confirm remains the kernel settlement**.
+- **System services** (`/rails`): capabilities status (SMS/WhatsApp/Razorpay configured? plugins on?), queue depths from `/metrics` (owner/itadmin), security — plus `/metrics` Prometheus door itself.
+
+### Principal / Coordinator
+- Everything owner has on the People console **except** account provisioning/suspension/reset: they transfer students and run CSV imports (admissions also imports). Principal additionally sees the coord suite; coordinator retains workload boards. Neither can read `/metrics` (owner/itadmin only).
+- Library staff (see owner list) — issue/return/overdue.
+
+### Finance / Admissions / Transport / Facilities / Technician
+- Finance: Razorpay **orders** door added (finance is the natural money desk) + decide board unchanged.
+- Admissions: CSV import (roster authority) + all previous funnel doors.
+- Facilities: joins library staffing (issue/return/overdue). Technician: unchanged.
+- All staff: `files.store` uploads allowed (5MB, whitelisted types); downloads per scope.
+
+### Parent
+- Sees only what the server scopes: child timeline/academics/attendance/exams (unchanged), consents/requests/PTM (unchanged), payments unchanged (open; confirm staff-only).
+- **Files**: can download files stored with `scope=student` **for their own child** only (`family.child_link` check; refusal is audited). No access to general/homework-scoped files unless uploader/admin.
+
+### Student
+- **Library "My books"**: own loans + due dates via the name-match identity pin (`GET /plugins/library/loans/mine`, fail-closed).
+- **Files**: may download their own `scope=student` files (name-match pin).
+- Everything else unchanged (30m kiosk session, no-store, Clear-Site-Data).
+
+### IT admin
+- Same as owner for People console + plugins + library + files + `/rails` + `/metrics`. WhatsApp template *registration* remains owner-only.
+
+### The decoupling contract (how "not every student comes in a bus" works)
+- `GET /capabilities` (any authenticated user) reports which rails are configured and which plugins are enabled. The frontend (`capabilitiesApi.ts`) memoizes it once per session; optional surfaces (library, transport, payments, files, People console) render **only when enabled**, and the nav simply omits them otherwise. A school without buses, without a library, or without an SMS provider sees none of those screens — nothing errors, nothing half-appears.
+
 ## Cross-role one-line differences (verified)
 
 | Action | owner | principal | coordinator | finance | teacher | itadmin | parent | student |
@@ -174,4 +210,4 @@ Session: **30m TTL** (`STUDENT_SESSION_TTL`), every `/student/*` response gets `
 | Write memory | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 | Migration activate | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-*Every ✓/✗ above is mechanical — extracted from `docs/PERMISSION-MATRIX.md` guard lists (door count per role: owner 95, principal 94, coordinator 86, itadmin 84, teacher 46, finance 23, parent 18, student 19, transport 13, facilities 10, technician 9, admissions 7) plus in-handler SoD/ownership code cited per role. Beyond door access, RLS adds the tenant wall for all roles, and parent/student/teacher layers add their structural scoping pins described above.*
+*Every ✓/✗ above is mechanical — extracted from `docs/PERMISSION-MATRIX.md` guard lists (pre-build-out door count per role: owner 95, principal 94, coordinator 86, itadmin 84, teacher 46, finance 23, parent 18, student 19, transport 13, facilities 10, technician 9, admissions 7 — the matrix is the live truth; build-out additions are listed above) plus in-handler SoD/ownership code cited per role. Beyond door access, RLS adds the tenant wall for all roles, and parent/student/teacher layers add their structural scoping pins described above.*

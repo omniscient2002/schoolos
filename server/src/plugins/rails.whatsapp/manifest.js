@@ -1,0 +1,33 @@
+// rails.whatsapp — plugin manifest (drop-in factory, docs/11 §2.2)
+export default {
+  id: 'rails.whatsapp',
+  name: 'WhatsApp Dispatch Rail',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'WhatsApp dispatch rail beneath the kernel Communication Orchestrator: reuses the comms.whatsapp DLT template registry (settings → templates), E.164 recipients, dedup-keyed. provider=logger (default) logs a structured line and reports ok; provider=http-generic POSTs to a settings URL with a settings auth header — generic, no vendor SDK. Degrades gracefully when unconfigured: the logger path always works and the dispatch queue still drains.',
+  permissions: ['comms.send', 'events.emit', 'audit.request'],
+  events: { subscribe: ['attendance.marked', 'fee.due', 'transport.delay'], publish: ['whatsapp.sent', 'whatsapp.failed'] },
+  slots: ['settings', 'reports'],
+  routes: [],
+  widgets: [],
+  settings_schema: {
+    type: 'object',
+    properties: {
+      provider: { type: 'string', enum: ['logger', 'http-generic'], default: 'logger' },
+      url: { type: 'string', description: 'http-generic: the POST endpoint (absolute https URL)' },
+      auth_header_name: { type: 'string', description: 'http-generic: auth header name; value never surfaced' },
+      auth_header_value: { type: 'string', description: 'http-generic: auth header value — secret-class, never logged' },
+      sender_header_name: { type: 'string', description: 'http-generic: optional sender/DLT header name' },
+      sender_header_value: { type: 'string', description: 'http-generic: optional sender/DLT header value' },
+      template_registry_from: { type: 'string', default: 'comms.whatsapp', description: 'plugin id whose settings → templates registry renders bodies' },
+    },
+    required: [],
+  },
+  data: { schema: 'none (receipts ride kernel app.communications)', core_refs: [], retention: { on_uninstall: 'nothing stored' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'rails', metered: ['messages_sent'] },
+  dependencies: ['comms.whatsapp (template registry, optional — degrades to logger)'],
+  policy_refs: ['Comms §1.2'],
+};
