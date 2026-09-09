@@ -142,8 +142,8 @@ function BootGate({ children }: { children: React.ReactNode }) {
       <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
         <div className="u-col" style={{ gap: 14, alignItems: 'center', animation: 'fadeIn 300ms var(--ease-out)' }}>
           <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--accent)', display: 'grid', placeItems: 'center', color: '#fff', fontWeight: 700, fontSize: 20 }}>M</div>
-          <div style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>Meridian International Academy</div>
-          <div className="u-flex u-small u-faint" style={{ gap: 8 }}><span className="spinner" style={{ width: 12, height: 12 }} /> Opening your school…</div>
+          <div style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>Opening your school…</div>
+          <div className="u-flex u-small u-faint" style={{ gap: 8 }}><span className="spinner" style={{ width: 12, height: 12 }} /> {sessionSchoolName(null)}</div>
         </div>
       </div>
     );
@@ -237,9 +237,16 @@ function S({ children }: { children: React.ReactNode }) {
 
 /** Session gate — the front door. No valid session → the Login screen,
  * whatever the URL. Session persists in localStorage; sign-out clears it. */
-export interface SessionUser { name: string; role: string; email: string }
+export interface SessionUser { name: string; role: string; email: string; school?: { name: string | null; slug: string | null } }
 const SessionCtx = createContext<SessionUser | null>(null);
 export function useSession(): SessionUser { const v = useContext(SessionCtx); if (!v) throw new Error('useSession outside AuthGate'); return v; }
+/* The school brand for the signed-in session: the tenant's own name from /me.
+   Meridian is the demo tenant's seeded brand — kept as fallback so the demo
+   build keeps its title; a self-signup school sees ITS name everywhere. */
+export const DEMO_SCHOOL_NAME = 'Meridian International Academy';
+export function sessionSchoolName(s: SessionUser | null): string {
+  return s?.school?.name || DEMO_SCHOOL_NAME;
+}
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { setRole } = useStore();
@@ -261,7 +268,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
            the authenticated identity (unit-14 finding). Auth validation itself
            is unchanged: only a live /me answer establishes a session, and token
            handling (setToken/call) is untouched. */
-        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email }); }
+        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email, school: me.school }); }
       } catch {
         localStorage.removeItem('schoolos.session');
         localStorage.removeItem('schoolos_token');

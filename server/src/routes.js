@@ -24,7 +24,11 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   // ============ me / demo users ============
   app.get('/me', { preHandler: me }, async (req) => {
     const u = req.user;
-    return { id: u.id, name: u.name, role: u.role, email: u.email, tenantId: u.tenant_id };
+    // School identity rides every session (frontend header + title). The
+    // tenant's own row is the truth; a fresh self-signup school shows ITS name.
+    const t = await q(`SELECT name, slug FROM app.tenants WHERE id=$1`, [u.tenant_id]);
+    return { id: u.id, name: u.name, role: u.role, email: u.email, tenantId: u.tenant_id,
+      school: { name: t.rows[0]?.name ?? null, slug: t.rows[0]?.slug ?? null } };
   });
 
   // ============ students & people ============

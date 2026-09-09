@@ -7,7 +7,7 @@ import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
 import { fmtRelative } from '../lib/format';
 import { useKernelNav } from '../plugins/useKernel';
-import { useSession } from '../App';
+import { useSession, sessionSchoolName } from '../App';
 import { DEMO_MODE } from '../lib/demoMode';
 
 /* P0 fix 2c: chrome identity comes from the authenticated session
@@ -200,6 +200,7 @@ export function useNavItems(): NavItem[] {
 /* ================= Sidebar ================= */
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('schoolos.sidebarCollapsed') === '1');
+  const live = useSession();
   useEffect(() => { localStorage.setItem('schoolos.sidebarCollapsed', collapsed ? '1' : '0'); }, [collapsed]);
   const items = useNavItems();
   const groups = [
@@ -217,7 +218,7 @@ export function Sidebar() {
         <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 15, flexShrink: 0 }}>M</div>
         <div style={{ minWidth: 0 }} className="sidebar-label">
           <div style={{ fontWeight: 650, fontSize: 'var(--text-md)', letterSpacing: '-0.01em' }}>SchoolOS</div>
-          <div className="u-xs u-faint u-truncate">{seed.SCHOOL.name}</div>
+          <div className="u-xs u-faint u-truncate">{sessionSchoolName(live)}</div>
         </div>
         <button className="btn btn-ghost btn-sm sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-pressed={collapsed} onClick={() => setCollapsed(c => !c)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
           <Icon.PanelLeft size={15} />

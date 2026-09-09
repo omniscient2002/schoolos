@@ -14,7 +14,7 @@ const BASE = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080
    app — split-origin serving silently no-oped enablement; see backlog ledger). */
 export const LIVE_BASE = BASE;
 
-export interface ApiUser { id: string; name: string; role: string; email: string; tenantId: string }
+export interface ApiUser { id: string; name: string; role: string; email: string; tenantId: string; school?: { name: string | null; slug: string | null } }
 
 let token: string | null = localStorage.getItem('schoolos_token');
 

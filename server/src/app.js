@@ -268,8 +268,18 @@ export async function buildApp(opts = {}) {
   // --- dataset: the demo domain, server-owned (see src/generated/) ---
   const { dataset } = await import('./dataset.js');
   let datasetPayload = null;
-  app.get('/dataset', { preHandler: app.authenticate }, async () => {
+  app.get('/dataset', { preHandler: app.authenticate }, async (req) => {
     if (!datasetPayload) datasetPayload = dataset();
+    // Tenant identity override: the school block MUST be the caller's own
+    // school (self-signup schools saw the demo brand). The rest of the blob
+    // is the demo domain — replacing that world per-tenant is a product
+    // decision, not an isolation bug (each tenant's LIVE data is fully RLS-
+    // separated; only this demo backdrop is shared).
+    const t = await q(`SELECT name, slug, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id]).catch(() => ({ rows: [] }));
+    const tn = t.rows[0];
+    if (tn && tn.slug !== 'meridian') {
+      return { ...datasetPayload, SCHOOL: { ...datasetPayload.SCHOOL, name: tn.name, short: tn.name.split(' ')[0], established: null, board: tn.config?.board ?? null } };
+    }
     return datasetPayload;
   });
 
