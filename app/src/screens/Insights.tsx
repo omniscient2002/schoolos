@@ -172,7 +172,9 @@ export default function Insights() {
     const presence = totalActive ? Math.round(((totalActive - absentToday) / totalActive) * 1000) / 10 : 0;
     const flagged = seed.sections.filter(s => { const a = seed.sectionAttendanceToday(s.id); return a.total > 0 && a.pct < 85; }).length;
 
-    const wl = seed.insights.find(i => i.id === 'ins_4')!;
+    /* Empty-world law: the demo's workload insight may not exist in a real
+       school's data yet — render the card's absence, never crash. */
+    const wl = seed.insights.find(i => i.id === 'ins_4') ?? null;
     return { rate, failed, presence, flagged, wl };
   }, []);
 
@@ -229,13 +231,15 @@ export default function Insights() {
           sub="Grade 8-B cluster tracks the Bus 14 disruption"
           onClick={() => navigate('/attendance')}
         />
-        <Stat
-          label="Teacher workload"
-          value={stats.wl.delta}
-          delta={{ value: 'avg periods/week', dir: 'up' }}
-          sub="Two long-leave substitutes · Mathematics peaks at 31"
-          onClick={() => navigate('/operations/hr')}
-        />
+        {stats.wl && (
+          <Stat
+            label="Teacher workload"
+            value={stats.wl.delta}
+            delta={{ value: 'avg periods/week', dir: 'up' }}
+            sub="Two long-leave substitutes · Mathematics peaks at 31"
+            onClick={() => navigate('/operations/hr')}
+          />
+        )}
       </div>
 
       {error ? (

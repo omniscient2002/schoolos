@@ -270,12 +270,17 @@ function SideLink({ item, collapsed }: { item: NavItem; collapsed?: boolean }) {
 export function CampusSwitcher() {
   const { session, setActiveCampus } = useStore();
   const navigate = useNavigate();
-  const campus = seed.campuses.find(c => c.id === session.activeCampus)!;
+  /* Own-campus world: the dataset hydrates AFTER first render, so the active
+     campus may be missing for a few frames (and 'north' never exists in a
+     self-signup school). Guard instead of `!` — a brand-new school must never
+     white-screen the topbar. */
+  const campus = seed.campuses.find(c => c.id === session.activeCampus) ?? seed.campuses[0];
   const scopedToAll = session.campusScope === 'all';
+  if (!campus) return null;
   return (
     <Dropdown width={250} label="Campus switcher" trigger={() => (
       <button className="btn btn-ghost btn-sm" style={{ gap: 7 }}>
-        <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: campus.hue }} />
+        <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: campus.hue ?? 'var(--campus-a)' }} />
         <span className="u-truncate" style={{ maxWidth: 100 }}>{campus.name}</span>
         <Icon.ChevronDown size={13} />
       </button>
@@ -286,9 +291,9 @@ export function CampusSwitcher() {
           {seed.campuses.map(c => (
             <button key={c.id} role="menuitem" className="dropdown-item" disabled={!scopedToAll && c.id !== session.campusScope}
               onClick={() => { setActiveCampus(c.id); close(); }}>
-              <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: c.hue }} />
+              <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: c.hue ?? 'var(--campus-a)' }} />
               <span>{c.name}</span>
-              <span className="dd-right u-xs mono">{c.students}</span>
+              <span className="dd-right u-xs mono">{c.students ?? 0}</span>
             </button>
           ))}
           {!scopedToAll && <div role="none" className="dropdown-label" style={{ color: 'var(--text-3)' }}>Your access is scoped to one campus</div>}

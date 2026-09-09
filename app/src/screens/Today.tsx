@@ -218,15 +218,23 @@ export default function Today() {
     const totalActive = seed.students.filter(s => s.status !== 'inactive').length;
     const lastDay = seed.TERM_DAYS[seed.TERM_DAYS.length - 1];
     const absentOn = (d: Date) => seed.attendance.filter(a => a.date.getTime() === d.getTime() && a.status === 'absent').length;
-    const wocSeries = seed.TERM_DAYS.slice(-10).map(d => Math.round(((totalActive - absentOn(d)) / totalActive) * 1000) / 10);
-    const woc = wocSeries[wocSeries.length - 1];
-    const wocAvg = Math.round((wocSeries.reduce((a, b) => a + b, 0) / wocSeries.length) * 10) / 10;
+    /* Empty world: no students and no term calendar → no coverage series.
+       toFixed on undefined crashed the whole Today desk; nulls render '—'. */
+    const wocSeries: number[] = totalActive > 0 && seed.TERM_DAYS.length > 0
+      ? seed.TERM_DAYS.slice(-10).map(d => Math.round(((totalActive - absentOn(d)) / totalActive) * 1000) / 10)
+      : [];
+    const woc: number | null = wocSeries.length ? wocSeries[wocSeries.length - 1] : null;
+    const wocAvg: number | null = wocSeries.length ? Math.round((wocSeries.reduce((a, b) => a + b, 0) / wocSeries.length) * 10) / 10 : null;
+    void wocAvg; // kept for the demo world's delta copy; empty worlds never read it
 
     /* --- seeded narrative anchors --- */
     const act1 = actions.find(a => a.id === 'act_1') ?? seed.actionItems[0];
+    /* Empty-world law: a brand-new school has no insights/routes — anchor
+       derivations must tolerate absence instead of crashing the Today desk. */
     const insFee = seed.insights[0];
-    const collection = insFee.chart.values[insFee.chart.values.length - 1]; // 82.3
-    const r7 = routesData.find(r => r.id === 'route_7') ?? seed.busRoutes.find(r => r.id === 'route_7')!;
+    const insFeeValues = insFee?.chart?.values ?? [];
+    const collection = insFeeValues.length ? insFeeValues[insFeeValues.length - 1] : null;
+    const r7 = routesData.find(r => r.id === 'route_7') ?? seed.busRoutes.find(r => r.id === 'route_7') ?? null;
     const onTimePct = routesData.length ? Math.round((routesData.filter(r => r.status === 'on-time').length / routesData.length) * 100) : 0;
     const openCount = openActions(actions).length;
     const criticalCount = openActions(actions).filter(a => a.priority === 'critical').length;
@@ -291,34 +299,39 @@ export default function Today() {
       }));
 
     /* --- changed overnight --- */
+    /* Empty-world law: each narrative card requires its anchor; a brand-new
+       school simply shows fewer cards instead of crashing the desk. */
+    const chgAct: BriefItem | null = act1 ? {
+      id: 'chg-8b',
+      icon: 'Users',
+      title: act1.title,
+      detail: act1.detail,
+      chips: ['Attendance register · 08:40 · high', 'Route roster overlap · medium', `GPS monitor · 07:42 · high`],
+      badge: { label: 'Anomaly', tone: 'danger' },
+      to: '/attention',
+    } : null;
+    const chgFee: BriefItem | null = insFee ? {
+      id: 'chg-fee',
+      icon: 'Money',
+      title: `Term 2 collection at ${collection}% — down from 88% average`,
+      detail: `${seed.FEE_STORY.failedCount} online payments failed this week; 41 of 47 belong to Route 7 households. 23 gateway successes await settlement-file import.`,
+      chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
+      badge: { label: 'Fee dip', tone: 'warning' },
+      to: '/fees',
+    } : null;
+    const chgBus: BriefItem | null = r7 ? {
+      id: 'chg-bus',
+      icon: 'Bus',
+      title: `Bus 14 (Route 7) running ${r7.delayMins ?? 13} min late`,
+      detail: `Coolant leak repaired after Tuesday's breakdown; ${r7.students} students on route. Pre-route inspections active per dec_4; spare bus on standby.`,
+      chips: ['GPS monitor · 07:42 · high', 'Transport SOP · updated 2d ago · high'],
+      badge: { label: 'Transport', tone: 'warning' },
+      to: '/transport',
+    } : null;
     const changed: BriefItem[] = [
-      {
-        id: 'chg-8b',
-        icon: 'Users',
-        title: act1.title,
-        detail: act1.detail,
-        chips: ['Attendance register · 08:40 · high', 'Route roster overlap · medium', `GPS monitor · 07:42 · high`],
-        badge: { label: 'Anomaly', tone: 'danger' },
-        to: '/attention',
-      },
-      {
-        id: 'chg-fee',
-        icon: 'Money',
-        title: `Term 2 collection at ${collection}% — down from 88% average`,
-        detail: `${seed.FEE_STORY.failedCount} online payments failed this week; 41 of 47 belong to Route 7 households. 23 gateway successes await settlement-file import.`,
-        chips: ['Fees records · 10:12 · high', 'Gateway settlement mismatch · medium'],
-        badge: { label: 'Fee dip', tone: 'warning' },
-        to: '/fees',
-      },
-      {
-        id: 'chg-bus',
-        icon: 'Bus',
-        title: `Bus 14 (Route 7) running ${r7.delayMins ?? 13} min late`,
-        detail: `Coolant leak repaired after Tuesday's breakdown; ${r7.students} students on route. Pre-route inspections active per dec_4; spare bus on standby.`,
-        chips: ['GPS monitor · 07:42 · high', 'Transport SOP · updated 2d ago · high'],
-        badge: { label: 'Transport', tone: 'warning' },
-        to: '/transport',
-      },
+      ...(chgAct ? [chgAct] : []),
+      ...(chgFee ? [chgFee] : []),
+      ...(chgBus ? [chgBus] : []),
     ];
     if (complaintCases.length) {
       changed.push({
@@ -413,7 +426,7 @@ export default function Today() {
       const overdueSum = seed.feeObligations.filter(f => f.status === 'overdue').reduce((a, f) => a + (f.amount - f.paidAmount), 0);
       headSub = `${weekday(now)} · ${fmtDate(now)} · Finance · ${campusLabel}`;
       stats = [
-        { label: 'Collection — Term 2', value: `${collection}%`, delta: { value: '4.7 pts', dir: 'down' }, spark: <Sparkline points={insFee.chart.values} color="var(--accent)" />, sub: 'vs 88% four-week average', to: '/fees' },
+        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'vs 88% four-week average' : 'No fee records yet', to: '/fees' },
         { label: 'Failed payments', value: String(failed.length), sub: '41 of 47 on Route 7 households', to: '/fees' },
         { label: 'Overdue outstanding', value: fmtMoneyShortLocal(overdueSum), sub: 'Across all campuses · Term 1 + 2', to: '/fees' },
         { label: 'Open items', value: String(openCount), sub: `${highCount} high priority`, to: '/action-center' },
@@ -482,10 +495,10 @@ export default function Today() {
       /* principal / coordinator / admissions / owner — the full Morning Briefing */
       headSub = `${weekday(now)} · ${fmtDate(now)} · ${campusLabel} · Second register in progress`;
       stats = [
-        { label: 'WOC — coverage', value: `${woc.toFixed(1)}%`, delta: { value: `${woc >= wocAvg ? '+' : ''}${(woc - wocAvg).toFixed(1)} pts vs avg`, dir: woc >= wocAvg ? 'up' : 'down' }, spark: <Sparkline points={wocSeries} color="var(--accent)" />, sub: `Weekly Operating Coverage · ${seed.campuses.reduce((a, c) => a + c.students, 0)} students · live registers`, to: '/attendance' },
+        { label: 'WOC — coverage', value: woc != null ? `${woc.toFixed(1)}%` : '—', spark: wocSeries.length ? <Sparkline points={wocSeries} color="var(--accent)" /> : undefined, sub: `Weekly Operating Coverage · ${seed.campuses.reduce((a, c) => a + (c.students ?? 0), 0)} students`, to: '/attendance' },
         { label: 'Open actions', value: String(openCount), sub: `${criticalCount} critical · ${highCount} high priority`, to: '/action-center' },
-        { label: 'Term 2 collection', value: `${collection}%`, delta: { value: '4.7 pts', dir: 'down' }, spark: <Sparkline points={insFee.chart.values} color="var(--warning)" />, sub: '47 failed · 41 on Route 7 households', to: '/fees' },
-        { label: 'Transport on time', value: `${onTimePct}%`, sub: r7.status === 'delayed' ? `Bus 14 delayed +${r7.delayMins ?? 13} min` : 'All routes nominal', to: '/transport' },
+        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? '47 failed · 41 on Route 7 households' : 'No fee records yet', to: '/fees' },
+        { label: 'Transport on time', value: `${onTimePct}%`, sub: r7 ? (r7.status === 'delayed' ? `Bus 14 delayed +${r7.delayMins ?? 13} min` : 'All routes nominal') : 'No routes yet', to: '/transport' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'priority-ranked, oldest deadline first', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
       bands.push({ id: 'changed', label: 'Changed overnight', sub: 'Attendance anomalies, fee movement, transport events — diffed against 30-day baselines', items: changed });
