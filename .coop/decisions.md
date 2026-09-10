@@ -80,3 +80,15 @@
   schedule anything voice/telephony-related. The company name ("AI Reception") may still reference the
   concept in branding — that is a business decision outside engineering scope. Current grades (74/56) are
   unaffected: the receptionist was never weighted in them.
+- **D-26 RUN SCOPE (owner directive, T+0 of Waves 2–5 run):** continuous execution until T+46h or full
+  completion; strict P2→P3→P4→P5 priority; STOP ruling posted by S0 at T+46; honest projection ~82/70 at
+  halt; live-credential items (SMS/BSP/SMTP sends, external staging) ship code-complete + sandbox-verified
+  and are NOT failures.
+- **D-27 TAKEOVER STANDING ORDER:** lane silent ≥90 min (no journal line AND no file changes) → S0 declares
+  it dead and executes its queue directly. No permission needed; journal records the takeover.
+- **D-29 liveApi amendment:** L4 may ADD wrappers to `app/src/services/liveApi.ts` this run (Wave-1 freeze
+  partially lifted); no lane may delete from `services/index.ts` (deferred cleanup).
+- **D-30 App.tsx continuous ownership:** L5 owns App.tsx for the whole run (Wave-1 D-3 window superseded);
+  S0 reviews at gates.
+- **D-31 Secrets rotation (S0-executed):** JWT_SECRET + webhook secrets regenerated in `server/.env` this
+  run; server restart required; deployed environments must mirror before next release.
