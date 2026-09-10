@@ -53,7 +53,9 @@ export function AiTraceCard({ trace, defaultOpen = false, compact }: { trace: Ai
     { k: 'Action', v: trace.action },
     { k: 'Approval', v: trace.approvalStatus },
     { k: 'Verification', v: trace.verification },
-    { k: 'Model', v: `${trace.model} · ${trace.latencyMs}ms · ${trace.tokens} tok · ${trace.cost}` },
+    /* Honesty (D-23): the fabricated model/latency/token/cost row was removed —
+       no model exists in this product (deterministic templates server-side, canned
+       strings client-side). Never present invented inference stats as fact. */
   ].filter(r => r.v);
   return (
     <div style={{ border: '1px solid var(--ai-weak-2)', borderRadius: 'var(--r-lg)', background: 'var(--ai-weak)', overflow: 'hidden' }}>
