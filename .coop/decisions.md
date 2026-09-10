@@ -92,3 +92,13 @@
   S0 reviews at gates.
 - **D-31 Secrets rotation (S0-executed):** JWT_SECRET + webhook secrets regenerated in `server/.env` this
   run; server restart required; deployed environments must mirror before next release.
+- **D-32 CREDENTIALS-LAST PROTOCOL (owner directive):** all provider integrations (SMS/WhatsApp/SMTP/gateway)
+  are built, configured, and TESTED against sandbox adapters now. Owner supplies real keys/passwords at the
+  END of the run; only then are they placed into server/.env / plugin settings. Rules: (1) no lane blocks on
+  credentials — ever; (2) keys NEVER enter git, tests, logs, or code comments; (3) final integration step is
+  S0-only, with values written to server/.env and documented in the final report; (4) every integration ships
+  with a credential checklist in the report so the owner knows exactly which key goes where.
+- **D-33 QUALITY BAR (owner directive):** enterprise target = accuracy + consistency + security + features
+  per the audit's Phase 2-5 definitions. "Done" per item = code + negative tests + tsc/suite green + honest
+  UI. No shortcuts to hit the clock: if Wave 5 exceeds T+46h, remaining items are recorded precisely as the
+  post-run backlog rather than shipped loose.
