@@ -82,9 +82,11 @@ export function AiDock() {
             <div className="u-flex" style={{ gap: 8 }}>
               <Icon.Sparkle size={15} style={{ color: 'var(--ai-text)', flexShrink: 0 }} />
               <span style={{ fontWeight: 640 }}>Ask SchoolOS</span>
-              <Badge tone="ai">grounded</Badge>
+              {/* T305 (§9.5): the "grounded" badge was fiction — this dock is a
+                  canned, offline assistant with no model and no school records. */}
+              <Badge tone="outline">canned assistant — demo</Badge>
             </div>
-            <div className="u-xs u-faint" style={{ marginTop: 3 }}>Reading this page's context · answers cite records · actions follow the Constitution.</div>
+            <div className="u-xs u-faint" style={{ marginTop: 3 }}>Demo answers only — no model, no school records, no actions. Nothing here is grounded in real data.</div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)} aria-label="Close Ask panel" style={{ flexShrink: 0 }}>
             <Icon.X size={15} />
@@ -94,7 +96,7 @@ export function AiDock() {
         {!turns.length && (
           <div className="u-col" style={{ gap: 10 }}>
             <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-              Ask anything about your school. Every answer carries its evidence chain — records, timestamps, confidence.
+              This demo assistant replies with canned scripts — it does not read school records, and its "evidence" is illustrative only.
             </div>
             <div className="u-xs" style={{ fontWeight: 650, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)', marginTop: 2 }}>Suggested</div>
             <div className="suggest-list">
@@ -137,16 +139,18 @@ export function AiDock() {
                       r: {
                         ...t.r,
                         id: t.r.id + '_ack',
-                        answer: `Done — “${label}” is executing. The action and its policy reference have been logged to the audit trail.`,
+                        /* T305 (§9.5): nothing executes and nothing is logged —
+                           the demo dock has no action door. */
+                        answer: `Not connected — “${label}” was not executed. This demo assistant cannot perform actions or write to the audit trail.`,
                         blocks: [],
                         trace: {
                           ...t.r.trace,
-                          trigger: 'Suggested action approved',
-                          action: label,
-                          approvalStatus: 'Approved by you',
-                          verification: 'Execution logged; verification event will confirm',
-                          latencyMs: 90,
-                          tokens: 40,
+                          trigger: 'Suggested action approved (demo)',
+                          action: `${label} — not executed (demo)`,
+                          approvalStatus: 'Acknowledge only — no door behind this button',
+                          verification: 'Nothing to verify — no action was taken',
+                          latencyMs: 0,
+                          tokens: 0,
                           cost: '₹0.00',
                         },
                       },
@@ -162,7 +166,7 @@ export function AiDock() {
             <div className="skeleton" style={{ width: '70%', height: 12 }} />
             <div className="skeleton" style={{ width: '90%', height: 12 }} />
             <div className="skeleton" style={{ width: '55%', height: 12 }} />
-            <div className="u-xs u-faint u-flex" style={{ gap: 6 }}><span className="spinner" style={{ width: 11, height: 11 }} /> Reading records…</div>
+            <div className="u-xs u-faint u-flex" style={{ gap: 6 }}><span className="spinner" style={{ width: 11, height: 11 }} /> Composing a canned demo reply…</div>
           </div>
         )}
       </div>

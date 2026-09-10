@@ -8,9 +8,7 @@ import { createContext, useContext, useEffect, useMemo, useReducer, useState, ty
 import { sessionUserName } from '../services/sessionIdentity';
 import type { ActionRecord, CampusId, ChatMsg, LiveEvent, Notification, RoleId, SchoolCase, WorkOrderRecord, WOStatus } from '../types/domain';
 import * as seed from '../data/dataset';
-import { datasetReady, campuses } from '../data/dataset';
-import { actionItems as seedActions } from '../data/dataset';
-import { workOrders as seedWOs } from '../data/dataset';
+import { datasetReady, campuses, ensureDataset } from '../data/dataset';
 
 export interface Session {
   roleId: RoleId;
@@ -44,15 +42,21 @@ type DomainAction =
   | { type: 'event/add'; e: LiveEvent }
   | { type: 'offline/queue'; n: number }
   | { type: 'sync/flush' }
+  | { type: 'domain/hydrate' }
   | { type: 'reset' };
 
+/* T301 (§9.1): domain slices start EMPTY. They used to be snapshotted here at
+   module-eval — before /dataset hydration — so workOrders/actions/cases/
+   notifications/chat/audit were empty arrays forever and the whole layer was
+   dead in every session. The provider now dispatches 'domain/hydrate' once
+   ensureDataset() resolves; the reducer then reads the live dataset bindings. */
 const initialState: DomainState = {
-  workOrders: seedWOs,
-  actions: seedActions,
-  cases: seed.cases,
-  notifications: seed.notifications,
-  chat: seed.guardianChat,
-  audit: seed.auditEntries,
+  workOrders: [],
+  actions: [],
+  cases: [],
+  notifications: [],
+  chat: [],
+  audit: [],
   events: [],
   /* P0 fix 5: the queue starts EMPTY. A seeded 12 fabricated "12 offline
      changes queued" for every fresh session; only real offline/queue
@@ -145,6 +149,19 @@ function reducer(state: DomainState, a: DomainAction): DomainState {
       return { ...state, offlineQueue: Math.max(0, state.offlineQueue + a.n) };
     case 'sync/flush':
       return { ...state, offlineQueue: 0, syncing: true };
+    case 'domain/hydrate':
+      /* T301: the seed arrays are read HERE — at dispatch time, i.e. strictly
+         after ensureDataset() resolved — then copied, so in-flight dataset
+         rebinds can never mutate state underneath the reducer. */
+      return {
+        ...state,
+        workOrders: [...seed.workOrders],
+        actions: [...seed.actionItems],
+        cases: [...seed.cases],
+        notifications: [...seed.notifications],
+        chat: [...seed.guardianChat],
+        audit: [...seed.auditEntries],
+      };
     case 'reset':
       return { ...initialState };
     default:
@@ -204,8 +221,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [domain, dispatch] = useReducer(reducer, initialState);
   storeDispatchRef.current = dispatch;
 
+  /* T301 (§9.1): fill the domain slices exactly once, after /dataset
+     hydration. ensureDataset() is idempotent and shared — when AuthGate's
+     boot path has already hydrated, this resolves immediately; when it has
+     not (login screen, token still polling), this waits for the same
+     promise. A failed hydration is surfaced by AuthGate; slices stay
+     honestly empty rather than throwing at boot. */
+  useEffect(() => {
+    let dead = false;
+    ensureDataset()
+      .then(() => { if (!dead) dispatch({ type: 'domain/hydrate' }); })
+      .catch(() => { /* hydration failure handled by AuthGate — nothing to fake here */ });
+    return () => { dead = true; };
+  }, []);
+
   const value = useMemo<Ctx>(() => {
-    const account = demoAccounts.find(a => a.id === session.roleId)!;
+    /* T304 (D-5): no `!`-asserts — an unrecognised role falls back to the
+       first demo account instead of crashing on `account.name`. */
+    const account = demoAccounts.find(a => a.id === session.roleId) ?? demoAccounts[0];
     return {
       session,
       actorName: sessionUserName() ?? account.name,

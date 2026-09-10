@@ -17,12 +17,24 @@ import type {
   Insight, VisitorEntry, GatePass, DeskIntent, Scenario, Campus, ChatMsg,
   AssetRecord, ReceptionCall, FrontDeskSettings, DocRecord, IncidentRecord, CampusId, WOCategory,
   WorkOrderRecord, TechnicianRecord, MaintPlan, InspectionRecord, InventoryItem, VendorRecord,
+  MaintPriority,
 } from '../types/domain';
 
 type AnyRec = Record<string, unknown>;
 
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+/* T304 (D-5): the /dataset payload — especially the empty-world variant, where
+   the server blanks every seed-derived key — may OMIT any key. Every binding
+   below is therefore coerced through these helpers: a missing or mistyped key
+   yields an empty structure, never undefined, and no code in this module (or
+   in state/store.tsx) may `!`-assert a dataset-derived value. */
+function arr<T>(v: unknown): T[] { return Array.isArray(v) ? (v as T[]) : []; }
+function rec<T extends object>(v: unknown, fallback: T): T {
+  return (v != null && typeof v === 'object' && !Array.isArray(v)) ? (v as T) : fallback;
+}
+function str(v: unknown): string { return typeof v === 'string' ? v : ''; }
 
 function revive(value: unknown, key: string | null, depth = 0): unknown {
   /* ISO-UTC strings become Dates anywhere they appear — including bare string arrays. */
@@ -55,57 +67,65 @@ export async function ensureDataset(): Promise<void> {
     const raw = (await apiDataset()) as AnyRec;
     data = revive(raw, null) as AnyRec;
     hydrated = true;
-    campuses = data.campuses as Campus[] as never;
-    TERM_DAYS = data.TERM_DAYS as Date[] as never;
-    students = data.students as Person[] as never;
-    teachers = data.teachers as Person[] as never;
-    staff = data.staff as Person[] as never;
-    guardians = data.guardians as Person[] as never;
-    guardianLinks = data.guardianLinks as Link[] as never;
-    sections = data.sections as Section[] as never;
-    timetable = data.timetable as TimeSlot[] as never;
-    busRoutes = data.busRoutes as BusRoute[] as never;
-    attendance = data.attendance as AttendanceRecord[] as never;
-    feeObligations = data.feeObligations as FeeObligation[] as never;
-    payments = data.payments as Payment[] as never;
-    leads = data.leads as Lead[] as never;
-    documents = data.documents as DocRecord[] as never;
-    incidents = data.incidents as IncidentRecord[] as never;
-    cases = data.cases as SchoolCase[] as never;
-    actionItems = data.actionItems as ActionRecord[] as never;
-    decisions = data.decisions as DecisionRecord[] as never;
-    meetings = data.meetings as MeetingNote[] as never;
-    memoryDocs = data.memoryDocs as MemoryDoc[] as never;
-    policies = data.policies as PolicyRule[] as never;
-    workflows = data.workflows as WorkflowDef[] as never;
-    workflowRuns = data.workflowRuns as WorkflowRun[] as never;
-    obligations = data.obligations as Obligation[] as never;
-    calendarEvents = data.calendarEvents as CalendarEvent[] as never;
-    healthIssues = data.healthIssues as HealthIssue[] as never;
-    notifications = data.notifications as Notification[] as never;
-    auditEntries = data.auditEntries as AuditEntry[] as never;
-    insights = data.insights as Insight[] as never;
-    aiUsage = data.aiUsage as unknown as AiUsageShape as never;
-    models = data.models as ModelRow[] as never;
-    guardianChat = data.guardianChat as ChatMsg[] as never;
-    DEMO_STUDENT = data.DEMO_STUDENT as Person as never;
-    DEMO_GUARDIAN = data.DEMO_GUARDIAN as Person as never;
-    DEMO_SECTION_ID = data.DEMO_SECTION_ID as string as never;
-    assets = data.assets as AssetRecord[] as never;
-    workOrders = data.workOrders as WorkOrderRecord[] as never;
-    technicians = data.technicians as TechnicianRecord[] as never;
-    maintPlans = data.maintPlans as MaintPlan[] as never;
-    inspections = data.inspections as InspectionRecord[] as never;
-    inventory = data.inventory as InventoryItem[] as never;
-    vendors = data.vendors as VendorRecord[] as never;
-    deskSettings = data.deskSettings as FrontDeskSettings as never;
-    deskIntents = data.deskIntents as DeskIntent[] as never;
-    calls = data.calls as ReceptionCall[] as never;
-    visitors = data.visitors as VisitorEntry[] as never;
-    gatePasses = data.gatePasses as GatePass[] as never;
-    SCENARIOS = data.SCENARIOS as Scenario[] as never;
-    SCHOOL = data.SCHOOL as { name: string; short: string; established: number; board: string };
-    FEE_STORY = data.FEE_STORY as { clusterRoute: string; dipPct: number; failedCount: number };
+    /* T304 (D-5): every binding coerced — a key the server removed or blanked
+       leaves the export at its empty default instead of poisoning it with
+       undefined. */
+    campuses = arr<Campus>(data.campuses);
+    TERM_DAYS = arr<Date>(data.TERM_DAYS);
+    students = arr<Person>(data.students);
+    teachers = arr<Person>(data.teachers);
+    staff = arr<Person>(data.staff);
+    guardians = arr<Person>(data.guardians);
+    guardianLinks = arr<Link>(data.guardianLinks);
+    sections = arr<Section>(data.sections);
+    timetable = arr<TimeSlot>(data.timetable);
+    busRoutes = arr<BusRoute>(data.busRoutes);
+    attendance = arr<AttendanceRecord>(data.attendance);
+    feeObligations = arr<FeeObligation>(data.feeObligations);
+    payments = arr<Payment>(data.payments);
+    leads = arr<Lead>(data.leads);
+    documents = arr<DocRecord>(data.documents);
+    incidents = arr<IncidentRecord>(data.incidents);
+    cases = arr<SchoolCase>(data.cases);
+    actionItems = arr<ActionRecord>(data.actionItems);
+    decisions = arr<DecisionRecord>(data.decisions);
+    meetings = arr<MeetingNote>(data.meetings);
+    memoryDocs = arr<MemoryDoc>(data.memoryDocs);
+    policies = arr<PolicyRule>(data.policies);
+    workflows = arr<WorkflowDef>(data.workflows);
+    workflowRuns = arr<WorkflowRun>(data.workflowRuns);
+    obligations = arr<Obligation>(data.obligations);
+    calendarEvents = arr<CalendarEvent>(data.calendarEvents);
+    healthIssues = arr<HealthIssue>(data.healthIssues);
+    notifications = arr<Notification>(data.notifications);
+    auditEntries = arr<AuditEntry>(data.auditEntries);
+    insights = arr<Insight>(data.insights);
+    aiUsage = rec<AiUsageShape>(data.aiUsage, { days: [], byFeature: [], latency: { p50: 0, p95: 0 }, failureRate: 0, monthSpend: 0, budget: 0 });
+    models = arr<ModelRow>(data.models);
+    guardianChat = arr<ChatMsg>(data.guardianChat);
+    DEMO_STUDENT = rec<Person>(data.DEMO_STUDENT, {} as Person);
+    DEMO_GUARDIAN = rec<Person>(data.DEMO_GUARDIAN, {} as Person);
+    DEMO_SECTION_ID = str(data.DEMO_SECTION_ID);
+    assets = arr<AssetRecord>(data.assets);
+    workOrders = arr<WorkOrderRecord>(data.workOrders);
+    technicians = arr<TechnicianRecord>(data.technicians);
+    maintPlans = arr<MaintPlan>(data.maintPlans);
+    inspections = arr<InspectionRecord>(data.inspections);
+    inventory = arr<InventoryItem>(data.inventory);
+    vendors = arr<VendorRecord>(data.vendors);
+    deskSettings = rec<FrontDeskSettings>(data.deskSettings, {} as FrontDeskSettings);
+    deskIntents = arr<DeskIntent>(data.deskIntents);
+    calls = arr<ReceptionCall>(data.calls);
+    visitors = arr<VisitorEntry>(data.visitors);
+    gatePasses = arr<GatePass>(data.gatePasses);
+    SCENARIOS = arr<Scenario>(data.SCENARIOS);
+    SCHOOL = rec(data.SCHOOL, { name: '', short: '', established: 0, board: '' });
+    FEE_STORY = rec(data.FEE_STORY, { clusterRoute: '', dipPct: 0, failedCount: 0 });
+    /* T302 (D-4): rebind the SLA policy after hydration — server-provided
+       keys override the code-level DEFAULT_SLA; any key the server blanked
+       (empty world) falls back to the default. SLA_POLICY is therefore never
+       undefined and always covers every MaintPriority, in both worlds. */
+    SLA_POLICY = { ...DEFAULT_SLA, ...rec<Partial<Record<MaintPriority, SlaRule>>>(data.SLA_POLICY, {}) };
     for (const [k, v] of Object.entries((data.guardianIdByStudent as unknown as Record<string, string[]>) ?? {})) guardianIdByStudent.set(k, v);
   })().catch((err: unknown) => {
     loading = null; // a failed load must be retryable — never cache the rejection
@@ -169,7 +189,22 @@ export let DEMO_GUARDIAN: Person = {} as never;
 export let DEMO_SECTION_ID: string = {} as never;
 
 /* maintenance collections (former data/dataset) */
-export const SLA_POLICY = data.SLA_POLICY as Record<string, { responseMins: number; resolveMins: number }>;
+/* T302 (§9.2): SLA_POLICY used to be `export const … = data.SLA_POLICY` —
+   evaluated at module-eval against an empty `data`, so it was undefined
+   forever and every ReportIssue submit threw inside its own promise
+   (services/index.ts:372) and hung the spinner permanently. It is now a
+   `let` seeded from the code-level DEFAULT_SLA (D-4) and rebound after
+   hydration in ensureDataset(). Consumers resolving `SLA_POLICY[priority]`
+   at call time — the only legal pattern — always get a total table. */
+export interface SlaRule { responseMins: number; resolveMins: number; }
+export const DEFAULT_SLA: Record<MaintPriority, SlaRule> = {
+  emergency: { responseMins: 10, resolveMins: 240 },
+  critical: { responseMins: 30, resolveMins: 480 },
+  high: { responseMins: 60, resolveMins: 1440 },
+  medium: { responseMins: 240, resolveMins: 4320 },
+  low: { responseMins: 480, resolveMins: 10080 },
+};
+export let SLA_POLICY: Record<MaintPriority, SlaRule> = DEFAULT_SLA;
 export let assets: AssetRecord[] = [] as never;
 export let workOrders: WorkOrderRecord[] = [] as never;
 export let technicians: TechnicianRecord[] = [] as never;
@@ -202,13 +237,19 @@ export function sectionOfStudent(st: Person): Section | undefined {
   return sections.find(s => s.campus === st.campus && s.grade === st.grade && s.name === st.section);
 }
 export function guardiansOfStudent(studentId: string) {
-  return ((data.guardianLinks as Link[] ?? [])).filter(l => l.studentId === studentId).map(l => ({
-    link: l,
-    guardian: (data.guardians as Person[] ?? []).find(g => g.id === l.guardianId)!,
-  }));
+  /* T304 (D-5): the old `.find(...)!` cast undefined rows into the result —
+     a consumer reading `row.guardian.name` then crashed. Rows without a
+     resolvable guardian are dropped instead. */
+  return ((data.guardianLinks as Link[] ?? []))
+    .filter(l => l.studentId === studentId)
+    .map(l => ({ link: l, guardian: (data.guardians as Person[] ?? []).find(g => g.id === l.guardianId) }))
+    .filter((r): r is { link: Link; guardian: Person } => r.guardian !== undefined);
 }
 export function attendanceMarkedToday(): AttendanceRecord[] {
+  /* T304 (§11): TERM_DAYS is empty in the blanked/empty world — the old
+     `TERM_DAYS[-1].getTime()` threw on every fresh tenant. */
   const t = TERM_DAYS[TERM_DAYS.length - 1];
+  if (!t) return [];
   return attendance.filter(a => a.date.getTime() === t.getTime());
 }
 export function healthScore(issues: HealthIssue[]) {
@@ -225,14 +266,25 @@ export function studentFeeSummary(studentId: string): { items: FeeObligation[]; 
 export function studentAttendanceRate(studentId: string, lastN = 30) {
   const days = TERM_DAYS.slice(-lastN);
   const recs = attendance.filter(a => a.studentId === studentId && days.some(d => d.getTime() === a.date.getTime()));
+  /* T304 (§9.5): zero records used to compute a fabricated "100.0%" (the
+     formula treats unmarked days as present). With no records the kernel now
+     reports rate 0 + hasData:false — screens must render "no records yet"
+     rather than a percentage when hasData is false. */
+  const hasData = recs.length > 0;
   const absent = recs.filter(r => r.status === 'absent').length;
   const late = recs.filter(r => r.status === 'late').length;
   const excused = recs.filter(r => r.status === 'excused').length;
-  const rate = Math.round(((lastN - absent - late) / lastN) * 1000) / 10;
-  return { rate, absent, late, excused, series: days.map(d => { const r = recs.find(x => x.date.getTime() === d.getTime()); return r ? (r.status === 'present' ? 1 : 0) : 1; }) };
+  const rate = hasData ? Math.round(((lastN - absent - late) / lastN) * 1000) / 10 : 0;
+  return {
+    rate, absent, late, excused, hasData,
+    series: hasData ? days.map(d => { const r = recs.find(x => x.date.getTime() === d.getTime()); return r ? (r.status === 'present' ? 1 : 0) : 1; }) : [],
+  };
 }
 export function sectionAttendanceToday(sectionId: string) {
+  /* T304 (§11): empty TERM_DAYS (fresh tenant) → honest zeros, not a throw
+     on `TERM_DAYS[-1].getTime()`. */
   const t = TERM_DAYS[TERM_DAYS.length - 1];
+  if (!t) return { total: 0, absent: 0, late: 0, pct: 0, unmarked: 0 };
   const sec = sections.find(x => x.id === sectionId);
   const recs = attendance.filter(a => a.sectionId === sectionId && a.date.getTime() === t.getTime());
   const total = sec ? students.filter(s => s.campus === sec.campus && s.grade === sec.grade && s.section === sec.name).length : 0;
@@ -251,8 +303,10 @@ export const campusWorkOrders = (campus: CampusId | 'all'): WorkOrderRecord[] =>
 export const openWorkOrders = (campus: CampusId | 'all'): WorkOrderRecord[] => campusWorkOrders(campus).filter(w => !['resolved', 'closed', 'cancelled'].includes(w.status));
 export function slaState(wo: WorkOrderRecord) {
   const active = !['resolved', 'closed', 'cancelled'].includes(wo.status);
-  const remaining = wo.sla.resolveBy.getTime() - NOW;
-  const responseRemaining = wo.sla.responseBy.getTime() - NOW;
+  /* T304 (D-5): a work order without an embedded SLA (blanked key) degrades
+     to "no time left to compute" instead of throwing on `.getTime()`. */
+  const remaining = (wo.sla?.resolveBy?.getTime() ?? NOW) - NOW;
+  const responseRemaining = (wo.sla?.responseBy?.getTime() ?? NOW) - NOW;
   if (!active) return { label: 'Met', tone: 'success' as const, remaining: 0, breached: false };
   if (wo.respondedOn) {
     if (remaining <= 0) return { label: 'Breached', tone: 'danger' as const, remaining, breached: true };
@@ -279,7 +333,9 @@ export function recommendTechnicians(category: WOCategory, campus: CampusId | 'a
     .slice(0, limit);
 }
 export function replacementView(a: AssetRecord) {
-  if (!a.expectedLifeYears) return null;
+  /* T304 (D-5): blanked asset fields (never installed / zero cost) → no view,
+     same contract consumers already handle for `!expectedLifeYears`. */
+  if (!a.expectedLifeYears || !a.installedOn || !a.purchaseCost) return null;
   const ageYears = (NOW - a.installedOn.getTime()) / (365.25 * 86400000);
   const repairRatio = a.repairSpendYTD / a.purchaseCost;
   const failureCount = a.failures.length;
@@ -296,7 +352,7 @@ export function replacementView(a: AssetRecord) {
 export function maintAnalytics(campus: CampusId | 'all') {
   const wos = campusWorkOrders(campus);
   const resolved = wos.filter(w => ['resolved', 'closed'].includes(w.status));
-  const breached = wos.filter(w => w.slaBreached || (['resolved', 'closed'].includes(w.status) && w.completedOn && w.completedOn.getTime() > w.sla.resolveBy.getTime()));
+  const breached = wos.filter(w => w.slaBreached || (['resolved', 'closed'].includes(w.status) && w.completedOn && w.completedOn.getTime() > (w.sla?.resolveBy?.getTime() ?? Number.POSITIVE_INFINITY)));
   const openCount = openWorkOrders(campus).length;
   const emergency = openWorkOrders(campus).filter(w => w.priority === 'emergency' || w.priority === 'critical').length;
   const avgResolutionHrs = resolved.length
@@ -322,14 +378,19 @@ export function deskAnalytics() {
   const cs = calls as ReceptionCall[];
   const total = cs.length;
   const handoff = cs.filter(c => c.outcome === 'handoff').length;
+  /* T304 (§9.5/§11): callsToday/answeredByAi/guardrailTriggers were hardcoded
+     (49 / 47 / 1) and the rates NaN'd on an empty call list. Everything is
+     computed from the tenant's own records now, with zero-guards; metrics the
+     dataset does not carry (answer latency, guardrail telemetry) report 0
+     rather than an invented number. */
   return {
-    callsToday: 49,
-    answeredByAi: 47,
-    avgAnswerSec: 3,
-    handoffRate: Math.round((handoff / total) * 100),
-    avgDurationSec: Math.round(cs.reduce((a, c) => a + c.durationSec, 0) / total),
-    missedCalls: 0,
-    guardrailTriggers: 1,
+    callsToday: total,
+    answeredByAi: cs.filter(c => c.resolvedByAi).length,
+    avgAnswerSec: 0,
+    handoffRate: total ? Math.round((handoff / total) * 100) : 0,
+    avgDurationSec: total ? Math.round(cs.reduce((a, c) => a + c.durationSec, 0) / total) : 0,
+    missedCalls: cs.filter(c => c.outcome === 'voicemail').length,
+    guardrailTriggers: 0,
     byIntent: (deskIntents as DeskIntent[]).map(i => ({ intent: i.label, count: i.callsToday, aiResolved: Math.round((i.callsToday * i.resolvedByAiPct) / 100) })),
   };
 }

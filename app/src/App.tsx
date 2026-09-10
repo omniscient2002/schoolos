@@ -105,6 +105,7 @@ const Noticeboard = F(() => import('./screens/student/Noticeboard'));
 const TeacherHome = F(() => import('./screens/TeacherHome'));
 const TeacherHomework = F(() => import('./screens/teacher/Homework'));
 const SubmissionsInbox = F(() => import('./screens/teacher/SubmissionsInbox'));
+const MyLeave = F(() => import('./screens/teacher/MyLeave'));
 /* CU-1 coordinator lane (CoordinatorOS) */
 const CoordHome = F(() => import('./screens/coord/CoordHome'));
 const CoordSubstitutions = F(() => import('./screens/coord/SubstitutionReview'));
@@ -132,24 +133,6 @@ function PageShell({ children }: { children: React.ReactNode }) {
       <div style={{ height: 40 }} />
     </div>
   );
-}
-
-/* ---------- boot gate: simulated first-load fetch ---------- */
-function BootGate({ children }: { children: React.ReactNode }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => { const t = setTimeout(() => setReady(true), 420); return () => clearTimeout(t); }, []);
-  if (!ready) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
-        <div className="u-col" style={{ gap: 14, alignItems: 'center', animation: 'fadeIn 300ms var(--ease-out)' }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--accent)', display: 'grid', placeItems: 'center', color: '#fff', fontWeight: 700, fontSize: 20 }}>M</div>
-          <div style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>Opening your school…</div>
-          <div className="u-flex u-small u-faint" style={{ gap: 8 }}><span className="spinner" style={{ width: 12, height: 12 }} /> {sessionSchoolName(null)}</div>
-        </div>
-      </div>
-    );
-  }
-  return <>{children}</>;
 }
 
 /* ---------- offline / sync banner ---------- */
@@ -196,8 +179,10 @@ function Guard({ children }: { children: React.ReactNode }) {
   const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
   /* staffOnly drift fix (P0): /plugins, /settings, /library were missing and
      every parent/student route probe answered with the real screen; /live is
-     staff-only regardless (its route additionally only exists in demo mode). */
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live'];
+     staff-only regardless (its route additionally only exists in demo mode).
+     T509 (§7.5): /people-admin and /rails rendered for light roles until the
+     API refused — added to the staffOnly list. */
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live', '/people-admin', '/rails'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     /* Re-scan P3 fix: an AUTHENTICATED parent/student who deep-links (or lands
        post-login — the default returnTo is /today) on a staff surface is
@@ -403,6 +388,9 @@ function AppRoutes() {
       <Route path="/teacher" element={<S><TeacherHome /></S>} />
       <Route path="/teacher/homework" element={<S><TeacherHomework /></S>} />
       <Route path="/teacher/submissions" element={<S><SubmissionsInbox /></S>} />
+      {/* T508: P8 teacher self-leave — screen existed unrouted; both doors are
+          live (teacher.classroom:239 POST /teacher/leave, :271 GET /mine) */}
+      <Route path="/teacher/leave" element={<S><MyLeave /></S>} />
       {/* StudentOS staff desks — paper-first ops behind the student surface (staff-gated) */}
       <Route path="/print-queue" element={<S><PrintQueue /></S>} />
       <Route path="/wellbeing-queue" element={<S><WellbeingQueue /></S>} />
@@ -494,8 +482,11 @@ function SessionApp() {
     <KernelProvider>
       <StoreProvider>
         <ToastProvider>
-          <BootGate>
-            <AuthGate>
+          {/* T303 (§9.13): BootGate — a pure 420 ms setTimeout that showed a
+              "Meridian" splash before the session loaded — is gone. The only
+              boot indicator is AuthGate's spinner, which renders while real
+              work happens (live /me validation + /dataset hydration). */}
+          <AuthGate>
               {/* P0 fix 1: TeacherProvider is mounted once, around the whole
                   session frame — every /teacher screen's useTeacher() has a
                   provider and the white-screen throw never fires. */}
@@ -503,7 +494,6 @@ function SessionApp() {
                 <Frame />
               </TeacherProvider>
             </AuthGate>
-          </BootGate>
         </ToastProvider>
       </StoreProvider>
     </KernelProvider>
