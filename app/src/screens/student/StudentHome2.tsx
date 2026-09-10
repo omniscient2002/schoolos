@@ -9,7 +9,7 @@
    ranks, no red alerts.
 
    Doors consumed (may be mid-build → calm empty/error states):
-   GET /student/home · GET /student/session · GET /student/print/jobs
+   GET /student/home · GET /student/session · GET /student/print/mine
    POST /student/print (via PrintButton) · POST /student/tasks/:id/toggle
    ============================================================ */
 import { useEffect, useState } from 'react';
@@ -65,7 +65,9 @@ const TILES: Tile[] = [
   { key: 'study', label: 'Study', icon: 'Book', soon: true },
   { key: 'results', label: 'Results', icon: 'Insights', soon: true },
   { key: 'tutor', label: 'Tutor', icon: 'Sparkle', to: '/student/ask' },
-  { key: 'timetable', label: 'Timetable', icon: 'Calendar', to: '/student' },
+  /* T505: Timetable tile removed — it deep-linked the demo /student route
+     (demo-blob surface, crash-prone outside the demo world) and no live
+     student timetable route exists; today's classes render on this home. */
   { key: 'portfolio', label: 'Portfolio', icon: 'Award', to: '/student/portfolio' },
   { key: 'print', label: 'Print', icon: 'File', print: true },
 ];

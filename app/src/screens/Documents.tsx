@@ -11,7 +11,7 @@ import {
   PageHead, Section, Card, Stat, Badge, DataTable, Button, useToast,
   Modal, Empty, ErrorState, Skeleton, KeyValue,
 } from '../components/ui';
-import { AiTraceCard } from '../components/Ai';
+import { friendly } from '../lib/friendlyErrors';
 import { BarChart } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort } from '../lib/format';
@@ -26,7 +26,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
     fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+      .catch(e => live && setState({ data: null, loading: false, error: friendly(e) }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
@@ -143,13 +143,15 @@ export default function Documents() {
       type: 'audit/add',
       entry: {
         actor: actorName, actorRole: session.roleId,
-        action: 'Created renewal task', recordType: 'Document', recordRef: `${d.title} — ${d.ownerName}`,
+        action: 'Noted renewal need (no task created)', recordType: 'Document', recordRef: `${d.title} — ${d.ownerName}`,
         reason: d.expiresOn ? `Expires ${fmtDate(d.expiresOn)}` : 'Renewal due',
         policyRef: 'Workflow wf_5 · document.expiring', aiInvolved: false, risk: 'low',
-        outcome: 'Task assigned to document owner · reminder at 14 days',
+        outcome: 'Note kept on this device · workflow runtime not connected',
       },
     });
-    toast({ title: 'Renewal task created', sub: `${d.title} — assigned to ${d.ownerType === 'school' ? 'Admin Officer' : d.ownerName}. Reminder fires at 14 days (wf_5).`, tone: 'success' });
+    /* T305 (§9.5): there is no workflow runtime — no task exists anywhere and
+       no reminder will fire. */
+    toast({ title: 'Noted on this device', sub: `${d.title} — renewal workflows are not connected, so no task was created and no reminder will fire.`, tone: 'info' });
   };
 
   const generatePack = () => {
@@ -161,13 +163,15 @@ export default function Documents() {
         type: 'audit/add',
         entry: {
           actor: actorName, actorRole: session.roleId,
-          action: 'Generated inspection pack', recordType: 'Document bundle', recordRef: 'Inspection pack · 42 documents',
+          action: 'Requested inspection pack (not connected)', recordType: 'Document bundle', recordRef: 'Inspection pack',
           reason: 'CBSE OASIS inspection readiness', policyRef: 'Compliance §2.1',
-          aiInvolved: false, risk: 'low', outcome: '42 documents assembled · signed index generated',
+          aiInvolved: false, risk: 'low', outcome: 'No bundle generated — pack assembly requires server support',
         },
       });
-      toast({ title: 'Inspection pack generated', sub: '42 documents assembled', tone: 'success' });
-    }, 900);
+      /* T305 (§9.5): no bundle is produced anywhere — the old toast claimed a
+         42-document pack had been assembled. */
+      toast({ title: 'Not connected', sub: 'Inspection packs require server support — no bundle was generated and nothing was downloaded.', tone: 'info' });
+    }, 400);
   };
 
   const submitUpload = () => {
@@ -186,19 +190,21 @@ export default function Documents() {
       category: form.category,
       expiresOn: exp,
       status: !exp ? 'valid' : exp.getTime() < today.getTime() ? 'expired' : exp.getTime() <= today.getTime() + 30 * 86400000 ? 'expiring' : 'valid',
-      size: '412 KB',
+      size: 'not stored',
     };
     setExtraDocs(prev => [doc, ...prev]);
     dispatch({
       type: 'audit/add',
       entry: {
         actor: actorName, actorRole: session.roleId,
-        action: 'Uploaded document', recordType: 'Document', recordRef: doc.title,
-        reason: 'Registry upload (demo) — stored against school owner', policyRef: 'Records §1.3',
-        aiInvolved: false, risk: 'low', outcome: 'Document indexed · expiry watch scheduled',
+        action: 'Registered document (demo upload — not stored)', recordType: 'Document', recordRef: doc.title,
+        reason: 'Registry upload (demo) — no file is stored against school records', policyRef: 'Records §1.3',
+        aiInvolved: false, risk: 'low', outcome: 'Registry entry on this device only · no file stored on any server',
       },
     });
-    toast({ title: 'Document uploaded', sub: `${doc.title} added to the registry${doc.expiresOn ? ` · expiry ${fmtDateShort(doc.expiresOn)}` : ''}.`, tone: 'success' });
+    /* T305 (§9.5/§24): there is no upload door here — only a registry row in
+       local state; no file leaves the browser. */
+    toast({ title: 'Demo upload — not stored', sub: `${doc.title} was added to this device's registry view only. No file is stored on school servers${doc.expiresOn ? ` · expiry ${fmtDateShort(doc.expiresOn)} noted locally` : ''}.`, tone: 'info' });
     setUploadOpen(false);
     setForm({ name: '', category: 'Identity', expiry: '' });
   };
@@ -282,33 +288,23 @@ export default function Documents() {
             </div>
             <div className="u-col" style={{ gap: 10 }}>
               <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.65 }}>
-                The registry is inspection-ready except for {stats.expired} expired records, mostly medical forms owned by class
-                teachers. The CBSE inspection pack assembles the compliance set — fire safety, building OC, bus fitness and the lab
-                chemical license — with a signed index; it can be regenerated on demand in under a minute.
+                The registry shows {stats.expired} expired records, mostly medical forms owned by class
+                teachers. The CBSE inspection pack (fire safety, building OC, bus fitness and the lab
+                chemical license, with a signed index) is not connected in this build — nothing has been generated.
               </p>
               <KeyValue
                 items={[
-                  { k: 'Renewals in progress', v: '4 tasks open (wf_5)' },
-                  { k: 'Inspection pack', v: '42 documents · last generated today' },
-                  { k: 'Expiry watch', v: 'Auto at 30 / 14 / 7 days' },
+                  { k: 'Renewal tasks', v: 'Not connected — no workflow runtime in this build' },
+                  { k: 'Inspection pack', v: 'Not connected — nothing generated yet' },
+                  { k: 'Expiry watch', v: 'Not connected — expiry dates shown from the registry only' },
                 ]}
                 cols={1}
               />
-              <AiTraceCard
-                trace={{
-                  trigger: 'Weekly registry scan · expiry forecast recomputed',
-                  policy: 'Read-only analysis · document registry · no automated renewals',
-                  dataUsed: ['document registry', 'renewal task log', 'workflow run history'],
-                  reasoningRole: 'Summarizer (read-only)',
-                  action: 'None — forecast and pack assembly only',
-                  approvalStatus: 'Not required (read-only)',
-                  verification: 'Forecast recomputed from expiresOn fields; pack index checksummed',
-                  model: 'Frontier (reasoning) · ap-south-1',
-                  latencyMs: 540,
-                  tokens: 760,
-                  cost: '₹0.06',
-                }}
-              />
+              {/* T305 (§9.5): the AI trace card here fabricated a weekly scan
+                  worker plus model/token/cost telemetry that do not exist. */}
+              <div className="u-small u-muted" style={{ border: '1px dashed var(--border)', borderRadius: 'var(--r-md)', padding: '10px 12px', lineHeight: 1.6 }}>
+                No automation runs on this registry — there is no scheduled scan, no model call and no cost. The expiry forecast above is computed in your browser from the expiry dates shown.
+              </div>
             </div>
           </div>
         </div>
@@ -374,7 +370,14 @@ export default function Documents() {
             <DataTable
               rows={filtered.slice(0, 80)}
               rowKey={d => d.id}
-              empty={<Empty icon={<Icon.Document size={22} />} title="No documents match" sub="Adjust the filters or search to see the registry." />}
+              empty={
+                <Empty
+                  icon={<Icon.Document size={22} />}
+                  title="No documents match"
+                  sub="Adjust the filters or search to see the registry."
+                  action={<Button size="sm" variant="secondary" onClick={() => { setCategory('all'); setStatus('all'); setOwnerType('all'); setQuery(''); }}>Clear filters</Button>}
+                />
+              }
               columns={[
                 { key: 'title', label: 'Document', render: d => <span style={{ fontWeight: 570 }}>{d.title}</span> },
                 {
@@ -432,14 +435,14 @@ export default function Documents() {
       >
         <div className="u-col" style={{ gap: 10 }}>
           <div className="u-small u-muted">
-            The pack pulls every document in category <strong>Compliance</strong>, plus the transport fitness certificates and the
-            latest medical-form summary. Documents expire mid-cycle are flagged in the index rather than excluded.
+            Would pull every document in category <strong>Compliance</strong>, plus the transport fitness certificates and the
+            latest medical-form summary. Not connected — pack assembly needs server support, so nothing is generated or downloaded.
           </div>
           <KeyValue
             items={[
-              { k: 'Documents assembled', v: '42' },
-              { k: 'Includes', v: 'Fire safety · Building OC · Bus fitness · Lab chemical license · Medical summary' },
-              { k: 'Output', v: 'Signed PDF index + folder of source files' },
+              { k: 'Status', v: 'Not connected in this build' },
+              { k: 'Would include', v: 'Fire safety · Building OC · Bus fitness · Lab chemical license · Medical summary' },
+              { k: 'Output', v: 'None produced here — no bundle or signed index exists' },
             ]}
             cols={1}
           />

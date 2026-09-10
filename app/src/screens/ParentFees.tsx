@@ -4,6 +4,7 @@
    concessions. Quiet, respectful copy throughout.
    ============================================================ */
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
 import { Badge, Button, Card, DataTable, Empty, Modal, PageHead, Section, useToast } from '../components/ui';
@@ -68,15 +69,17 @@ export default function ParentFees() {
           reference: `MER${String(Date.now()).slice(-6)}`,
         }, ...h]);
       }
-      toast({ title: 'Receipt sent on WhatsApp', sub: 'Recorded in the school fees record — no late fee applies.', tone: 'success' });
-      dispatch({ type: 'audit/add', entry: { actor: GUARDIAN_NAME, actorRole: 'parent', action: 'Paid fee online', recordType: 'Fee', recordRef: nextDue ? `${nextDue.term} · ${fmtMoney(nextDue.amount)}` : 'Payment', aiInvolved: false, risk: 'low', outcome: `Success via ${payMethod} · receipt on WhatsApp` } });
+      /* D-6 honesty: this pay flow is a local simulation — no door, no receipt,
+         no school-record write. Say exactly that. */
+      toast({ title: 'Demo payment simulated', sub: 'No receipt was sent and nothing was recorded. Live payments are under Family → Fees.', tone: 'info' });
+      dispatch({ type: 'audit/add', entry: { actor: GUARDIAN_NAME, actorRole: 'parent', action: 'Demo: fee payment simulated', recordType: 'Fee', recordRef: nextDue ? `${nextDue.term} · ${fmtMoney(nextDue.amount)}` : 'Payment', aiInvolved: false, risk: 'low', outcome: 'Device-only demo — no school record created' } });
     }, 1200);
   };
   const resetPay = () => { setPayOpen(false); setPayState('form'); };
 
   const retry = () => {
-    toast({ title: 'Payment retried — successful', sub: 'The gateway cleared the mandate on the second attempt.', tone: 'success' });
-    dispatch({ type: 'audit/add', entry: { actor: GUARDIAN_NAME, actorRole: 'parent', action: 'Retried failed payment', recordType: 'Fee', recordRef: failedItem ? `${failedItem.term} · ${fmtMoney(failedItem.amount)}` : 'Failed payment', reason: failedItem?.failureReason, aiInvolved: false, risk: 'low', outcome: 'Cleared on retry · receipt reissued' } });
+    toast({ title: 'Demo retry simulated', sub: 'No gateway was contacted and nothing was recorded. Live payments are under Family → Fees.', tone: 'info' });
+    dispatch({ type: 'audit/add', entry: { actor: GUARDIAN_NAME, actorRole: 'parent', action: 'Retried failed payment', recordType: 'Fee', recordRef: failedItem ? `${failedItem.term} · ${fmtMoney(failedItem.amount)}` : 'Failed payment', reason: failedItem?.failureReason, aiInvolved: false, risk: 'low', outcome: 'Device-only demo retry — no school record' } });
     if (failedItem) {
       setHistory(h => [{
         id: `pay_retry_${Date.now()}`, studentId: CHILD.id, obligationId: failedItem.id,
@@ -86,10 +89,17 @@ export default function ParentFees() {
     }
   };
 
-  const downloadReceipt = () => toast({ title: 'Receipt downloaded (PDF)', sub: 'Signed receipt with the school GSTIN and payment reference.', tone: 'success' });
+  const downloadReceipt = () => toast({ title: 'Receipts are not available in this demo view', sub: 'The school office issues signed receipts on the live system (Family → Fees).', tone: 'info' });
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
+      {/* T504 honesty banner: demo fee walkthrough — live ledger is /parent/family. */}
+      <div style={{ background: 'var(--warn-weak, var(--surface-2, #FFF8E6))', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '10px 14px', marginBottom: 14 }}>
+        <span className="u-small" style={{ fontWeight: 550 }}>Demo view</span>
+        <span className="u-small u-muted"> — payments on this page are simulations and never reach the school. Your family's live fee records are under </span>
+        <Link to="/parent/family" style={{ fontWeight: 550 }}>Family</Link>
+        <span className="u-small u-muted"> → Fees.</span>
+      </div>
       <PageHead
         title="Fees"
         sub={`${CHILD.name} · Grade ${CHILD.grade}-${CHILD.section} · North Campus`}

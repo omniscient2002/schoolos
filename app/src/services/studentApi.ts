@@ -101,12 +101,11 @@ export interface StudentSessionData {
 }
 
 export interface StudentNoticeboardEntry { title: string; detail: string | null; when: string | null }
+/* T506: server shape is { student, blocks:[{title, lines[]}] } (student.world:440). */
 export interface StudentNoticeboardData {
   weekLabel: string | null;
-  assignments: StudentNoticeboardEntry[];
-  exams: StudentNoticeboardEntry[];
-  events: StudentNoticeboardEntry[];
-  clubs: StudentNoticeboardEntry[];
+  student: { name: string | null; classLabel: string | null } | null;
+  blocks: StudentNoticeboardBlock[];
 }
 
 /* ---------- tolerant coercers (v0 element shapes are loose) ---------- */
@@ -171,7 +170,9 @@ export async function getStudentHome(): Promise<StudentHomeData> {
     return {
       id: firstStr(r.id) ?? `att-${i}`,
       kind: KIND_MAP[kindRaw] ?? 'other',
-      title: firstStr(r.title, r.what, r.label) ?? '(untitled item)',
+      /* T505: server sends {text, ref} — `title` never existed, so every live
+         item rendered "(untitled item)". Read `text` first. */
+      title: firstStr(r.text, r.title, r.what, r.label) ?? '(untitled item)',
       subject: firstStr(r.subject),
       dueLabel: firstStr(r.dueLabel, r.due_label, r.due),
       detail: firstStr(r.detail, r.note),
@@ -198,7 +199,9 @@ export async function getStudentHome(): Promise<StudentHomeData> {
   return {
     nextClass,
     today: {
-      classes: countOf(today.classes),
+      /* T505: server field is classes_count (student.world:212) — reading
+         `classes` gave "0 classes" on real data. */
+      classes: countOf(today.classes_count ?? today.classes),
       assignmentsDue: countOf(today.assignments_due),
       upcomingTest: countOf(today.upcoming_test),
     },
@@ -341,10 +344,11 @@ export async function requestPrint(kind: StudentPrintKind, payload?: unknown): P
 }
 /* Student's own print jobs (status polling for "queued → printed").
    Path note: GET /student/print/queue is the frozen STAFF door; the
-   student-scoped read is assumed as /student/print/jobs — confirm
-   with SS-1 when the door lands. */
+   student-scoped read is /student/print/mine (student.world:399). */
 export async function getMyPrints(): Promise<{ jobs: StudentPrintJob[] }> {
-  const raw = await studentCall<unknown>('/student/print/jobs');
+  /* T505: the server door is /student/print/mine (student.world:399) —
+     /student/print/jobs 404'd. */
+  const raw = await studentCall<unknown>('/student/print/mine');
   const jobs: StudentPrintJob[] = list(raw).map((e, i) => {
     const r = rec(e);
     const k = firstStr(r.kind) ?? 'checklist';
@@ -383,19 +387,30 @@ export async function getSession(): Promise<StudentSessionData> {
   };
 }
 
-/* ---------- GET /student/noticeboard ---------- */
+/* ---------- GET /student/noticeboard ----------
+   T506: the live door (student.world:440) returns
+   { student, blocks: [{title, lines: string[]}] } — the old
+   {assignments,exams,events,clubs} shape never existed server-side, so the
+   noticeboard always rendered empty. Normalizer now mirrors the real shape. */
+export interface StudentNoticeboardBlock { title: string; lines: string[] }
 export async function getNoticeboard(): Promise<StudentNoticeboardData> {
   const raw = rec(await studentCall<unknown>('/student/noticeboard'));
-  const entries = (v: unknown): StudentNoticeboardEntry[] => list(v).map(e => {
-    if (typeof e === 'string') return { title: e, detail: null, when: null };
-    const r = rec(e);
-    return { title: firstStr(r.title, r.name, r.what) ?? '(untitled)', detail: firstStr(r.detail, r.note, r.where), when: firstStr(r.when, r.on, r.at) };
+  const blocks: StudentNoticeboardBlock[] = list(raw.blocks).map((b, i) => {
+    if (typeof b === 'string') return { title: b, lines: [] };
+    const r = rec(b);
+    return {
+      title: firstStr(r.title, r.name) ?? `Section ${i + 1}`,
+      lines: list(r.lines)
+        .map(l => (typeof l === 'string' ? l : firstStr(rec(l).text, rec(l).label, rec(l).what, rec(l).title) ?? ''))
+        .filter((l): l is string => Boolean(l)),
+    };
   });
+  const st = rec(raw.student);
   return {
     weekLabel: firstStr(raw.weekLabel, raw.week_label, raw.week),
-    assignments: entries(raw.assignments),
-    exams: entries(raw.exams),
-    events: entries(raw.events),
-    clubs: entries(raw.clubs),
+    student: raw.student
+      ? { name: firstStr(st.name), classLabel: firstStr(st.class, st.class_label, st.grade) }
+      : null,
+    blocks,
   };
 }

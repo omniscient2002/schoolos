@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
 import { Badge, Button, Card, Dropdown, Drawer, Empty, ErrorState, PageHead, Section, SkeletonCard, Stat, Timeline, useToast } from '../components/ui';
+import { friendly } from '../lib/friendlyErrors';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateTime, fmtRelative } from '../lib/format';
@@ -21,7 +22,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
     fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+      .catch(e => live && setState({ data: null, loading: false, error: friendly(e) }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
@@ -112,14 +113,17 @@ export default function Incidents() {
   };
 
   const requestMaintenance = (inc: IncidentRecord) => {
-    toast({ title: 'Maintenance request sent', sub: `Vendor slot requested for ${CAMPUS_LABEL[inc.campus]} campus — admin officer notified`, tone: 'success' });
+    /* T305 (§9.5): no maintenance-dispatch door exists — the old toast claimed
+       a vendor slot was requested and the admin officer notified. Neither
+       happens; the note lives on this device only. */
+    toast({ title: 'Maintenance note recorded on this device', sub: 'Not connected — maintenance dispatch is not wired to school records, so no vendor was requested and nobody was notified.', tone: 'info' });
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: session.roleId, action: 'Requested maintenance',
+        actor: actorName, actorRole: session.roleId, action: 'Logged maintenance note',
         recordType: 'Facilities', recordRef: `${inc.id} — ${inc.title}`,
         reason: 'Repair or vendor visit needed', aiInvolved: false, risk: 'low',
-        outcome: 'Vendor request queued · admin officer assigned',
+        outcome: 'Note kept on this device · no vendor request sent (dispatch not connected)',
       },
     });
   };

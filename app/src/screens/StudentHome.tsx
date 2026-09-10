@@ -32,7 +32,10 @@ export default function StudentHome() {
      Today's seed may record Aarav absent during the Bus 14 week; the
      leniency policy (Attendance §1.4) marks delayed-route riders present
      until 09:30 — that is what the student sees. */
-  const todayKey = seed.TERM_DAYS[seed.TERM_DAYS.length - 1].getTime();
+  /* Empty-world guard: TERM_DAYS is blanked without data — miss honestly
+     instead of crashing the default landing page of a fresh tenant. */
+  const lastTermDay = seed.TERM_DAYS[seed.TERM_DAYS.length - 1];
+  const todayKey = lastTermDay ? lastTermDay.getTime() : -1;
   const att = seed.attendance.find(a => a.studentId === ME.id && a.date.getTime() === todayKey);
   const attLabel = !att || att.status === 'present'
     ? 'Marked present'

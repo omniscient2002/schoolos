@@ -4,6 +4,8 @@ import { PageHead, Section, Card, Badge, Tabs, Button, useToast, KeyValue, Avata
 import { Icon } from '../components/Icon';
 import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
+import { apiPost } from '../services/liveApi';
+import { friendly } from '../lib/friendlyErrors';
 import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
 
 const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
@@ -16,6 +18,19 @@ export default function Settings() {
   const { session, actorName } = useStore();
   const toast = useToast();
   const navigate = useNavigate();
+  /* T305: the data-export request now uses the real DPDP DSR door
+     (POST /plugins/pack.dpdp/dsr — DPO-gated) instead of a fictional toast. */
+  const [dsrPhone, setDsrPhone] = useState('');
+  const [dsrBusy, setDsrBusy] = useState(false);
+  const requestDsr = (kind: 'export' | 'erasure') => {
+    const subjectRef = dsrPhone.trim();
+    if (!subjectRef) { toast({ title: 'Phone number required', sub: 'Data requests are filed against the guardian phone number on record.', tone: 'error' }); return; }
+    setDsrBusy(true);
+    apiPost<{ id?: string; sla_due_at?: string }>('/plugins/pack.dpdp/dsr', { kind, subjectRef })
+      .then(() => toast({ title: `${kind === 'export' ? 'Data export' : 'Data erasure'} request filed`, sub: 'Recorded with the school’s data-protection workflow and an SLA due date.', tone: 'success' }))
+      .catch(e => toast({ title: 'Request not filed', sub: friendly(e), tone: 'error' }))
+      .finally(() => setDsrBusy(false));
+  };
   const [tab, setTab] = useState('school');
   const [theme, setThemeState] = useState<ThemeChoice>(storedTheme());
   const canManage = ['principal', 'itadmin', 'owner'].includes(session.roleId);
@@ -23,7 +38,7 @@ export default function Settings() {
   return (
     <>
       <PageHead title="Settings" sub={`Signed in as ${actorName} · ${demoAccounts.find(a => a.id === session.roleId)?.title}`}
-        actions={<Button variant="secondary" icon={<Icon.Download size={14} />} onClick={() => toast({ title: 'Settings export queued', sub: 'A JSON snapshot of school configuration will download shortly', tone: 'info' })}>Export configuration</Button>} />
+        actions={<Button variant="secondary" icon={<Icon.Download size={14} />} onClick={() => toast({ title: 'Not connected', sub: 'Configuration export requires server support — nothing was downloaded.', tone: 'info' })}>Export configuration</Button>} />
 
       <Tabs active={tab} onChange={setTab} tabs={[
         { id: 'school', label: 'School' },
@@ -36,7 +51,7 @@ export default function Settings() {
       {tab === 'school' && (
         <Section title="School profile" sub="Applies across all campuses. Campus-specific details live in Operations.">
           <div className="grid grid-2">
-            <Card head="Identity" actions={canManage ? <Button size="sm" variant="ghost" icon={<Icon.Edit size={13} />} onClick={() => toast({ title: 'Edit requested', sub: 'Changes require an IT admin or owner — a request has been logged', tone: 'info' })}>Edit</Button> : <Badge tone="outline">Read-only for your role</Badge>}>
+            <Card head="Identity" actions={canManage ? <Button size="sm" variant="ghost" icon={<Icon.Edit size={13} />} onClick={() => toast({ title: 'Not connected', sub: 'Editing the school profile requires server support — no request was logged.', tone: 'info' })}>Edit</Button> : <Badge tone="outline">Read-only for your role</Badge>}>
               <div style={{ padding: 'var(--s-5)' }}>
                 <KeyValue cols={1} items={[
                   { k: 'School name', v: seed.SCHOOL.name },
@@ -62,7 +77,7 @@ export default function Settings() {
                 ))}
               </div>
               <div style={{ padding: '0 var(--s-5) var(--s-4)' }}>
-                <Button size="sm" variant="ghost" icon={<Icon.Plus size={13} />} disabled={!canManage} onClick={() => toast({ title: 'Campus creation is a governed action', sub: 'New campuses start as drafts and require owner approval', tone: 'info' })}>Add campus</Button>
+                <Button size="sm" variant="ghost" icon={<Icon.Plus size={13} />} disabled={!canManage} onClick={() => toast({ title: 'Not connected', sub: 'Campus creation requires server support — no draft was created.', tone: 'info' })}>Add campus</Button>
               </div>
             </Card>
             <Card head="Academic structure">
@@ -176,10 +191,13 @@ export default function Settings() {
             <Card head="Channels">
               <div style={{ padding: 'var(--s-5)' }}>
                 <KeyValue cols={1} items={[
-                  { k: 'WhatsApp Business', v: <span className="u-flex" style={{ gap: 8 }}>Connected · 99.2% delivery <Badge tone="success" dot>Live</Badge></span> },
-                  { k: 'SMS fallback', v: <span className="u-flex" style={{ gap: 8 }}>Connected · auto on WhatsApp failure <Badge tone="success" dot>Live</Badge></span> },
-                  { k: 'Email', v: <span className="u-flex" style={{ gap: 8 }}>Connected · staff & statements <Badge tone="success" dot>Live</Badge></span> },
-                  { k: 'In-app', v: <span className="u-flex" style={{ gap: 8 }}>Push + digest <Badge tone="success" dot>Live</Badge></span> },
+                  /* T305 (§9.5/§24): no messaging rails are implemented — the
+                     "Connected · 99.2% · Live" badges were fiction. In-app
+                     notifications are the one channel that really runs. */
+                  { k: 'WhatsApp Business', v: <span className="u-flex" style={{ gap: 8 }}>Not connected — no messaging provider configured <Badge tone="neutral">Off</Badge></span> },
+                  { k: 'SMS fallback', v: <span className="u-flex" style={{ gap: 8 }}>Not connected — no SMS provider configured <Badge tone="neutral">Off</Badge></span> },
+                  { k: 'Email', v: <span className="u-flex" style={{ gap: 8 }}>Not connected — no email provider configured <Badge tone="neutral">Off</Badge></span> },
+                  { k: 'In-app', v: <span className="u-flex" style={{ gap: 8 }}>Delivered inside SchoolOS <Badge tone="success" dot>Live</Badge></span> },
                 ]} />
               </div>
             </Card>
@@ -265,11 +283,17 @@ export default function Settings() {
             </Card>
             <Card head="Your data rights">
               <div style={{ padding: 'var(--s-5)' }} className="u-col u-gap-2">
-                <div className="u-small u-muted">As a data principal (or their guardian) you can request export or correction of records. Requests become cases with SLAs — nothing is handled over email.</div>
+                <div className="u-small u-muted">File a data-protection request for a guardian by phone number. Requests go to the school's DPDP workflow with an SLA due date — filed by data-protection operators (owner, principal, IT admin, coordinator).</div>
+                <label className="u-small">Guardian phone on record
+                  <input type="tel" value={dsrPhone} onChange={e => setDsrPhone(e.target.value)} placeholder="+91 98450 00101" style={{ width: '100%' }} />
+                </label>
                 <div className="u-flex u-gap-2">
-                  <Button size="sm" variant="secondary" icon={<Icon.Download size={13} />} onClick={() => toast({ title: 'Data export request created', sub: 'Case opened · SLA 7 days · you will be notified on WhatsApp', tone: 'success' })}>Request my data export</Button>
-                  <Button size="sm" variant="ghost" icon={<Icon.Edit size={13} />} onClick={() => toast({ title: 'Correction request created', sub: 'Routed to the front office with your attached note', tone: 'success' })}>Request a correction</Button>
+                  <Button size="sm" variant="secondary" icon={<Icon.Download size={13} />} disabled={dsrBusy} onClick={() => requestDsr('export')}>Request data export</Button>
+                  <Button size="sm" variant="ghost" icon={<Icon.Shield size={13} />} disabled={dsrBusy} onClick={() => requestDsr('erasure')}>Request erasure review</Button>
                 </div>
+                {/* T305: no correction door exists — the old "correction request
+                    created · routed to the front office" toast was fiction. */}
+                <div className="u-xs u-faint">Corrections are not connected yet — contact the front office directly; no correction request can be filed from here.</div>
               </div>
             </Card>
           </div>
@@ -286,7 +310,9 @@ function NotificationRow({ label, desc, push, whatsapp, email, canEdit }: { labe
     if (!canEdit) return;
     setState(s => {
       const next = { ...s, [k]: !s[k] };
-      toast({ title: 'Preference saved', sub: `${label} — ${k} turned ${next[k] ? 'on' : 'off'}`, tone: 'success' });
+      /* T305 (D-6): preferences live in this screen's state only — no door
+         persists them for the school. */
+      toast({ title: 'Saved on this device only', sub: `${label} — ${k} turned ${next[k] ? 'on' : 'off'} locally. Notification preferences are not connected to school records yet.`, tone: 'info' });
       return next;
     });
   };

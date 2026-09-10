@@ -270,13 +270,17 @@ export default function Learning() {
     }, ...x]);
     setNewOpen(false);
     setNewForm(f => ({ ...f, title: '' }));
-    toast({ title: `“${title}” published to ${total} students`, sub: `Guardians can see it in the parent app · Communication §2.1`, tone: 'success' });
+    /* T305 (§9.5): this list is device-local demo state — the assignment is
+       not published to any student or guardian. */
+    toast({ title: 'Saved on this device only', sub: `“${title}” was added to this view for ${total} students — it is not published to the parent app or school records.`, tone: 'info' });
   };
 
   const closeAssignment = (a: Assignment) => {
     setClosedIds(prev => new Set(prev).add(a.id));
     setAsgOpen(null);
-    toast({ title: 'Assignment closed', sub: 'Submissions are locked; late work routes to the teacher for review.', tone: 'info' });
+    /* T305 (§9.5): no submission door is touched from here — closing is a
+       local note on this device. */
+    toast({ title: 'Closed on this device only', sub: `${a.title} marked closed in this view — submissions are not locked in school records.`, tone: 'info' });
   };
 
   /* ---------- loading / error shells ---------- */

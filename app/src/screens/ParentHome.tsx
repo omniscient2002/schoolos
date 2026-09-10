@@ -36,7 +36,10 @@ export default function ParentHome() {
   /* ---- attendance today ----
      The seed may record Aarav absent during the Bus 14 week — show it
      plainly with the leniency context, never with alarm. */
-  const todayKey = seed.TERM_DAYS[seed.TERM_DAYS.length - 1].getTime();
+  /* Empty-world guard: the dataset blanked TERM_DAYS — no "last school day"
+     exists, so attendance-today lookups honestly miss instead of crashing. */
+  const lastTermDay = seed.TERM_DAYS[seed.TERM_DAYS.length - 1];
+  const todayKey = lastTermDay ? lastTermDay.getTime() : -1;
   const attToday = seed.attendance.find(a => a.studentId === childId && a.date.getTime() === todayKey);
   const rate = seed.studentAttendanceRate(childId).rate;
   const attendanceView = !attToday
@@ -97,7 +100,9 @@ export default function ParentHome() {
     setPayState('processing');
     setTimeout(() => {
       setPayState('done');
-      toast({ title: 'Receipt sent on WhatsApp', sub: 'Payment recorded in the school fees record.', tone: 'success' });
+      /* D-6 honesty: no payment door is called here — never claim a receipt
+         or a school-record write. */
+      toast({ title: 'Demo payment simulated', sub: 'Nothing was sent to the school. Live fee payments are under Family → Fees.', tone: 'info' });
     }, 1200);
   };
   const resetPay = () => { setPayOpen(false); setPayState('form'); };
@@ -110,6 +115,14 @@ export default function ParentHome() {
 
   return (
     <div style={{ maxWidth: 980, margin: '0 auto' }}>
+      {/* T504 honesty banner: this surface is a demo walkthrough; the live
+          family data lives under /parent/family. */}
+      <div style={{ background: 'var(--warn-weak, var(--surface-2, #FFF8E6))', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '10px 14px', marginBottom: 14 }}>
+        <span className="u-small" style={{ fontWeight: 550 }}>Demo view</span>
+        <span className="u-small u-muted"> — this page walks through a sample family. Your family's live data is under </span>
+        <Link to="/parent/family" style={{ fontWeight: 550 }}>Family</Link>
+        <span className="u-small u-muted"> (attendance, homework, fees and requests operate on school records there).</span>
+      </div>
       {/* ---------- greeting ---------- */}
       <div className="u-flex" style={{ gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
         <Avatar name={child.name} size="lg" />

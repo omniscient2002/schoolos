@@ -5,7 +5,7 @@
    ============================================================ */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { apiLogin, apiRequestOtp, apiVerifyOtp, apiGoogleDemo } from '../services/liveApi';
+import { apiLogin, apiRequestOtp, apiVerifyOtp } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
@@ -116,12 +116,10 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
       return { name: r.user.name, role: r.user.role, email: r.user.email };
     });
   };
-  const googleSignIn = () => {
-    run(async () => {
-      const r = await apiGoogleDemo(email.trim() || 'principal@meridian.edu');
-      return { name: r.user.name, role: r.user.role, email: r.user.email };
-    });
-  };
+
+  /* T303 (§A9/§9.13): the Google tab previously called apiGoogleDemo — a demo
+     door that fabricates a session for any email (audit P0-2 family). The
+     button now renders disabled with honest copy; no sign-in is simulated. */
 
   useEffect(() => { setError(null); setOtpSent(false); setCode(''); }, [method]);
 
@@ -132,7 +130,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
           <div className="logo-mark">S</div>
           <div>
             <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: '-0.02em' }}>SchoolOS</div>
-            <div style={{ color: 'var(--text-2)', fontSize: 12.5 }}>Meridian International Academy</div>
+            <div style={{ color: 'var(--text-2)', fontSize: 12.5 }}>Sign in to your school's workspace</div>
           </div>
         </div>
         <p style={{ color: 'var(--text-2)', fontSize: 13.5, margin: '10px 0 18px' }}>
@@ -198,14 +196,11 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
 
         {method === 'google' && (
           <div role="tabpanel" id="login-seg-panel-google" aria-labelledby="seg-tab-google" className="login-form">
-            <button className="btn google-btn" disabled={busy} onClick={googleSignIn} style={{ width: '100%', justifyContent: 'center' }}>
+            <button className="btn google-btn" disabled aria-disabled="true" style={{ width: '100%', justifyContent: 'center' }}>
               <GoogleG /> Continue with Google
             </button>
-            <label style={{ marginTop: 10 }}>School email <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· must match your SchoolOS account</span>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="principal@meridian.edu" />
-            </label>
             <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 10 }}>
-              Google OAuth runs server-side (/auth/google/start · /callback). Sign in with your school Google account.
+              Google sign-in is not configured for this school yet — the button is disabled. Use email + password or phone + OTP.
             </p>
           </div>
         )}

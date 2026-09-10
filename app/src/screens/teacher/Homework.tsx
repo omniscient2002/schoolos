@@ -107,12 +107,17 @@ export default function Homework() {
     } finally { setPublishing(false); }
   };
 
+  /* D-8: the live door returns `submission_count` (a single int — all
+     submissions); the submitted/late/reviewed/missing breakdown exists only
+     in fixture enrichment. Compute waiting/missing only where the breakdown
+     is really present, never as silent zeros on live rows. */
   const totals = useMemo(() => {
-    const rows = list.data?.homework ?? [];
+    const rows = (list.data?.homework ?? []) as Array<{ status: string; submission_counts?: { submitted: number; late: number; reviewed: number; missing: number } }>;
+    const withBreakdown = rows.filter(h => h.submission_counts);
     return {
       open: rows.filter(h => h.status === 'open').length,
-      waiting: rows.reduce((a, h) => a + ((h.submission_counts?.submitted ?? 0) + (h.submission_counts?.late ?? 0) - (h.submission_counts?.reviewed ?? 0)), 0),
-      missing: rows.reduce((a, h) => a + (h.submission_counts?.missing ?? 0), 0),
+      waiting: withBreakdown.reduce((a, h) => a + (h.submission_counts!.submitted + h.submission_counts!.late - h.submission_counts!.reviewed), 0),
+      missing: withBreakdown.reduce((a, h) => a + h.submission_counts!.missing, 0),
     };
   }, [list.data]);
 
@@ -257,7 +262,11 @@ export default function Homework() {
                   key: 'turnin', label: 'Turned in',
                   render: h => {
                     const c = h.submission_counts;
-                    if (!c) return <span className="u-faint u-small">—</span>;
+                    /* D-8: live rows carry submission_count (single int) —
+                       show the real number, not the fixture-only breakdown. */
+                    const liveCount = (h as { submission_count?: number }).submission_count;
+                    if (!c && liveCount == null) return <span className="u-faint u-small">—</span>;
+                    if (!c) return <span className="u-small">{liveCount} turned in</span>;
                     return (
                       <span className="u-small">
                         {c.submitted + c.late} of {c.submitted + c.late + c.missing}
@@ -296,10 +305,21 @@ export default function Homework() {
         {summaryHw && (
           <div className="u-col" style={{ gap: 14 }}>
             <div className="grid grid-2" style={{ gap: 10 }}>
-              <Stat label="Turned in" value={String((summaryHw.submission_counts?.submitted ?? 0) + (summaryHw.submission_counts?.late ?? 0))} sub="of the class" />
-              <Stat label="Waiting for you" value={String(Math.max(0, (summaryHw.submission_counts?.submitted ?? 0) + (summaryHw.submission_counts?.late ?? 0) - (summaryHw.submission_counts?.reviewed ?? 0)))} sub="Reviews take about 20s each" />
-              <Stat label="Late" value={String(summaryHw.submission_counts?.late ?? 0)} sub="Your call to accept" />
-              <Stat label="Not yet in" value={String(summaryHw.submission_counts?.missing ?? 0)} sub="Reminders run automatically" />
+              <Stat label="Turned in" value={String(summaryHw.submission_counts ? (summaryHw.submission_counts.submitted + summaryHw.submission_counts.late) : (summaryHw as { submission_count?: number }).submission_count ?? 0)} sub={summaryHw.submission_counts ? 'of the class' : 'of the class (live count)'} />
+              {summaryHw.submission_counts ? (
+                <>
+                  <Stat label="Waiting for you" value={String(Math.max(0, (summaryHw.submission_counts.submitted + summaryHw.submission_counts.late) - summaryHw.submission_counts.reviewed))} sub="Reviews take about 20s each" />
+                  <Stat label="Late" value={String(summaryHw.submission_counts.late)} sub="Your call to accept" />
+                  <Stat label="Not yet in" value={String(summaryHw.submission_counts.missing)} sub="Reminders run automatically" />
+                </>
+              ) : (
+                /* D-6/D-8: no live breakdown exists — say so instead of zeros. */
+                <>
+                  <Stat label="Waiting for you" value="—" sub="Per-status split is not in the live door yet" />
+                  <Stat label="Late" value="—" sub="Per-status split is not in the live door yet" />
+                  <Stat label="Not yet in" value="—" sub="Per-status split is not in the live door yet" />
+                </>
+              )}
             </div>
 
             <AsyncGate

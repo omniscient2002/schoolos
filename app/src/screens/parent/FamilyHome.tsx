@@ -128,10 +128,14 @@ export default function FamilyHome() {
   const attToday = detail?.attendance?.today?.status ?? child.attendance_today ?? null;
 
   /* family-wide tiered list: each child's attention rows + the home actions,
-     urgent first, then action, then upcoming */
+     urgent first, then action, then upcoming.
+     CRASH GUARD: the server aggregate (family.view /parent/home) sends
+     {children, requests} — `actions` is a client-side DTO wish, never a field.
+     Read it defensively; the row renders from children's attention alone. */
+  const homeActions = (home as ParentHomeData & { actions?: ParentHomeAction[] }).actions ?? [];
   const attentionRows = [
     ...attention.map(a => ({ tier: a.tier, title: a.title, due: a.due, ref: a.ref, childName: a.childName })),
-    ...home.actions.map((a: ParentHomeAction) => ({
+    ...homeActions.map((a: ParentHomeAction) => ({
       tier: a.kind === 'payment' || a.kind === 'consent' ? ('action' as const) : ('upcoming' as const),
       title: a.title, due: a.due, ref: a.ref, childName: undefined,
     })),
@@ -192,7 +196,11 @@ export default function FamilyHome() {
             </div>
             <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
               <div className="u-upper" style={{ marginBottom: 6 }}>Homework due</div>
-              {hw.length === 0 ? (
+              {detail.assignments == null ? (
+                /* D-6 honesty: there is no per-child assignments door yet — the
+                   request 404s. Say that, never "no homework". */
+                <div className="u-small u-muted">Not available yet — ask the class teacher until homework appears here.</div>
+              ) : hw.length === 0 ? (
                 <div className="u-small u-muted">No homework due right now.</div>
               ) : (
                 <div className="u-col" style={{ gap: 5 }}>
@@ -240,7 +248,7 @@ export default function FamilyHome() {
 
       {/* ---------- NEEDS YOUR ATTENTION ---------- */}
       <Card headAs="h2" head="Needs your attention">
-        {attention.length === 0 && home.actions.length === 0 ? (
+        {attention.length === 0 && homeActions.length === 0 ? (
           <Empty
             titleAs="h3"
             icon={<Icon.Check size={22} style={{ color: 'var(--success)' }} />}

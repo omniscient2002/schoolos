@@ -12,6 +12,7 @@
    machinery already did the chasing.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Avatar, Badge, Button, Card, DataTable, Drawer, Empty, PageHead, Section, Stat, Tabs, useToast,
 } from '../../components/ui';
@@ -155,17 +156,22 @@ export default function SubmissionsInbox() {
     if (!open) return;
     setSaving(true);
     try {
+      /* D-7 grading contract (teacher.classroom:168): a grade can only be
+         recorded when status='graded' — the drawer used to send
+         status:'reviewed' with the grade attached, so every graded review
+         400'd and the grade never persisted. Any recorded grade ⇒ 'graded'. */
+      const hasGrade = grade.trim() !== '';
       const body: { status: string; grade?: number; feedback?: string } = {
-        status: decide,
+        status: hasGrade ? 'graded' : decide,
         feedback: feedback.trim() || undefined,
-        grade: decide === 'reviewed' && grade.trim() ? Number(grade) : undefined,
+        grade: hasGrade ? Number(grade) : undefined,
       };
       await reviewSubmission(open.id, body);
       toast({
-        title: decide === 'reviewed' ? 'Review saved' : 'Resubmission requested',
-        sub: decide === 'reviewed'
-          ? `${open.student_name} — the student sees your grade and note in the app tonight.`
-          : `${open.student_name} was asked to send the work again. A reminder goes out with the 17:00 digest.`,
+        title: hasGrade ? 'Grade saved' : decide === 'reviewed' ? 'Review saved' : 'Resubmission requested',
+        sub: decide === 'resubmit_requested' && !hasGrade
+          ? `${open.student_name} was asked to send the work again. A reminder goes out with the 17:00 digest.`
+          : `${open.student_name} — the student sees your ${hasGrade ? 'grade and note' : 'note'} in the app tonight.`,
         tone: 'success',
       });
       setOpenId(null);
@@ -263,6 +269,7 @@ export default function SubmissionsInbox() {
                 icon={<Icon.Clipboard size={22} />}
                 title="No submissions yet"
                 sub="Assign homework first — turned-in work lands here the moment a student sends it."
+                action={<Link to="/teacher/homework" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Assign homework</Link>}
               />
             ) : tab === 'submitted' ? (
               <Empty

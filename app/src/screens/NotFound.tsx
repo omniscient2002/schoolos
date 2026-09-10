@@ -12,8 +12,11 @@ export default function NotFound() {
   const navigate = useNavigate();
   const { session } = useStore();
 
-  const homeByRole = session.roleId === 'parent' ? '/parent' : session.roleId === 'student' ? '/student' : '/today';
-  const homeLabel = session.roleId === 'parent' ? 'Go to Home' : session.roleId === 'student' ? 'Go to My Day' : 'Go to Today';
+  /* T509 (§9.6): light roles used to be sent BACK into the demo surfaces
+     (/parent, /student) — the demo-blob screens that crash on a fresh
+     tenant. Route them to their LIVE homes instead. */
+  const homeByRole = session.roleId === 'parent' ? '/parent/family' : session.roleId === 'student' ? '/student/home2' : '/today';
+  const homeLabel = session.roleId === 'parent' ? 'Go to Family' : session.roleId === 'student' ? 'Go to My Day' : 'Go to Today';
 
   const openSearch = () => {
     /* The command palette lives in the app shell; announce the intent

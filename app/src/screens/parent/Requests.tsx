@@ -66,7 +66,14 @@ export default function Requests() {
     if (!title.trim()) { setFormErr('Please write a short title so the office knows what you need.'); return; }
     setBusy(true); setFormErr(null); setSent(null);
     try {
-      await createRequest({ category, title: title.trim(), detail: detail.trim() || undefined });
+      /* Wire contract (family.view:236-246): the server stores detail inside the
+         jsonb `payload` column and reads `childId` (camel) — a top-level `detail`
+         was silently dropped. Wrapper DTO lives in frozen services (D-2). */
+      await createRequest({
+        category,
+        title: title.trim(),
+        payload: { detail: detail.trim() || undefined },
+      } as unknown as Parameters<typeof createRequest>[0]);
       toast({ title: 'Request sent to the school office', sub: 'You can follow its progress below.', tone: 'success' });
       setTitle(''); setDetail('');
       load();
@@ -81,7 +88,9 @@ export default function Requests() {
     if (!discRef.trim() || !discWhat.trim()) { setDiscErr('Tell us which record and what looks wrong.'); return; }
     setDiscBusy(true); setDiscErr(null);
     try {
-      await reportDiscrepancy({ record_ref: discRef.trim(), what_wrong: discWhat.trim() });
+      /* Wire contract (family.view:270-273): the server reads `recordRef` /
+         `whatWrong` (camel) — the snake_case keys 400'd on every submit. */
+      await reportDiscrepancy({ recordRef: discRef.trim(), whatWrong: discWhat.trim() } as unknown as Parameters<typeof reportDiscrepancy>[0]);
       setDiscDone(true);
       setDiscRef(''); setDiscWhat('');
       setDiscOpen(false);
@@ -104,6 +113,7 @@ export default function Requests() {
 
       <div className="grid grid-2" style={{ gap: 16 }}>
         {/* ---------- new request ---------- */}
+        <span id="new-request" aria-hidden="true" />
         <Card pad>
           <h2 style={{ marginBottom: 10 }}><Icon.File size={15} /> New request</h2>
           {sent && <div className="login-error" role="status" style={{ marginBottom: 10 }}>{sent}</div>}
@@ -150,6 +160,7 @@ export default function Requests() {
                 title="No requests yet"
                 sub="Certificate copies, transport changes, corrections — ask here and follow the progress."
                 titleAs="h3"
+                action={<a href="#new-request" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Send your first request</a>}
               />
             ) : (
               <div className="u-col" style={{ gap: 12 }}>
@@ -174,7 +185,8 @@ export default function Requests() {
                           <span aria-hidden="true" style={{ width: 12, height: 12, borderRadius: 6, flexShrink: 0, marginTop: 3, background: i === all.length - 1 ? 'var(--accent)' : 'var(--border-strong)', border: '2px solid var(--surface)' }} />
                           <span style={{ minWidth: 0 }}>
                             <span className="u-small" style={{ display: 'block', fontWeight: i === all.length - 1 ? 620 : 520 }}>
-                              {STATUS_WORD[ev.status] ?? ev.status}
+                              {/* server sends `to` (to_status); DTO said `status` */}
+                              {STATUS_WORD[(ev as { to?: string }).to ?? ev.status] ?? (ev as { to?: string }).to ?? ev.status}
                             </span>
                             <span className="u-xs u-faint">
                               {fmtDateShort(ev.at)} · {fmtTime(ev.at)}{ev.note ? ` — ${ev.note}` : ''}

@@ -1,13 +1,14 @@
 /* ============================================================
    IT Admin console — platform health, access & sessions,
    API keys / integrations, feature flags, data residency and
-   backups. Every control is wired with toasts + audit entries.
+   backups. T305 (§9.5): session revocation, key rotation, flag
+   rollout, snapshot download and data export have no server
+   doors — those controls render disabled with honest copy.
    ============================================================ */
-import { useMemo, useState } from 'react';
 import * as seed from '../data/dataset';
 import { makeRng } from '../lib/rng';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, DataTable, Modal, PageHead, Section, Stat, useToast } from '../components/ui';
+import { Badge, Button, Card, DataTable, PageHead, Section, Stat } from '../components/ui';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtRelative } from '../lib/format';
@@ -69,17 +70,14 @@ const FLAGS = [
 
 /* ---------- screen ---------- */
 export default function ItAdmin() {
-  const { session, actorName, dispatch } = useStore();
-  const toast = useToast();
+  const { session, actorName } = useStore();
   const isIt = session.roleId === 'itadmin';
 
-  const [revoked, setRevoked] = useState<Set<string>>(new Set());
-  const [rotating, setRotating] = useState<typeof API_KEYS[number] | null>(null);
-  const [flags, setFlags] = useState<Record<string, boolean>>({
+  /* T305 (§9.5): revocation, rotation and flag toggles have no doors — the
+     mutable states behind them are gone; the controls render disabled. */
+  const FLAG_DEFAULTS: Record<string, boolean> = {
     'offline-mode': true, 'live-events': true, 'ai-shield': true, 'parent-digest': true, 'transport-leniency': true,
-  });
-
-  const sessions = useMemo(() => SESSION_ROWS.filter(s => !revoked.has(s.id)), [revoked]);
+  };
 
   /* Control Plane registry (docs/06 §2.A/§4.1) — one auditable home for every
      governance object. Read-only here; changes land as control_plane.changed events. */
@@ -94,43 +92,19 @@ export default function ItAdmin() {
     { kind: 'Integration scope', name: 'whatsapp.business', value: 'send + receive · templates locked', scope: 'comms', lastChange: '6 days ago · IT admin', policy: 'Communication §1.2' },
   ];
 
-  const audit = (action: string, recordRef: string, outcome: string) => dispatch({
-    type: 'audit/add',
-    entry: { actor: actorName, actorRole: session.roleId, action, recordType: 'IT Admin', recordRef, aiInvolved: false, risk: 'low' as const, outcome },
-  });
-
-  const revoke = (row: SessionRow) => {
-    setRevoked(prev => new Set(prev).add(row.id));
-    toast({ title: `Session revoked — ${row.person.name}`, sub: 'Device signs out on its next poll (≤ 60s).', tone: 'success' });
-    audit('Revoked access session', `${row.person.name} · ${row.device}`, 'Session terminated; event sent to device');
-  };
-
-  const rotate = () => {
-    if (!rotating) return;
-    toast({ title: `${rotating.name} key rotated`, sub: 'Previous key stays valid for 24h for in-flight calls.', tone: 'success' });
-    audit('Rotated API key', rotating.name, 'New secret issued · old key grace 24h');
-    setRotating(null);
-  };
-
-  const toggleFlag = (id: string) => {
-    setFlags(f => ({ ...f, [id]: !f[id] }));
-    toast({ title: 'Flag changed — rollout updated (audit entry recorded)', tone: 'info' });
-    audit('Toggled feature flag', FLAGS.find(x => x.id === id)?.label ?? id, `Flag → ${flags[id] ? 'off' : 'on'} for all campuses`);
-  };
-
   return (
     <>
       <PageHead
         title="IT Admin"
         sub={isIt
-          ? 'Platform posture for all three campuses. Key rotations, flag rollouts and session revocations are audited.'
-          : `Viewing as ${actorName}. In this demo role every control works and records to the audit trail.`}
+          ? 'Platform posture for all three campuses. Security operations (session revoke, key rotation, exports) require server support and are disabled in this build.'
+          : `Viewing as ${actorName}. Security operations require server support and are disabled in this build.`}
         actions={<Badge tone={isIt ? 'accent' : 'outline'} dot>{isIt ? 'Full access' : 'Demo role'}</Badge>}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <Stat label="Uptime · 30d" value="99.97%" sub="Target 99.9 · 0 sev-2 incidents" />
-        <Stat label="Active sessions" value="214" sub={`${sessions.filter(s => s.status === 'active').length} staff sessions in this view`} />
+        <Stat label="Active sessions" value="214" sub={`${SESSION_ROWS.filter(s => s.status === 'active').length} staff sessions in this view`} />
         <Stat label="API p95" value="380ms" sub="Read p50 88ms · write p50 160ms" />
         <Stat label="Failed logins · 24h" value="3" sub="All rate-limited · 0 lockouts" />
       </div>
@@ -157,7 +131,7 @@ export default function ItAdmin() {
       </Section>
 
       {/* ---------- access & sessions ---------- */}
-      <Section title="Access & sessions" sub="Staff sign-ins across campuses. Revoking signs the device out within a minute." style={{ marginBottom: 4 }}>
+      <Section title="Access & sessions" sub="Staff sign-ins across campuses. Not connected — revoking a session requires server support." style={{ marginBottom: 4 }}>
         <DataTable
           columns={[
             { key: 'name', label: 'Staff', render: r => <span style={{ fontWeight: 570 }}>{r.person.name}</span> },
@@ -168,18 +142,18 @@ export default function ItAdmin() {
             { key: 'status', label: 'Status', render: r => r.status === 'active'
               ? <Badge tone="success" dot>active</Badge>
               : <Badge tone="neutral">expired</Badge> },
-            { key: 'act', label: '', align: 'right', render: r => (
-              <Button size="sm" variant="danger-ghost" disabled={r.status === 'expired'} onClick={() => revoke(r)}>Revoke</Button>
+            { key: 'act', label: '', align: 'right', render: () => (
+              <Button size="sm" variant="danger-ghost" disabled title="Not connected — operations require server support">Revoke</Button>
             ) },
           ]}
-          rows={sessions}
+          rows={SESSION_ROWS}
           rowKey={r => r.id}
           empty={<Card pad><EmptyInline title="No sessions" sub="Everyone is signed out." /></Card>}
         />
       </Section>
 
       {/* ---------- API keys & integrations ---------- */}
-      <Section title="API keys & integrations" sub="Outbound systems. Rotating a key issues a new secret with a 24-hour overlap." style={{ marginBottom: 4 }}>
+      <Section title="API keys & integrations" sub="Outbound systems on record. Not connected — key rotation requires server support." style={{ marginBottom: 4 }}>
         <div className="grid grid-3">
           {API_KEYS.map(k => (
             <Card key={k.id} pad>
@@ -194,7 +168,7 @@ export default function ItAdmin() {
                   <span className="mono u-xs u-faint">key •••• {k.id.padEnd(4, 'x').slice(0, 4).toUpperCase()}</span>
                 </div>
                 <div>
-                  <Button size="sm" variant="secondary" icon={<Icon.Key size={13} />} onClick={() => setRotating(k)}>Rotate key</Button>
+                  <Button size="sm" variant="secondary" icon={<Icon.Key size={13} />} disabled title="Not connected — operations require server support">Rotate key</Button>
                 </div>
               </div>
             </Card>
@@ -232,7 +206,7 @@ export default function ItAdmin() {
             </table>
           </div>
           <div className="u-xs u-faint" style={{ marginTop: 10, lineHeight: 1.55 }}>
-            The feature-flag toggles below write through this registry — flipping one records {`control_plane.changed`} with actor, scope and reason.
+            Display-only in this build — the feature switches below do not write to a registry; rollout requires server support.
           </div>
         </Card>
       </Section>
@@ -246,8 +220,8 @@ export default function ItAdmin() {
                 <div style={{ fontWeight: 580 }}>{f.label}</div>
                 <div className="u-small u-muted">{f.desc}</div>
               </div>
-              <label className="switch" title={flags[f.id] ? 'On — click to disable' : 'Off — click to enable'}>
-                <input type="checkbox" checked={flags[f.id]} onChange={() => toggleFlag(f.id)} aria-label={`Toggle ${f.label}`} />
+              <label className="switch" title="Not connected — flag rollout requires server support">
+                <input type="checkbox" checked={FLAG_DEFAULTS[f.id]} disabled aria-label={`Toggle ${f.label} (not connected)`} />
                 <span className="track" />
               </label>
             </div>
@@ -277,45 +251,30 @@ export default function ItAdmin() {
         <Card head="Backup & export">
           <div className="u-col u-small" style={{ gap: 10 }}>
             <div className="u-flex" style={{ gap: 8 }}>
-              <Icon.Download size={15} style={{ color: 'var(--accent-text)', flexShrink: 0, marginTop: 1 }} />
+              <Icon.Download size={15} style={{ color: 'var(--warning)', flexShrink: 0, marginTop: 1 }} />
               <span>
-                Last backup <strong>today 03:00 IST</strong> — success, encrypted (AES-256), verified restore-check.
-                Point-in-time recovery covers the last 14 days.
+                <strong>No backups are configured for this school yet.</strong> Snapshot download, exports and
+                point-in-time recovery require server support and are disabled in this build.
               </span>
             </div>
             <div className="u-faint" style={{ paddingLeft: 23 }}>
-              Snapshots are pulled from the Mumbai region only and are watermarked for this demo.
+              Until a backup job is connected, treat the data in SchoolOS as the only copy.
             </div>
             <div className="u-flex" style={{ gap: 8, paddingLeft: 23 }}>
-              <Button size="sm" variant="secondary" icon={<Icon.Download size={13} />} onClick={() => { toast({ title: 'Snapshot download started', sub: 'Encrypted backup · ap-south-1 · you will get a signed link by email.', tone: 'info' }); audit('Requested backup snapshot', 'nightly snapshot 03:00', 'Signed download link issued'); }}>
+              <Button size="sm" variant="secondary" icon={<Icon.Download size={13} />} disabled title="Not connected — operations require server support">
                 Download snapshot
               </Button>
-              <Button size="sm" variant="ghost" icon={<Icon.File size={13} />} onClick={() => { toast({ title: 'Export queued — attendance & fees (CSV)', sub: 'You will be notified when the export is ready.', tone: 'info' }); audit('Requested data export', 'attendance + fees CSV', 'Export job queued'); }}>
+              <Button size="sm" variant="ghost" icon={<Icon.File size={13} />} disabled title="Not connected — operations require server support">
                 Export data
               </Button>
+            </div>
+            <div className="u-xs u-faint" style={{ paddingLeft: 23 }}>
+              Not connected — snapshot download and data export require server support and are disabled in this build.
             </div>
           </div>
         </Card>
       </div>
 
-      {/* ---------- rotate-key confirm modal ---------- */}
-      <Modal
-        open={rotating !== null}
-        onClose={() => setRotating(null)}
-        title={`Rotate ${rotating?.name ?? ''} key`}
-        sub="The new secret applies immediately; the old key stays valid for 24 hours."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setRotating(null)}>Cancel</Button>
-            <Button variant="primary" icon={<Icon.Key size={14} />} onClick={rotate}>Rotate now</Button>
-          </>
-        }
-      >
-        <p className="u-small" style={{ lineHeight: 1.6 }}>
-          Integrations using the old key keep working during the overlap. This action is recorded in the audit trail
-          with your name and the timestamp. Rotation does not interrupt {rotating?.name === 'Payment gateway' ? 'pending settlements' : 'in-flight jobs'}.
-        </p>
-      </Modal>
     </>
   );
 }

@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { PageHead, Card, Badge, Button, Empty, Skeleton, SkeletonCard, DataTable, Drawer, useToast, Progress, Section } from '../components/ui';
+import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtRelative } from '../lib/format';
 import type { HealthIssue, Person } from '../types/domain';
@@ -23,7 +24,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
     fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+      .catch(e => live && setState({ data: null, loading: false, error: friendly(e) }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
@@ -245,14 +246,16 @@ function BulkGrid({ onApplied }: { onApplied: (n: number) => void }) {
     setRows(rs => rs.map(r => (r.state === 'valid' ? { ...r, state: 'applied' as const } : r)));
     setApplied(true);
     onApplied(good);
-    toast({ title: `${good} records updated`, sub: 'One audit entry records the bulk action — scope, actor, undo window 30 min', tone: 'success' });
+    /* T305 (§9.5): rows were validated in this preview only — no door writes
+       corrections to school records, and no audit entry is recorded anywhere. */
+    toast({ title: `Preview applied — ${good} row${good === 1 ? '' : 's'} marked in this view`, sub: 'Client-only: no records were changed in school records, and no audit entry was written (bulk fixes require server support).', tone: 'info' });
   };
 
   return (
     <div className="u-col" style={{ gap: 10 }}>
       <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-        Paste straight from Excel — one record per line: <span className="u-mono">phone, name, corrected-value</span>. Rows validate before anything is written;
-        applied batches carry one audited bulk entry with a 30-minute undo window.
+        Paste straight from Excel — one record per line: <span className="u-mono">phone, name, corrected-value</span>. Rows validate before anything is shown;
+        this is a client-only preview — applying marks rows in this view only and writes nothing to school records.
       </div>
       <textarea
         value={raw}
@@ -267,7 +270,7 @@ function BulkGrid({ onApplied }: { onApplied: (n: number) => void }) {
         <Button size="sm" variant="primary" disabled={!rows.some(r => r.state === 'valid') || applied} onClick={apply}>
           Apply {rows.filter(r => r.state === 'valid').length || ''} valid rows
         </Button>
-        {applied && <Button size="sm" variant="ghost" onClick={() => { setRows([]); setRaw(''); setApplied(false); toast({ title: 'Undone', sub: 'Batch reverted — audit entry updated', tone: 'info' }); }}>Undo batch</Button>}
+        {applied && <Button size="sm" variant="ghost" onClick={() => { setRows([]); setRaw(''); setApplied(false); toast({ title: 'Preview cleared', sub: 'Nothing was written to school records, so there is nothing to undo.', tone: 'info' }); }}>Clear preview</Button>}
       </div>
       {rows.length > 0 && (
         <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', overflow: 'hidden' }}>
@@ -334,19 +337,21 @@ export default function DataHealth() {
       entry: {
         actor: actorName,
         actorRole: session.roleId,
-        action: `Bulk action — ${issue.title}`,
+        action: `Marked fix (preview) — ${issue.title}`,
         recordType: 'Data health',
         recordRef: `${issue.count} records · ${CATEGORY_LABEL[issue.category]}`,
         reason: issue.suggestedFix,
         policyRef: 'Data governance §1.2 — fixes are bulk, audited, reversible',
         aiInvolved: false,
         risk: issue.severity === 'high' ? 'medium' : 'low',
-        outcome: `Marked fixed · data health +2.6`,
+        outcome: 'Marked fixed in this preview only — no records changed (fixes not connected)',
       },
     });
     setIssues(list => list.map(i => (i.id === issue.id ? { ...i, status: 'fixed' } : i)));
     setScore(s => Math.min(100, Math.round((s + 2.6) * 10) / 10));
-    toast({ title: `Fixed — ${issue.count} records processed.`, sub: 'Audit entry recorded; score updated.', tone: 'success' });
+    /* T305 (§9.5): the old toast claimed "N records processed" — nothing
+       touches school records; even the score is this screen's local model. */
+    toast({ title: `Marked fixed in this preview — ${issue.count} records were NOT changed.`, sub: 'Client-only: the fix needs server support to touch school records; the score is this screen\'s local model.', tone: 'info' });
   };
 
   const ignore = (issue: HealthIssue) => {

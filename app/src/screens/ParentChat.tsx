@@ -24,17 +24,12 @@ const QUICK_REPLIES = [
 ];
 const AUTOREPLY = 'Thanks for writing in — class teacher Priya Iyer has been notified. For urgent matters call the front office.';
 
-/* ---------- status ticks (WhatsApp-like, small SVG) ---------- */
+/* ---------- status label (honest) ----------
+   T504: this thread is device-only — WhatsApp-style delivered/read ticks
+   fabricated delivery facts. Show the truth instead. */
 function Ticks({ status }: { status: 'sending' | 'sent' | 'delivered' | 'read' }) {
   if (status === 'sending') return <span className="u-xs u-faint" aria-label="Sending">···</span>;
-  const stroke = status === 'read' ? 'var(--accent-text)' : 'var(--text-3)';
-  const single = status === 'sent';
-  return (
-    <svg width={single ? 13 : 17} height={11} viewBox={single ? '0 0 13 11' : '0 0 17 11'} aria-label={`Message ${status}`} style={{ display: 'inline' }}>
-      <path d="M1 6.2 4.2 9.4 10 2.6" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-      {!single && <path d="M6 6.2 9.2 9.4 15 2.6" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />}
-    </svg>
-  );
+  return <span className="u-xs u-faint" aria-label="Sent on this device only">sent (device only)</span>;
 }
 
 export default function ParentChat() {
@@ -82,8 +77,8 @@ export default function ParentChat() {
     <div style={{ maxWidth: 860, margin: '0 auto' }}>
       <PageHead
         title="Chat with school"
-        sub="The same thread as your WhatsApp — replies reach the school office and the class teacher."
-        actions={<Badge tone="success" dot>School office online</Badge>}
+        sub="Demo preview — messages stay on this device and do not reach the school. Family → Requests is the live channel to the office."
+        actions={<Badge tone="outline" dot>Demo — not connected</Badge>}
       />
 
       <Card pad={false}>

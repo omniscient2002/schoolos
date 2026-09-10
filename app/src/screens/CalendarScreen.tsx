@@ -115,9 +115,10 @@ export default function CalendarScreen() {
     setLocalEvents(list => [...list, ev]);
     dispatch({
       type: 'audit/add',
-      entry: { actor: actorName, actorRole: session.roleId, action: 'Added calendar event', recordType: 'Calendar', recordRef: `${ev.title} · ${fmtDateShort(on)}`, aiInvolved: false, risk: 'low', outcome: 'Saved to the school calendar' },
+      entry: { actor: actorName, actorRole: session.roleId, action: 'Added calendar event (this device)', recordType: 'Calendar', recordRef: `${ev.title} · ${fmtDateShort(on)}`, aiInvolved: false, risk: 'low', outcome: 'Saved on this device only — school calendar not connected' },
     });
-    toast({ title: 'Event added to the school calendar', sub: `${ev.title} · ${fmtDateShort(on)} ${fmtTime(on)}`, tone: 'success' });
+    /* T305 (§9.5): events save to local state only — no calendar door exists. */
+    toast({ title: 'Saved on this device only', sub: `${ev.title} · ${fmtDateShort(on)} ${fmtTime(on)} — the school calendar is not connected, so other staff will not see it.`, tone: 'info' });
     setAddOpen(false);
     setForm(f => ({ ...f, title: '', time: '09:00' }));
   };

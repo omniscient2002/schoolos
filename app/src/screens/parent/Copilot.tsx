@@ -70,7 +70,10 @@ export default function Copilot() {
     if (draftText) return; // keep edits if the parent reopens
     setDraftLoading(true);
     try {
-      const r = await draftCopilotNote({});
+      /* The draft door requires a kind (parent.assistant:352). This button is the
+         "note to the teacher" flow → question_to_teacher. The wrapper's payload
+         type lives in frozen services (D-2), hence the structural cast. */
+      const r = await draftCopilotNote({ kind: 'question_to_teacher' } as unknown as Parameters<typeof draftCopilotNote>[0]);
       setDraftText(r.draft);
     } catch (e) {
       setDraftErr(friendly((e as Error).message || e));
@@ -136,12 +139,31 @@ export default function Copilot() {
                       {t.a.empty_reason ?? 'Nothing in the school records answers this yet. The class teacher or the office can help — call or message them.'}
                     </div>
                   )}
-                  {t.a.sources?.length > 0 && (
-                    <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <span className="u-xs u-faint">Sources:</span>
-                      {t.a.sources.map(s => <Badge key={s} tone="outline">{s}</Badge>)}
-                    </div>
-                  )}
+                  {(() => {
+                    /* Server sources are objects ({kind, table, available}) while the
+                       client DTO claims string[] — rendering the object raw crashes
+                       React ("Objects are not valid as a React child"). Render a safe
+                       label for either shape; the DTO widening lives in frozen
+                       services (blocks.md). */
+                    const srcs = (t.a.sources ?? []) as unknown[];
+                    if (srcs.length === 0) return null;
+                    const label = (v: unknown): string => {
+                      if (typeof v === 'string') return v;
+                      if (v && typeof v === 'object') {
+                        const o = v as { title?: unknown; label?: unknown; kind?: unknown };
+                        if (typeof o.title === 'string') return o.title;
+                        if (typeof o.label === 'string') return o.label;
+                        if (typeof o.kind === 'string') return o.kind;
+                      }
+                      return '';
+                    };
+                    return (
+                      <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span className="u-xs u-faint">Sources:</span>
+                        {srcs.map((v, i) => { const l = label(v); return l ? <Badge key={`${l}-${i}`} tone="outline">{l}</Badge> : null; })}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

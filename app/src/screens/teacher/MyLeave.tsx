@@ -120,6 +120,7 @@ export default function MyLeave() {
         })}
       </div>
 
+      <span id="apply-leave" aria-hidden="true" />
       <Section title="Ask for leave" sub="Pick the kind, the dates, one line why.">
         <Card pad>
           <div className="field">
@@ -182,6 +183,7 @@ export default function MyLeave() {
               icon={<Icon.Calendar size={22} />}
               title="No leave taken"
               sub="Your requests and their outcomes will be listed here, with balances above always up to date."
+              action={<a href="#apply-leave" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Request leave</a>}
             />
           }
         >

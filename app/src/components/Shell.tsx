@@ -100,6 +100,7 @@ export function useNavItems(): NavItem[] {
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
+        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* T509: finance's core surface was routed but never in the nav */
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
@@ -203,14 +204,27 @@ export function Sidebar() {
   const live = useSession();
   useEffect(() => { localStorage.setItem('schoolos.sidebarCollapsed', collapsed ? '1' : '0'); }, [collapsed]);
   const items = useNavItems();
-  const groups = [
+  /* T509: the label whitelist silently DROPPED every assigned item it didn't
+     name (Maintenance, Front desk, Data import, Library, People console,
+     System services, Modules, …) — routed, role-assigned, invisible. Group
+     what is named, then render the remainder under 'More' so nothing
+     assigned to the role can vanish from the sidebar. */
+  const groups: { label: string; items: NavItem[] }[] = [
     { label: 'Daily operations', items: items.filter(i => ['Today', 'Needs your attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
     /* CU-1: coordinator desk surfaces (nav items pointing at /coord/*) */
     { label: 'Coordination', items: items.filter(i => i.to.startsWith('/coord')) },
     { label: 'Records', items: items.filter(i => ['People', 'Learning', 'Operations'].includes(i.label)) },
     { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'AI memory', 'Platform'].includes(i.label)) },
     { label: 'Your space', items: items.filter(i => ['Home', 'Messages', 'Fees', 'My Day', 'Portfolio'].includes(i.label)) },
-  ].filter(g => g.items.length);
+  ];
+  /* T509: the label whitelist silently DROPPED every assigned item it didn't
+     name (Maintenance, Front desk, Data import, Library, People console,
+     System services, Modules, …) — routed, role-assigned, invisible. Any
+     remainder renders under 'More' so nothing assigned can vanish. */
+  const claimed = new Set(groups.flatMap(g => g.items.map(i => i.to)));
+  const rest = items.filter(i => !claimed.has(i.to));
+  if (rest.length) groups.push({ label: 'More', items: rest });
+  const visible = groups.filter(g => g.items.length);
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -225,7 +239,7 @@ export function Sidebar() {
         </button>
       </Link>
       <nav className="sidebar-nav" aria-label="Primary">
-        {groups.map(g => (
+        {visible.map(g => (
           <div className="nav-section" key={g.label}>
             <span className="sidebar-label">{g.label}</span>
             {g.items.map(item => <SideLink key={item.to} item={item} collapsed={collapsed} />)}

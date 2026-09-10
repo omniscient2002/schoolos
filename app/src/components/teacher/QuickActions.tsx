@@ -34,23 +34,21 @@ interface QuickActionDef {
   group: 'Teaching' | 'Students' | 'Communication' | 'Me';
 }
 
-/* The 14 actions of plan §P1, fixed order — attendance first
-   (mobile priority order, plan §1). */
+/* T508: FAB entries whose destination route was never registered 404'd —
+   they are removed until their screens/doors exist. Kept: every entry whose
+   `to` is a registered route (/teacher/homework, /teacher/leave — MyLeave is
+   now routed; both its doors are live at teacher.classroom:239/271).
+   Removed (no route, no screen): /teacher/attendance, /teacher/announce,
+   /teacher/messages, /teacher/concerns (GET door exists at teacher.support:140
+   but no screen — rebuilding it was not "cheap"), /teacher/ptm,
+   /teacher/copilot. Re-add each with its route in the same change. */
 export const QUICK_ACTIONS: QuickActionDef[] = [
-  { id: 'attendance',  label: 'Take attendance',    icon: 'Clipboard', to: '/teacher/attendance',   group: 'Teaching' },
   { id: 'homework',    label: 'Assign homework',    icon: 'Book',      to: '/teacher/homework',     group: 'Teaching' },
   { id: 'assessment',  label: 'Create assessment',  icon: 'File',      to: '/teacher/homework',     group: 'Teaching' },
   { id: 'marks',       label: 'Record marks',       icon: 'Award',     to: '/teacher/homework',     group: 'Teaching' },
   { id: 'lesson',      label: 'Create lesson',      icon: 'Learning',  to: '/teacher/homework',     group: 'Teaching' },
-  { id: 'announce',    label: 'Announce to class',  icon: 'Send',      to: '/teacher/announce',     group: 'Communication' },
-  { id: 'message',     label: 'Message a parent',   icon: 'Message',   to: '/teacher/messages',     group: 'Communication' },
-  { id: 'concern',     label: 'Flag a concern',     icon: 'Flag',      to: '/teacher/concerns',     group: 'Students', kind: 'concern' },
-  { id: 'observation', label: 'Add observation',    icon: 'Eye',       to: '/teacher/concerns',     group: 'Students' },
-  { id: 'ptm',         label: 'PTM note',           icon: 'Users',     to: '/teacher/ptm',          group: 'Students' },
   { id: 'leave',       label: 'Request leave',      icon: 'Calendar',  to: '/teacher/leave',        group: 'Me', kind: 'substitute' },
   { id: 'substitute',  label: 'Request substitute', icon: 'Users',     to: '/teacher/leave',        group: 'Me', kind: 'substitute' },
-  { id: 'incident',    label: 'Report incident',    icon: 'Zap',       to: '/teacher/concerns',     group: 'Me', kind: 'incident' },
-  { id: 'copilot',     label: 'Ask AI',             icon: 'Sparkle',   to: '/teacher/copilot',      group: 'Me' },
 ];
 
 export function QuickActions() {

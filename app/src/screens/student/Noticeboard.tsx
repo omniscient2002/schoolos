@@ -8,11 +8,12 @@
    window.print() — @media print CSS hides all app chrome so the
    sheet is the only thing on the paper.
 
-   Door consumed (frozen v0; SS-1 lane builds it):
-   - GET /student/noticeboard → print-ready weekly summary
-     (assignments / exams / events / clubs) — "staff door too".
-     Reuses the SU-1 wrapper (services/studentApi.getNoticeboard),
-     which already tolerates the loose v0 element shapes.
+   Door consumed (LIVE — student.world:440):
+   - GET /student/noticeboard → { student, blocks: [{title, lines[]}] }:
+     "Homework due this week" / "Results published" /
+     "Announcements & events this week" / "Printed by". T506 rewired the
+     UI to the real shape (the old assignments/exams/events/clubs contract
+     never existed server-side, so the sheet always rendered empty).
    Server errors surface verbatim (house law) via friendly().
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
@@ -77,17 +78,26 @@ export default function Noticeboard() {
 
   const regenerate = () => {
     setTick(t => t + 1);
-    toast({ title: 'Regenerating this week’s sheet', sub: 'Pulls the latest assignments, exams, events and clubs from the server.', tone: 'info' });
+    toast({ title: 'Regenerating this week’s sheet', sub: 'Rebuilds the sheet from live homework, results and announcements.', tone: 'info' });
   };
 
+  /* T506: render the server's own blocks (title + lines) — no fabricated
+     categories. Server block lines map 1:1 to sheet entries. */
   const blocks = useMemo(() => {
     if (!data) return [];
-    return [
-      { key: 'assignments', title: 'Assignments due', icon: <Icon.Clipboard size={13} />, entries: data.assignments },
-      { key: 'exams', title: 'Exams next week', icon: <Icon.Alert size={13} />, entries: data.exams },
-      { key: 'events', title: 'Events', icon: <Icon.Calendar size={13} />, entries: data.events },
-      { key: 'clubs', title: 'Clubs & announcements', icon: <Icon.Users size={13} />, entries: data.clubs },
+    const ICONS = [
+      <Icon.Clipboard size={13} key="hw" />,
+      <Icon.Alert size={13} key="ex" />,
+      <Icon.Calendar size={13} key="ev" />,
+      <Icon.Users size={13} key="cl" />,
+      <Icon.File size={13} key="ft" />,
     ];
+    return data.blocks.map((b, i) => ({
+      key: `${i}-${(b.title || 'block').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20)}`,
+      title: b.title,
+      icon: ICONS[i % ICONS.length],
+      entries: b.lines.map(l => ({ title: l, detail: null as string | null, when: null as string | null })),
+    }));
   }, [data]);
 
   const anything = blocks.some(b => b.entries.length > 0);
@@ -108,7 +118,7 @@ export default function Noticeboard() {
         <PageHead title="Noticeboard" sub="The weekly print-ready sheet for the class noticeboard." />
         <ErrorState title="Could not load the weekly summary" sub={error} onRetry={() => setTick(t => t + 1)} />
         <p className="u-small u-faint" style={{ marginTop: 10 }}>
-          The noticeboard door (SS-1 lane) assembles the week from assignments, exams, events and clubs. Until it answers, nothing can be printed here.
+          The noticeboard door (student.world) assembles the week from homework, published results and announcements. Until it answers, nothing can be printed here.
         </p>
       </div>
     );
@@ -132,7 +142,7 @@ export default function Noticeboard() {
         <Empty
           icon={<Icon.Calendar size={22} />}
           title="The noticeboard is empty this week"
-          sub="No assignments, exams, events or clubs were returned for this week. Regenerate to pull the latest — the sheet fills itself from the live timetable and homework."
+          sub="The school's noticeboard feed has nothing this week. Regenerate to pull the latest — the sheet rebuilds from live homework, results and announcements."
           action={<span className="no-print"><Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={regenerate}>Regenerate weekly</Button></span>}
         />
       ) : (

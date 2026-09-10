@@ -74,7 +74,9 @@ export default function StudentLearning() {
     if (!openAssignment) return;
     setFinished(f => new Set(f).add(openAssignment.id));
     setOpenAssignment(null);
-    toast({ title: 'Marked as done', sub: 'Your teacher sees it in tomorrow morning\u2019s register.', tone: 'success' });
+    /* T305 (§9.5): "done" is a tick on this device — nothing is sent to the
+       school, and no register is touched. */
+    toast({ title: 'Marked as done on this device', sub: 'Saved only on this device — your teacher is not notified and the school register is not updated.', tone: 'info' });
   };
 
   return (
@@ -246,7 +248,7 @@ export default function StudentLearning() {
           <p className="u-small" style={{ lineHeight: 1.7, color: 'var(--text-2)', margin: 0 }}>{openAssignment?.instructions}</p>
           <div style={{ height: 1, background: 'var(--border-subtle)' }} />
           <div className="u-small u-muted">
-            When you mark it done, your teacher sees it in the morning register — nothing else changes, and no one is notified at night.
+            Marking it done ticks it on this device only — your teacher is not notified and the school register is not updated.
           </div>
         </div>
       </Drawer>

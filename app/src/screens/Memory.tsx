@@ -7,6 +7,7 @@ import * as seed from '../data/dataset';
 import { memoryService } from '../services';
 import { useStore } from '../state/store';
 import { Avatar, Badge, Button, Card, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, Timeline, useToast } from '../components/ui';
+import { friendly } from '../lib/friendlyErrors';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateTime, fmtRelative } from '../lib/format';
@@ -20,7 +21,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
     fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+      .catch(e => live && setState({ data: null, loading: false, error: friendly(e) }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
@@ -101,21 +102,23 @@ export default function Memory() {
         aiInvolved: false, risk: 'low', outcome: 'Expected vs actual reconciled — memory updated',
       },
     });
-    toast({ title: 'Decision loop closed', sub: `${d.id} · outcome recorded — next review scheduled automatically`, tone: 'success' });
+    toast({ title: 'Outcome recorded on this device', sub: `${d.id} · reconciled locally — decision memory is not connected to school records and no review is scheduled automatically.`, tone: 'info' });
     setRecordId(null);
   };
 
   const createTask = (item: string, meetingId: string) => {
     const idx = item.indexOf(':');
     const owner = idx > 0 ? item.slice(0, idx) : 'Owner';
-    toast({ title: 'Task created', sub: `${owner} assigned · appears in Action Center · audit entry recorded`, tone: 'success' });
+    /* T305 (§9.5): no task is created anywhere — the old copy claimed the task
+       "appears in Action Center". Only a session audit note is written. */
+    toast({ title: 'Noted on this device', sub: `${owner} noted as suggested owner — tasks are not created from meeting notes yet, so this does not appear in Action Center.`, tone: 'info' });
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: session.roleId, action: 'Created task from meeting',
+        actor: actorName, actorRole: session.roleId, action: 'Noted task from meeting (no task created)',
         recordType: 'Task', recordRef: item,
         reason: `From meeting intelligence (${meetingId})`, policyRef: 'Approvals §1.2',
-        aiInvolved: true, risk: 'low', outcome: `Task assigned to ${owner}`,
+        aiInvolved: true, risk: 'low', outcome: `Note only · ${owner} suggested — task creation not connected`,
       },
     });
   };
@@ -210,7 +213,7 @@ export default function Memory() {
           {everything.loading && <div className="grid grid-2"><SkeletonCard lines={6} /><SkeletonCard lines={6} /><SkeletonCard lines={6} /><SkeletonCard lines={6} /></div>}
           {everything.error && <ErrorState title="Could not load AI memory" sub={everything.error} onRetry={everything.retry} />}
           {!everything.loading && !everything.error && decisions.length === 0 && (
-            <Empty icon={<Icon.Memory size={26} />} title="No decisions match these filters" sub={q ? `Nothing in memory matches “${q}”.` : 'Record a decision to start a loop.'} />
+            <Empty icon={<Icon.Memory size={26} />} title="No decisions match these filters" sub={q ? `Nothing in memory matches “${q}”.` : 'Record a decision to start a loop.'} action={q ? <Button size="sm" variant="secondary" onClick={() => setQ('')}>Clear search</Button> : undefined} />
           )}
           {!everything.loading && !everything.error && decisions.length > 0 && (
             <div className="grid grid-2">
