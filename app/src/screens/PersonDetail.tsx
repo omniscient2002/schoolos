@@ -6,10 +6,33 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as seed from '../data/dataset';
-import { aiService, feeService } from '../services';
+import { aiService } from '../services';
+import { apiGet, apiPost } from '../services/liveApi';
+import { friendly } from '../lib/friendlyErrors';
+
+/* local async hook (duplicated per screen per APP-SPEC) */
+function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
+  const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setState(s => ({ ...s, loading: true, error: null }));
+    fn().then(d => { if (live) setState({ data: d, loading: false, error: null }); })
+      .catch(e => { if (live) setState({ data: null, loading: false, error: String(e) }); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, tick]);
+  return { ...state, retry: () => setTick(t => t + 1) };
+}
+
+/* Real ledger row (fee_obligations) */
+interface RealObligation {
+  id: string; term: string; category: string; amount: number; paidAmount: number;
+  dueDate: Date | null; status: 'open' | 'partial' | 'paid' | 'void';
+}
 import { useStore } from '../state/store';
 import {
-  Avatar, Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, PageHead, Section, SkeletonCard, Stat, Tabs, useToast,
+  Avatar, Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, useToast,
 } from '../components/ui';
 import { Sparkline } from '../components/Chart';
 import { AiHeader, AiTraceCard, EvidenceChain } from '../components/Ai';
@@ -58,28 +81,53 @@ export default function PersonDetail() {
    ============================================================ */
 function StudentDetail({ person }: { person: Person }) {
   const navigate = useNavigate();
-  const { actorName, dispatch } = useStore();
+  const { actorName, session } = useStore();
   const toast = useToast();
   const [tab, setTab] = useState('overview');
-  const [feeTick, setFeeTick] = useState(0);
+
   const [retrying, setRetrying] = useState<string | null>(null);
   const [slot, setSlot] = useState<AttendanceRecord | null>(null);
+  const [payRow, setPayRow] = useState<RealObligation | null>(null);
+
+  /* A real (database) student id is a UUID; demo-directory ids (st_north_*,
+     per_xxx) are fixture rows that no server door can act on. Payment and
+     attendance truth is derived accordingly. */
+  const isRealStudent = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(person.id);
+  const canConfirm = ['finance', 'owner'].includes(session.roleId);
 
   const rate = useMemo(() => seed.studentAttendanceRate(person.id), [person.id]);
-  /* eslint-disable-next-line react-hooks/exhaustive-deps -- feeTick is a deliberate recompute tick: seed fee state mutates in place on payment actions */
-  const fees = useMemo(() => seed.studentFeeSummary(person.id), [person.id, feeTick]);
+  const fees = useMemo(() => seed.studentFeeSummary(person.id), [person.id]);
+  const hasAttendanceRows = useMemo(() => (seed.attendance ?? []).some(a => a.studentId === person.id), [person.id]);
   const guardianRows = useMemo(() => seed.guardiansOfStudent(person.id), [person.id]);
-  const docs = useMemo(() => seed.documents.filter(d => d.ownerType === 'student' && d.ownerId === person.id), [person.id]);
+  const docs = useMemo(() => (seed.documents ?? []).filter(d => d.ownerType === 'student' && d.ownerId === person.id), [person.id]);
   const section = seed.sectionOfStudent(person);
   const classTeacher = section ? seed.findPerson(section.classTeacherId) : undefined;
   const route = person.busRoute ? seed.busRoutes.find(r => r.name === person.busRoute) : undefined;
   const verifiedCount = guardianRows.filter(g => g.link.verified).length;
 
-  /* 30-day register: seed stores only non-present marks; fill the rest as present */
+  /* Real ledger rows for a real student (UUID id) */
+  const realFees = useAsync<RealObligation[] | null>(async () => {
+    if (!isRealStudent) return null;
+    const res = await apiGet<{ obligations: Record<string, unknown>[] }>(`/fees/obligations?studentId=${person.id}`);
+    return (res.obligations ?? []).map(o => ({
+      id: String(o.id),
+      term: String(o.term ?? ''),
+      category: String(o.label ?? ''),
+      amount: Number(o.amount_cents ?? 0) / 100,
+      paidAmount: Number(o.paid_cents ?? 0) / 100,
+      dueDate: o.due_on ? new Date(String(o.due_on)) : null,
+      status: (o.status ?? 'open') as 'open' | 'partial' | 'paid' | 'void',
+    }));
+  }, [isRealStudent, person.id]);
+
+  /* 30-day register: seed stores only non-present marks; fill the rest as present.
+     A student with no attendance rows yet gets an honest empty state instead of
+     30 fabricated "present" days. */
   const register = useMemo(() => {
-    const recs = seed.attendance.filter(a => a.studentId === person.id);
+    const recs = (seed.attendance ?? []).filter(a => a.studentId === person.id);
     const markedBy = classTeacher?.name ?? 'Class teacher';
-    return [...seed.TERM_DAYS].reverse().map(day => {
+    const days = seed.TERM_DAYS ?? [];
+    return [...days].reverse().map(day => {
       const rec = recs.find(r => r.date.getTime() === day.getTime());
       return {
         date: day,
@@ -93,7 +141,9 @@ function StudentDetail({ person }: { person: Person }) {
 
   const briefing = useBriefing(person.id, actorName);
 
-  const attTier = rate.rate >= 95 ? { tone: 'success' as const, label: `Attendance ${fmtPct(rate.rate, 1)}` }
+  const attTier = !hasAttendanceRows
+    ? { tone: 'outline' as const, label: 'No attendance records yet' }
+    : rate.rate >= 95 ? { tone: 'success' as const, label: `Attendance ${fmtPct(rate.rate, 1)}` }
     : rate.rate >= 88 ? { tone: 'info' as const, label: `Attendance ${fmtPct(rate.rate, 1)}` }
     : rate.rate >= 75 ? { tone: 'warning' as const, label: `Attendance watch · ${fmtPct(rate.rate, 1)}` }
     : { tone: 'danger' as const, label: `Attendance risk · ${fmtPct(rate.rate, 1)}` };
@@ -103,21 +153,20 @@ function StudentDetail({ person }: { person: Person }) {
     : fees.due > 0 ? { tone: 'info' as const, label: `${fmtMoneyShort(fees.due)} due` }
     : { tone: 'success' as const, label: 'Fees clear' };
 
-  const retryPayment = async (obligationId: string) => {
-    setRetrying(obligationId);
+  /* Record a payment through the real rails (initiate + confirm), finance/owner
+     only — same two doors as the Fees desk. Fixture (demo-directory) rows have
+     no server representation, so the button does not appear for them at all. */
+  const recordPayment = async (row: RealObligation, gatewayRef?: string) => {
+    setRetrying(row.id);
     try {
-      await feeService.recordRetry(obligationId);
-      setFeeTick(t => t + 1);
-      toast({ title: 'Retry accepted by gateway', sub: 'Obligation marked paid · no late fee within the 5-day retry window (Fees §4.3).', tone: 'success' });
-      dispatch({
-        type: 'audit/add',
-        entry: {
-          actor: actorName, actorRole: 'finance', action: 'Retried failed UPI mandate', recordType: 'Fee obligation',
-          recordRef: obligationId, policyRef: 'Fees §4.3', aiInvolved: false, risk: 'low', outcome: 'Payment succeeded on retry',
-        },
-      });
-    } catch {
-      toast({ title: 'Retry failed', sub: 'The gateway declined the mandate again. A reconciliation case will open automatically.', tone: 'error' });
+      const init = await apiPost<{ payment: { id: string } }>('/fees/payments', { obligationId: row.id, method: 'upi' });
+      const conf = await apiPost<{ payment: { receipt_no: string | null }, obligation: { status: string } }>(
+        `/fees/payments/${init.payment.id}/confirm`, gatewayRef?.trim() ? { gatewayRef: gatewayRef.trim() } : {});
+      toast({ title: `Payment recorded — receipt ${conf.payment.receipt_no ?? 'issued'}`, sub: `${fmtMoney(row.amount - row.paidAmount)} against ${person.name} · obligation now ${conf.obligation.status}.`, tone: 'success' });
+      setPayRow(null);
+      realFees.retry();
+    } catch (e) {
+      toast({ title: 'Could not record the payment', sub: friendly(e), tone: 'error' });
     } finally {
       setRetrying(null);
     }
@@ -129,21 +178,16 @@ function StudentDetail({ person }: { person: Person }) {
       toast({ title: 'No guardian linked', sub: 'Link a guardian to this student before messaging.', tone: 'error' });
       return;
     }
-    toast({ title: `Message queued to ${primary.guardian.name}`, sub: 'WhatsApp template · quiet hours 20:30–07:30 (Communication §1.1).', tone: 'success' });
-    dispatch({
-      type: 'audit/add',
-      entry: {
-        actor: actorName, actorRole: 'coordinator', action: 'Sent guardian message', recordType: 'Message',
-        recordRef: `${primary.guardian.name} · ${person.name}`, aiInvolved: false, risk: 'low', outcome: 'Queued via WhatsApp template',
-      },
-    });
+    toast({ title: `Draft noted for ${primary.guardian.name}`, sub: 'One-tap parent messaging is not connected yet — messages run from the Rails console once a provider is connected.', tone: 'info' });
   };
 
   const chainSteps: AiEvidenceStep[] = [
     {
       label: 'Attendance — 30 school days',
-      detail: `${fmtPct(rate.rate, 1)} present · ${rate.absent} absent · ${rate.late} late · ${rate.excused} excused`,
-      source: 'Attendance register · recomputed just now',
+      detail: !hasAttendanceRows
+        ? 'No register rows yet — attendance appears after the first register submission'
+        : `${fmtPct(rate.rate, 1)} present · ${rate.absent} absent · ${rate.late} late · ${rate.excused} excused`,
+      source: !hasAttendanceRows ? 'Attendance register · empty' : 'Attendance register · recomputed just now',
       refType: 'attendance',
     },
     route
@@ -289,34 +333,83 @@ function StudentDetail({ person }: { person: Person }) {
             )}
 
             {tab === 'attendance' && (
-              <DataTable
-                rows={register}
-                rowKey={r => r.date.toISOString()}
-                onRowClick={r => setSlot(r as AttendanceRecord)}
-                columns={[
-                  { key: 'date', label: 'Date', render: r => <span className="tnum">{fmtDateShort(r.date)} · {new Date(r.date).toLocaleDateString('en-IN', { weekday: 'short' })}</span> },
-                  {
-                    key: 'status', label: 'Status',
-                    render: r => r.status === 'present' ? <Badge tone="success">Present</Badge>
-                      : r.status === 'absent' ? <Badge tone="danger">Absent</Badge>
-                      : r.status === 'late' ? <Badge tone="warning">Late</Badge>
-                      : <Badge tone="info">Excused</Badge>,
-                  },
-                  { key: 'markedBy', label: 'Marked by', render: r => r.markedBy },
-                  { key: 'note', label: 'Note', render: r => <span className="u-muted">{r.note}</span> },
-                ]}
-              />
+              !hasAttendanceRows ? (
+                <Empty icon={<Icon.Check size={24} />} title="No attendance records yet" sub="This student's register history appears after the first attendance submission — nothing is invented in the meantime."
+                  action={<Button variant="secondary" onClick={() => navigate('/attendance')}>Open the Attendance desk</Button>} />
+              ) : (
+                <DataTable
+                  rows={register}
+                  rowKey={r => r.date.toISOString()}
+                  onRowClick={r => setSlot(r as AttendanceRecord)}
+                  columns={[
+                    { key: 'date', label: 'Date', render: r => <span className="tnum">{fmtDateShort(r.date)} · {new Date(r.date).toLocaleDateString('en-IN', { weekday: 'short' })}</span> },
+                    {
+                      key: 'status', label: 'Status',
+                      render: r => r.status === 'present' ? <Badge tone="success">Present</Badge>
+                        : r.status === 'absent' ? <Badge tone="danger">Absent</Badge>
+                        : r.status === 'late' ? <Badge tone="warning">Late</Badge>
+                        : <Badge tone="info">Excused</Badge>,
+                    },
+                    { key: 'markedBy', label: 'Marked by', render: r => r.markedBy },
+                    { key: 'note', label: 'Note', render: r => <span className="u-muted">{r.note}</span> },
+                  ]}
+                />
+              )
             )}
 
             {tab === 'fees' && (
-              fees.items.length === 0 ? (
+              isRealStudent ? (
+                realFees.loading ? (
+                  <div className="u-col" style={{ padding: 16 }}><SkeletonCard /></div>
+                ) : realFees.error ? (
+                  <ErrorState title="Could not load this student's fees" sub={friendly(realFees.error)} onRetry={realFees.retry} />
+                ) : (realFees.data ?? []).length === 0 ? (
+                  <Empty icon={<Icon.Money size={24} />} title="No fee obligations on record" sub="Fee lines appear here once the school records them."
+                    action={canConfirm ? <Button variant="secondary" onClick={() => navigate('/fees')}>Open the Fees desk</Button> : undefined} />
+                ) : (
+                  <div className="u-col" style={{ gap: 14 }}>
+                    <div className="grid grid-3">
+                      <Stat label="Due now" value={fmtMoneyShort((realFees.data ?? []).filter(f => f.status !== 'paid' && f.status !== 'void').reduce((a, f) => a + (f.amount - f.paidAmount), 0))} sub="Open + part-paid obligations" />
+                      <Stat label="Paid to date" value={fmtMoneyShort((realFees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} sub={`${(realFees.data ?? []).filter(f => f.status === 'paid').length} of ${(realFees.data ?? []).length} obligations settled`} />
+                      <Stat label="Ledger" value="Live" sub="Straight from the school's fee ledger" />
+                    </div>
+                    <DataTable<RealObligation>
+                      rows={realFees.data ?? []}
+                      rowKey={f => f.id}
+                      columns={[
+                        { key: 'term', label: 'Term', render: f => f.term },
+                        { key: 'category', label: 'Category', render: f => f.category },
+                        { key: 'amount', label: 'Amount', align: 'right', render: f => <span className="tnum">{fmtMoney(f.amount)}</span> },
+                        { key: 'due', label: 'Due date', render: f => f.dueDate ? fmtDateShort(f.dueDate) : '—' },
+                        {
+                          key: 'status', label: 'Status',
+                          render: f => f.status === 'paid' ? <Badge tone="success" dot>Paid</Badge>
+                            : f.status === 'partial' ? <Badge tone="info" dot>Part paid</Badge>
+                            : f.status === 'open' ? <Badge tone="warning" dot>Open</Badge>
+                            : <Badge tone="neutral">Void</Badge>,
+                        },
+                        {
+                          key: 'actions', label: '',
+                          render: f => (f.status !== 'paid' && f.status !== 'void')
+                            ? (canConfirm
+                              ? <Button size="sm" variant="secondary" icon={<Icon.Money size={12} />} loading={retrying === f.id} onClick={() => setPayRow(f)}>Record payment</Button>
+                              : <Button size="sm" variant="secondary" disabled title="Recording payments is done by finance or the owner — your role can view the ledger.">Record payment</Button>)
+                            : null,
+                        },
+                      ]}
+                    />
+                    <div className="u-xs u-faint">Payments run the real ledger (initiate + confirm). Recording is finance/owner authority; every entry is audited server-side.</div>
+                  </div>
+                )
+              ) : fees.items.length === 0 ? (
                 <Empty icon={<Icon.Money size={24} />} title="No fee obligations on record" sub="This student has no fee lines for the current academic year." />
               ) : (
                 <div className="u-col" style={{ gap: 14 }}>
+                  <Badge tone="outline">Demo data — payments for demo-directory records cannot be recorded against the school ledger</Badge>
                   <div className="grid grid-3">
                     <Stat label="Due now" value={fmtMoneyShort(fees.due)} sub={fees.overdue > 0 ? `${fmtMoneyShort(fees.overdue)} overdue` : 'Nothing overdue'} />
                     <Stat label="Paid this year" value={fmtMoneyShort(fees.paid)} sub={`${fees.items.filter(f => f.status === 'paid').length} of ${fees.items.length} obligations settled`} />
-                    <Stat label="Payment health" value={fees.hasFailed ? 'Failed' : fees.overdue > 0 ? 'Overdue' : 'Clear'} sub={fees.hasFailed ? '1 UPI mandate declined — retry available' : 'Gateway reconciliations clean'} />
+                    <Stat label="Payment health" value={fees.hasFailed ? 'Failed' : fees.overdue > 0 ? 'Overdue' : 'Clear'} sub={fees.hasFailed ? '1 UPI mandate declined (demo data)' : 'Gateway reconciliations clean'} />
                   </div>
                   <DataTable<FeeObligation>
                     rows={fees.items}
@@ -335,22 +428,17 @@ function StudentDetail({ person }: { person: Person }) {
                           : <Badge tone="neutral">Waived</Badge>,
                       },
                       { key: 'paid', label: 'Paid on', render: f => f.paidOn ? <span className="u-small u-muted">{fmtDateShort(f.paidOn)} · {f.method}</span> : '—' },
-                      {
-                        key: 'actions', label: '',
-                        render: f => f.status === 'failed' ? (
-                          <Button size="sm" variant="secondary" icon={<Icon.Refresh size={12} />} loading={retrying === f.id} onClick={() => retryPayment(f.id)}>Retry UPI</Button>
-                        ) : null,
-                      },
                     ]}
                   />
-                  {fees.hasFailed && <div className="u-xs u-faint">Retries within 5 days of failure carry no late fee (Fees §4.3). The last failure reason was recorded by the gateway.</div>}
+                  <div className="u-xs u-faint">This is a demo-directory record. Real payments are recorded from the Fees desk against ledger rows.</div>
                 </div>
               )
             )}
 
             {tab === 'guardians' && (
               guardianRows.length === 0 ? (
-                <Empty icon={<Icon.People size={24} />} title="No guardians linked" sub="Add a guardian from the Directory to enable absence alerts and pickup authorisation." />
+                <Empty icon={<Icon.People size={24} />} title="No guardians linked" sub="Add a guardian from the Directory to enable absence alerts and pickup authorisation."
+                  action={<Button variant="secondary" onClick={() => navigate('/people')}>Open the Directory</Button>} />
               ) : (
                 <div className="u-col" style={{ gap: 10 }}>
                   {guardianRows.map(({ link, guardian }) => (
@@ -428,6 +516,25 @@ function StudentDetail({ person }: { person: Person }) {
           />
         )}
       </Drawer>
+
+      {/* record payment — real rails, finance/owner only */}
+      <Modal
+        open={!!payRow}
+        onClose={() => setPayRow(null)}
+        title="Record a payment"
+        sub={payRow ? `${person.name} · ${payRow.term} ${payRow.category} · outstanding ${fmtMoney(payRow.amount - payRow.paidAmount)}` : undefined}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPayRow(null)} disabled={!!retrying}>Cancel</Button>
+            <Button variant="primary" loading={!!retrying} onClick={() => payRow && recordPayment(payRow)}>Record payment</Button>
+          </>
+        }
+      >
+        <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.65 }}>
+          This initiates the payment and records its settlement against the ledger (manual reconciliation).
+          Use it when the money has actually arrived. Every entry is audited with your name ({actorName}, {session.roleId}).
+        </p>
+      </Modal>
     </div>
   );
 }
@@ -609,7 +716,8 @@ function GuardianDetail({ person }: { person: Person }) {
         </Card>
         <Section title="Linked students" sub="Open a student for the full 360 view">
           {wards.length === 0 ? (
-            <Empty icon={<Icon.Users size={22} />} title="No students linked" sub="This guardian record is not yet linked to a student." />
+            <Empty icon={<Icon.Users size={22} />} title="No students linked" sub="This guardian record is not yet linked to a student."
+                  action={<Button variant="secondary" onClick={() => navigate('/people')}>Open the Directory</Button>} />
           ) : (
             <div className="u-col" style={{ gap: 10 }}>
               {wards.map(({ link, student }) => student && (

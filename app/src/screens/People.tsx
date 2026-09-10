@@ -7,6 +7,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { peopleService } from '../services';
+import { apiPost } from '../services/liveApi';
+import { DEMO_MODE } from '../lib/demoMode';
+import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
   Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, Modal, PageHead, Skeleton, Stat, useToast,
@@ -76,8 +79,11 @@ export default function People() {
   const [klass, setKlass] = useState('all');
   const [visible, setVisible] = useState(15);
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'student', campus: session.activeCampus as string, phone: '' });
+  const [form, setForm] = useState({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
   const [saving, setSaving] = useState(false);
+  /* Directory creation authority — POST /students allows owner, principal,
+     coordinator and admissions. Everyone else gets an honest disabled button. */
+  const canAddStudent = ['owner', 'principal', 'coordinator', 'admissions'].includes(session.roleId);
 
   /* keep campus in sync with role scope */
   useEffect(() => { if (scopeLocked) setCampus(session.campusScope); }, [scopeLocked, session.campusScope]);
@@ -168,23 +174,55 @@ export default function People() {
     }
   };
 
-  const submitPerson = () => {
+  const submitPerson = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
-    setTimeout(() => {
-      dispatch({
-        type: 'audit/add',
-        entry: {
-          actor: actorName, actorRole: session.roleId, action: 'Requested new directory record',
-          recordType: 'Person', recordRef: `${form.name.trim()} (${form.type})`, reason: 'Front-office intake',
-          aiInvolved: false, risk: 'low', outcome: 'Queued for verification',
-        },
-      });
-      toast({ title: 'Record request logged', sub: `${form.name.trim()} appears after office verification — demo data is read-only.`, tone: 'success' });
+    /* Demo world: the demo directory is read-only (fixture ids cannot enter the
+       server), so the request is noted in this session only. */
+    if (DEMO_MODE) {
+      setTimeout(() => {
+        dispatch({
+          type: 'audit/add',
+          entry: {
+            actor: actorName, actorRole: session.roleId, action: 'Requested new directory record',
+            recordType: 'Person', recordRef: `${form.name.trim()} (${form.type})`, reason: 'Front-office intake',
+            aiInvolved: false, risk: 'low', outcome: 'Noted in session · demo world',
+          },
+        });
+        toast({ title: 'Request noted (demo)', sub: 'Demo world — nothing was sent. In a live school this enrols the student via the server.', tone: 'info' });
+        setSaving(false);
+        setAddOpen(false);
+        setForm({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
+      }, 420);
+      return;
+    }
+    if (!form.grade || !form.section) {
       setSaving(false);
+      toast({ title: 'Grade and section are required', sub: 'The server needs a class to enrol the student into.', tone: 'error' });
+      return;
+    }
+    try {
+      const res = await apiPost<{ student: { admission_no: string | null; name: string; grade: string; section: string } }>('/students', {
+        name: form.name.trim(),
+        grade: form.grade,
+        section: form.section,
+        ...(form.phone.trim() ? { guardianPhone: form.phone.trim() } : {}),
+        ...(form.guardianName.trim() ? { guardianName: form.guardianName.trim() } : {}),
+        reason: 'Front-office intake',
+      });
+      toast({
+        title: `${res.student.name} enrolled`,
+        sub: `Admission no ${res.student.admission_no ?? 'auto'} · ${res.student.grade}-${res.student.section} · audited with your name and role.`,
+        tone: 'success',
+      });
       setAddOpen(false);
-      setForm({ name: '', type: 'student', campus: session.activeCampus as string, phone: '' });
-    }, 420);
+      setForm({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
+      results.retry();
+    } catch (e) {
+      toast({ title: 'Could not enrol the student', sub: friendly(e), tone: 'error' });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const scopeWord = campus === 'all' ? 'all campuses' : campusShort(campus);
@@ -197,7 +235,12 @@ export default function People() {
         actions={
           <>
             <Button variant="secondary" icon={<Icon.Download size={14} />} onClick={exportCsv}>Export CSV</Button>
-            <Button variant="primary" icon={<Icon.Plus size={14} />} onClick={() => setAddOpen(true)}>Add person</Button>
+            <Button
+              variant="primary" icon={<Icon.Plus size={14} />}
+              disabled={!canAddStudent}
+              title={canAddStudent ? undefined : 'Enrolling students is done by the owner, principal, coordinator or admissions desk — your role can view and export the directory.'}
+              onClick={() => setAddOpen(true)}
+            >Add person</Button>
           </>
         }
       />
@@ -259,7 +302,9 @@ export default function People() {
         <div className="card-head">
           <h3>{TYPE_LABEL[tab]} · {scopeWord}</h3>
           <span className="u-small u-faint">
-            {results.loading ? 'Searching…' : `Showing ${shown.length} of ${rows.length} · search returns up to 60`}
+            {results.loading
+              ? 'Searching…'
+              : `Showing ${shown.length} of ${rows.length}${rows.length >= 60 ? ' · showing first 60 — refine the search to narrow it' : ''}`}
           </span>
         </div>
         <div>
@@ -357,13 +402,15 @@ export default function People() {
       <Modal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        title="Add a person to the directory"
-        sub="Requests are logged to the audit trail and completed by the front office after verification."
+        title={DEMO_MODE ? 'Add a person to the directory (demo)' : 'Enrol a student'}
+        sub={DEMO_MODE
+          ? 'Demo world — the request is noted in this session only; nothing is sent anywhere.'
+          : 'Creates the student record immediately via the server (owner, principal, coordinator or admissions). It is audited with your name and role.'}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setAddOpen(false)} disabled={saving}>Cancel</Button>
             <Button variant="primary" icon={<Icon.Check size={14} />} loading={saving} disabled={!form.name.trim()} onClick={submitPerson}>
-              Log request
+              {DEMO_MODE ? 'Log request' : 'Enrol student'}
             </Button>
           </>
         }
@@ -372,28 +419,56 @@ export default function People() {
           <label htmlFor="np-name">Full name</label>
           <input id="np-name" className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Meera Nair" />
         </div>
-        <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div className="field u-grow" style={{ minWidth: 150 }}>
-            <label htmlFor="np-type">Record type</label>
-            <select id="np-type" className="select" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-              <option value="student">Student</option>
-              <option value="teacher">Teacher</option>
-              <option value="staff">Staff</option>
-              <option value="guardian">Guardian</option>
-            </select>
+        {DEMO_MODE ? (
+          <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div className="field u-grow" style={{ minWidth: 150 }}>
+              <label htmlFor="np-type">Record type</label>
+              <select id="np-type" className="select" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                <option value="student">Student</option>
+                <option value="teacher">Teacher</option>
+                <option value="staff">Staff</option>
+                <option value="guardian">Guardian</option>
+              </select>
+            </div>
+            <div className="field u-grow" style={{ minWidth: 150 }}>
+              <label htmlFor="np-campus">Campus</label>
+              <select id="np-campus" className="select" value={form.campus} onChange={e => setForm(f => ({ ...f, campus: e.target.value }))} disabled={scopeLocked}>
+                {seed.campuses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
           </div>
-          <div className="field u-grow" style={{ minWidth: 150 }}>
-            <label htmlFor="np-campus">Campus</label>
-            <select id="np-campus" className="select" value={form.campus} onChange={e => setForm(f => ({ ...f, campus: e.target.value }))} disabled={scopeLocked}>
-              {seed.campuses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-        </div>
+        ) : (
+          <>
+            <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
+              <div className="field u-grow" style={{ minWidth: 120 }}>
+                <label htmlFor="np-grade">Grade</label>
+                <select id="np-grade" className="select" value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value }))}>
+                  {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
+                </select>
+              </div>
+              <div className="field u-grow" style={{ minWidth: 120 }}>
+                <label htmlFor="np-section">Section</label>
+                <select id="np-section" className="select" value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))}>
+                  {['A', 'B', 'C'].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="np-guardian">Guardian name (optional)</label>
+              <input id="np-guardian" className="input" value={form.guardianName} onChange={e => setForm(f => ({ ...f, guardianName: e.target.value }))} placeholder="e.g. Ramesh Nair" />
+            </div>
+          </>
+        )}
         <div className="field" style={{ marginBottom: 0 }}>
-          <label htmlFor="np-phone">Phone (optional)</label>
+          <label htmlFor="np-phone">{DEMO_MODE ? 'Phone (optional)' : 'Guardian phone (optional)'}</label>
           <input id="np-phone" className="input" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="+91 98…" />
           <span className="hint">Numbers are WhatsApp-verified before absence alerts are enabled (Attendance §1.1).</span>
         </div>
+        {!DEMO_MODE && (
+          <p className="u-xs u-faint" style={{ marginBottom: 0, lineHeight: 1.6 }}>
+            Only student records can be created here. Teacher, staff and guardian records come from onboarding and migration.
+          </p>
+        )}
       </Modal>
     </>
   );

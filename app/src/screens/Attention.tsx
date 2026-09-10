@@ -9,10 +9,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
+import { apiActions, apiDecideAction } from '../services/liveApi';
+import { DEMO_MODE } from '../lib/demoMode';
+import { friendly } from '../lib/friendlyErrors';
 import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, ClickThrough} from '../components/ui';
-import { EvidenceChain, AiTraceCard, SuggestedActions } from '../components/Ai';
+import { EvidenceChain, SuggestedActions } from '../components/Ai';
 import { Slot } from '../plugins/Slot';
-import type { AiTrace, WorkOrderRecord } from '../types/domain';
+import type { WorkOrderRecord } from '../types/domain';
 import { assets as seedAssetsMaint } from '../data/dataset';
 import { Icon } from '../components/Icon';
 import { fmtTime, fmtDateShort } from '../lib/format';
@@ -53,22 +56,6 @@ interface Signal {
   derived: boolean;
 }
 
-function mkTrace(over: Partial<AiTrace>): AiTrace {
-  return {
-    trigger: 'Ranked attention feed — anomaly detection',
-    policy: 'Read-only assembly; actions approval-gated · Constitution v2026.1',
-    dataUsed: ['attendance records', 'transport GPS', 'fees records', 'document register'],
-    reasoningRole: 'Investigator (read-only)',
-    action: 'Ranked and proposed — awaiting human decision',
-    approvalStatus: 'Pending your approval',
-    verification: 'Every figure recomputed from source records',
-    model: 'Frontier (reasoning) · ap-south-1',
-    latencyMs: 740,
-    tokens: 980,
-    cost: '₹0.08',
-    ...over,
-  };
-}
 
 function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
   const out: Signal[] = [];
@@ -311,18 +298,8 @@ function DetailDrawer({ sig, onClose, onApprove, onDismiss }: {
           onApprove={() => onApprove()}
         />
         <div className="u-xs u-faint" style={{ lineHeight: 1.6 }}>
-          Policy reference — {sig.policyRef}. Approving executes the first suggested action and writes an immutable audit entry with your name and role.
+          Policy reference — {sig.policyRef}. Approving records your decision with your name and role; where the item defines a linked message or task, the server executes it. Only the owning authority can decide an item — the server will say so if it belongs to another desk.
         </div>
-        {sig.aiInvolved && (
-          <AiTraceCard
-            trace={mkTrace({
-              trigger: 'Ranked attention feed — this item',
-              dataUsed: sig.chips.map(c => c.split('·')[0].trim()),
-              action: sig.suggested[0]?.label ?? 'Investigate',
-            })}
-            defaultOpen
-          />
-        )}
       </div>
     </Drawer>
   );
@@ -335,39 +312,70 @@ export default function Attention() {
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [kindFilter, setKindFilter] = useState('all');
   const [openId, setOpenId] = useState<string | null>(null);
+  const [confirmDismiss, setConfirmDismiss] = useState<Signal | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  /* optimistic reconcile layer over the server queue (mirrors ActionCenter) */
+  const [decidedOnServer, setDecidedOnServer] = useState<Set<string>>(new Set());
+
+  /* live build: the decision queue is the server's (GET /actions), the same
+     source ActionCenter decides against — ids line up with the decide door. */
+  const serverActions = useAsync(async () => {
+    if (DEMO_MODE) return [] as Record<string, unknown>[];
+    const res = await apiActions();
+    return (res.actions ?? []) as Record<string, unknown>[];
+  }, []);
 
   const { data, loading, error, retry } = useAsync(async () => {
-    await new Promise(r => setTimeout(r, 380)); // simulated ranking pass
+    await new Promise(r => setTimeout(r, 380)); // local ranking pass
     return { signals: deriveSignals(domain.workOrders), rankedAt: new Date() };
   }, [session.roleId, domain.workOrders.length]);
 
+  const refresh = () => { setDecidedOnServer(new Set()); serverActions.retry(); };
 
   const items: Signal[] = useMemo(() => {
-    const actionSignals: Signal[] = domain.actions
-      .filter(a => a.status === 'open')
-      .sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9))
-      .map(a => ({
-        id: a.id,
-        kind: a.kind,
-        title: a.title,
-        detail: a.detail,
-        why: a.why,
-        priority: a.priority === 'urgent' ? 'critical' : a.priority,
-        chips: [
-          ...a.evidence.slice(0, 2).map(e => e.label),
-          `${a.aiInvolved ? 'SchoolOS AI' : 'Rule-based'} · ${fmtTime(a.on)} · ${a.aiInvolved ? 'medium' : 'high'} confidence`,
-        ],
-        evidence: a.evidence.map(e => ({ label: e.label, detail: e.detail as string | undefined })),
-        suggested: a.actions.map((x, i) => ({ id: `${a.id}_${i}`, label: x.label, type: x.type, detail: x.detail, posture: x.posture })),
-        policyRef: a.evidence.find(e => e.label.startsWith('Policy'))?.detail?.replace(/[“”]/g, '') ?? 'Constitution v2026.1 — posture applies to all suggested actions',
-        to: '/action-center',
-        due: a.deadline ? `due ${fmtDateShort(a.deadline)}` : undefined,
-        aiInvolved: a.aiInvolved,
-        derived: false,
-      }));
+    const actionSignals: Signal[] = DEMO_MODE
+      ? domain.actions
+        .filter(a => a.status === 'open')
+        .map(a => ({
+          id: a.id,
+          kind: a.kind,
+          title: a.title,
+          detail: a.detail,
+          why: a.why,
+          priority: a.priority === 'urgent' ? 'critical' : a.priority,
+          chips: [
+            ...a.evidence.slice(0, 2).map(e => e.label),
+            `${a.aiInvolved ? 'SchoolOS AI' : 'Rule-based'} · ${fmtTime(a.on)} · ${a.aiInvolved ? 'medium' : 'high'} confidence · demo`,
+          ],
+          evidence: a.evidence.map(e => ({ label: e.label, detail: e.detail as string | undefined })),
+          suggested: a.actions.map((x, i) => ({ id: `${a.id}_${i}`, label: x.label, type: x.type, detail: x.detail, posture: x.posture })),
+          policyRef: a.evidence.find(e => e.label.startsWith('Policy'))?.detail?.replace(/[“”]/g, '') ?? 'Constitution v2026.1 — posture applies to all suggested actions',
+          to: '/action-center',
+          due: a.deadline ? `due ${fmtDateShort(a.deadline)}` : undefined,
+          aiInvolved: a.aiInvolved,
+          derived: false,
+        }))
+      : (serverActions.data ?? [])
+        .filter(r => r.status === 'open' && !decidedOnServer.has(String(r.id)))
+        .map(r => ({
+          id: String(r.id),
+          kind: (r.kind ?? 'approval') as Signal['kind'],
+          title: String(r.title ?? 'Untitled item'),
+          detail: String(r.detail ?? ''),
+          why: String(r.why ?? ''),
+          priority: (r.priority === 'urgent' ? 'critical' : r.priority ?? 'normal') as Signal['priority'],
+          chips: [`${r.owner_role ?? 'Staff'} desk · ${fmtTime(new Date(String(r.created_at ?? Date.now())))}`],
+          evidence: [] as { label: string; detail?: string }[],
+          suggested: [] as { id: string; label: string; type: 'investigate' | 'workflow' | 'message' | 'review'; detail?: string; posture?: 'AUTO' | 'APPROVAL' | 'HUMAN-ONLY' }[],
+          policyRef: (r.policy_ref as string) ?? 'Constitution v2026.1 — posture applies to all suggested actions',
+          to: '/action-center',
+          due: r.deadline ? `due ${fmtDateShort(new Date(String(r.deadline)))}` : undefined,
+          aiInvolved: !!r.ai_involved,
+          derived: false,
+        }));
     const signals = data?.signals ?? [];
     return [...actionSignals, ...signals].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9));
-  }, [domain.actions, data]);
+  }, [DEMO_MODE, domain.actions, serverActions.data, decidedOnServer, data]);
 
   const kindCounts = useMemo(() => {
     const c: Record<string, number> = { all: items.length };
@@ -381,14 +389,40 @@ export default function Attention() {
   );
 
   const openSig = items.find(i => i.id === openId) ?? null;
-  const resolvedCount = domain.actions.filter(a => a.status === 'approved' || a.status === 'dismissed').length;
+  const resolvedCount = DEMO_MODE
+    ? domain.actions.filter(a => a.status === 'approved' || a.status === 'dismissed').length
+    : (serverActions.data ?? []).filter(a => a.status === 'approved' || a.status === 'dismissed').length;
+  const totalForResolution = DEMO_MODE ? domain.actions.length : (serverActions.data ?? []).length;
 
-  const decide = (id: string, decision: 'approved' | 'dismissed') => {
-    dispatch({ type: 'action/decide', id, decision, actor: actorName, role: session.roleId });
-    setOpenId(null);
-    toast(decision === 'approved'
-      ? { title: 'Approved — executing.', sub: 'Audit entry recorded with your name and role.', tone: 'success' }
-      : { title: 'Dismissed.', sub: 'Removed from the open feed; audit entry recorded.', tone: 'info' });
+  /* decide: the real door where the server queue backs the item; demo keeps
+     the session reducer with honest copy. Success claims only 2xx truth. */
+  const decide = async (sig: Signal, decision: 'approved' | 'dismissed') => {
+    setBusyId(sig.id);
+    if (DEMO_MODE) {
+      dispatch({ type: 'action/decide', id: sig.id, decision, actor: actorName, role: session.roleId });
+      setOpenId(null);
+      setConfirmDismiss(null);
+      setBusyId(null);
+      toast(decision === 'approved'
+        ? { title: 'Approved (demo)', sub: 'Demo world — kept for this session, not connected to school records.', tone: 'info' }
+        : { title: 'Dismissed (demo)', sub: 'Demo world — removed from this session\'s feed only.', tone: 'info' });
+      return;
+    }
+    try {
+      const res = await apiDecideAction(sig.id, decision);
+      setDecidedOnServer(prev => new Set(prev).add(sig.id));
+      setOpenId(null);
+      setConfirmDismiss(null);
+      const exec = res.execution as { type?: string } | null | undefined;
+      toast(decision === 'approved'
+        ? { title: 'Approved', sub: exec?.type === 'communication' ? 'Recorded — the linked message was queued by the server.' : exec?.type === 'notification' ? 'Recorded — the linked task was broadcast to staff.' : 'Recorded with your name and role. The owning desk acts on it from here.', tone: 'success' }
+        : { title: 'Dismissed', sub: 'Recorded on the server and removed from the open feed.', tone: 'info' });
+      refresh();
+    } catch (e) {
+      toast({ title: decision === 'approved' ? 'Could not approve' : 'Could not dismiss', sub: friendly(e), tone: 'error' });
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const ack = (sig: Signal) => {
@@ -407,7 +441,7 @@ export default function Attention() {
         outcome: 'Acknowledged · no action yet',
       },
     });
-    toast({ title: 'Acknowledged.', sub: 'Saved to the activity log; the signal stays visible until someone decides.', tone: 'info' });
+    toast({ title: 'Acknowledged.', sub: 'Noted in your session activity (this is not the school ledger); the signal stays visible until someone decides.', tone: 'info' });
   };
 
   return (
@@ -450,11 +484,11 @@ export default function Attention() {
               onChange={setKindFilter}
             />
             <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>
-              {resolvedCount} of {domain.actions.length} seeded items decided
+              {resolvedCount} of {totalForResolution} items decided
             </span>
           </div>
 
-          {loading ? (
+          {loading || (!DEMO_MODE && serverActions.loading) ? (
             <div className="u-col" style={{ gap: 10 }}>
               <Skeleton w={220} h={12} />
               <SkeletonCard lines={3} />
@@ -467,7 +501,9 @@ export default function Attention() {
                 icon={items.length === 0 ? <span className="clear-check"><Icon.Check size={22} /></span> : <Icon.Check size={22} />}
                 title={items.length === 0 ? 'All clear — nothing needs a human right now' : 'Nothing matches these filters'}
                 sub={items.length === 0
-                  ? 'Every recommendation is decided and every derived signal is acknowledged. New signals appear here as records change.'
+                  ? (DEMO_MODE
+                    ? 'Every recommendation is decided and every derived signal is acknowledged. New signals appear here as records change.'
+                    : 'The decision queue is clear and no derived signals are open. New items appear here as records change.')
                   : 'Adjust the priority or kind filters to see the rest of the feed.'}
               />
             </Card>
@@ -478,8 +514,8 @@ export default function Attention() {
                   key={sig.id}
                   sig={sig}
                   onOpen={() => setOpenId(sig.id)}
-                  onApprove={() => sig.derived ? ack(sig) : decide(sig.id, 'approved')}
-                  onDismiss={() => sig.derived ? ack(sig) : decide(sig.id, 'dismissed')}
+                  onApprove={() => sig.derived ? ack(sig) : decide(sig, 'approved')}
+                  onDismiss={() => sig.derived ? ack(sig) : setConfirmDismiss(sig)}
                   onAck={() => ack(sig)}
                 />
               ))}
@@ -489,9 +525,27 @@ export default function Attention() {
           <DetailDrawer
             sig={openSig}
             onClose={() => setOpenId(null)}
-            onApprove={() => openSig && (openSig.derived ? (ack(openSig), setOpenId(null)) : decide(openSig.id, 'approved'))}
-            onDismiss={() => openSig && (openSig.derived ? (ack(openSig), setOpenId(null)) : decide(openSig.id, 'dismissed'))}
+            onApprove={() => openSig && (openSig.derived ? (ack(openSig), setOpenId(null)) : decide(openSig, 'approved'))}
+            onDismiss={() => openSig && (openSig.derived ? (ack(openSig), setOpenId(null)) : setConfirmDismiss(openSig))}
           />
+
+          {/* dismiss confirmation */}
+          <Drawer
+            open={!!confirmDismiss}
+            onClose={() => setConfirmDismiss(null)}
+            title="Dismiss this item?"
+            sub={confirmDismiss?.title}
+            footer={
+              <div className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={() => setConfirmDismiss(null)}>Keep it</Button>
+                <Button variant="danger" icon={<Icon.X size={13} />} loading={!!confirmDismiss && busyId === confirmDismiss.id} onClick={() => confirmDismiss && decide(confirmDismiss, 'dismissed')}>Dismiss permanently</Button>
+              </div>
+            }
+          >
+            <p className="u-small u-muted" style={{ marginTop: 0, lineHeight: 1.65 }}>
+              Dismissing closes “{confirmDismiss?.title}” with your name on the record. The owning desk can re-raise it if the underlying pattern reappears.
+            </p>
+          </Drawer>
         </>
       )}
     </>

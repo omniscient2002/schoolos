@@ -1,19 +1,27 @@
 /* ============================================================
-   Attendance — the mark sheet + 30-day register.
-   Teacher-owned marking; SchoolOS handles notifications,
-   leniency and the follow-up workflow (wf_1).
+   Attendance — the mark sheet + register history.
+   T401: the submit path hits the real door (POST /attendance/mark)
+   via apiMarkAttendance — success toasts only on 2xx and carry the
+   SERVER's counts; failures surface friendly errors (never a
+   "kept on this device" lie). The register prefers server rows
+   (GET /attendance) so submitted marks survive a reload; the demo
+   build falls back to the demo blob and says so.
+   Demo fixture ids (st_north_*) are not database rows — in the
+   demo world the register is session-local and labelled as such.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
-import { attendanceService, peopleService } from '../services';
+import { apiAttendance, apiMarkAttendance } from '../services/liveApi';
+import { DEMO_MODE } from '../lib/demoMode';
+import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
   Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, PageHead, Section, Skeleton, Stat, Tabs, useToast,
 } from '../components/ui';
 import { LineChart } from '../components/Chart';
 import { Icon } from '../components/Icon';
-import { fmtDate, fmtDateShort, fmtMoneyShort, fmtRelative, weekday } from '../lib/format';
+import { fmtDate, fmtDateShort, fmtRelative, weekday } from '../lib/format';
 import type { Person } from '../types/domain';
 
 /* Local async hook (duplicated per screen per APP-SPEC §async pattern) */
@@ -37,21 +45,41 @@ const cap = (m: Mark) => m[0].toUpperCase() + m.slice(1);
 
 const campusShort = (id: string) => seed.campuses.find(c => c.id === id)?.shortName ?? id;
 
+/* The school day runs on IST — compute it once and pass the SAME date to
+   the read and the write so an evening register can never land on the
+   wrong day (server-side toISOString defaults are UTC). */
+const istToday = (): Date => {
+  const iso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // YYYY-MM-DD
+  return new Date(`${iso}T00:00:00`);
+};
+const isoDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/* Server row shape from GET /attendance */
+interface ServerRow { id: string; admission_no: string | null; name: string; grade: string; section: string; status: string | null; note?: string | null }
+
 interface RosterRow {
   person: Person;
-  rate: number;
   prefill: Mark | null;
   note?: string;
-  feeLabel: string;
-  feeTone: 'success' | 'warning' | 'danger' | 'info';
 }
 
+interface SectionOpt { id: string; grade: number; name: string; campus: string; count: number }
+
 interface RegisterData {
-  rows: RosterRow[];
+  /** all students for the day (server rows or demo blob) — sliced client-side by section */
+  allRows: RosterRow[];
+  serverMode: boolean;
+  sections: SectionOpt[];
   markedToday: boolean;
   lastMarkAt: Date | null;
-  markedBy: string;
+  markedBy: string | null;
 }
+
+interface HistoryRow { date: Date; absent: number; late: number; pct: number; names: string[]; markedBy: string; live: boolean; error?: boolean }
+
+const markFromStatus = (s: string | null | undefined): Mark | null =>
+  s === 'present' || s === 'absent' || s === 'late' ? s as Mark : s === 'leave' ? 'excused' : null;
 
 export default function Attendance() {
   const navigate = useNavigate();
@@ -59,67 +87,94 @@ export default function Attendance() {
   const toast = useToast();
 
   const isTeacher = session.roleId === 'teacher';
-  const today = seed.TERM_DAYS[seed.TERM_DAYS.length - 1];
+  const today = DEMO_MODE ? (seed.TERM_DAYS[seed.TERM_DAYS.length - 1] ?? istToday()) : istToday();
+  const todayISO = isoDay(today);
 
-  /* ---- section picker: campus-scoped, role-aware default ---- */
-  const sections = useMemo(() => {
-    /* session.activeCampus is a CampusId; campusScope==='all' roles still get a
-       concrete campus here — use the campus filter, not a synthetic 'all'. */
-    const campus: string = session.activeCampus;
-    const list = seed.sections.filter(s => s.campus === campus);
-    return [...list].sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name) || a.campus.localeCompare(b.campus));
-  }, [session.activeCampus]);
-
-  const initialSectionId = () => {
-    if (isTeacher) {
-      const me = seed.teachers.find(t => t.name === actorName);
-      const cls = me?.classes?.[0];
-      if (cls) {
-        const [g, s] = cls.split('-');
-        const found = sections.find(x => String(x.grade) === g && x.name === s);
-        if (found) return found.id;
-      }
-    }
-    return sections.some(x => x.id === 'north-g8-b') ? 'north-g8-b' : sections[0]?.id ?? 'north-g8-b';
-  };
-  const [sectionId, setSectionId] = useState(initialSectionId);
+  const [sectionId, setSectionId] = useState('');
   const [tab, setTab] = useState<'mark' | 'history'>('mark');
 
-  /* if the campus switcher makes the current section invisible, fall back */
+  /* ---- register load: server rows first; demo blob only as fallback ---- */
+  const register = useAsync<RegisterData>(async () => {
+    if (!DEMO_MODE) {
+      /* ---- live world: the register IS the server response ---- */
+      let server: ServerRow[] = [];
+      try {
+        const res = await apiAttendance(todayISO);
+        server = Array.isArray(res.rows) ? res.rows as ServerRow[] : [];
+      } catch { /* surfaced by the error shell below */ }
+
+      const byKey = new Map<string, ServerRow[]>();
+      for (const r of server) {
+        const key = `${r.grade}|${r.section}`;
+        if (!byKey.has(key)) byKey.set(key, []);
+        byKey.get(key)!.push(r);
+      }
+      const sections: SectionOpt[] = [...byKey.entries()].map(([key, list]) => ({
+        id: key, grade: Number(list[0].grade), name: String(list[0].section ?? ''), campus: session.activeCampus, count: list.length,
+      })).sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name));
+      const allRows: RosterRow[] = server.map(r => ({
+        person: {
+          id: r.id, name: r.name, type: 'student', campus: session.activeCampus, email: '', phone: '',
+          grade: Number(r.grade), section: String(r.section ?? ''), rollNo: r.admission_no ?? undefined,
+        } as Person,
+        prefill: markFromStatus(r.status),
+        note: r.note ?? undefined,
+      }));
+      const marked = allRows.filter(r => r.prefill);
+      return {
+        allRows, serverMode: true, sections,
+        markedToday: marked.length > 0, lastMarkAt: marked.length ? today : null, markedBy: null,
+      };
+    }
+
+    /* ---- demo world: blob roster (ids are fixtures, labelled as demo) ---- */
+    const sections: SectionOpt[] = [...seed.sections]
+      .sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name) || a.campus.localeCompare(b.campus))
+      .map(s => ({ id: s.id, grade: s.grade, name: s.name, campus: s.campus, count: seed.studentsOfSection(s.id).length }));
+    const todayRecs = seed.attendance.filter(a => a.date.getTime() === today.getTime());
+    const allRows: RosterRow[] = seed.students.map(st => {
+      const rec = todayRecs.find(r => r.studentId === st.id);
+      return {
+        person: st,
+        prefill: rec ? (rec.status as Mark) : null,
+        note: rec?.note,
+      };
+    });
+    return {
+      allRows, serverMode: false, sections,
+      markedToday: todayRecs.length > 0, lastMarkAt: todayRecs[0]?.date ?? null,
+      markedBy: todayRecs[0] ? seed.findPerson(todayRecs[0].markedBy)?.name ?? 'Class teacher' : 'Class teacher',
+    };
+  }, [todayISO]);
+
+  /* ---- section picker: derived from the loaded register ---- */
+  const sections = register.data?.sections ?? [];
   useEffect(() => {
-    if (!sections.some(s => s.id === sectionId) && sections[0]) setSectionId(sections[0].id);
+    if (register.data && !sectionId && sections.length) setSectionId(sections[0].id);
+  }, [register.data, sections, sectionId]);
+  /* if the loaded data no longer contains the chosen section, fall back */
+  useEffect(() => {
+    if (sectionId && sections.length && !sections.some(s => s.id === sectionId)) setSectionId(sections[0].id);
   }, [sections, sectionId]);
 
-  const section = seed.sections.find(s => s.id === sectionId);
-  const sectionLabel = section ? `Grade ${section.grade}-${section.name}` : sectionId;
-  const classTeacher = section ? seed.findPerson(section.classTeacherId) : undefined;
+  const section = sections.find(s => s.id === sectionId);
+  const sectionLabel = section ? `Grade ${section.grade}-${section.name}` : '—';
+  const serverMode = register.data?.serverMode ?? false;
+  const demoSection = !serverMode ? seed.sections.find(s => s.id === sectionId) : undefined;
+  const classTeacher = demoSection ? seed.findPerson(demoSection.classTeacherId) : undefined;
   /* Empty-world law: the Bus-14 anomaly banner narrates the demo world's
      incident; only render when that section actually exists in the tenant. */
   const isAnomaly = sectionId === 'north-g8-b' && seed.sections.some(sec => sec.id === 'north-g8-b');
 
-  /* ---- async register load (seed access behind a Promise) ---- */
-  const register = useAsync<RegisterData>(async () => {
-    const roster = seed.studentsOfSection(sectionId);
-    const todayRecs = seed.attendance.filter(a => a.sectionId === sectionId && a.date.getTime() === today.getTime());
-    const rows = await Promise.all(roster.map(async st => {
-      const [att, fees] = await Promise.all([peopleService.attendance(st.id), peopleService.feeSummary(st.id)]);
-      const rec = todayRecs.find(r => r.studentId === st.id);
-      return {
-        person: st,
-        rate: att.rate,
-        prefill: rec ? (rec.status as Mark) : null,
-        note: rec?.note,
-        feeLabel: fees.hasFailed ? 'fee failed' : fees.overdue > 0 ? `${fmtMoneyShort(fees.overdue)} overdue` : fees.due > 0 ? `${fmtMoneyShort(fees.due)} due` : 'fees clear',
-        feeTone: fees.hasFailed ? 'danger' as const : fees.overdue > 0 ? 'warning' as const : fees.due > 0 ? 'info' as const : 'success' as const,
-      } satisfies RosterRow;
-    }));
-    const markedBy = todayRecs[0]
-      ? seed.findPerson(todayRecs[0].markedBy)?.name ?? classTeacher?.name ?? 'Class teacher'
-      : classTeacher?.name ?? 'Class teacher';
-    return { rows, markedToday: todayRecs.length > 0, lastMarkAt: todayRecs[0]?.date ?? null, markedBy };
-  }, [sectionId]);
-
-  const rows = useMemo(() => register.data?.rows ?? [], [register.data]);
+  const rows = useMemo(
+    () => (register.data?.allRows ?? []).filter(r => {
+      if (!sectionId) return false;
+      if (serverMode) return `${r.person.grade}|${r.person.section}` === sectionId;
+      const sec = seed.sectionOfStudent(r.person);
+      return sec?.id === sectionId;
+    }),
+    [register.data, sectionId, serverMode],
+  );
   const rowById = useMemo(() => new Map(rows.map(r => [r.person.id, r])), [rows]);
 
   /* ---- draft marking state ---- */
@@ -153,6 +208,8 @@ export default function Attendance() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, marks]);
 
+  /* ≥1 marked row must exist before the register can go anywhere */
+  const hasMarks = rows.length > 0 && (Object.keys(marks).length > 0 || rows.every(r => r.prefill));
   const dirty = Object.keys(marks).length > 0;
 
   const markAllPresent = () => {
@@ -176,62 +233,103 @@ export default function Attendance() {
       status: markOf(r.person.id) as 'present' | 'absent' | 'late',
     }));
     try {
-      await attendanceService.mark(sectionId, entries);
-      setSubmitted(true);
-      const absentCount = summary.absent;
-      dispatch({
-        type: 'event/add',
-        e: {
-          id: `ev_${Date.now()}`, on: new Date(), type: 'attendance',
-          label: `Register submitted — ${sectionLabel} · ${absentCount} absent`,
-          severity: absentCount > 4 ? 'warn' : 'info',
-        },
-      });
-      dispatch({
-        type: 'audit/add',
-        entry: {
-          actor: actorName, actorRole: session.roleId, action: 'Submitted attendance register',
-          recordType: 'Attendance', recordRef: `${sectionLabel} · ${rows.length} students`,
-          reason: 'First-period mark', policyRef: 'Attendance §1.1', aiInvolved: false, risk: 'low',
-          outcome: `Register submitted · ${absentCount} guardians queued for notification (workflow wf_1)`,
-        },
-      });
-      toast({
-        title: 'Register submitted',
-        sub: absentCount
-          ? `${absentCount} ${absentCount === 1 ? 'guardian' : 'guardians'} will be notified (Attendance §1.1)${summary.excused ? ` · ${summary.excused} excused, no notification` : ''}`
-          : 'Full attendance — no notifications needed',
-        tone: 'success',
-      });
-    } catch {
-      toast({ title: 'Could not submit', sub: 'The register is kept on this device — retry when you are back online.', tone: 'error' });
+      if (serverMode && entries.every(e => UUID_RE.test(e.studentId))) {
+        const res = await apiMarkAttendance(todayISO, entries);
+        setSubmitted(true);
+        /* Session feeds only — the durable record is the server's (reload proves it). */
+        dispatch({
+          type: 'event/add',
+          e: {
+            id: `ev_${Date.now()}`, on: new Date(), type: 'attendance',
+            label: `Register submitted — ${sectionLabel} · ${res.absent} absent`,
+            severity: res.absent > 4 ? 'warn' : 'info',
+          },
+        });
+        dispatch({
+          type: 'audit/add',
+          entry: {
+            actor: actorName, actorRole: session.roleId, action: 'Submitted attendance register',
+            recordType: 'Attendance', recordRef: `${sectionLabel} · ${res.marked} students`,
+            reason: 'Register submission', policyRef: 'Attendance §1.1', aiInvolved: false, risk: 'low',
+            outcome: `Server accepted ${res.marked} marks · ${res.noticesQueued} absence notices queued`,
+          },
+        });
+        toast({
+          title: `Register submitted — ${res.marked} ${res.marked === 1 ? 'student' : 'students'} saved`,
+          sub: res.noticesQueued
+            ? `${res.noticesQueued} absence ${res.noticesQueued === 1 ? 'notice' : 'notices'} queued to guardians (Attendance §1.1)`
+            : 'Full attendance — no notifications needed',
+          tone: 'success',
+        });
+        register.retry(); /* re-pull the door so prefill reflects what the server stored */
+      } else {
+        /* Demo fixture ids are not database rows — there is no honest door for
+           them. Session-local only, and the copy says exactly that. */
+        setSubmitted(true);
+        toast({
+          title: 'Register kept for this session',
+          sub: 'Demo world — this register is not connected to school records and will not survive a reload.',
+          tone: 'info',
+        });
+      }
+    } catch (e) {
+      toast({ title: 'Could not submit the register', sub: friendly(e), tone: 'error' });
     } finally {
       setSaving(false);
     }
   };
 
-  /* ---- 30-day history for this section ---- */
-  const history = useMemo(() => {
-    const total = rows.length;
-    return seed.TERM_DAYS.map(d => {
-      const t = d.getTime();
-      const recs = seed.attendance.filter(a => a.sectionId === sectionId && a.date.getTime() === t);
-      const absent = recs.filter(r => r.status === 'absent').length;
-      const late = recs.filter(r => r.status === 'late').length;
-      const names = recs.filter(r => r.status === 'absent').map(r => seed.findPerson(r.studentId)?.name ?? 'Unknown');
-      return {
-        date: d,
-        absent,
-        late,
-        pct: total ? Math.round(((total - absent) / total) * 100) : 0,
-        names,
-        markedBy: recs[0] ? seed.findPerson(recs[0].markedBy)?.name ?? '—' : '—',
-      };
-    });
-  }, [sectionId, rows.length]);
+  /* ---- register history: demo keeps its 30-day blob chart; the live world
+          aggregates the last 7 days straight from the read door ---- */
+  const historyDays = useMemo(() => {
+    if (!serverMode) return seed.TERM_DAYS.map(d => ({ date: d }));
+    const days: { date: Date }[] = [];
+    for (let i = 0; i < 7; i++) days.push({ date: new Date(today.getTime() - i * 86400000) });
+    return days.reverse();
+  }, [serverMode, today.getTime()]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const historyDesc = useMemo(() => [...history].reverse(), [history]);
-  const chartLabels = history.map(h => fmtDateShort(h.date).replace(/\s\S+$/, ''));
+  const history = useAsync<HistoryRow[]>(async () => {
+    if (!serverMode) {
+      const total = rows.length;
+      return seed.TERM_DAYS.map(d => {
+        const t = d.getTime();
+        const recs = seed.attendance.filter(a => a.sectionId === sectionId && a.date.getTime() === t);
+        const absent = recs.filter(r => r.status === 'absent').length;
+        const late = recs.filter(r => r.status === 'late').length;
+        const names = recs.filter(r => r.status === 'absent').map(r => seed.findPerson(r.studentId)?.name ?? 'Unknown');
+        return {
+          date: d, absent, late,
+          pct: total ? Math.round(((total - absent) / total) * 100) : 0,
+          names, markedBy: recs[0] ? seed.findPerson(recs[0].markedBy)?.name ?? '—' : '—',
+          live: false,
+        };
+      });
+    }
+    if (!sectionId) return [];
+    const [grade, sec] = sectionId.split('|');
+    const perDay = await Promise.all(historyDays.map(async ({ date }): Promise<HistoryRow> => {
+      try {
+        const res = await apiAttendance(isoDay(date), grade, sec);
+        const list = (res.rows ?? []) as ServerRow[];
+        const statuses = list.map(r => markFromStatus(r.status)).filter(Boolean) as Mark[];
+        const absent = statuses.filter(s => s === 'absent').length;
+        const late = statuses.filter(s => s === 'late').length;
+        const names = list.filter(r => r.status === 'absent').map(r => r.name);
+        return {
+          date, absent, late,
+          pct: list.length ? Math.round(((list.length - absent) / list.length) * 100) : 0,
+          names, markedBy: '—', live: true,
+        };
+      } catch {
+        return { date, absent: 0, late: 0, pct: 0, names: [], markedBy: '—', live: true, error: true };
+      }
+    }));
+    return perDay;
+  }, [serverMode, sectionId, todayISO, tab]);
+
+  const historyRows = history.data ?? [];
+  const historyDesc = useMemo(() => [...historyRows].reverse(), [historyRows]);
+  const chartLabels = historyRows.map(h => fmtDateShort(h.date).replace(/\s\S+$/, ''));
 
   /* ---------- shells ---------- */
   if (register.loading) {
@@ -272,14 +370,17 @@ export default function Attendance() {
       <PageHead
         title={isTeacher ? 'My class — attendance' : 'Attendance'}
         sub={isTeacher
-          ? 'Mark the register in seconds. Guardians are notified automatically for absences.'
-          : 'First-period registers across your scope. Marking is teacher-owned; SchoolOS handles the follow-ups.'}
+          ? 'Mark the register in seconds. Absence notices are queued to guardians automatically.'
+          : 'First-period registers across your scope. Marking is teacher-owned; SchoolOS queues the follow-ups.'}
         actions={
-          <Badge tone={register.data?.markedToday ? 'success' : 'warning'} dot>
-            {register.data?.markedToday
-              ? `Marked today · ${register.data.lastMarkAt ? fmtRelative(register.data.lastMarkAt) : 'just now'}`
-              : 'Not marked today'}
-          </Badge>
+          <>
+            {!serverMode && <Badge tone="outline">Demo data</Badge>}
+            <Badge tone={register.data?.markedToday ? 'success' : 'warning'} dot>
+              {register.data?.markedToday
+                ? `Marked today · ${register.data.lastMarkAt ? fmtRelative(register.data.lastMarkAt) : 'just now'}`
+                : 'Not marked today'}
+            </Badge>
+          </>
         }
       />
 
@@ -296,17 +397,19 @@ export default function Attendance() {
           >
             {sections.map(s => (
               <option key={s.id} value={s.id}>
-                {`Grade ${s.grade}-${s.name} · ${campusShort(s.campus)} · ${seed.studentsOfSection(s.id).length} students`}
+                {`Grade ${s.grade}-${s.name} · ${s.count} students`}
               </option>
             ))}
           </select>
         </label>
-        <span className="u-small u-faint">
-          Room {section?.room ?? '—'} · Class teacher {classTeacher?.name ?? '—'}
-        </span>
+        {!serverMode && (
+          <span className="u-small u-faint">
+            Room {demoSection?.room ?? '—'} · Class teacher {classTeacher?.name ?? '—'}
+          </span>
+        )}
       </div>
 
-      {/* ---- Bus 14 anomaly banner (8-B only) ---- */}
+      {/* ---- Bus 14 anomaly banner (demo blob only) ---- */}
       {isAnomaly && (
         <div
           className="u-flex u-wrap"
@@ -356,7 +459,7 @@ export default function Attendance() {
         active={tab}
         onChange={id => setTab(id as 'mark' | 'history')}
           panelId="att-tab"
-        tabs={[{ id: 'mark', label: 'Today — mark' }, { id: 'history', label: 'History — 30 days' }]}
+        tabs={[{ id: 'mark', label: 'Today — mark' }, { id: 'history', label: serverMode ? 'History — last 7 days' : 'History — 30 days' }]}
       />
 
       {/* ================= Today — mark ================= */}
@@ -365,9 +468,13 @@ export default function Attendance() {
           <div role="tabpanel" id="att-tab-panel-mark" aria-labelledby="att-tab-tab-mark" style={{ marginTop: 16 }}>
             <Empty
               icon={<Icon.People size={26} />}
-              title="No students in this section"
-              sub={`${sectionLabel} has no enrolled students. Choose another section from the picker above.`}
-              action={<Button variant="secondary" onClick={() => navigate('/people')}>Open Directory</Button>}
+              title={serverMode ? 'No students on the roster yet' : 'No students in this section'}
+              sub={serverMode
+                ? 'Students appear here as soon as they are admitted. Add your first students from the People console.'
+                : `${sectionLabel} has no enrolled students. Choose another section from the picker above.`}
+              action={serverMode
+                ? <Button variant="secondary" onClick={() => navigate('/people-admin')}>Open People console</Button>
+                : <Button variant="secondary" onClick={() => navigate('/people')}>Open Directory</Button>}
             />
           </div>
         ) : (
@@ -387,14 +494,15 @@ export default function Attendance() {
                   </Button>
                 </div>
                 <div className="u-flex" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span className="u-xs u-faint">{weekday(today)}, {fmtDate(today)} · marked by {register.data?.markedBy}</span>
+                  <span className="u-xs u-faint">{weekday(today)}, {fmtDate(today)}{register.data?.markedBy ? ` · marked by ${register.data.markedBy}` : ''}</span>
                   <Button
                     size="sm"
                     variant="primary"
                     loading={saving}
-                    disabled={submitted && !dirty}
+                    disabled={!hasMarks || (submitted && !dirty)}
                     icon={<Icon.Clipboard size={13} />}
                     onClick={submit}
+                    title={!hasMarks ? 'Mark at least one student first' : undefined}
                   >
                     {submitted && !dirty ? 'Submitted' : 'Submit register'}
                   </Button>
@@ -437,7 +545,7 @@ export default function Attendance() {
               <div className="scroll-thin" style={{ maxHeight: 540, overflowY: 'auto' }}>
                 {rows.map((r, i) => {
                   const m = markOf(r.person.id);
-                  const busAffected = r.person.busRoute === 'Route 7 — Sector 12';
+                  const busAffected = !serverMode && r.person.busRoute === 'Route 7 — Sector 12';
                   return (
                     <div key={r.person.id} className="u-between u-wrap" style={{ padding: '9px 16px', borderBottom: '1px solid var(--border-subtle)', gap: 8 }}>
                       <div className="u-flex" style={{ gap: 10, minWidth: 220 }}>
@@ -446,9 +554,8 @@ export default function Attendance() {
                         <div style={{ minWidth: 0 }}>
                           <div className="u-truncate" style={{ fontWeight: 540 }}>{r.person.name}</div>
                           <div className="u-xs u-faint u-truncate">
-                            <span className="tnum">{r.rate}%</span> term · <span style={{ color: r.feeTone === 'success' ? undefined : r.feeTone === 'danger' ? 'var(--danger)' : r.feeTone === 'warning' ? 'var(--warning)' : undefined }}>{r.feeLabel}</span>
-                            {busAffected && <span style={{ color: 'var(--warning)', fontWeight: 600 }}> · Bus 14 rider</span>}
-                            {r.note ? ` · note: ${r.note}` : ''}
+                            {busAffected && <span style={{ color: 'var(--warning)', fontWeight: 600 }}>Bus 14 rider · </span>}
+                            {r.note ? `note: ${r.note}` : ''}
                           </div>
                         </div>
                       </div>
@@ -471,63 +578,80 @@ export default function Attendance() {
                   <Badge tone="warning" dot>{summary.late} late</Badge>
                   <Badge tone="info" dot>{summary.excused} excused</Badge>
                 </div>
-                <span className="u-xs u-faint">Submit → guardians of absentees notified automatically · workflow wf_1</span>
+                <span className="u-xs u-faint">Submit saves to school records · guardians of absentees are queued a notice (Attendance §1.1)</span>
               </div>
             </Card>
           </div>
         )
       )}
 
-      {/* ================= History — 30 days ================= */}
+      {/* ================= History ================= */}
       {tab === 'history' && (
         <Section role="tabpanel" id="att-tab-panel-history" aria-labelledby="att-tab-tab-history"
-          title="30-day register history"
-          sub={`${sectionLabel} · ${campusShort(section?.campus ?? 'north')} · Sundays off · anomalies flagged below 80%`}
+          title={serverMode ? 'Register history — last 7 days' : '30-day register history'}
+          sub={serverMode
+            ? `${sectionLabel} · built from submitted registers`
+            : `${sectionLabel} · ${campusShort(section?.campus ?? 'north')} · Sundays off · anomalies flagged below 80%`}
         >
           <Card>
-            <div style={{ padding: '16px 20px 8px' }}>
-              <LineChart
-                series={[{ name: 'Presence %', color: 'var(--accent)', points: history.map(h => h.pct) }]}
-                labels={chartLabels}
-                yFormat={v => `${Math.round(v)}%`}
-                min={0}
-                max={100}
-                height={170}
-                area
-              />
-              {isAnomaly && (
-                <div className="u-xs u-faint" style={{ marginTop: 4 }}>
-                  The collapse over the last 5 school days tracks the Bus 14 (Route 7) breakdown — see the anomaly banner on Today.
+            {history.loading ? (
+              <div style={{ padding: 20 }}><Skeleton h={120} /></div>
+            ) : historyRows.length === 0 ? (
+              <div style={{ padding: 20 }}>
+                <Empty
+                  title="No register history yet"
+                  sub={serverMode
+                    ? 'History builds as registers are submitted. Submit today\'s register and it will appear here.'
+                    : 'The demo blob has no register rows for this section.'}
+                />
+              </div>
+            ) : (
+              <>
+                <div style={{ padding: '16px 20px 8px' }}>
+                  <LineChart
+                    series={[{ name: 'Presence %', color: 'var(--accent)', points: historyRows.map(h => h.pct) }]}
+                    labels={chartLabels}
+                    yFormat={v => `${Math.round(v)}%`}
+                    min={0}
+                    max={100}
+                    height={170}
+                    area
+                  />
+                  {!serverMode && sectionId === 'north-g8-b' && (
+                    <div className="u-xs u-faint" style={{ marginTop: 4 }}>
+                      The collapse over the last 5 school days tracks the Bus 14 (Route 7) breakdown — see the anomaly banner on Today.
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div style={{ padding: '8px 20px 20px' }}>
-              <DataTable
-                rows={historyDesc}
-                rowKey={h => h.date.toISOString()}
-                columns={[
-                  { key: 'date', label: 'Date', render: h => <span className="tnum">{weekday(h.date)}, {fmtDateShort(h.date)}</span> },
-                  {
-                    key: 'pct', label: 'Presence',
-                    render: h => (
-                      <span className="tnum" style={{ fontWeight: h.pct < 80 ? 650 : 480, color: h.pct < 80 ? 'var(--danger)' : undefined }}>{h.pct}%</span>
-                    ),
-                  },
-                  {
-                    key: 'counts', label: 'Absent / late',
-                    render: h => <span className="tnum u-small">{h.absent} / {h.late}</span>,
-                  },
-                  {
-                    key: 'names', label: 'Absentees',
-                    render: h => h.names.length === 0
-                      ? <span className="u-faint">—</span>
-                      : <span className="u-small">{h.names.slice(0, 3).map(n => n.split(' ')[0]).join(', ')}{h.names.length > 3 ? ` +${h.names.length - 3}` : ''}</span>,
-                  },
-                  { key: 'markedBy', label: 'Marked by', render: h => <span className="u-small u-muted">{h.markedBy}</span> },
-                  { key: 'flag', label: '', render: h => h.pct < 80 ? <Badge tone="danger">Anomaly</Badge> : null },
-                ]}
-              />
-            </div>
+                <div style={{ padding: '8px 20px 20px' }}>
+                  <DataTable
+                    rows={historyDesc}
+                    rowKey={h => h.date.toISOString()}
+                    columns={[
+                      { key: 'date', label: 'Date', render: h => <span className="tnum">{weekday(h.date)}, {fmtDateShort(h.date)}</span> },
+                      {
+                        key: 'pct', label: 'Presence',
+                        render: h => (
+                          <span className="tnum" style={{ fontWeight: h.pct < 80 ? 650 : 480, color: h.pct < 80 ? 'var(--danger)' : undefined }}>{h.pct}%</span>
+                        ),
+                      },
+                      {
+                        key: 'counts', label: 'Absent / late',
+                        render: h => <span className="tnum u-small">{h.absent} / {h.late}</span>,
+                      },
+                      {
+                        key: 'names', label: 'Absentees',
+                        render: h => h.names.length === 0
+                          ? <span className="u-faint">—</span>
+                          : <span className="u-small">{h.names.slice(0, 3).map(n => n.split(' ')[0]).join(', ')}{h.names.length > 3 ? ` +${h.names.length - 3}` : ''}</span>,
+                      },
+                      { key: 'markedBy', label: 'Marked by', render: h => <span className="u-small u-muted">{h.markedBy}</span> },
+                      { key: 'flag', label: '', render: (h: HistoryRow) => h.error ? <Badge tone="warning">offline</Badge> : h.pct < 80 ? <Badge tone="danger">Anomaly</Badge> : null },
+                    ]}
+                  />
+                </div>
+              </>
+            )}
           </Card>
         </Section>
       )}
