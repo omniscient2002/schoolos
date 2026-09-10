@@ -73,7 +73,7 @@ Five fresh-context sessions, one shared `.coop/` protocol (file ownership + clai
 - **MFA, httpOnly cookies, password-reset email** — unchanged (force_change still stamped-but-unenforced).
 - **Maintenance module** — still the in-memory plane except ReportIssue (works now) and honest copy; work-order doors still UI-orphaned.
 - **DPDP erasure** — platform-incomplete per D-17 of the baseline (L1 delivered a completion plan, no code — correctly, per cut list).
-- **PITR/DR drills, alerting/observability, staging/CD, i18n, workflow runtime, real AI, the voice receptionist** — all untouched.
+- **PITR/DR drills, alerting/observability, staging/CD, i18n, workflow runtime, real AI** — all untouched. *(The voice receptionist was REMOVED FROM SCOPE by owner decision, 2026-09-11 — it was never built, so nothing to remove from code; it no longer counts against any roadmap or grade.)*
 - **Secrets rotation** — *owner-side action, still pending confirmation from you.* The code now fails closed without the flags, but the committed-adjacent secrets in `server/.env` still need rotating in your deploy environment.
 - README/HANDOFF staleness (62/63 screens, "25/25 tests", "zero mock modules") — now factually worse vs 273 tests; docs pass owed.
 

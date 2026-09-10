@@ -74,3 +74,9 @@
   rebrand + rebuild). L5: D-22 fixture/typing fixes. L3: D-23 Ai.tsx honesty fix. S0 will run the final
   regression at the next gate and deliver STILL NOT GOOD_2.md. If any lane is inactive, S0 executes the
   scoped fix directly (owner directive: "complete all").
+- **D-25 SCOPE CHANGE (owner, 2026-09-11): the AI voice receptionist is REMOVED from this project's scope.**
+  It was never built (zero code references), so removal affects roadmap documents only: STRIKE from Phase 5
+  planning, from the §24 NOT-IMPLEMENTED inventory, and from all future waves. Do not design, estimate, or
+  schedule anything voice/telephony-related. The company name ("AI Reception") may still reference the
+  concept in branding — that is a business decision outside engineering scope. Current grades (74/56) are
+  unaffected: the receptionist was never weighted in them.
