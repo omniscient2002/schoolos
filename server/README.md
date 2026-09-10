@@ -88,3 +88,54 @@ GET  /health
 - **Outbox:** `app.outbox` rows are written transactionally with events; a worker consumes `WHERE processed_at IS NULL` (worker process is shipped (`scripts/outbox-worker.js` — compose `outbox` service, `npm run worker`; retries with backoff, parks poison rows) — `docs/08`).
 - **Secrets:** set `JWT_SECRET` in any shared environment; `.env` is dev-only.
 - **Logs:** structured pino; `level:50` lines are errors with stack + reqId.
+
+## Backup & restore (T205 — ops audit §15)
+
+**Backup.** `scripts/backup.sh` writes one directory per UTC night under
+`BACKUP_DIR` (default `/var/backups/schoolos`): `globals.sql`
+(`pg_dumpall --globals-only` — the roles `schoolos`/`schoolos_app`, their
+passwords and memberships) plus `<db>.dump` (custom-format `pg_dump`, default db
+`schoolos`; override with `BACKUP_DATABASES`). Every dump is verified with
+`pg_restore --list` before it counts. Retention: `BACKUP_KEEP_DAYS` nights
+(default 7). The script exits non-zero on any failure and deletes the failed
+artifact; a missing night directory or a leftover `.incomplete` marker means that
+night did not complete — treat it as **no backup for that night**.
+
+```bash
+# one-off, host with a postgres-client >= server major
+BACKUP_DIR=/var/backups/schoolos PGUSER=postgres server/scripts/backup.sh
+
+# nightly cron (02:17 IST; silence is success, mail on failure)
+# 17 2 * * * BACKUP_DIR=/var/backups/schoolos PGUSER=postgres /srv/schoolos/server/scripts/backup.sh >> /var/log/schoolos-backup.log 2>&1
+
+# docker-only variant (no host client needed — the db image ships the tools):
+#   docker compose -f server/docker-compose.yml exec -T db pg_dump -U schoolos --format=custom schoolos \
+#     > /var/backups/schoolos/schoolos-$(date -u +%F).dump
+#   docker compose -f server/docker-compose.yml exec -T db pg_dumpall --globals-only -U schoolos \
+#     > /var/backups/schoolos/globals-$(date -u +%F).sql
+```
+
+Backups contain student PII: keep `BACKUP_DIR` off any web path, owner-only
+permissions (the script sets `umask 077`), encrypted volumes at rest.
+
+**Restore (rehearse quarterly — an untested backup is a rumor).**
+
+```bash
+# 0) provision an EMPTY Postgres cluster (same or newer major version)
+# 1) globals FIRST — the roles and memberships everything else depends on
+psql -h 127.0.0.1 -U postgres -f /var/backups/schoolos/<date>/globals.sql
+# 2) recreate the app database with the restored owner
+psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE schoolos OWNER schoolos;"
+# 3) restore as a SUPERUSER with owners preserved — the dump encodes ownership and
+#    default-privilege entries for BOTH roles (schoolos + postgres), which only a
+#    superuser can replay. (Drilled 2026-09-10: zero ignored errors + check green.
+#    `--no-owner --role=schoolos` is NOT equivalent: it drops the postgres-owned
+#    default-privilege entries with "permission denied" errors.)
+pg_restore -h 127.0.0.1 -U postgres -d schoolos -j 4 \
+  /var/backups/schoolos/<date>/schoolos.dump
+# 4) verify the restored system gates green (reachability, migrations, RLS baseline)
+cd server && DATABASE_URL=postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/schoolos node scripts/check.js
+```
+
+**RPO with this scheme is ≤ 24h.** WAL archiving / point-in-time recovery is a
+separate work item (sprint cut list) — do not claim PITR from these dumps.

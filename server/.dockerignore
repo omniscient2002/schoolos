@@ -1,0 +1,21 @@
+# T206 (ops audit §15: "no .dockerignore (27MB context)"). Build context is this
+# server/ directory (compose `build: .`). The image needs only: src, migrations,
+# scripts, package.json + lockfile (see Dockerfile) — everything else is context
+# dead weight or must never land in an image layer.
+node_modules
+tests
+.env
+.env.*
+*.log
+logs
+storage
+coverage
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+*.md
+.qa-*
+.chrome-*
+dist
+.npm-cache

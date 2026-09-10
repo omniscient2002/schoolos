@@ -10,14 +10,25 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # Engine parity: compose db + every dev/test cluster run Postgres 18 — CI
+        # must test the same major, not the 16 the old job shipped. Digest-pinned
+        # (backlog: image digest pinning).
+        image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
         env:
-          POSTGRES_USER: schoolos
-          POSTGRES_PASSWORD: schoolos_dev_pw
+          # The test harness's admin lane (tests/helpers.js `ADMIN`,
+          # scripts/bootstrap.js, scripts/ci-init-db.js) connects as `postgres` with
+          # NO password over TCP 127.0.0.1:5432 and drops/creates databases — the
+          # service container must therefore BE a `postgres` superuser with trust
+          # auth. The constrained `schoolos` owner role + app db are provisioned
+          # idempotently by scripts/ci-init-db.js (mirrors server/README.md quick
+          # start). Fixes the audit's §13 finding: POSTGRES_USER=schoolos shipped a
+          # container with no `postgres` role and no `schoolos` database.
+          POSTGRES_USER: postgres
           POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U schoolos"
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/schoolos
@@ -29,13 +40,26 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: server/package-lock.json }
       - run: npm ci
         working-directory: server
+      - name: Provision database (role schoolos + db schoolos, idempotent)
+        run: node scripts/ci-init-db.js
+        working-directory: server
+      - name: Migrate the app database (idempotent — gives check.js its baseline)
+        run: node scripts/migrate.js
+        working-directory: server
       - name: Permission matrix (§43 — fails on any unguarded route)
         run: node scripts/permission-matrix.js
         working-directory: server
-      - name: Serial test suite (one process at a time — shared schoolos_test)
+      # T207 (§23 R2.10) — UI↔door parity gate. REPORT-ONLY this sprint: it prints
+      # the yellow list (wrapper-only/orphan write doors + mock-plane importers)
+      # while L4/L5 re-point the flagship screens. Flip to `--enforce` (fails CI on
+      # any unwired door or mock import) at the final gate or when S0 calls it.
+      - name: UI↔door parity gate (T207 — report-only; flip to --enforce at final gate)
+        run: node scripts/parity-gate.js
+        working-directory: server
+      - name: Serial test suite (one process at a time — schoolos_test recreated per file)
         run: npm test
         working-directory: server
-      - name: Server factory gates (RLS baseline, DB reachability)
+      - name: Server factory gates (DB reachable, migrations applied, RLS baseline)
         run: node scripts/check.js
         working-directory: server
 
@@ -60,9 +84,13 @@ jobs:
         with: { node-version: 22 }
       - name: Secret scan (E5 — fail closed)
         run: node scripts/secret-scan.mjs
-      - name: npm audit (server deps, fail on high)
-        run: npm audit --audit-level=high || true
+      # T202: the old steps ended in `|| true` — they could never fail. Production
+      # deps only (--omit=dev); no exceptions are currently documented. If a high
+      # finding ever needs a temporary waiver, document it INLINE here with its GHSA
+      # id + justification and gate on the remainder — never restore `|| true`.
+      - name: npm audit (server prod deps — fails the build on high/critical)
+        run: npm audit --omit=dev --audit-level=high
         working-directory: server
-      - name: npm audit (app deps, fail on high)
-        run: npm audit --audit-level=high || true
+      - name: npm audit (app prod deps — fails the build on high/critical)
+        run: npm audit --omit=dev --audit-level=high
         working-directory: app

@@ -1,7 +1,8 @@
 # SchoolOS — full stack (db + api). For local/staging use.
 services:
   db:
-    image: postgres:18-alpine
+    # Digest-pinned (backlog: image digest pinning) — bump deliberately.
+    image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
     environment:
       POSTGRES_USER: schoolos
       POSTGRES_PASSWORD: ${DB_PASSWORD:-schoolos_dev_pw}
@@ -17,10 +18,19 @@ services:
 
   api:
     build: .
+    # T206 (ops audit §15 deploy row): the API is a long-running service and must
+    # survive host reboots/crashes like the workers below. (retention + demo-init
+    # stay restart:"no" — they are one-shots by design.)
+    restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      # T206 backlog stub — log shipping (no shipper wired in code yet; pino only
+      # writes stdout). When a shipper lands, these become real contract:
+      # LOG_LEVEL: ${LOG_LEVEL:-info}          # pino level (config.js reads it today)
+      # LOG_SHIP_URL: ${LOG_SHIP_URL:-}        # e.g. vector/loki endpoint (UNIMPLEMENTED)
+      # LOG_SHIP_TOKEN: ${LOG_SHIP_TOKEN:-}    # shipper auth (UNIMPLEMENTED)
       # config.js refuses CORS_ORIGINS="*" in production — pass the operator's
       # allowlist through (comma-separated); see server/.env.example.
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in production}
@@ -124,3 +134,14 @@ services:
 
 volumes:
   pgdata:
+
+# T205 — nightly backups (ops audit §15). Scheduler wiring: host cron is the
+# sanctioned path for this sprint (a `backup` one-shot service + in-container cron
+# is deferred). The db image ships pg_dump/pg_dumpall, so the docker-only variant
+# needs no host postgres-client — cron lines (02:17 IST nightly):
+#   17 2 * * * cd /srv/schoolos/server && docker compose exec -T db pg_dump -U schoolos --format=custom schoolos | gzip > /var/backups/schoolos/schoolos-$$(date -u +\%F).dump.gz
+#   23 2 * * * cd /srv/schoolos/server && docker compose exec -T db pg_dumpall --globals-only -U schoolos > /var/backups/schoolos/globals-$$(date -u +\%F).sql
+# Retention + verification + the full restore procedure: server/README.md §Backup &
+# restore and scripts/backup.sh (host-cron variant with pg_restore --list checks).
+# NOTE: compose `exec` skips one-shots when the stack is down — prefer the host
+# cron against the published 127.0.0.1:5432 with a local client if that can happen.

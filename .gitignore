@@ -21,13 +21,10 @@ shots/
 # OS / editor
 .DS_Store
 
-# browser profiles / qa temp / agent dirs
-.chrome-profile/
-.chrome-profile2/
-.qa-relcert2-tmp/
+# browser profiles / qa temp / agent dirs (PII residue — never track)
+.chrome-profile*/
+.qa-relcert*/
 .claude/
-
-.qa-relcert-tmp/
 .research/
 uk*.xml
 
