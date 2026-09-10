@@ -142,11 +142,14 @@ export function register(app, kernel) {
       const code = String(randomInt(100000, 1000000)); // P3-2 (cycle 6): CSPRNG — Math.random is not a secret source
       const salt = randomBytes(16).toString('hex');
       const hash = scryptSync(code, salt, 64).toString('hex');
-      // kernel OTP-vault write (owner path): the app role is RLS-denied on the vault —
-      // only the kernel connection may write verification secrets (008 parity)
+      // T102 (P0-1): pickup codes live in THIS plugin's vault (plugin_visitors.pickup_otp,
+      // 024 — RLS denies the app role, owner-path write only). They must NEVER ride
+      // app.auth_otps: a vault row there is a LOGIN OTP and a front-desk pickup code
+      // could be redeemed at /auth/otp/verify for a full guardian session.
       const otp = await q(
-        `INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + make_interval(mins => $4)) RETURNING id`,
-        [req.user.tenant_id, g.phone, `${salt}:${hash}`, ttl(s)]);
+        `INSERT INTO plugin_visitors.pickup_otp (tenant_id, visit_id, phone, code_hash, expires_at)
+         VALUES ($1,$2,$3,$4, now() + make_interval(mins => $5)) RETURNING id`,
+        [req.user.tenant_id, v.id, g.phone, `${salt}:${hash}`, ttl(s)]);
       await c.query(`UPDATE plugin_visitors.visit SET status='pickup_pending', otp_request_id=$1, updated_at=now() WHERE id=$2`, [otp.rows[0].id, v.id]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'visitors', label: `pickup requested — OTP sent to primary guardian (…${g.phone.slice(-4)})`, ref: v.id },
@@ -171,18 +174,18 @@ export function register(app, kernel) {
       if (!v) return bad(reply, 'We couldn\'t find that visit', 404);
       if (v.status !== 'pickup_pending' || !v.otp_request_id) return bad(reply, `No pickup code is active for this visit (status: ${v.status})`, 409);
       const s = (await settings(req.user.tenant_id)).rows[0]?.settings ?? {};
-      const otp = (await q(`SELECT id, phone, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE id=$1`, [v.otp_request_id])).rows[0];
+      const otp = (await q(`SELECT id, phone, code_hash, attempts, expires_at, consumed_at FROM plugin_visitors.pickup_otp WHERE id=$1 AND tenant_id=$2`, [v.otp_request_id, req.user.tenant_id])).rows[0];
       if (!otp || otp.consumed_at) return bad(reply, 'That code is used up — request a new one', 409); // UI lane #1: OTP-state ≠ auth
       if (new Date(otp.expires_at) < new Date()) return bad(reply, 'That code has expired — request a new one', 409); // UI lane #1
       if (otp.attempts >= config.otp.maxAttempts) return bad(reply, 'Too many wrong attempts — request a new code', 429);
       const [salt, hash] = otp.code_hash.split(':');
       const ok = (() => { try { return timingSafeEqual(scryptSync(String(code), salt, 64), Buffer.from(hash, 'hex')); } catch { return false; } })();
       if (!ok) {
-        await q(`UPDATE app.auth_otps SET attempts = attempts + 1 WHERE id=$1`, [otp.id]);
+        await q(`UPDATE plugin_visitors.pickup_otp SET attempts = attempts + 1 WHERE id=$1`, [otp.id]);
         await c.query(`UPDATE plugin_visitors.visit SET otp_attempts = otp_attempts + 1, updated_at=now() WHERE id=$1`, [v.id]);
         return bad(reply, 'That code is not right — check it and try again', 422); // UI lane #1: unprocessable code, not an auth failure
       }
-      await q(`UPDATE app.auth_otps SET consumed_at = now() WHERE id=$1`, [otp.id]); // consume on success (kernel parity, owner path)
+      await q(`UPDATE plugin_visitors.pickup_otp SET consumed_at = now() WHERE id=$1`, [otp.id]); // consume on success (owner path)
       const u = await c.query(`UPDATE plugin_visitors.visit SET status='verified', verified_at=now(), updated_at=now() WHERE id=$1 RETURNING status`, [v.id]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'visitors', label: 'guardian verified pickup', ref: v.id },

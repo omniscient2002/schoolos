@@ -107,38 +107,68 @@ export async function buildApp(opts = {}) {
   };
 
   // --- phone + OTP ---
+  // T103 (§7 P0-3): identity resolution is TENANT-BOUND end to end. A phone that
+  // exists in several tenants must never let the kernel silently pick rows[0] —
+  // a self-signup attacker could plant the victim's phone in their own school and
+  // receive/verify the victim's code. Multi-row matches 409 exactly like password
+  // login; X-Tenant-Hint carries the opaque tenant ids (no names, no PII) so a
+  // future chooser can re-submit with an explicit tenantId.
+  const multiTenantReply = (reply, rows) => reply.code(409)
+    .header('x-tenant-hint', rows.map((r) => r.tenant_id).join(','))
+    .send({
+      error: 'This identity is used in more than one school on this platform. Sign in from your school\'s own sign-in page (password), or ask the school office which school your account belongs to.',
+      multiTenant: true, schools: rows.length,
+    });
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   app.post('/auth/otp/request', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const { phone } = req.body ?? {};
+    const { phone, tenantId } = req.body ?? {};
     if (!phone || !/^\+?[0-9]{10,14}$/.test(phone)) return reply.code(400).send({ error: 'valid phone required (+countrycode)' });
-    const u = await q(`SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active`, [phone]);
-    const user = u.rows[0] ?? null;
+    const scope = typeof tenantId === 'string' && UUID_RE.test(tenantId) ? tenantId : null;
+    const u = await q(
+      `SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active ${scope ? 'AND tenant_id=$2' : ''} ORDER BY created_at`,
+      scope ? [phone, scope] : [phone]);
     // Uniform response shape — phone enumeration must not distinguish
-    // registered from unregistered numbers.
+    // registered from unregistered numbers (a multi-tenant 409 mirrors the
+    // password-login contract; see T103 comment above).
+    if (!scope && u.rows.length > 1) return multiTenantReply(reply, u.rows);
+    const user = u.rows[0] ?? null;
     const body = { sent: true, expiresInSeconds: Math.round(config.otp.ttlMs / 1000), devEcho: config.otp.devEcho };
     if (user) {
       const code = String(randomInt(100000, 1000000)); // CSPRNG — Math.random is not a secret source (ops.visitors precedent)
       const salt = randomBytes(16).toString('hex');
       const hash = scryptSync(code, salt, 64).toString('hex');
       // kernel path: the OTP vault denies the app role entirely (RLS policy) —
-      // only the owner connection may write verification secrets.
+      // only the owner connection may write verification secrets. The row is
+      // bound to the issuing tenant (auth_otps.tenant_id) — T103.
       await q(`INSERT INTO app.auth_otps (tenant_id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + make_interval(secs => $4))`,
         [user.tenant_id, phone, `${salt}:${hash}`, config.otp.ttlMs / 1000]);
-      req.log.warn({ phone: phone.slice(-4), msg: 'OTP issued' });
+      req.log.warn({ phone: phone.slice(-4), tenant: user.tenant_id, msg: 'OTP issued' });
       if (config.otp.devEcho) body.devCode = code; // dev-only echo, opt-in via OTP_DEV_ECHO
     }
     return body;
   });
 
   app.post('/auth/otp/verify', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const { phone, code } = req.body ?? {};
+    const { phone, code, tenantId } = req.body ?? {};
     if (!phone || !code) return reply.code(400).send({ error: 'phone and code required' });
-    const u = await q(`SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active`, [phone]);
+    const scope = typeof tenantId === 'string' && UUID_RE.test(tenantId) ? tenantId : null;
+    const u = await q(
+      `SELECT id, tenant_id, name, role, phone FROM app.users WHERE phone=$1 AND active ${scope ? 'AND tenant_id=$2' : ''} ORDER BY created_at`,
+      scope ? [phone, scope] : [phone]);
     // Uniform failure copy for EVERY path — registered/unregistered/expired/missing
     // code all look identical from outside (phone-enumeration defense, RT-7cyc8).
     const DENIED = { error: 'that code didn’t work — request a new one and try again' };
     const deny = () => reply.code(401).send(DENIED);
+    if (!scope && u.rows.length > 1) return multiTenantReply(reply, u.rows);
     const user = u.rows[0];
-    const otp = user ? await q(`SELECT id, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps WHERE phone=$1 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1`, [phone]) : { rows: [] };
+    // T103 (P0-3): the vault row must match phone AND the issuing tenant. An OTP
+    // issued in tenant A can never verify the account of the same phone in
+    // tenant B — the cross-tenant session-issuance path is closed.
+    const otp = user ? await q(
+      `SELECT id, code_hash, attempts, expires_at, consumed_at FROM app.auth_otps
+       WHERE phone=$1 AND tenant_id=$2 AND consumed_at IS NULL
+       ORDER BY created_at DESC LIMIT 1`, [phone, user.tenant_id]) : { rows: [] };
     const row = otp.rows[0];
     if (!row) return deny();
     if (new Date(row.expires_at) < new Date()) return deny(); // expiry uses config.otp.ttlMs
@@ -193,21 +223,27 @@ export async function buildApp(opts = {}) {
       const profile = await profRes.json();
       const email = (profile.email ?? '').toLowerCase();
       if (!email || profile.email_verified === false) return reply.code(401).send({ error: 'google email not verified' });
-      const u = await q(`SELECT id, tenant_id, name, role, email FROM app.users WHERE lower(email)=lower($1) AND active`, [email]);
+      // T103 (P0-3): never rows[0] on a multi-tenant email — same 409 contract as
+      // password login; X-Tenant-Hint lists the opaque tenant ids.
+      const u = await q(`SELECT id, tenant_id, name, role, email FROM app.users WHERE lower(email)=lower($1) AND active ORDER BY created_at`, [email]);
+      if (u.rows.length > 1) return multiTenantReply(reply, u.rows);
       if (!u.rows[0]) return reply.code(403).send({ error: `no SchoolOS account for ${email} — contact your school admin` });
       await q(`UPDATE app.users SET auth_provider='google' WHERE id=$1`, [u.rows[0].id]);
       return issueSession(u.rows[0], 'google-sso');
     } catch (e) { req.log.error(e); return reply.code(502).send({ error: 'google sso unreachable' }); }
   });
 
-  // Dev SSO simulator — ONLY when Google isn't configured and we're not in production.
-  // Lets the full SSO UX be exercised end-to-end before real OAuth credentials exist.
+  // Dev SSO simulator — armed ONLY by config.devSsoEnabled (T101/P0-2: NODE_ENV
+  // must be exactly 'development' AND AUTH_DEV_SSO explicitly set; config logs a
+  // loud warning at boot when it arms). Production has no path to this door, and
+  // a real Google OAuth config always takes precedence.
   app.post('/auth/google/demo', async (req, reply) => {
-    const demoSso = process.env.AUTH_DEV_SSO === '1' && config.env !== 'production';
-    if (!demoSso || googleConfigured()) return reply.code(403).send({ error: 'dev SSO simulator disabled' });
+    if (!config.devSsoEnabled || googleConfigured()) return reply.code(403).send({ error: 'dev SSO simulator disabled' });
     const { email } = req.body ?? {};
     if (!email) return reply.code(400).send({ error: 'email required' });
-    const u = await q(`SELECT id, tenant_id, name, role, email FROM app.users WHERE lower(email)=lower($1) AND active`, [email]);
+    // T103 (P0-3): multi-tenant email → 409 with X-Tenant-Hint, never rows[0].
+    const u = await q(`SELECT id, tenant_id, name, role, email FROM app.users WHERE lower(email)=lower($1) AND active ORDER BY created_at`, [email]);
+    if (u.rows.length > 1) return multiTenantReply(reply, u.rows);
     if (!u.rows[0]) return reply.code(403).send({ error: `no SchoolOS account for ${email}` });
     return issueSession(u.rows[0], 'google-sso (dev simulator)');
   });
@@ -281,31 +317,41 @@ export async function buildApp(opts = {}) {
     const t = await q(`SELECT name, slug, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id]).catch(() => ({ rows: [] }));
     const tn = t.rows[0];
     if (tn && tn.slug !== 'meridian') {
-      // NON-DEMO TENANTS GET AN EMPTY WORLD: a self-signup school must see
-      // blank screens with only ITS OWN live records — never the demo school's
-      // students/timetable/fees. Shape stays identical so every screen's
-      // empty-state renders naturally; /onboard/status powers what's next.
+      // NON-DEMO TENANTS GET AN EMPTY WORLD — now by ALLOWLIST (T104, §7.4 P2-2 /
+      // §9.5): a self-signup school receives ONLY (a) its own school identity and
+      // (b) a fixed set of STRUCTURAL keys — collections as honest empties, plus
+      // the two zero-shapes screens compute against. Every seed-derived key
+      // (DEMO_STUDENT, DEMO_GUARDIAN, DEMO_SECTION_ID, FEE_STORY, SLA_POLICY,
+      // deskSettings, SCENARIOS, and the demo corpus behind every collection) is
+      // ABSENT from the payload — an allowlist cannot forget a key the way the
+      // old spread-then-override blocklist did. The frontend kernel tolerates
+      // every removed key (decisions D-4/D-5: DEFAULT_SLA lives client-side).
+      const EMPTY_WORLD_COLLECTIONS = [
+        'students', 'teachers', 'staff', 'guardians', 'guardianLinks',
+        'sections', 'timetable', 'busRoutes', 'attendance',
+        'feeObligations', 'payments', 'obligations', 'leads', 'documents',
+        'incidents', 'cases', 'actionItems', 'decisions', 'meetings',
+        'memoryDocs', 'policies', 'workflows', 'workflowRuns', 'calendarEvents',
+        'healthIssues', 'notifications', 'auditEntries', 'insights',
+        'assets', 'vendors', 'maintPlans', 'inspections', 'inventory',
+        'workOrders', 'technicians', 'calls', 'gatePasses', 'visitors',
+        'deskIntents', 'guardianChat', 'models',
+      ];
       const cfg = tn.config ?? {};
       const ownCampus = (cfg.campuses?.length ? cfg.campuses : [{ id: 'main', name: `${tn.name} — Main`, shortName: 'Main' }]).map((c, i) => ({
         id: c.id ?? `campus-${i + 1}`, name: c.name ?? c, shortName: c.shortName ?? String(c.name ?? c).split(' ')[0],
         students: 0, capacity: null, hue: 'var(--campus-a)',
       }));
       const empty = {
-        ...datasetPayload,
+        // tenant-real identity blocks
         SCHOOL: { name: tn.name, short: tn.name.split(' ')[0], established: null, board: cfg.board ?? null },
         campuses: ownCampus,
+        // honest structural empties
         TERM_DAYS: [],
-        students: [], teachers: [], staff: [], guardians: [], guardianLinks: [],
-        sections: [], timetable: [], busRoutes: [], attendance: [],
-        feeObligations: [], payments: [], leads: [], documents: [], incidents: [],
-        cases: [], actionItems: [], decisions: [], meetings: [], memoryDocs: [],
-        policies: [], workflows: [], workflowRuns: [], obligations: [], calendarEvents: [],
-        healthIssues: [], notifications: [], auditEntries: [], insights: [],
-        assets: [], vendors: [], maintPlans: [], inspections: [], inventory: [],
-        technicians: [], calls: [], gatePasses: [], visitors: [], deskIntents: [],
-        guardianIdByStudent: {}, SCENARIOS: [],
+        ...Object.fromEntries(EMPTY_WORLD_COLLECTIONS.map((k) => [k, []])),
+        guardianIdByStudent: {},
+        // zero-shapes (b86d6fa contract: ItAdmin/HR render from these, never crash)
         aiUsage: { days: [], byFeature: [], latency: { p50: 0, p95: 0 }, failureRate: 0, monthSpend: 0, budget: 0 },
-        models: [], guardianChat: [],
       };
       for (const k of Object.keys(empty)) if (empty[k] === undefined) delete empty[k];
       return empty;

@@ -80,9 +80,14 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     assert.equal(p.statusCode, 200);
     assert.match(p.json().devCode, /^\d{6}$/, 'dev-only OTP echo (kernel parity, OTP_DEV_ECHO=1)');
     pickupDevCode = p.json().devCode;
-    const vault = await sql(`SELECT phone, attempts, consumed_at FROM app.auth_otps WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [pickupVisit]);
+    // L1 sprint T102 (P0-1): pickup OTPs live in the plugin's own vault
+    // (plugin_visitors.pickup_otp) — the LOGIN vault (app.auth_otps) must be
+    // untouched by the desk (054 purged the legacy rows).
+    const vault = await sql(`SELECT phone, attempts, consumed_at FROM plugin_visitors.pickup_otp WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [pickupVisit]);
     assert.equal(vault.rows[0].phone, student.phone, 'OTP went to the PRIMARY guardian phone');
     assert.equal(vault.rows[0].consumed_at, null);
+    const loginVault = await sql(`SELECT count(*)::int n FROM app.auth_otps WHERE phone=$1`, [student.phone]);
+    assert.equal(loginVault.rows[0].n, 0, 'pickup code NEVER lands in the login OTP vault (P0-1 negative)');
     const ev = await sql(`SELECT count(*)::int n FROM app.outbox WHERE topic='visitor.pickup.requested.v1'`);
     assert.equal(ev.rows[0].n, 1);
   });
@@ -102,7 +107,7 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
       payload: { code: pickupDevCode }, headers: H(co.token) });
     assert.equal(ok.statusCode, 200);
     assert.equal(ok.json().status, 'verified');
-    const vault = await sql(`SELECT consumed_at FROM app.auth_otps WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [pickupVisit]);
+    const vault = await sql(`SELECT consumed_at FROM plugin_visitors.pickup_otp WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [pickupVisit]);
     assert.ok(vault.rows[0].consumed_at, 'OTP consumed on success (single-use)');
     const ev = await sql(`SELECT count(*)::int n FROM app.outbox WHERE topic='visitor.pickup.verified.v1'`);
     assert.equal(ev.rows[0].n, 1);
@@ -191,7 +196,7 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     // force the pending OTP into the expired state directly (no TTL wait)
     const v = (await sql(`SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1 AND status='pickup_pending' ORDER BY created_at DESC LIMIT 1`, [pickupVisit])).rows[0];
     if (v) { // pickupVisit already verified in test 4 — this branch only trips on fresh orders
-      await sql(`UPDATE app.auth_otps SET expires_at = now() - interval '1 minute' WHERE id=$1`, [v.otp_request_id]);
+      await sql(`UPDATE plugin_visitors.pickup_otp SET expires_at = now() - interval '1 minute' WHERE id=$1`, [v.otp_request_id]);
       const late = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${pickupVisit}/pickup/verify`,
         payload: { code: '000000' }, headers: H(co.token) });
       assert.equal(late.statusCode, 409, 'expired code → 409, never 401');
@@ -205,7 +210,7 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     const pr = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup`, payload: {}, headers: H(co.token) });
     assert.equal(pr.statusCode, 200, pr.body);
     const req2 = (await sql(`SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1`, [vid])).rows[0].otp_request_id;
-    await sql(`UPDATE app.auth_otps SET expires_at = now() - interval '1 minute' WHERE id=$1`, [req2]);
+    await sql(`UPDATE plugin_visitors.pickup_otp SET expires_at = now() - interval '1 minute' WHERE id=$1`, [req2]);
     const late = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup/verify`,
       payload: { code: '000000' }, headers: H(co.token) });
     assert.equal(late.statusCode, 409, 'expired code → 409 (was 401: logged the desk out mid-verify)');

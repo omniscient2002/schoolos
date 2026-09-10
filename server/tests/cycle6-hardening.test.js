@@ -189,7 +189,8 @@ describe('P3 hygiene pins', () => {
     await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/checkin`, payload: {}, headers: H(co.token) });
     const p = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup`, payload: {}, headers: H(co.token) });
     assert.match(p.json().devCode, /^\d{6}$/, '6-digit code (randomInt(100000, 1000000))');
-    const vault = await sql(`SELECT code_hash, consumed_at FROM app.auth_otps WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [vid]);
+    // L1 sprint T102: pickup OTPs live in plugin_visitors.pickup_otp (P0-1 vault split)
+    const vault = await sql(`SELECT code_hash, consumed_at FROM plugin_visitors.pickup_otp WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [vid]);
     assert.match(vault.rows[0].code_hash, /^[^:]+:[0-9a-f]{128}$/, 'scrypt+salt hash in the vault');
   });
 

@@ -34,7 +34,12 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
 
   // ============ students & people ============
   const STAFF_ROSTER = new Set(['principal','owner','itadmin','finance','coordinator','admissions','transport','facilities','technician']);
-  app.get('/students', { preHandler: me }, async (req) => {
+  app.get('/students', { preHandler: me }, async (req, reply) => {
+    // T105a (§7.3 P1-2): the whole-school roster is a STAFF surface. There is no
+    // structural user↔student binding for the student role (name-equality is the
+    // P1-4 anti-pattern), so the student role is refused here — their plane is
+    // student.world's own doors.
+    if (req.user.role === 'student') return bad(reply, 'Your student desk shows your own records — the school roster is staff-only', 403);
     const { grade, section, search, limit = 100, offset = 0 } = req.query;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTR-001 RT-005: parents are scoped to their own child via the guardian record;
@@ -62,6 +67,10 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
 
   app.get('/students/:id', { preHandler: me }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // T105a (P1-2): a student may not open arbitrary student records; without a
+      // structural binding there is no id they can authorize, so 404 (existence
+      // not revealed).
+      if (req.user.role === 'student') return bad(reply, 'not found', 404);
       // RTR-001 RT-005: a parent may only open their own child's record.
       if (req.user.role === 'parent') {
         // RT-7cyc8 P1-9: structural guardian binding (family.child_link), NOT name matching.
@@ -124,12 +133,23 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/attendance/mark', { preHandler: require('teacher','coordinator','principal') }, async (req, reply) => {
+  app.post('/attendance/mark', { preHandler: require('owner','principal','coordinator','teacher') }, async (req, reply) => {
     const { date = new Date().toISOString().slice(0,10), marks } = req.body ?? {};
     if (!Array.isArray(marks) || marks.length === 0) return bad(reply, 'marks[] required (studentId, status)');
     const valid = ['present','absent','late','leave'];
     if (marks.some(m => !m.studentId || !valid.includes(m.status))) return bad(reply, 'invalid marks payload');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // T105c (§7.3 P1-7): marking is bound to class ownership. Best-effort
+      // class_of_record check first: the only assignment surfaces that exist
+      // (app.timetable_slots / app.timetable_substitutions, migration 021) carry
+      // teacher_name but NO grade/section binding — verified against the schema —
+      // so no class-assignment data can exist for (teacher → this student's class).
+      // Per the sprint brief the fallback is therefore: principal+ authority marks
+      // the register, and the fallback is stamped into the audit outcome below.
+      const sodFallback = !['owner', 'principal'].includes(req.user.role);
+      if (sodFallback) {
+        return bad(reply, 'Class-assignment records don\'t exist yet, so the register can only be marked by the principal\'s office.', 403);
+      }
       const upserts = [];
       for (const m of marks) {
         upserts.push(c.query(
@@ -155,7 +175,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
             [req.user.tenant_id, JSON.stringify([g.phone]), `Absence notice for ${g.name} (${date}) — please confirm.`, randomUUID()]);
         }
       }
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Marked attendance', recordType: 'Attendance', recordRef: `${marks.length} students on ${date}`, reason: 'register marked', policyRef: 'Attendance §1.1', outcome: `${absents.length} absence notices queued` });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Marked attendance', recordType: 'Attendance', recordRef: `${marks.length} students on ${date}`, reason: 'register marked', policyRef: 'Attendance §1.1', outcome: `${absents.length} absence notices queued · authority: principal+ (T105c: no class-assignment data exists to bind a teacher to a class)` });
       return { ok: true, marked: marks.length, absent: absents.length, noticesQueued: absents.length };
     });
   });
@@ -197,6 +217,14 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const o = await c.query(`SELECT * FROM app.fee_obligations WHERE id=$1 AND status <> 'void' FOR UPDATE`, [obligationId]);
       if (!o.rows[0]) return bad(reply, 'obligation not found', 404);
+      // T105b (§7.3 P1-3): a parent may start a payment ONLY on their own child's
+      // obligation (structural family.child_link binding, rename-proof) — a parent
+      // initiating on another family's obligation deadlocks the real one via the
+      // one-open-payment constraint. 404 keeps obligation existence private.
+      if (req.user.role === 'parent') {
+        const own = await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, o.rows[0].student_id]);
+        if (!own.rows[0]) return bad(reply, 'obligation not found', 404);
+      }
       const due = BigInt(o.rows[0].amount_cents) - BigInt(o.rows[0].paid_cents);
       if (due <= 0n) return bad(reply, 'obligation already settled', 409);
       const open = await c.query(`SELECT id FROM app.payments WHERE obligation_id=$1 AND status='initiated'`, [obligationId]);
@@ -277,7 +305,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
            `Draft ready (template TRANSPORT_DELAY). Audience resolved from ${routeCode} roster.`,
            `Transport §3.1 — delay > 10 min triggers guardian notice; approval before send.`,
            ev.id,
-           JSON.stringify({ kind: 'message', audience: `Route ${routeCode} guardians`, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${routeCode} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk` })]);
+           JSON.stringify({ kind: 'message', audience: `Route ${routeCode} guardians`, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${routeCode} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk`, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
         action = a.rows[0];
         await linkLineage(c, req.user.tenant_id, { eventId: ev.id, actionId: action.id, relation: 'raised', policyRef: 'Transport §3.1' });
       }
@@ -450,6 +478,23 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       }
       const ownerOk = a.owner_role === req.user.role || ['owner','principal'].includes(req.user.role) && a.owner_role !== 'finance';
       if (!ownerOk) return bad(reply, `only the owning authority (${a.owner_role}) may decide this action`, 403);
+      // T105d (§7.3 P1-9): the self-approval guard only had teeth when the payload
+      // carried proposed_by. For UNATTRIBUTED raises, block approval only where the
+      // raising desk CAN include the decider's role — the audited exploit paths:
+      //   · admissions offer→enrolled conversions (admissions ADMIN includes principal)
+      //   · legacy transport delay notices (transport desk includes principal; new
+      //     ones carry proposed_by — stamped at the raise site above)
+      // Sources whose raising desk provably EXCLUDES owner_role (health.clinic
+      // guardian notices, pack.cbse obligations) are untouched — there the owner
+      // role is a genuinely second authority approving a lower desk's raise.
+      // Dismissal stays open to the owning authority (rejection is not self-dealing).
+      const proposedBy = a.payload && typeof a.payload === 'object' ? (a.payload.proposed_by ?? null) : null;
+      const exploitableUnattributed = a.payload && typeof a.payload === 'object' && proposedBy == null
+        && ((a.source_event === 'admission.offer.accepted' && a.payload.leadId != null)
+          || (a.payload.kind === 'message' && a.payload.template === 'TRANSPORT_DELAY' && a.payload.proposed_by == null));
+      if (decision === 'approved' && exploitableUnattributed && req.user.role === a.owner_role && req.user.role !== 'owner') {
+        return bad(reply, 'Segregation of duties — this proposal was raised without an attributable proposer, so the owning desk cannot approve it. Ask the school owner to decide.', 403);
+      }
       if (a.payload && typeof a.payload === 'object' && a.payload.proposed_by === req.user.id && decision === 'approved')
         return bad(reply, 'self-approval is not permitted (segregation of duties)', 403);
       await c.query(`UPDATE app.actions SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,

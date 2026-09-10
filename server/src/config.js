@@ -39,10 +39,6 @@ export const config = {
   otp: {
     ttlMs: int(process.env.OTP_TTL_MS, 5 * 60 * 1000),
     maxAttempts: int(process.env.OTP_MAX_ATTEMPTS, 5),
-    // Dev echo is OPT-IN and never on in production: without it, OTP login
-    // requires a real SMS provider. Set OTP_DEV_ECHO=1 only in local dev.
-    // (RTR-001 fix: this literal cannot read `config.env` — TDZ — use NODE_ENV.)
-    devEcho: process.env.SMS_PROVIDER ? false : (process.env.NODE_ENV !== 'production' && process.env.OTP_DEV_ECHO === '1'),
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID ?? null,
@@ -52,6 +48,31 @@ export const config = {
   rateLimitMax: int(process.env.RATE_LIMIT_MAX, 300),
   staticDir: process.env.STATIC_DIR ?? null, // optional: serve built frontend
 };
+
+// ── T101 (STILL NOT GOOD §7 P0-2): dev doors fail CLOSED ─────────────────────
+// AUTH_DEV_SSO / OTP_DEV_ECHO arm ONLY when BOTH hold:
+//   1. NODE_ENV is exactly 'development' (staging boxes that inherit a dev
+//      posture via NODE_ENV=test/qa/staging never arm them), AND
+//   2. the operator EXPLICITLY opted in (flag present and truthy).
+// A production config cannot arm them through any code path — the flags are
+// computed once here and the HTTP layer reads only these booleans.
+const devFlagExplicitlyOn = (name) =>
+  process.env[name] === '1' || process.env[name] === 'true';
+const devSso = config.env === 'development' && devFlagExplicitlyOn('AUTH_DEV_SSO');
+// Dev echo additionally requires that no real SMS provider is configured —
+// arming an echo beside a live rail would leak codes into HTTP responses.
+const devEcho = config.env === 'development'
+  && devFlagExplicitlyOn('OTP_DEV_ECHO')
+  && !process.env.SMS_PROVIDER;
+if (devSso) {
+  console.warn('⚠️  AUTH_DEV_SSO IS ACTIVE — POST /auth/google/demo issues a full session for any existing email with zero credentials. NEVER set this outside a local developer machine.');
+}
+if (devEcho) {
+  console.warn('⚠️  OTP_DEV_ECHO IS ACTIVE — OTP codes are echoed in HTTP responses. NEVER set this outside a local developer machine.');
+}
+
+config.otp.devEcho = devEcho;
+config.devSsoEnabled = devSso;
 
 // RTR-001 RT-001: refuse to boot production on a default/known secret.
 // (Workers hold no signing key — they only read the database.)
