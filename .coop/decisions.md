@@ -130,3 +130,10 @@
 - **D-42 SOURCE TREE LAW:** app/src is TypeScript-only — no .js artifacts may exist or be committed there
   (vite resolves .js before .ts, so a stray compiled file silently replaces the real source and crashes
   boot). S0 deleted lib/format.js, lib/rng.js, types/domain.js (compiled CJS strays). Emit nothing into src/.
+- **D-43 WAVE-5 ACCEPTANCE ITEM (owner request):** "Librarian" must be creatable as a custom role via the
+  /roles console (L5-5.1) with library-scoped permissions, and the kernel (L3-4.2 resolution) must honor
+  it end-to-end: a user with ONLY the librarian role sees the Library module and nothing management-only.
+  L5 builds the console flow; L3 verifies enforcement server-side (a librarian token cannot read finance
+  doors, CAN use library doors). This item is verified in STILL NOT GOOD_3.md — it does not count done
+  until demonstrated. Note for the product ledger: principals keeping read-oversight of library is
+  acceptable and expected; the acceptance target is that a librarian-only account works.

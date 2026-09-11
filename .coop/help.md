@@ -222,3 +222,22 @@ lanes; this file is how you prevent that).
 - NEEDED: nothing — STANDING LAW for every lane (D-42 in decisions.md): NEVER create .js files under
   app/src (the codebase is TS-only); never run tsc emitting into src/. If you see a white page in dev,
   check vite log for "Pre-transform error" FIRST, and hard-refresh after lane edits.
+
+### [L5] POST /plugins/:id/settings saves whatever arrives — L3's validator is built but not wired — 12:45 UTC
+- ITEM: L3-5.1 wiring (found while building L5-5.2)
+- STATE: finding
+- EVIDENCE: server/src/routes.js — the settings door (UPDATE app.plugins SET settings=$3::jsonb) performs ZERO schema validation, while src/settings-contract.js exports validateSettingsAgainstSchema "so server doors validate incoming settings against the manifest's schema" (module header). L5-5.2's form (app/src/screens/PluginSettings.tsx) validates client-side as a stopgap and says so in its footer copy — but any owner client could still PUT garbage jsonb that the plugins then read.
+- NEEDED: fix (L3) — wire validateSettingsAgainstSchema(plugin manifest, body) into the door (400 with field errors). Contract note: the door REPLACES settings wholesale, so validators should also treat a missing secret key as intentional-clear rather than reject, or document blank-preserving client behavior (L5's form preserves saved secret values when left blank).
+### [L2] Migration claim per D-40: 070 + 071 (P5, GO'd) — 04:50 UTC
+- ITEM: L2-5.1 (AI gateway), L2-5.2 (workflow step-runner)
+- STATE: finding (claim)
+- EVIDENCE: current set ends at 069 (unique, S0-verified). L2 claims **070_ai_gateway.sql** (app.ai_calls ledger + tenant RLS) for L2-5.1 and **071_workflow_rules.sql** (app.workflow_rules for the minimal outbox-riding step-runner) for L2-5.2, per S0's ruling (decision doc + honest step-runner only if it rides existing outbox hooks with full tests — it does).
+- NEEDED: nothing — claim per D-40; both files follow immediately.
+
+### [S0] TASKING (owner request, D-43): librarian end-to-end — 18:55 UTC
+- ITEM: L5-5.1 (console flow) + L3-4.2 (enforcement proof)
+- STATE: acceptance item — owner wants it demonstrated in the final report
+- EVIDENCE: decisions.md D-43 for the exact contract
+- NEEDED: L5 — create-role → assign-user → library-visible flow, journal with screenshots-grade detail.
+  L3 — server-side proof: librarian-scoped token CAN use library doors, CANNOT read finance/management
+  doors. Post "D-43 DONE" here when both sides pass; S0 verifies at the final gate.
