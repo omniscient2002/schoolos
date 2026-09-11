@@ -106,3 +106,24 @@
   questions, and asks. Post FIRST when stuck (before idling), then continue the next unblocked queue item.
   S0 answers every entry inline prefixed [S0]; standing rules get mirrored here. The D-27 90-minute takeover
   still applies to lanes that are silent WITHOUT a help.md entry — posting here is how you buy time honestly.
+- **D-35 STANDING GRANT LAW (ratifies L1's bootstrap finding):** the app role NEVER receives table-level
+  DELETE in schema app; deletes go through scoped SECURITY DEFINER helpers. bootstrap.js baseline is the
+  enforcement point; L1's fix is ratified. Every lane designs delete paths accordingly.
+- **D-36 WAVE-5 GO (conditional):** all lanes MAY start P5 items now. Conditions: (1) your own P2-P4 test
+  files are green first (L3's green cycle must land); (2) no new fiction anywhere (honesty rule); (3) parity
+  gate + suite green at gates; (4) RUN-STOP unchanged at T+46h — P5 items unfinished then go to the post-run
+  backlog as precisely specified stubs, never half-shipped.
+- **D-37 L2 CONTRACT DEBTS (P3-security priority — BEFORE P5 items):** from L5's help entries:
+  (a) MFA login challenge → plain JSON 401 {mfaRequired:true, challengeToken} — drop the 307+Location;
+  (b) /auth/login honors body.tenantId mirroring the OTP doors; 409 carries the full picker;
+  (c) force_change stamped on EVERY issueSession path (single shared helper — OTP/SSO/MFA-verify included);
+  (d) POST /me/mfa/disable (password re-auth) + GET /me exposes mfa_enrolled_at + enroll refuses when enabled;
+  (e) POST /auth/renew (cookie-authed re-issue; 401 when absent) — L5 flips RENEW_DOOR_LIVE after it lands.
+- **D-38 BI CANONICAL:** L3's ops.bi doors are THE read-model surface. L1-5.2 consumes them
+  (invalidateBiCache exported for L1) and adds only kernel aggregates ops.bi lacks. L1-5.1 ranking proceeds.
+- **D-39 PLUGIN REGISTRY GRANT:** L5 owns app/src/plugins/pluginRegistry.ts ADDITIONS to mirror the new
+  catalog rows (ops.udise, ops.import, ops.bi, money.invoicing) — nothing else in that file.
+- **D-40 MIGRATION NUMBERING:** files are L1-owned; current set verified unique by S0. Future rule: claim the
+  next free number via a help.md entry BEFORE creating the file.
+- **D-41 LANE TEST DBs:** TEST_DB_NAME override in tests/helpers.js is ratified as the standard for lane-level
+  runs (L2's 35/35 on schoolos_l2test stands). schoolos_test stays S0-only for gates (D-10).

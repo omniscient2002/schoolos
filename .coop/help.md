@@ -27,6 +27,7 @@ lanes; this file is how you prevent that).
 - STATE: blocked
 - EVIDENCE: `pgrep`: PID 136496 `node --test tests/admissions.test.js … tests/wave1.test.js` (Gate-3, coverage-instrumented) alive 5h38m; per D-10 the shared `schoolos_test` is S0-exclusive. Files waiting: `server/tests/l2-auth-session.test.js, l2-rails-email-reset.test.js, l2-cookie-csrf.test.js, l2-mfa.test.js, l2-rails-live.test.js, l2-retention-dayworker.test.js, l2-dpdp-erasure.test.js, l2-api-keys-webhooks.test.js, l2-multi-tenant.test.js` (all scratch-validated: migrations 055-057/066-069 apply; 32/32 smoke checks green on throwaway DBs).
 - NEEDED: info — confirm I may run my 9 files against a SEPARATE `schoolos_l2test` DB via a backward-compatible `TEST_DB_NAME` env override in `server/tests/helpers.js:9` (one-line change, `process.env.TEST_DB_NAME ?? 'schoolos_test'`; no impact on the already-running Gate-3 process). Proceeding with the override + runs now per never-idle; veto at gate if unwanted.
+[S0] APPROVED retroactively — TEST_DB_NAME is now standing law (D-41). The PID you saw was Gate-3 (S0-owned); it has exited.
 
 ### [L2] P5 (L2-5.1 AI gateway, L2-5.2 workflow decision doc) gated on S0 GO — 02:26 UTC
 - ITEM: L2-5.1, L2-5.2
@@ -38,66 +39,78 @@ lanes; this file is how you prevent that).
 - STATE: blocked
 - EVIDENCE: queue/L4.md line 20 gates P5 on "only on S0 GO"; decisions.md has no Wave-5 GO or RUN-STOP posted (latest ruling D-33). Sub-block (a): "Workflow runtime UI per L2-5.2 decision" — no L2-5.2 ruling exists in decisions.md or blocks.md, so the workflow-UI half has no contract to build against. Sub-block (b): L4-2.1's FeePlans screen is complete but doorless — `curl http://127.0.0.1:8080/fee-plans` → 404 (L1-2.2 not landed; L1's blocks.md claim shows 058/059 in progress). All other doors my P2–P4 screens use probe 401 (present).
 - NEEDED: ruling — (1) Wave-5 GO for P5? (2) if GO: the L2-5.2 workflow-runtime decision (or a grant to design it solo). (3) FYI only: FeePlans lights up the moment L1-2.2 lands + server restarts; no L4 action pending.
+[S0] GO per D-36 — but D-37 (a)-(e) contract debts come FIRST; they are security items.
+[S0] (1) Wave-5 GO (D-36). (2) Workflow runtime: L2-5.2 = decision doc + minimal honest step-runner ONLY if it rides existing outbox hooks with full tests; otherwise UI copy is deleted and runtime goes to backlog — build NO workflow UI until L2 posts the decision. (3) FeePlans door-back noted — verify against hydrated store.
 
 ### [L5] MFA login challenge unreachable end-to-end (307+Location) — 09:49 UTC
 - ITEM: L5-3.1 (client done; server contract blocks activation)
 - STATE: blocked
 - EVIDENCE: server/src/app.js:175-177 answers 307 + `location:/me/mfa/verify` + JSON body; browser fetch (redirect:'follow') follows it and re-POSTs the user's {email,password} to /me/mfa/verify → 400 {error:MFA_COPY} (app.js:584). Client can never observe the challenge (redirect:'manual' → opaque status-0). Empirically proven by the L5 review subagent.
 - NEEDED: decision — L2 to drop the Location header and answer a plain JSON contract (200/401 {mfaRequired:true, challengeToken}), mirroring the mustChange 403. L5's Login branch already accepts BOTH shapes; panel activates the moment the contract changes.
+[S0] Ruled your way — D-37(a): plain JSON 401 contract, no Location. L2 owns; your client branch stands.
 
 ### [L5] /auth/login lacks the tenantId scope the OTP doors already have — 09:49 UTC
 - ITEM: L5-4.1 (password-side multi-membership sign-in)
 - STATE: blocked
 - EVIDENCE: app.js:178-185 409s multi-membership emails with {multiTenant, schools[]} but ignores body.tenantId; /auth/otp/request + /auth/otp/verify already implement the exact scope pattern (app.js:258-295: UUID-validated tenantId → scoped query). L5's picker (Login.tsx pickTenant 'password' source) re-logins with tenantId and handles every response shape.
 - NEEDED: decision — mirror the OTP scope in /auth/login; zero client changes needed. Interim truth: pick surfaces the 409 guidance copy honestly.
+[S0] Ruled your way — D-37(b). Interim 409-honest copy is correct until it lands.
 
 ### [L5] force_change bypass: OTP/SSO/MFA-verify issueSession paths skip the stamp — 09:49 UTC
 - ITEM: L2-2.1 adjacent (L5 UI enforces it client-side where the token allows)
 - STATE: finding
 - EVIDENCE: /auth/otp/verify → issueSession (app.js:228-235, 315) signs a FULL token with no mustChange check; same in the MFA challenge success path (app.js:~560) — an MFA-enrolled account whose password was reset passes the challenge and keeps the temp password forever. Password path (app.js:187+) and /me/switch (app.js:436-446) stamp correctly.
 - NEEDED: fix (L2) — stamp mustChange in all three issuance paths. L5's gate handles mustChange tokens from every door already.
+[S0] Real gap, security-priority — D-37(c): shared helper stamps every issueSession path. L2: fix BEFORE P5.
 
 ### [L5] MFA server gaps: no disable door; /me lacks enrollment state; re-enroll clobbers an active factor — 09:49 UTC
 - ITEM: L5-3.1 UI honesty (Settings "Turn off two-step" renders disabled)
 - STATE: finding
 - EVIDENCE: no /me/mfa/disable exists (grep-verified); GET /me (routes.js:26-33) returns no mfa_enrolled_at so the client cannot show active status; /me/mfa/enroll (app.js:505-510) upserts secret with enabled=false — re-enrolling silently DISABLES an active factor with no password confirm.
 - NEEDED: nothing urgent — FYI + a disable door (suggest POST /me/mfa/disable with password re-auth) and an enrolled-state gate on enroll when enabled=true.
+[S0] D-37(d) covers all three (disable door, /me state, enroll-refusal). Settings UI may render "Turn off" once the door exists.
 
 ### [L5] /auth/renew door absent — silent-renew probe flag-gated OFF — 09:49 UTC
 - ITEM: L5-3.2
 - STATE: finding
 - EVIDENCE: App.tsx boot probe `RENEW_DOOR_LIVE = false` (const + AbortSignal.timeout(3000)); POST /auth/renew exists nowhere in server/src (grep-verified). Contract L5 coded against: cookie-session → 200 {token} fresh bearer, 401 otherwise.
 - NEEDED: decision — L2 ships the door and L5 flips the flag, or the probe is dropped at the gate.
+[S0] Ship it — D-37(e). L5 flips the flag only after the door + tests land.
 
 ### [L3] P5 gate: L3-5.1 armed but no S0 GO posted — 09:51 UTC
 - ITEM: L3-5.1 (settings-schema → form contract, pairs with L5-5.2)
 - STATE: uncertain
 - EVIDENCE: .coop/queue/L3.md:20 "P5 — Wave 5 (only on S0 GO)"; .coop/status/S0.md last entry is the 22:10 stand-down — no GO/RUN-STOP posted since. All P2–P4 L3 items are DONE and journaled (.coop/status/L3.md). If GO is granted: L3-5.1 needs a file grant for its contract door — routes.js is in the L1↔L3 collision zone, so I propose a standalone `server/src/settings-contract.js` (pure functions, zero routes.js edits) + a tiny door mounted from ONE of my own plugins unless S0 rules otherwise.
 - NEEDED: decision (GO / hold; plus file-grant preference for the contract door)
+[S0] GO per D-36 — after your 5 files are green (D-33). Post "GREEN" here when they are.
 
 ### [L3] Custom-roles DDL (app.roles + users.role_key) still absent — 09:51 UTC
 - ITEM: L3-4.2 (schema-gated follow-through)
 - STATE: blocked (feature-complete, waiting on L1 migration)
 - EVIDENCE: `grep -l "app.roles" server/migrations/*.sql` → empty; L1's migrations now at 069 (069_api_keys_webhooks.sql latest). Exact DDL spec posted at .coop/blocks.md (L3→L1 entry). My doors answer 503 until it lands: src/routes.js:47-160 (`rolesAvailable()` probe `to_regclass('app.roles')` + users.role_key column check); tests/custom-roles.test.js is schema-conditional so the gate stays green either way. NOTE the L1↔L3 routes.js collision already listed above — my section is routes.js:47-260, single-copy, node --check clean (verified 00:18).
 - NEEDED: info — confirm L1 still owns the DDL and it's still planned; if it's dropped, I take a ruling on whether the custom-roles surface stays schema-gated or gets removed.
+[S0] STALE: 063_custom_roles.sql now exists in migrations/. Verify its DDL matches your blocks.md spec; mismatches → new help entry for L1.
 
 ### [L3] BI overlap: L1-5.2 kernel endpoints vs L3-4.3 ops.bi doors — 09:51 UTC
 - ITEM: L3-4.3 ↔ L1-5.2
 - STATE: uncertain (ownership/collision)
 - EVIDENCE: ops.bi doors are complete and journaled (.coop/status/L3.md, L3-4.3 entry): GET /plugins/ops.bi/{attendance,fees/aging,funnel,homework} with 60s cache + 500-row caps. L1.md:23 lists "reporting/BI endpoints (attendance %, fee aging, funnel conversion — all tenant-scoped)" for P5. Same four surfaces, two lanes.
 - NEEDED: decision — L1's kernel endpoints consume/extend ops.bi (my `invalidateBiCache(tenantId)` is exported for them), or L3's doors are the canonical surface and L1-5.2 drops those four.
+[S0] ops.bi is canonical (D-38). L1 consumes; you keep charter + cache. No duplication.
 
 ### [L3] Migration numbering collision: two 058s, two 059s, two 060s — 09:51 UTC
 - ITEM: fleet-wide (no queue id)
 - STATE: finding
 - EVIDENCE: `ls server/migrations/` → 058_academic_year.sql + 058_comms_receipts.sql, 059_audit_cold.sql + 059_fee_plan_templates.sql, 060_dpdp_erasure_journal.sql + 060_payment_refund.sql. The runner tracks by filename (app.schema_migrations) so both apply, but inter-lane ordering is now ambiguous and fresh check-DBs apply them in ls-order, not dependency order. `npm run check` currently fails on 11+ unapplied rows for exactly this class of drift (shared DB needs a migration re-run at gate).
 - NEEDED: decision — renumber the later-filed of each pair into the 06x sequence (L1-authored files: 058_comms_receipts, 059_audit_cold, 060_payment_refund are candidates) or accept filename-order as canonical. L3 authored no migrations; no action from me either way.
+[S0] STALE: current set verified unique (055-069, no duplicate prefixes). Standing law D-40: claim numbers via help.md before creating files.
 
 ### [L3] ops.udise missing from the frontend plugin registry — 09:51 UTC
 - ITEM: L3-3.2 follow-through (L5's lane)
 - STATE: finding
 - EVIDENCE: `grep ops.udise app/src/plugins/pluginRegistry.ts` → no match (registry mirrors the 23-plugin born-at-signup catalog; my src/plugin-catalog.js rows for ops.udise/ops.import/ops.bi are server-side only). Server doors work regardless; the owner's Modules UI will show unknown rows until the frontend manifests land.
 - NEEDED: nothing — FYI for L5-5.2 pairing (my /plugins/ops.udise/columns + ops.import schema doors are ready to drive those forms).
+[S0] Assigned: L5 gets registry-additions grant (D-39) and will mirror your catalog rows in L5-5.2.
 
 ### [S0] Gate-3 triage — suite EXIT:1, ~40 failing cases across 15 suites — 09:45 UTC
 - ITEM: all lanes, Wave 2-4 new code
@@ -124,3 +137,46 @@ lanes; this file is how you prevent that).
   files. Nobody starts new queue items until your own files are green (P4 done ≠ done). S0 re-gates in
   ~2h; if a lane is then still red without a help entry, D-27 takeover applies.
 - [S0] NOTE: helpers.js + 063 edits observed minutes ago — if that was your fix cycle, state it here.
+### [L4] FINDING: ops.bi doors live — Reports swapped; dev server needs restart — live
+- ITEM: L4-4.2 (follow-up to my entry above)
+- STATE: finding
+- EVIDENCE: `server/src/plugins/ops.bi/index.js` exists with attendance/fees-aging/funnel/homework doors (L3-4.3). Reports.tsx now consumes all three (apiBiAttendance/apiBiAging/apiBiFunnel added to liveApi per D-29; tsc clean). `curl :8080/plugins/ops.bi/attendance` → 404: dev server predates the plugin. Same restart will activate L1-2.2's fee-plans doors when they land.
+- NEEDED: nothing — FYI; one server restart covers both. My stale blocks.md line ("reporting doors do not exist yet") is superseded by this entry.
+[S0] Noted. I restart the dev server at the gate; keep changes door-backed only.
+
+### [L1] bootstrap.js grant baseline wipes per-migration DELETE grants in schema app — 10:34 UTC
+- ITEM: cross-cutting (hit L1-4.1; will hit L3-4.2's roles delete path)
+- STATE: finding (fixed on my side)
+- EVIDENCE: scripts/bootstrap.js:25-26 (`REVOKE ALL ON ALL TABLES IN SCHEMA app FROM schoolos_app` + `GRANT SELECT, INSERT, UPDATE …` — no DELETE) runs AFTER migrate in tests/helpers.js:25, so every migration's explicit table-level DELETE grant in schema app is dead-on-arrival at test setup. My migration-engine stage-rows 500'd with 42501 "permission denied for table migration_rows" (routes.js:1491 DELETE); bootstrap.js mtime moved mid-session (15:30), which is when previously-green suites started failing. Fixed in 061: scoped SECURITY DEFINER `app.purge_staged_rows(uuid)` (tenant-guarded, EXECUTE to schoolos_app — same style as audit_log's kernel-function writes) + door now calls it; migration-engine 7/7 and my 8-suite regression 51/51 green against the current tree. Note 063_custom_roles.sql's `GRANT … DELETE ON app.roles` is likewise wiped — L3's roles-delete door will need the same definer-helper treatment (or an owner-path carve-out) or it will 42501.
+- NEEDED: ruling — confirm "app-role never gets table-level DELETE in schema app; deletes go through scoped SECURITY DEFINER helpers" as the standing law so every lane codes to it (and note bootstrap.js was edited mid-run; my suites were green before that edit, green again after my fix).
+[S0] Ratified as standing law D-35. Your fix stands.
+
+### [L1] P5 items still gated on S0 GO; L1-5.2 will consume ops.bi, not duplicate — 10:34 UTC
+- ITEM: L1-5.1, L1-5.2
+- STATE: uncertain
+- EVIDENCE: .coop/queue/L1.md P5 gate ("only if S0 posts GO") — no GO/RUN-STOP in decisions.md at check time; L3's status/L3.md:21 ships ops.bi read models (attendance/aging/funnel/homework) + exports invalidateBiCache() explicitly "for L1-5.2's kernel endpoints".
+- NEEDED: decision — (a) GO/no-GO for P5; (b) if GO: confirm L1-5.2 = thin kernel/tenant-scoped endpoints over L3's read models + ranking service only for L1-5.1 (I will not rebuild the aggregates).
+[S0] GO per D-36; D-38 confirms ops.bi canonical — thin kernel endpoints over it. Ranking service proceeds.
+
+### [L1] FYI for new test authors: helpers.loginAs returns the full response JSON — 10:34 UTC
+- ITEM: cross-cutting test harness
+- STATE: finding
+- EVIDENCE: tests/helpers.js — `loginAs(app, email)` resolves to the parsed response body (status, token, user…), not a token string; `const t = await loginAs(app, …)` then `Bearer ${t}` yields "Bearer [object Object]" → silent 401s. Correct use: `(await loginAs(app, email)).token`. Cost me a debug cycle on L1-2.1.
+- NEEDED: nothing — FYI only.
+[S0] Acknowledged — logged for the record.
+
+### [L3] Root cause for the "topic does not exist" ×4 — it's app.OUTBOX vs app.events — 10:39 UTC
+- ITEM: S0 Gate-3 triage item 1 (lifecycle/exam/udise/migration-engine suites)
+- STATE: finding (L3's four files FIXED; likely also explains L1's migration-engine suite)
+- EVIDENCE: `app.events` has NO topic column — the kernel splits the spine: events rows are keyed by `type` (src/audit.js:31-34), and `topic` lands ONLY on `app.outbox` (src/audit.js:36-38, DDL 001_init.sql:305). My three suites pinned `SELECT ... FROM app.events WHERE topic='...'` (tests/udise-export.test.js:114, tests/import-engine.test.js:103, tests/students-lifecycle.test.js:65,135,170) → 42703. FIXED 10:07: those pins now assert the topic contract on `app.outbox WHERE topic=` and the event row on `app.events WHERE type=... AND payload->>...`. L1: if tests/migration-*.test.js pins events by topic, same one-line change. exam-depth's 7 failures were NOT topic — its before() hook had `ReferenceError: client is not defined` (tests/exam-depth.test.js:32, my rewrite left the fixture query on the old helper name) → FIXED to `sql(...)`; fee-aging's 500 was a subquery-alias bug in my door (`SELECT ob.term ... ) x GROUP BY ob.term` → both now `x.`) → FIXED.
+- NEEDED: nothing — FYI for L1 + confirmation S0 can re-gate my five files (exam-depth, import-engine, bi-readmodels, udise-export, students-lifecycle — all node --check clean 10:07).
+[S0] Excellent root-cause. outbox-vs-events noted; keep the green cycle moving and post GREEN when your 5 files pass.
+
+[L3] re S0 NOTE (helpers.js + 063 edits observed): NOT L3 — I touched neither file. My fix cycle (10:05–10:39 UTC) was: 5 test files (topic→outbox pins, exam-depth before-hook `client`→`sql`, import-engine mis-pins), src/plugins/ops.bi/index.js (aging subquery alias), and a settings_schema→settingsSchema rename in my three manifests only.
+### [L2] L2 suite 35/35 green on schoolos_l2test; 2 real product bugs fixed — 03:35 UTC
+- ITEM: L2-2.1 → L2-4.2 (test runs complete)
+- STATE: finding
+- EVIDENCE: `.coop/status/L2.md` full table — 9/9 files, 35 tests, 0 fail/cancel. The proper-role test DB (schoolos owner, not superuser) exposed bugs my superuser smoke masked: pack.dpdp/index.js:230 erasure journal write + OTP-vault purges hit 'permission denied' under the tightened grants (now kernel.q), and the payload scrub regex couldn't match spaced phones (digit-normalized). Both fixes are inside the L2-owned pack.dpdp erasure branch + src/totp.js label encoding; no other lane's files touched.
+- NEEDED: nothing — FYI for Gate-3 triage (S0's known ~17 ✖ include dpdp/consent: if any pin the OLD scrub behavior or expect superuser-path writes, they need the same treatment).
+
+[S0] Verified and ratified (D-41). Post the 2 product-bug summaries to your journal for the audit trail.
