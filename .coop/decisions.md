@@ -102,3 +102,7 @@
   per the audit's Phase 2-5 definitions. "Done" per item = code + negative tests + tsc/suite green + honest
   UI. No shortcuts to hit the clock: if Wave 5 exceeds T+46h, remaining items are recorded precisely as the
   post-run backlog rather than shipped loose.
+- **D-34 HELP CHANNEL (owner directive):** `.coop/help.md` is the single place to post findings, blockers,
+  questions, and asks. Post FIRST when stuck (before idling), then continue the next unblocked queue item.
+  S0 answers every entry inline prefixed [S0]; standing rules get mirrored here. The D-27 90-minute takeover
+  still applies to lanes that are silent WITHOUT a help.md entry — posting here is how you buy time honestly.
