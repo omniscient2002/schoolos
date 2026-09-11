@@ -5,17 +5,18 @@
    POST /me/mfa/verify { code } (bearer session) → { enabled,
    recoveryCodes } — codes are shown ONCE here.
 
-   Honest-status notes (D-6):
-   · the client cannot read enrollment state (GET /me does not
-     expose mfa_enrolled_at) — re-enrolling REPLACES an existing
-     factor, and the copy says so before it happens;
-   · the disable flow waits on L2's disable door (blocks.md);
+   Honest-status notes (D-6, updated after D-37 landed):
+   · GET /me now exposes mfa_enrolled_at (D-37(d)) — the section
+     reads the REAL state on mount and shows the on/off truth;
+     if /me fails, the state is shown as unknown, never guessed;
+   · POST /me/mfa/disable {password} (D-37(d)) powers the Turn-off
+     flow — password re-authentication, wrong password keeps MFA on;
    · all calls go through a local full-response post — the shared
-     call() treats a 401 (wrong code) as a dead session and would
-     bounce the user to /login, which is wrong for a wrong-code
-     retry inside a settings panel.
+     call() treats a 401 (wrong code/password) as a dead session and
+     would bounce the user to /login, which is wrong for a form
+     error inside a settings panel.
    ============================================================ */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LIVE_BASE } from '../../services/liveApi';
 import { Icon } from '../../components/Icon';
 import { Badge, Button, useToast } from '../../components/ui';
@@ -61,7 +62,10 @@ async function mfaPost(path: string, body: unknown): Promise<{ status: number; d
 type Stage =
   | { kind: 'idle' }
   | { kind: 'enrolling'; otpauth: string; secret: string }
-  | { kind: 'recovery'; codes: string[] };
+  | { kind: 'recovery'; codes: string[] }
+  | { kind: 'disabling' };
+
+export type MfaEnrolled = boolean | null; // null = unknown (state fetch failed)
 
 export default function MfaSection() {
   const toast = useToast();
@@ -69,6 +73,56 @@ export default function MfaSection() {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [enrolled, setEnrolled] = useState<MfaEnrolled>(null);
+  const [disablePassword, setDisablePassword] = useState('');
+
+  /* D-37(d): /me carries mfa_enrolled_at — the only MFA fact the server
+     exposes. A failed fetch leaves the state unknown (null): the UI then
+     claims neither "on" nor "off" — it offers setup with the replace
+     warning, which is truthful in both states. */
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const token = localStorage.getItem('schoolos_token');
+        const csrf = readCsrf();
+        const res = await fetch(`${LIVE_BASE}/me`, {
+          headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(csrf ? { 'x-csrf-token': csrf } : {}) },
+          ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok && live) {
+          const data = (await res.json()) as { mfa_enrolled_at?: string | null };
+          setEnrolled(data.mfa_enrolled_at ? true : false);
+        } else if (live) setEnrolled(null);
+      } catch { if (live) setEnrolled(null); }
+    })();
+    return () => { live = false; };
+  }, [stage.kind === 'idle']);
+
+  const confirmDisable = async () => {
+    if (!disablePassword) return;
+    setBusy(true); setError(null);
+    try {
+      const { status, data } = await mfaPost('/me/mfa/disable', { password: disablePassword });
+      if (status === 200) {
+        setDisablePassword('');
+        setStage({ kind: 'idle' });
+        setEnrolled(false);
+        toast({ title: t('mfa.turnOff') + ' — done', sub: 'Two-step verification is off: the authenticator factor, recovery codes and the enrollment record were removed. The change is in the audit log.', tone: 'info' });
+        return;
+      }
+      const msg = friendly((data.error as string) ?? 'could not turn off two-step');
+      setError(msg);
+      toast({ title: 'Two-step stays on', sub: msg, tone: 'error' });
+    } catch (e: unknown) {
+      const msg = friendly((e as Error)?.message ?? 'could not reach the server');
+      setError(msg);
+      toast({ title: 'Two-step stays on', sub: msg, tone: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const startEnroll = async () => {
     setBusy(true); setError(null);
@@ -129,20 +183,44 @@ export default function MfaSection() {
     <div className="u-col" style={{ gap: 10 }}>
       {stage.kind === 'idle' && (
         <>
+          {enrolled === true && (
+            <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
+              <Badge tone="success" dot>{t('mfa.onBadge')}</Badge>
+              <span className="u-small u-muted">{t('mfa.onSub')}</span>
+            </div>
+          )}
           <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-            {t('mfa.idle.copy', { replace: t('mfa.idle.replace') })}
+            {enrolled === true ? t('mfa.replace.copy') : t('mfa.idle.copy', { replace: t('mfa.idle.replace') })}
           </div>
           {error && <div role="alert" className="u-small" style={{ color: 'var(--danger)' }}>{error}</div>}
           <div className="u-flex" style={{ gap: 8 }}>
             <Button size="sm" variant="secondary" icon={<Icon.Shield size={13} />} disabled={busy} onClick={() => void startEnroll()}>
               {busy ? t('mfa.starting') : t('mfa.setup')}
             </Button>
-            <span title="Not connected — the disable door ships with the next server drop">
-              <Button size="sm" variant="ghost" disabled>{t('mfa.turnOff')}</Button>
-            </span>
+            <Button size="sm" variant="ghost" disabled={busy || enrolled !== true}
+              title={enrolled === false ? 'Two-step is not on for this account.' : undefined}
+              onClick={() => { setDisablePassword(''); setStage({ kind: 'disabling' }); }}>
+              {t('mfa.turnOff')}
+            </Button>
           </div>
-          <div className="u-xs u-faint">{t('mfa.turnOffNote')}</div>
         </>
+      )}
+
+      {stage.kind === 'disabling' && (
+        <div className="u-col" style={{ gap: 8 }}>
+          <div className="u-small" style={{ background: 'var(--warning-weak)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '9px 12px', lineHeight: 1.55 }}>
+            {t('mfa.disable.warn')}
+          </div>
+          <form className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }} onSubmit={e => { e.preventDefault(); void confirmDisable(); }}>
+            <input className="input" type="password" autoComplete="current-password" style={{ maxWidth: 280 }}
+              placeholder={t('mfa.disable.placeholder')} aria-label={t('mfa.disable.placeholder')}
+              value={disablePassword} onChange={e => setDisablePassword(e.target.value)} />
+            <button className="btn btn-primary btn-sm" type="submit" disabled={busy || !disablePassword}>
+              {busy ? t('mfa.turningOff') : t('mfa.turnOff')}
+            </button>
+            <Button size="sm" variant="ghost" onClick={() => { setStage({ kind: 'idle' }); setError(null); }}>{t('mfa.cancel')}</Button>
+          </form>
+        </div>
       )}
 
       {stage.kind === 'enrolling' && (
@@ -201,7 +279,7 @@ export default function MfaSection() {
             <Button size="sm" variant="secondary" icon={<Icon.File size={12} />} onClick={() => void copy(stage.codes.join('\n'), 'Recovery codes')}>{t('mfa.copyAll')}</Button>
           </div>
           <div>
-            <Button size="sm" variant="primary" onClick={() => setStage({ kind: 'idle' })}>{t('mfa.done')}</Button>
+            <Button size="sm" variant="primary" onClick={() => { setEnrolled(true); setStage({ kind: 'idle' }); }}>{t('mfa.done')}</Button>
           </div>
         </div>
       )}

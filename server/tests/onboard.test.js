@@ -89,7 +89,7 @@ test('03b · AMBIGUITY GUARD: that email can no longer sign in without disambigu
   assert.equal(r.status, 409, 'multi-tenant email → choose-your-school, not silent first-row pick');
   const b = await r.json();
   assert.equal(b.multiTenant, true);
-  assert.ok(b.schools >= 2);
+  assert.ok(b.schools.length >= 2); // L2-4.2 picker contract: schools is now [{tenantId, name}]
 });
 
 test('04 · signup always creates a NEW tenant (never merges into an existing one)', async () => {

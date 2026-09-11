@@ -82,15 +82,21 @@ export function readTenantId(): string | null {
 
 /** Re-issue the session against the chosen tenant. The caller installs the
  *  fresh token and decides between the app (onAuthed / reload) and the
- *  forced password-change flow (mustChange). */
-export async function switchTenant(tenantId: string): Promise<SwitchResult> {
+ *  forced password-change flow (mustChange).
+ *  S0 fix A4: accounts that HAVE a password require it here (the server
+ *  answers 403 {passwordRequired:true} otherwise — callers surface a prompt). */
+export async function switchTenant(tenantId: string, currentPassword?: string): Promise<SwitchResult> {
   const res = await fetch(`${LIVE_BASE}/me/switch`, {
     method: 'POST',
     headers: authHeaders('POST'),
-    body: JSON.stringify({ tenantId }),
+    body: JSON.stringify({ tenantId, ...(currentPassword ? { currentPassword } : {}) }),
     ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
   });
-  const body = (await res.json().catch(() => ({}))) as Partial<SwitchResult> & { error?: string };
-  if (!res.ok || !body.token) throw new Error(body.error ?? `HTTP ${res.status}`);
+  const body = (await res.json().catch(() => ({}))) as Partial<SwitchResult> & { error?: string; passwordRequired?: boolean };
+  if (!res.ok || !body.token) {
+    const err = new Error(body.error ?? `HTTP ${res.status}`) as Error & { passwordRequired?: boolean };
+    if (body.passwordRequired) err.passwordRequired = true;
+    throw err;
+  }
   return body as SwitchResult;
 }

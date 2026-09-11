@@ -40,6 +40,8 @@ const ChangePassword = lazy(() => import('./screens/account/ChangePassword'));
 const FeePlans = F(() => import('./screens/finance/FeePlans'));
 /* L5-5.1: custom roles over L3-4.2's doors (owner/IT admin) */
 const RolesAdmin = F(() => import('./screens/RolesAdmin'));
+/* L5-5.2: generic plugin-settings form on L3-5.1's schema contract */
+const PluginSettings = F(() => import('./screens/PluginSettings'));
 /* self-serve school signup — public door (Platform §1.1, migration 053) */
 const Onboard = lazy(() => import('./screens/Onboard'));
 const Today = F(() => import('./screens/Today'));
@@ -283,7 +285,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
          does not exist yet (review-verified; L2 owns it) — the probe is
          flag-gated OFF so logged-out cold opens don't fire a guaranteed
          404, and it can be flipped on the moment L2 ships the door. */
-      const RENEW_DOOR_LIVE = false;
+      const RENEW_DOOR_LIVE = true // /auth/renew LANDED (D-37(e));
       if (RENEW_DOOR_LIVE && !localStorage.getItem('schoolos_token')) {
         try {
           const res = await fetch(`${LIVE_BASE}/auth/renew`, { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(3000) });
@@ -449,6 +451,9 @@ function AppRoutes() {
       <Route path="/settings" element={<S><Settings /></S>} />
       {/* L5-5.1: custom-roles console — owner + IT admin (server ROLES_ADMIN) */}
       <Route path="/roles" element={<S><RolesAdmin /></S>} />
+      {/* L5-5.2: plugin settings — list + per-plugin form (owner + IT admin) */}
+      <Route path="/plugins/settings" element={<S><PluginSettings /></S>} />
+      <Route path="/plugins/settings/:id" element={<S><PluginSettings /></S>} />
       {/* L5-2.1: voluntary self-service password change (any signed-in role;
           deliberately NOT in the staffOnly list — parents/students change
           their own passwords here too). The forced flow renders the same

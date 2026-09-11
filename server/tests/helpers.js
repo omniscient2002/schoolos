@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 const SERVER_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ADMIN = 'postgres://postgres@127.0.0.1:5432/postgres';
-export const TEST_DB = 'schoolos_test';
+// TEST_DB_NAME (L2, D-34): lets a lane run its own test files against a SEPARATE
+// database while S0's gate run holds schoolos_test — e.g. TEST_DB_NAME=schoolos_l2test.
+// Default unchanged; the running gate process is unaffected (module already loaded).
+export const TEST_DB = process.env.TEST_DB_NAME ?? 'schoolos_test';
 export const TEST_URL = `postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/${TEST_DB}`;
 
 export async function setupTestDb() {

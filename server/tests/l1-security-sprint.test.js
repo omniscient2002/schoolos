@@ -144,7 +144,7 @@ describe('L1 security sprint (054)', () => {
       const r = await app.inject({ method: 'POST', url: '/auth/otp/request', payload: { phone: PARENT_PHONE } });
       assert.equal(r.statusCode, 409);
       assert.equal(r.json().multiTenant, true);
-      assert.equal(r.json().schools, 2);
+      assert.equal(r.json().schools.length, 2); // L2-4.2 picker contract: schools is now [{tenantId, name}]
       const hint = (r.headers['x-tenant-hint'] ?? '').split(',');
       assert.ok(hint.includes(T) && hint.includes(TB), 'X-Tenant-Hint lists both candidate tenants');
       assert.equal(r.json().devCode, undefined, 'no code is issued for an ambiguous phone');

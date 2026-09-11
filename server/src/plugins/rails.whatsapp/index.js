@@ -16,6 +16,11 @@
 //   provider = 'logger' (default) — structured log line + { ok: true }.
 //   provider = 'http-generic' — POST { to, body, template, params } as JSON to
 //     settings url with a settings-named auth header. No vendor SDK.
+//   provider = 'cloud-api' — WhatsApp Cloud API (Graph) text message:
+//     POST https://graph.facebook.com/<version>/<phone_number_id>/messages with a
+//     Bearer access_token (secret-class, never logged). Settings: phone_number_id,
+//     access_token, api_version (default v20.0). L2-3.3 (D-26: code-complete;
+//     lights up when the owner's BSP credentials exist).
 // Degrades gracefully when unconfigured: no settings row → logger.
 // Recipients must be E.164; failures are RETURNED, never thrown.
 const ID = 'rails.whatsapp';
@@ -105,6 +110,36 @@ async function sendViaHttp(s, { to, body, template, params }) {
   return { ok: true, provider: 'http-generic', ref, error: null };
 }
 
+// ── WhatsApp Cloud API (Graph) text messages ──────────────────────────────────
+async function sendViaCloudApi(s, { to, body }) {
+  if (!s.phone_number_id || !s.access_token) {
+    return { ok: false, provider: 'cloud-api', ref: null, error: 'provider cloud-api needs phone_number_id + access_token in plugin settings' };
+  }
+  const version = String(s.api_version ?? 'v20.0').replace(/^v?/i, 'v');
+  const res = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(String(s.phone_number_id))}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${String(s.access_token)}` },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'text',
+      text: { preview_url: false, body: String(body ?? '') },
+    }),
+    signal: AbortSignal.timeout(8000), // capability latency_sla.timeout_ms
+  });
+  if (!res.ok) {
+    return { ok: false, provider: 'cloud-api', ref: null, error: `provider answered HTTP ${res.status}` };
+  }
+  let ref = null;
+  try {
+    const j = await res.json();
+    ref = j?.messages?.[0]?.id ?? null; // wamid — the provider receipt
+    if (ref != null) ref = String(ref);
+  } catch { /* non-JSON 2xx body — still accepted */ }
+  return { ok: true, provider: 'cloud-api', ref, error: null };
+}
+
 /**
  * sendWhatsapp({ to, template, params, body, dedupKey, tenantId }) — internal rail
  * function (NOT a door). Resolves the tenant's settings + the DLT registry body,
@@ -119,7 +154,7 @@ export async function sendWhatsapp({ to, template, params, body, dedupKey, tenan
     return { ok: false, provider: 'logger', ref: null, body, error: 'recipient must be E.164 (+countrycode…)' };
   }
   const s = await readSettings(tenantId);
-  const provider = ['logger', 'http-generic'].includes(s.provider) ? s.provider : 'logger';
+  const provider = ['logger', 'http-generic', 'cloud-api'].includes(s.provider) ? s.provider : 'logger';
   // template registry reuse: the registered DLT body wins; queue body is the fallback
   const tplBody = await readTemplate(tenantId, template);
   const finalBody = tplBody ? renderTemplate(tplBody, params) : String(body ?? '');
@@ -127,7 +162,9 @@ export async function sendWhatsapp({ to, template, params, body, dedupKey, tenan
   try {
     r = provider === 'http-generic'
       ? await sendViaHttp(s, { to, body: finalBody, template, params })
-      : { ok: true, provider: 'logger', ref: `wa_log_${dedupKey}`, error: null };
+      : provider === 'cloud-api'
+        ? await sendViaCloudApi(s, { to, body: finalBody })
+        : { ok: true, provider: 'logger', ref: `wa_log_${dedupKey}`, error: null };
   } catch (e) {
     r = { ok: false, provider, ref: null, error: String(e?.cause?.message ?? e?.message ?? 'provider call failed') };
   }

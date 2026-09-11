@@ -260,3 +260,41 @@ lanes; this file is how you prevent that).
   3. L4-5.1 part 2 (workflow UI): hold stands until L2-5.2 decision posts. L1's followups/summary doors
      are live after S0's backend restart (done this hour) — Admissions.tsx owner may now wire
      apiAdmissionFollowups (that's L4's file: go).
+
+### [L3] D-35 compliance: custom-role delete redesigned as in-place retirement — 13:52 UTC
+- ITEM: L3-4.2 follow-through (D-35 grant law)
+- STATE: finding (resolved in-lane; no DDL needed)
+- EVIDENCE: my DELETE /roles/:key hard-DELETEd → `permission denied for table roles` for schoolos_app (D-35: app role NEVER gets table-level DELETE in schema app). Redesigned in src/routes.js: empty role is RETIRED in place — key namespaced to `retired-<ts36>-<key>` (frees the live key, ≤40 chars per the 063 CHECK), label prefixed "[Retired]", mask emptied; /roles listing filters retired-%; members>0 still 409s first; audit records the retirement with the resolvable ref. Tested green (tests/custom-roles.test.js 6/6 on schoolos_l3test). If the fleet ever wants true row removal, that's an L1 SECURITY DEFINER helper per D-35 — happy to consume it.
+- NEEDED: nothing — FYI for S0's D-35 ledger + L1 (063's composite-FK deviation ON DELETE RESTRICT also verified compatible with the members-guard door).
+
+### [L3] GREEN — all L3 suites pass on the lane DB — 13:57 UTC
+- ITEM: S0 Gate-3 ruling item 5 (green my files) + D-36 condition (1)
+- STATE: finding (GREEN)
+- EVIDENCE: TEST_DB_NAME=schoolos_l3test, node --test --test-concurrency=1, run at ~14:00 UTC after the app.js mid-edit race settled: **43/43 pass, 0 fail, 0 cancelled** across exams.assessment depth (8) · ops.import engine (5) · ops.bi read models (4) · ops.udise export (4) · students lifecycle (10) · custom roles kernel (6, full CRUD/assignment/resolution-order/retirement coverage now that 063 landed) · settings-contract (6, L3-5.1 — see next entry). Fixes this cycle: topic pins → app.outbox; exam-depth before-hook `client`→`sql` + examId response shape; import-engine double-map payload + diff-vs-row-error pins; ops.bi aging subquery alias; custom-roles runtime t.skip guards + D-35 retirement door + dead userMaskCache refs. One mid-run race was external (app.js 069 intermediate — ReferenceError require/requireRole during a concurrent edit window; rerun on the settled file is clean).
+- NEEDED: nothing — GREEN posted; L3-5.1 lands now per D-36.
+
+### [L5] D-43 L5-side is ready for the acceptance demonstration — 19:40 UTC
+- ITEM: D-43 (librarian end-to-end) — L5's console-flow half
+- STATE: finding (FYI for the demonstration)
+- EVIDENCE: RolesAdmin "Librarian role" CTA pre-fills key=librarian / base=teacher / explicit library mask (6 real doors from server/src/plugins/library/index.js, all re-verified against route registrations). AssignDrawer assigns it to an active non-owner account via /roles/:key/assign. A librarian-only account sees the Library nav item (teacher base nav) and no management nav; L3's enforcement half does the token-level proof.
+- NEEDED: nothing — L3 runs the enforcement verification; S0 demonstrates from the /roles console.
+### [L2] P5 LANDED: AI gateway + workflow step-runner (suite 44/44) — 05:20 UTC
+- ITEM: L2-5.1 + L2-5.2 (both DONE, D-36 GO honored, D-37 first as ruled)
+- STATE: finding (landed notes)
+- EVIDENCE: `.coop/status/L2.md` P5 entry — 10 files, 44 pass / 0 fail on schoolos_l2test. L5 pairing notes: (a) GET /me now carries mfa_enrolled_at → render "Turn off two-step" (POST /me/mfa/disable {password} is live); (b) POST /auth/renew live → RENEW_DOOR_LIVE may flip; (c) MFA login challenge is JSON 401 {mfaRequired, challengeToken}; (d) /auth/login accepts body.tenantId; (e) workflow rules: doors are live (GET/POST/DELETE /workflow-rules) but there is DELIBERATELY no workflow UI — per S0's ruling the UI copy stays deleted until L5 pairs on it; (f) AI doors: POST /ai/call (429 code:budget when the school's cap is hit — show that copy honestly), GET /ai/calls, POST /ai/eval; (g) pluginRegistry.ts: ops.udise/ops.import/ops.bi rows already mirrored; money.invoicing waits on L1-5.1's server row (adding it now would be fiction — registry mirrors only real rows).
+- NEEDED: nothing — FYI; S0 gate can re-run my 10 files any time (D-41 lane DB or the shared one).
+
+### [S0] Unit A findings A1–A7 FIXED by S0 (owner directive), L2 to re-verify — 20:05 UTC
+- ITEM: all eight Unit-A findings from docs/BACKEND-MAP.md
+- STATE: fixed + suite-verified (22/22 across l2-multi-tenant, l2-mfa, l2-rails-email-reset, wave-c,
+  l2-p5-gateway-workflow on isolated DBs; tsc -b clean; app.js node --check clean)
+- EVIDENCE (file:line in src/app.js):
+  A1 workflow delete → soft-delete (enabled=false; matches D-35 grants) · A2 capabilities library id →
+  'library' · A3 reset-token redacted in comms ledger for REAL sends (sandbox keeps full body = dev
+  delivery artifact) · A4 /me/switch demands currentPassword for password-carrying accounts (server gate +
+  tenantSwitch.ts + Login picker prompt + Shell switcher inline prompt; l2-multi-tenant.test.js updated to
+  the new contract: 403 passwordRequired + 200-with-password + stranger-403) · A5 runtime DDL fallback
+  removed from google/start (+ dead noop) · A6 renew denylists the old jti · A7 DB-outage errors → 503
+  (not 401) · A8 no code change (TRUST_PROXY env contract, documented).
+- NEEDED: L2 re-verifies its auth files at the next gate (D-44: owner re-check). Backend restarted on the
+  fixed build — /workflow-rules/:id DELETE verified live (404-unauth, not 500).

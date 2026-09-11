@@ -1,0 +1,33 @@
+// rails.email — plugin manifest (drop-in factory, docs/11 §2.2; rails.sms parity)
+export default {
+  id: 'rails.email',
+  name: 'Email Rail',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'EMAIL rail beneath the kernel Communication Orchestrator: settings-driven, dedup-keyed. provider=logger (default, sandbox) logs a structured line and reports ok — sandbox-verified until SMTP credentials exist (D-26). provider=smtp speaks a minimal raw SMTP client (STARTTLS/AUTH LOGIN, no vendor SDK). Degrades gracefully when unconfigured: the logger path always works.',
+  permissions: ['comms.send', 'events.emit', 'audit.request'],
+  events: { subscribe: ['sar.requested', 'fee.due'], publish: ['email.sent', 'email.failed'] },
+  slots: ['settings', 'reports'],
+  routes: [],
+  widgets: [],
+  settings_schema: {
+    type: 'object',
+    properties: {
+      provider: { type: 'string', enum: ['logger', 'smtp'], default: 'logger' },
+      host: { type: 'string', description: 'smtp: server hostname (e.g. smtp.provider.in)' },
+      port: { type: 'integer', description: 'smtp: 587 (STARTTLS default) or 465 (implicit TLS)' },
+      secure: { type: 'boolean', description: 'smtp: implicit TLS on connect (port 465)' },
+      username: { type: 'string', description: 'smtp: AUTH LOGIN username' },
+      password: { type: 'string', description: 'smtp: AUTH LOGIN password — secret-class, never logged' },
+      from_address: { type: 'string', description: 'smtp: envelope sender (must be allowed by the provider)' },
+      reject_unauthorized: { type: 'boolean', description: 'smtp: default true — set false only for self-hosted testing with self-signed certs' },
+    },
+    required: [],
+  },
+  data: { schema: 'none (receipts ride kernel app.communications)', core_refs: [], retention: { on_uninstall: 'nothing stored' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'rails', metered: ['messages_sent'] },
+  dependencies: [],
+};

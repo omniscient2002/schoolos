@@ -8,6 +8,7 @@ import { Icon } from '../components/Icon';
 import { useKernel } from '../plugins/useKernel';
 import { CLASS_INFO, PERMISSION_INFO } from '../plugins/pluginTypes';
 import { BUILT_IN_CAPABILITIES } from '../plugins/pluginRegistry';
+import PluginSettingsForm from '../plugins/PluginSettingsForm';
 import { LIVE_API, apiEnablePlugin, apiDisablePlugin } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 
@@ -28,6 +29,7 @@ export default function Plugins() {
   const { all, enabled, enable, disable, configured } = useKernel();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState<string | null>(null);
   // intersect: a stale mirror (or retired ids in localStorage) must not
   // make the badge claim more enabled plugins than exist
   const enabledCount = all.filter(p => enabled.has(p.id)).length;
@@ -104,6 +106,29 @@ export default function Plugins() {
                   ))}
                 </div>
                 <div className="u-xs u-faint">Shows up in: {p.slots.join(' · ')}{p.eventSubscriptions?.length ? ` · reacts to: ${p.eventSubscriptions.join(', ')}` : ''}</div>
+
+                {/* L5-5.2: schema-driven settings (paired with L3-5.1's contract).
+                    Rendered from the SERVER manifest's settingsSchema; the form
+                    itself enforces the secret-masking + role rules. */}
+                {p.slots.includes('settings') && (
+                  <div style={{ borderTop: '1px dashed var(--border-subtle)', paddingTop: 10 }}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setSettingsOpen(settingsOpen === p.id ? null : p.id)}
+                    >
+                      <span className="u-inline" style={{ gap: 6, alignItems: 'center' }}>
+                        <Icon.Settings size={13} />
+                        {settingsOpen === p.id ? 'Hide settings' : (configured[p.id] ? 'Edit settings' : 'Settings')}
+                      </span>
+                    </Button>
+                    {settingsOpen === p.id && (
+                      <div style={{ marginTop: 12 }}>
+                        <PluginSettingsForm pluginId={p.id} />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </Card>
           );

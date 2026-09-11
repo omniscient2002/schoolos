@@ -104,6 +104,10 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
      would land here with a live token; pick uses POST /me/switch. */
   const [tenantPick, setTenantPick] = useState<PickSchool[] | null>(null);
   const [tenantPickSource, setTenantPickSource] = useState<'password' | 'otp' | 'otp-verify' | 'authed'>('password');
+  /* S0 fix A4: /me/switch demands the current password for password-carrying
+     accounts — the 'authed' picker path prompts for it inline. */
+  const [pickPw, setPickPw] = useState('');
+  const [pwNeeded, setPwNeeded] = useState(false);
   const [scopedTenantId, setScopedTenantId] = useState<string | null>(null);
   const [activeTenantId, setActiveTenantId] = useState<string | null>(null);
 
@@ -267,7 +271,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         /* a bootstrap session exists (server alternative contract): the
            switch door re-issues (audited) and may answer mustChange — the
            AuthGate gate screen takes over, exactly like the login 403 path. */
-        const r = await switchTenant(m.tenantId);
+        const r = await switchTenant(m.tenantId, pickPw || undefined);
         setToken(r.token);
         setTenantPick(null);
         if (r.mustChange) {
@@ -323,7 +327,10 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
       await onAuthed({ name: u.name, role: u.role, email: u.email });
       navigate(returnTo, { replace: true });
     } catch (e: unknown) {
-      if ((e as Error).message !== '__stage__') fail(friendly((e as Error)?.message || 'could not switch school'));
+      const err = e as Error & { passwordRequired?: boolean };
+      if (err.message === '__stage__') { /* control flow — show the code step */ }
+      else if (err.passwordRequired) { setPwNeeded(true); fail('Enter your current password to switch schools.'); }
+      else fail(friendly(err?.message || 'could not switch school'));
     } finally {
       setBusy(false);
     }
@@ -419,6 +426,11 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
             <div className="u-small" style={{ color: 'var(--text-2)', marginBottom: 10, lineHeight: 1.55 }}>
               {t('login.tenant.hint', { fallback: 'This account belongs to {count} schools. Choose which one to open — your role can differ per school.', count: tenantPick.length })}
             </div>
+            {pwNeeded && (
+              <label>{t('login.tenant.password', { fallback: 'Your current password' })}
+                <input type="password" autoComplete="current-password" value={pickPw} onChange={e => setPickPw(e.target.value)} placeholder="••••••••" autoFocus />
+              </label>
+            )}
             {tenantPick.map(m => (
               <button key={m.tenantId} type="button" className="btn btn-ghost" disabled={busy}
                 style={{ width: '100%', justifyContent: 'space-between', border: '1px solid var(--border)' }}

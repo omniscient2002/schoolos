@@ -251,6 +251,166 @@ export function register(app, kernel) {
     });
   });
 
+  // ── L3-2.1 student lifecycle doors ──────────────────────────────────────────
+  // PATCH /students/:id     — core-field edit (identity/status/provenance immutable)
+  // POST /students/:id/withdraw — active → transferred · bus unassigned · everything kept
+  // POST /students/:id/promote  — grade+1 with the transfer door's history invariant
+  // All three follow the transfer door's law: row lock, active-guard, single-tx
+  // writes, event + audit inside the withUser transaction.
+
+  const CORE_FIELD_CAPS = { name: 120, guardian_name: 120, guardian_phone: 24, bus_route: 40 };
+  const cleanField = (v, cap) => {
+    if (v === undefined) return undefined;
+    if (v === null || (typeof v === 'string' && v.trim() === '')) return null; // empty clears
+    if (typeof v !== 'string') return { __err: 'must be text' };
+    const t = v.trim();
+    if (t.length > cap) return { __err: `keep it under ${cap} characters` };
+    return t;
+  };
+
+  // ── edit core fields (owner, principal, coordinator) ────────────────────────
+  app.patch(`/plugins/${ID}/students/:id`, { preHandler: [require('owner', 'principal', 'coordinator'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    // Identity anchors never ride the edit door: admission_no is the UNIQUE key and
+    // provenance lives in source/source_ref; status changes go through the lifecycle
+    // doors; grade/section MUST go through transfer so the enrollment-history
+    // invariant ("history row and the flip commit together") cannot be bypassed.
+    for (const k of ['admission_no', 'status', 'source', 'source_ref', 'grade', 'section']) {
+      if (b[k] !== undefined) {
+        if (k === 'grade' || k === 'section')
+          return bad(reply, 'Class and section changes go through the transfer door so the move is written to the student\'s history', 409);
+        return bad(reply, `${k === 'admission_no' ? 'The admission number' : k === 'status' ? 'The status' : 'Provenance'} can\'t be edited here`, 409);
+      }
+    }
+    const patch = {};
+    for (const [k, cap] of Object.entries(CORE_FIELD_CAPS)) {
+      if (b[k] === undefined) continue;
+      const v = cleanField(b[k], cap);
+      if (v && v.__err) return bad(reply, `${k === 'name' ? 'The name' : k === 'bus_route' ? 'The bus route' : 'The field'} ${v.__err}`);
+      patch[k] = v;
+    }
+    if (!Object.keys(patch).length) return bad(reply, 'Nothing to update — send at least one field (name, guardian_name, guardian_phone, bus_route)');
+    if (patch.name === null) return bad(reply, 'The name can\'t be empty');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = (await c.query(`SELECT id, name, grade, section, guardian_name, guardian_phone, bus_route, status FROM app.students WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!s) return bad(reply, 'We couldn\'t find that student', 404);
+      if (s.status !== 'active') return bad(reply, `Only an active student's record can be edited (this student is ${s.status})`, 409);
+      const sets = [], vals = [s.id];
+      const changes = [];
+      for (const [k, v] of Object.entries(patch)) {
+        vals.push(v);
+        sets.push(`${k}=$${vals.length}`);
+        const before = s[k];
+        if ((before ?? null) !== (v ?? null)) changes.push(v === null ? `${k} cleared` : `${k} updated`);
+      }
+      if (!changes.length) return { ok: true, student: s, changed: [] };
+      const upd = (await c.query(`UPDATE app.students SET ${sets.join(', ')} WHERE id=$1 RETURNING id, name, grade, section, guardian_name, guardian_phone, bus_route`, vals)).rows[0];
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'people', label: `Student record updated: ${s.name} — ${changes.join(', ')}`, ref: s.id },
+        'people.student.updated', { studentId: s.id, fields: changes });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Student record updated', recordType: 'Student', recordRef: s.id,
+        reason: 'core-field edit', policyRef: 'Platform §2.4 · student lifecycle (L3-2.1)', risk: 'low',
+        outcome: `${changes.join(', ')} · ${s.grade}-${s.section} · history invariant untouched` });
+      return { ok: true, student: upd, changed: changes };
+    });
+  });
+
+  // ── withdraw / transfer-out (owner, principal) ──────────────────────────────
+  // Semantics (L3-2.1): status → 'transferred' (the existing CHECK value — a
+  // dedicated 'withdrawn' state needs an L1 CHECK migration and is recorded as the
+  // follow-up), bus unassigned, attendance/fees/guardian links deliberately KEPT
+  // (history must survive the exit; DPDP export flows read them later).
+  app.post(`/plugins/${ID}/students/:id/withdraw`, { preHandler: [require('owner', 'principal'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+    if (reason.length < 2) return bad(reply, 'Tell us why the student is leaving (this goes on the record)');
+    if (reason.length > 300) return bad(reply, 'Keep the reason under 300 characters');
+    let effectiveDate = new Date().toISOString().slice(0, 10);
+    if (b.effective_date != null) {
+      const d = String(b.effective_date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) return bad(reply, 'The effective date must look like 2026-04-01');
+      effectiveDate = d;
+    }
+    const lastSchool = b.last_school ? String(b.last_school).trim().slice(0, 120) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = (await c.query(`SELECT id, name, grade, section, status, bus_route FROM app.students WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!s) return bad(reply, 'We couldn\'t find that student', 404);
+      if (s.status !== 'active') return bad(reply, `Only an active student can be withdrawn (this student is ${s.status})`, 409);
+      await c.query(`UPDATE app.students SET status='transferred', bus_route=NULL WHERE id=$1`, [s.id]);
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'people', label: `Student withdrawn: ${s.name} (${s.grade}-${s.section}) — ${reason.slice(0, 80)}`, ref: s.id },
+        'people.student.withdrawn', {
+          studentId: s.id, reason, effectiveDate, lastSchool,
+          statusSet: 'transferred', busUnassigned: true, attendanceKept: true, feesKept: true, parentLinksPreserved: true,
+          academicYear: null, ayNote: 'next-AY scoping lands with the academic-year entity (L1)',
+        });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Student withdrawn', recordType: 'Student', recordRef: s.id,
+        reason, policyRef: 'Platform §2.4 · student lifecycle (L3-2.1)', risk: 'high',
+        outcome: `status → transferred (effective ${effectiveDate}) · bus unassigned · attendance/fees/guardian links kept${lastSchool ? ` · last school: ${lastSchool}` : ''}` });
+      return { ok: true, student: { id: s.id, name: s.name, status: 'transferred', busRoute: null },
+        effectiveDate, note: 'Attendance, fee records and parent links are kept. The bus seat is released. This can\'t be undone from here — re-admission creates a fresh record.' };
+    });
+  });
+
+  // ── promote to the next class (owner, principal, coordinator) ───────────────
+  // Grade+1 with the transfer door's invariant: the enrollment_history row and the
+  // flip commit together. Numeric grades advance 1..11; LKG→UKG→1; grade 12 is
+  // terminal in the IN ladder (mark alumni via the office flow instead).
+  const nextGrade = (g) => {
+    if (/^\d+$/.test(g)) { const n = Number(g); if (n < 1 || n > 12) return null; return n === 12 ? { terminal: true } : { to: String(n + 1) }; }
+    if (g === 'LKG') return { to: 'UKG' };
+    if (g === 'UKG') return { to: '1' };
+    return null; // free-text grade — caller must supply to_grade explicitly
+  };
+  app.post(`/plugins/${ID}/students/:id/promote`, { preHandler: [require('owner', 'principal', 'coordinator'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const toSection = typeof (b.to_section ?? b.toSection) === 'string' ? String(b.to_section ?? b.toSection).trim().toUpperCase() : null;
+    if (toSection != null && (toSection.length === 0 || toSection.length > 16)) return bad(reply, 'Keep the section under 16 characters');
+    let toGrade = typeof (b.to_grade ?? b.toGrade) === 'string' ? String(b.to_grade ?? b.toGrade).trim() : null;
+    if (toGrade != null && (toGrade.length === 0 || toGrade.length > 16)) return bad(reply, 'Keep the class under 16 characters');
+    const reason = b.reason ? String(b.reason).slice(0, 300) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = (await c.query(`SELECT id, name, grade, section, status FROM app.students WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!s) return bad(reply, 'We couldn\'t find that student', 404);
+      if (s.status !== 'active') return bad(reply, `Only an active student can be promoted (this student is ${s.status})`, 409);
+      if (!toGrade) {
+        const nxt = nextGrade(s.grade);
+        if (!nxt) return bad(reply, `"${s.grade}" can\'t be advanced automatically — tell us the next class (to_grade)`);
+        if (nxt.terminal) return bad(reply, 'Grade 12 is the final class — use the office flow to mark the student as alumni instead', 409);
+        toGrade = nxt.to;
+      } else if (/^\d+$/.test(toGrade) && s.grade !== toGrade) {
+        const cur = Number(s.grade);
+        if (Number.isFinite(cur) && Number(toGrade) > cur + 1)
+          return bad(reply, `A student moves up one class at a time (${s.grade} → ${cur + 1}); use the transfer door for a different class`, 409);
+      }
+      const toSec = toSection ?? s.section;
+      if (s.grade === toGrade && s.section === toSec) return bad(reply, 'The student is already in that class and section', 409);
+      // THE invariant (same as transfer): history row and the flip commit together.
+      await c.query(
+        `INSERT INTO app.enrollment_history (tenant_id, student_id, from_grade, from_section, to_grade, to_section, changed_by, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [req.user.tenant_id, s.id, s.grade, s.section, toGrade, toSec, req.user.id, reason ?? 'promoted to the next class']);
+      const upd = await c.query(`UPDATE app.students SET grade=$2, section=$3 WHERE id=$1 RETURNING grade, section`, [s.id, toGrade, toSec]);
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'people', label: `Student promoted: ${s.name} — ${s.grade}-${s.section} → ${toGrade}-${toSec}`, ref: s.id },
+        'people.student.promoted', {
+          studentId: s.id, fromGrade: s.grade, fromSection: s.section, toGrade, toSection: toSec, reason,
+          academicYear: null, ayNote: 'next-AY scoping lands with the academic-year entity (L1)',
+        });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Student promoted', recordType: 'Student', recordRef: s.id,
+        reason: reason ?? 'end-of-year promotion', policyRef: 'Platform §2.4 · student lifecycle (L3-2.1)', risk: 'medium',
+        outcome: `${s.grade}-${s.section} → ${upd.rows[0].grade}-${upd.rows[0].section} · history row written` });
+      return { ok: true, student: { id: s.id, name: s.name, grade: upd.rows[0].grade, section: upd.rows[0].section },
+        from: { grade: s.grade, section: s.section }, to: { grade: upd.rows[0].grade, section: upd.rows[0].section } };
+    });
+  });
+
   // ── CSV roster import (owner, principal, coordinator, admissions) ───────────
   // JSON-first contract: {csv: "name,grade,section,..."} — the frontend reads the
   // file client-side. Multipart file upload is accepted as the convenience lane.

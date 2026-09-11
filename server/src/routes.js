@@ -13,13 +13,25 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   const require = (...roles) => async (req, reply) => {
     await app.authenticate(req, reply);
     if (reply.sent) return;
-    if (!roles.includes(req.user.role)) {
+    let allowed = roles.includes(req.user.role);
+    if (allowed) {
+      // a matched DENY refuses even a door the base role permits (deny wins)
+      await applyCustomMask(req, reply);
+      if (reply.sent) return;
+    } else {
+      // custom → builtin resolution: an explicit ALLOW grant lifts the role refusal
+      allowed = await applyCustomMask(req, reply);
+      if (reply.sent) return; // a DENY already answered 403
+    }
+    if (!allowed) {
       return reply.code(403).send({ error: `Your role (${req.user.role}) doesn't allow this action` });
     }
   };
 
   const me = async (req, reply) => {
     await app.authenticate(req, reply);
+    if (reply.sent) return;
+    await applyCustomMask(req, reply); // read doors honour a deny too
   };
 
   // ============ me / demo users ============
@@ -28,8 +40,239 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     // School identity rides every session (frontend header + title). The
     // tenant's own row is the truth; a fresh self-signup school shows ITS name.
     const t = await q(`SELECT name, slug FROM app.tenants WHERE id=$1`, [u.tenant_id]);
+    // D-37(d): mfa_enrolled_at is the only MFA fact /me exposes (the Settings
+    // UI renders "Turn off two-step" from it); secrets stay kernel-only.
     return { id: u.id, name: u.name, role: u.role, email: u.email, tenantId: u.tenant_id,
+      mfa_enrolled_at: u.mfa_enrolled_at ?? null,
       school: { name: t.rows[0]?.name ?? null, slug: t.rows[0]?.slug ?? null } };
+  });
+
+  // ============ custom roles (L3-4.2) ============
+  // A custom role = {key, label, base_role, permissions:{allow:[],deny:[]}} stored in
+  // app.roles; a user carries role_key (nullable). RESOLUTION ORDER (custom → builtin):
+  //   1. the base role decides as usual (require() semantics unchanged),
+  //   2. a matched DENY pattern refuses (403) even when the base role allowed,
+  //   3. a matched ALLOW pattern GRANTS even when the base role lacked the door.
+  // Enforcement lives in require()/me() below — every kernel door checks the mask;
+  // plugin doors keep base-role gating this run (requireRole is app.js-owned —
+  // journal note for S0).
+  // SCHEMA GATE: the store needs L1's migration (app.roles + users.role_key). Until it
+  // lands, the doors answer 503 with the exact reason — never a silent no-op.
+  let rolesSchemaReady = null;
+  const rolesAvailable = async () => {
+    if (rolesSchemaReady === null) {
+      const r = await q(`SELECT to_regclass('app.roles') IS NOT NULL AS ok,
+                                EXISTS (SELECT 1 FROM information_schema.columns
+                                        WHERE table_schema='app' AND table_name='users' AND column_name='role_key') AS col`);
+      rolesSchemaReady = !!(r.rows[0]?.ok && r.rows[0]?.col);
+    }
+    return rolesSchemaReady;
+  };
+
+  // every registered route is recorded here so a mask pattern is validated against
+  // REAL doors — a typo can never silently grant (or refuse) nothing.
+  const registeredRoutes = new Set();
+  app.addHook('onRoute', (route) => {
+    if (!route?.url) return;
+    for (const m of (route.method || 'GET').split(',').map((x) => x.trim())) {
+      if (m === 'HEAD' || m === 'OPTIONS') continue;
+      registeredRoutes.add(`${m} ${route.url}`);
+    }
+  });
+
+  const MASK_RE = /^(GET|POST|PATCH|PUT|DELETE|\*)\s+\/[^\s]{0,118}$/;
+  const patternMatches = (pattern, method, url) => {
+    // pattern: "METHOD /path" with an optional trailing '*' (prefix match)
+    const sp = pattern.indexOf(' ');
+    if (sp < 0) return false;
+    const pm = pattern.slice(0, sp);
+    const pp = pattern.slice(sp + 1);
+    if (pm !== '*' && pm !== method) return false;
+    if (pp.endsWith('*')) return url.startsWith(pp.slice(0, -1));
+    return url === pp || url.startsWith(pp + '/') || url.startsWith(pp + '?');
+  };
+  const maskDecides = (mask, method, url) => {
+    // returns 'deny' | 'allow' | null — deny wins over allow (predictable order)
+    for (const p of mask?.deny ?? []) if (patternMatches(p, method, url)) return 'deny';
+    for (const p of mask?.allow ?? []) if (patternMatches(p, method, url)) return 'allow';
+    return null;
+  };
+  const validateMask = (perms) => {
+    if (perms == null) return { allow: [], deny: [] };
+    if (typeof perms !== 'object' || Array.isArray(perms)) return null;
+    const out = { allow: [], deny: [] };
+    for (const kind of ['allow', 'deny']) {
+      const list = perms[kind];
+      if (list === undefined) continue;
+      if (!Array.isArray(list) || list.length > 100) return null;
+      for (const p of list) {
+        if (typeof p !== 'string' || !MASK_RE.test(p)) return null;
+        // must hit at least one registered door (same matcher as enforcement)
+        const [pm, pp] = [p.slice(0, p.indexOf(' ')), p.slice(p.indexOf(' ') + 1)];
+        const hit = [...registeredRoutes].some((r) => {
+          const [rm, ru] = [r.slice(0, r.indexOf(' ')), r.slice(r.indexOf(' ') + 1)];
+          if (pm !== '*' && pm !== rm) return false;
+          if (pp.endsWith('*')) return ru.startsWith(pp.slice(0, -1));
+          return ru === pp || ru.startsWith(pp + '/');
+        });
+        if (!hit) return null;
+      }
+      out[kind] = list;
+    }
+    return out;
+  };
+  // role-key binding cache: userId → {key, at}. authenticate() (app.js) selects a
+  // fixed column list that doesn't include role_key, so the binding is resolved here —
+  // self-sufficient, never touching kernel files. TTL 30s bounds cross-request staleness
+  // of an assignment; the mask itself is always read FRESH (PATCH/DELETE invalidate).
+  const bindingCache = new Map(); // userId → {key: string|null, at: ms}
+  const BINDING_TTL_MS = 30_000;
+  const roleKeyFor = async (c, user) => {
+    const hit = bindingCache.get(user.id);
+    if (hit && Date.now() - hit.at < BINDING_TTL_MS) return hit.key;
+    const r = await c.query(`SELECT role_key FROM app.users WHERE id=$1 AND tenant_id=$2`, [user.id, user.tenant_id]);
+    const key = r.rows[0]?.role_key ?? null;
+    if (bindingCache.size > 1000) bindingCache.clear();
+    bindingCache.set(user.id, { key, at: Date.now() });
+    return key;
+  };
+  const maskForUser = async (c, user, roleKey) => {
+    if (!roleKey) return null;
+    const r = await c.query(`SELECT permissions FROM app.roles WHERE tenant_id=$1 AND key=$2`, [user.tenant_id, roleKey]);
+    return r.rows[0]?.permissions ?? null;
+  };
+  // called at the END of require()/me(): applies the caller's custom mask, if any.
+  // Deny → 403 (reply sent); allow grants → returns true so the role refusal lifts.
+  // Silent when the store is absent or the caller carries no binding.
+  const applyCustomMask = async (req, reply) => {
+    if (!(await rolesAvailable())) return false;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const roleKey = await roleKeyFor(c, req.user);
+      if (!roleKey) return false;
+      const mask = await maskForUser(c, req.user, roleKey);
+      const decision = mask ? maskDecides(mask, req.method, req.url.split('?')[0]) : null;
+      if (decision === 'deny') {
+        reply.code(403).send({ error: 'Your school\'s custom role for you refuses this action' });
+        return true;
+      }
+      return decision === 'allow';
+    });
+  };
+
+  const ROLES_ADMIN = ['owner', 'itadmin'];
+  app.get('/roles', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT r.key, r.label, r.base_role, r.permissions, r.created_at,
+                (SELECT count(*)::int FROM app.users u WHERE u.role_key = r.key) AS members
+         FROM app.roles r WHERE r.tenant_id=$1 AND r.key NOT LIKE 'retired-%' ORDER BY r.created_at`, [req.user.tenant_id])).rows;
+      return { roles: rows, builtin: ROLES };
+    });
+  });
+
+  app.post('/roles', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    const b = req.body ?? {};
+    const key = typeof b.key === 'string' ? b.key.trim().toLowerCase() : '';
+    if (!/^[a-z0-9_-]{2,40}$/.test(key)) return bad(reply, 'The role key must be 2-40 characters: lowercase letters, digits, - or _');
+    const label = typeof b.label === 'string' ? b.label.trim() : '';
+    if (label.length < 2 || label.length > 60) return bad(reply, 'Give the role a name of 2-60 characters');
+    if (!ROLES.includes(b.base_role)) return bad(reply, `base_role must be one of: ${ROLES.join(', ')}`);
+    const mask = validateMask(b.permissions);
+    if (mask === null) return bad(reply, 'permissions must be {allow:[], deny:[]} — entries like "GET /fees" or "POST /students/*" (max 100, each must match a real screen)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      try {
+        const r = (await c.query(
+          `INSERT INTO app.roles (tenant_id, key, label, base_role, permissions) VALUES ($1,$2,$3,$4,$5::jsonb) RETURNING *`,
+          [req.user.tenant_id, key, label, b.base_role, JSON.stringify(mask)])).rows[0];
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Custom role created', recordType: 'Role', recordRef: key, reason: `base ${b.base_role}`, policyRef: 'Custom roles (L3-4.2) · custom → builtin resolution', risk: 'high',
+          outcome: `key=${key} · base=${b.base_role} · allow ${mask.allow.length} · deny ${mask.deny.length}` });
+        return { role: r };
+      } catch (e) {
+        if (e.code === '23505') return bad(reply, `A role keyed "${key}" already exists`, 409);
+        throw e;
+      }
+    });
+  });
+
+  app.patch('/roles/:key', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    const b = req.body ?? {};
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cur = (await c.query(`SELECT * FROM app.roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE`, [req.user.tenant_id, req.params.key])).rows[0];
+      if (!cur) return bad(reply, 'We couldn\'t find that role', 404);
+      let mask = cur.permissions;
+      if (b.permissions !== undefined) {
+        mask = validateMask(b.permissions);
+        if (mask === null) return bad(reply, 'permissions must be {allow:[], deny:[]} — entries like "GET /fees" (max 100, each must match a real screen)');
+      }
+      const label = b.label != null ? String(b.label).trim() : cur.label;
+      if (label.length < 2 || label.length > 60) return bad(reply, 'The name must be 2-60 characters');
+      const base = b.base_role != null ? b.base_role : cur.base_role;
+      if (!ROLES.includes(base)) return bad(reply, `base_role must be one of: ${ROLES.join(', ')}`);
+      const r = (await c.query(
+        `UPDATE app.roles SET label=$3, base_role=$4, permissions=$5::jsonb, updated_at=now() WHERE tenant_id=$1 AND key=$2 RETURNING *`,
+        [req.user.tenant_id, req.params.key, label, base, JSON.stringify(mask)])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Custom role updated', recordType: 'Role', recordRef: req.params.key, policyRef: 'Custom roles (L3-4.2)', risk: 'high',
+        outcome: `base=${base} · allow ${mask.allow?.length ?? 0} · deny ${mask.deny?.length ?? 0} · cache invalidated` });
+      return { role: r };
+    });
+  });
+
+  app.delete('/roles/:key', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const members = (await c.query(`SELECT count(*)::int AS n FROM app.users WHERE role_key=$2 AND tenant_id=$1`, [req.user.tenant_id, req.params.key])).rows[0].n;
+      if (members > 0) return bad(reply, `${members} account(s) still carry this role — reassign them first`, 409);
+      // D-35 grant law: the app role NEVER hard-DELETEs in schema app — an empty
+      // role is RETIRED in place (key namespaced out of the live namespace, mask
+      // emptied) so the audit ledger's recordRef stays resolvable forever. The
+      // SECURITY DEFINER hard-delete can come later via an L1 migration if the
+      // fleet ever needs true row removal.
+      const cur = (await c.query(`SELECT key, label FROM app.roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE`, [req.user.tenant_id, req.params.key])).rows[0];
+      if (!cur) return bad(reply, 'We couldn\'t find that role', 404);
+      if (cur.key.startsWith('retired-')) return bad(reply, 'That role is already retired', 409);
+      const retiredKey = `retired-${Date.now().toString(36)}-${cur.key.slice(0, 30)}`;
+      const r = (await c.query(
+        `UPDATE app.roles SET key=$3, label=$4, permissions='{"allow":[],"deny":[]}'::jsonb, updated_at=now() WHERE tenant_id=$1 AND key=$2 RETURNING key`,
+        [req.user.tenant_id, req.params.key, retiredKey, `[Retired] ${cur.label}`.slice(0, 60)])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Custom role retired', recordType: 'Role', recordRef: req.params.key, policyRef: 'Custom roles (L3-4.2) · D-35 grant law (no app-role DELETE)', risk: 'medium', outcome: `empty role retired in place → ${retiredKey} (audit trail resolvable)` });
+      return { ok: true, retired: true, key: retiredKey };
+    });
+  });
+
+  // assignment: a user carries ONE role_key (their custom overlay). Re-assigning
+  // replaces it; assigning with {roleKey: null} clears back to the pure builtin.
+  app.post('/roles/:key/assign', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    if (!userIds.length || userIds.length > 200) return bad(reply, 'Send userIds (1-200 accounts to carry this role)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const role = (await c.query(`SELECT key, base_role FROM app.roles WHERE tenant_id=$1 AND key=$2`, [req.user.tenant_id, req.params.key])).rows[0];
+      if (!role) return bad(reply, 'We couldn\'t find that role', 404);
+      // structurally protected targets: the acting owner never re-roles themselves,
+      // and owner accounts are never re-roled (matches people.admin's owner pin)
+      if (userIds.includes(req.user.id)) return bad(reply, 'You can\'t change your own role from here — ask another owner or IT admin', 403);
+      const owners = (await c.query(`SELECT id FROM app.users WHERE tenant_id=$1 AND role='owner' AND id = ANY($2::uuid[])`, [req.user.tenant_id, userIds])).rows;
+      if (owners.length) return bad(reply, 'Owner accounts can\'t carry a custom role overlay', 409);
+      const r = await c.query(`UPDATE app.users SET role_key=$3 WHERE tenant_id=$1 AND id = ANY($2::uuid[]) RETURNING id`, [req.user.tenant_id, userIds, req.params.key]);
+      for (const id of userIds) bindingCache.delete(id);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Custom role assigned', recordType: 'Role', recordRef: req.params.key, policyRef: 'Custom roles (L3-4.2)', risk: 'high', outcome: `${r.rowCount} account(s) now carry "${req.params.key}" (base ${role.base_role} + mask)` });
+      return { ok: true, assigned: r.rowCount };
+    });
+  });
+
+  app.post('/roles/:key/unassign', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+    if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
+    const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    if (!userIds.length) return bad(reply, 'Send userIds to clear');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`UPDATE app.users SET role_key=NULL WHERE tenant_id=$1 AND id = ANY($2::uuid[]) AND role_key=$3`, [req.user.tenant_id, userIds, req.params.key]);
+      for (const id of userIds) bindingCache.delete(id);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Custom role cleared', recordType: 'Role', recordRef: req.params.key, policyRef: 'Custom roles (L3-4.2)', risk: 'medium', outcome: `${r.rowCount} account(s) back to their builtin role` });
+      return { ok: true, cleared: r.rowCount };
+    });
   });
 
   // ============ students & people ============
@@ -177,6 +420,157 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       }
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Marked attendance', recordType: 'Attendance', recordRef: `${marks.length} students on ${date}`, reason: 'register marked', policyRef: 'Attendance §1.1', outcome: `${absents.length} absence notices queued · authority: principal+ (T105c: no class-assignment data exists to bind a teacher to a class)` });
       return { ok: true, marked: marks.length, absent: absents.length, noticesQueued: absents.length };
+    });
+  });
+
+  // ============ academic years (Wave 2 · L1-2.1) ============
+  // The school calendar money/academic rows hang off. Exactly ONE year is current
+  // per tenant — the partial unique index (055) is the law; the doors below only
+  // make the legal path convenient. Every mutation is audited.
+  app.get('/academic-years', { preHandler: me }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT id, name, starts_on, ends_on, is_current, created_at
+                               FROM app.academic_years ORDER BY starts_on DESC`);
+      return { years: r.rows, currentAcademicYearId: r.rows.find((y) => y.is_current)?.id ?? null };
+    });
+  });
+
+  app.post('/academic-years', { preHandler: require('owner', 'principal', 'finance') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    const startsOn = typeof b.starts_on === 'string' ? b.starts_on.trim() : '';
+    const endsOn = typeof b.ends_on === 'string' ? b.ends_on.trim() : '';
+    if (!name || name.length > 80) return bad(reply, 'name is required (≤80 characters)');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startsOn) || !/^\d{4}-\d{2}-\d{2}$/.test(endsOn))
+      return bad(reply, 'starts_on and ends_on must be YYYY-MM-DD dates');
+    if (endsOn <= startsOn) return bad(reply, 'ends_on must be after starts_on');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      try {
+        // is_current at birth: clear any other current FIRST (same tx — atomic),
+        // the partial unique index still owns the invariant against races.
+        if (b.is_current === true)
+          await c.query(`UPDATE app.academic_years SET is_current=false, updated_at=now() WHERE tenant_id=$1 AND is_current`, [req.user.tenant_id]);
+        const r = await c.query(
+          `INSERT INTO app.academic_years (tenant_id, name, starts_on, ends_on, is_current)
+           VALUES ($1,$2,$3,$4,$5) RETURNING id, name, starts_on, ends_on, is_current`,
+          [req.user.tenant_id, name, startsOn, endsOn, b.is_current === true]);
+        const year = r.rows[0];
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created academic year', recordType: 'AcademicYear', recordRef: year.name, reason: 'academic calendar', outcome: year.is_current ? 'created and set current' : 'created (not current)' });
+        return { year };
+      } catch (e) {
+        if (e.code === '23505')
+          return bad(reply, e.constraint === 'academic_years_one_current_idx'
+            ? 'another academic year was just set current — reload and retry'
+            : 'an academic year with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
+  app.post('/academic-years/:id/activate', { preHandler: require('owner', 'principal') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cur = (await c.query(
+        `SELECT id, name, is_current FROM app.academic_years WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!cur) return bad(reply, 'academic year not found', 404);
+      if (cur.is_current) return { ok: true, id: cur.id, name: cur.name, is_current: true, already: true };
+      await c.query(`UPDATE app.academic_years SET is_current=false, updated_at=now() WHERE tenant_id=$1 AND is_current AND id<>$2`, [req.user.tenant_id, cur.id]);
+      await c.query(`UPDATE app.academic_years SET is_current=true, updated_at=now() WHERE id=$1`, [cur.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Activated academic year', recordType: 'AcademicYear', recordRef: cur.name, reason: 'academic calendar', outcome: 'set current — single-current enforced, previous year archived' });
+      await emitEvent(c, req.user.tenant_id, { type: 'people', label: `Academic year ${cur.name} is now current`, ref: cur.id });
+      return { ok: true, id: cur.id, name: cur.name, is_current: true };
+    });
+  });
+
+  // ---- fee plan templates & bulk generation (Wave 2 · L1-2.2) ----
+  // A template scopes a grade-set × term-list; /generate fans it out to every
+  // ACTIVE student in scope in one statement. (tenant, student, term, label) is
+  // the idempotency key (057): regeneration skips what exists — paid_cents
+  // invariant D-5/D-21: generation never overwrites a row carrying payments.
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const validateTerms = (terms) => {
+    if (!Array.isArray(terms) || terms.length === 0 || terms.length > 24) return 'terms must be a non-empty list (≤24 entries)';
+    for (const t of terms) {
+      if (!t || typeof t.term !== 'string' || !t.term.trim() || t.term.trim().length > 40) return 'each term needs a term name (≤40 chars)';
+      if (typeof t.label !== 'string' || !t.label.trim() || t.label.trim().length > 80) return 'each term needs a label (≤80 chars)';
+      if (!Number.isInteger(t.amount_cents) || t.amount_cents < 0) return 'each term needs an integer amount_cents ≥ 0';
+      if (t.due_on !== undefined && (typeof t.due_on !== 'string' || !DATE_RE.test(t.due_on))) return 'due_on must be a YYYY-MM-DD date';
+    }
+    return null;
+  };
+
+  app.get('/fee-plans', { preHandler: me }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT t.id, t.name, t.grades, t.terms, t.academic_year_id, t.created_at,
+                (SELECT count(*)::int FROM app.fee_obligations o
+                  WHERE o.source_ref = 'feeplan:' || t.id::text) AS obligations_generated,
+                (SELECT max(o.created_at) FROM app.fee_obligations o
+                  WHERE o.source_ref = 'feeplan:' || t.id::text) AS last_generated_at
+         FROM app.fee_plan_templates t ORDER BY t.created_at DESC`);
+      return { feePlans: r.rows };
+    });
+  });
+
+  app.post('/fee-plans', { preHandler: require('owner', 'principal', 'finance') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    const grades = Array.isArray(b.grades) ? b.grades.filter((g) => typeof g === 'string' && g.trim()) : null;
+    if (!name || name.length > 80) return bad(reply, 'name is required (≤80 characters)');
+    if (!grades || grades.length === 0 || grades.length > 40) return bad(reply, 'grades must be a non-empty list of grade names');
+    const termsErr = validateTerms(b.terms);
+    if (termsErr) return bad(reply, termsErr);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      try {
+        if (b.academicYearId) {
+          const ay = await c.query(`SELECT 1 FROM app.academic_years WHERE id=$1`, [b.academicYearId]);
+          if (!ay.rows[0]) return bad(reply, 'academicYearId does not reference this school\'s calendar', 400);
+        }
+        const r = await c.query(
+          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id)
+           VALUES ($1,$2,$3,$4::jsonb,$5) RETURNING id, name, grades, terms, academic_year_id`,
+          [req.user.tenant_id, name, grades, JSON.stringify(b.terms), b.academicYearId ?? null]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee plan template', recordType: 'FeePlan', recordRef: name, reason: `grades: ${grades.join(', ')}`, outcome: `created — ${b.terms.length} terms` });
+        return { feePlan: r.rows[0] };
+      } catch (e) {
+        if (e.code === '23505') return bad(reply, 'a fee plan with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
+  app.post('/fee-plans/:id/generate', { preHandler: require('owner', 'principal', 'finance') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const tpl = (await c.query(`SELECT id, name, grades, terms, academic_year_id FROM app.fee_plan_templates WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!tpl) return bad(reply, 'fee plan not found', 404);
+      const scope = (await c.query(`SELECT count(*)::int n FROM app.students WHERE status='active' AND grade = ANY($1)`, [tpl.grades])).rows[0].n;
+      const ins = await c.query(
+        `INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, due_on, amount_cents, academic_year_id, source_ref)
+         SELECT $1, s.id, te->>'term', te->>'label', NULLIF(te->>'due_on','')::date, (te->>'amount_cents')::bigint, $2, 'feeplan:' || $3
+         FROM app.students s CROSS JOIN jsonb_array_elements($4::jsonb) te
+         WHERE s.status='active' AND s.grade = ANY($5)
+         ON CONFLICT (tenant_id, student_id, term, label) DO NOTHING
+         RETURNING id`,
+        [req.user.tenant_id, tpl.academic_year_id, tpl.id, JSON.stringify(tpl.terms), tpl.grades]);
+      const inserted = ins.rowCount;
+      const attempted = scope * (Array.isArray(tpl.terms) ? tpl.terms.length : 0);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Generated fee obligations', recordType: 'FeePlan', recordRef: tpl.name, reason: `${scope} active students × ${tpl.terms.length} terms`, outcome: `${inserted} created · ${attempted - inserted} skipped (already exist — payments untouched)` });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee plan ${tpl.name} generated — ${inserted} obligations created for ${scope} students`, ref: tpl.id });
+      return { inserted, skipped: attempted - inserted, students: scope, terms: Array.isArray(tpl.terms) ? tpl.terms.length : 0 };
+    });
+  });
+
+  app.post('/fees/obligations/:id/void', { preHandler: require('owner') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const o = (await c.query(`SELECT id, label, amount_cents, paid_cents, status FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!o) return bad(reply, 'obligation not found', 404);
+      if (o.status === 'void') return { ok: true, id: o.id, status: 'void', already: true };
+      if (BigInt(o.paid_cents) > 0n)
+        return bad(reply, 'obligation carries payments — refund before voiding (paid_cents can never decrease)', 409);
+      const r = await c.query(`UPDATE app.fee_obligations SET status='void' WHERE id=$1 RETURNING id, label, status`, [o.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Voided fee obligation', recordType: 'FeeObligation', recordRef: o.label, reason: 'owner void', outcome: 'void — no payments attached' });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee obligation ${o.label} voided by owner`, ref: o.id });
+      return { ok: true, obligation: r.rows[0] };
     });
   });
 
@@ -454,6 +848,64 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
+  // Wave 2 · L1-2.3: admissions→student executor (kernel-side by design — the
+  // funnel keeps its no_core_students_writes invariant). Runs on approval of a
+  // students.create.<leadId> action: INSERT the student (+guardian rows from the
+  // lead), an enrollment_history admission row, audit trail. Idempotent three
+  // ways: (1) the decide door refuses a second decision on the same action (409);
+  // (2) the action code students.create.<leadId> is UNIQUE per tenant, so a lead
+  // cannot raise twice; (3) the (source='admissions', source_ref=leadId) lookup
+  // makes a replay return the existing record instead of duplicating it.
+  const parseClassApplied = (s) => {
+    const m = /^(\S+)-([A-Za-z0-9]+)$/.exec(String(s ?? '').trim());
+    return m ? { grade: m[1], section: m[2].toUpperCase() } : { grade: String(s ?? '').trim() || 'unassigned', section: 'A' };
+  };
+  const executeStudentCreation = async (c, req, a, p) => {
+    const lead = (await c.query(
+      `SELECT id, student_name, class_applied, guardian_name, guardian_phone, stage
+       FROM plugin_admissions.lead WHERE id=$1 FOR UPDATE`, [p.leadId])).rows[0];
+    if (!lead) throw Object.assign(new Error('the admissions lead behind this approval no longer exists'), { statusCode: 409 });
+    const existing = (await c.query(
+      `SELECT id, name FROM app.students WHERE tenant_id=$1 AND source='admissions' AND source_ref=$2`,
+      [req.user.tenant_id, String(p.leadId)])).rows[0];
+    if (existing) return { type: 'student', id: existing.id, name: existing.name, already: true };
+    if (lead.stage !== 'enrolled') throw Object.assign(new Error(`lead is "${lead.stage}", not "enrolled" — conversion stale`), { statusCode: 409 });
+    const { grade, section } = parseClassApplied(lead.class_applied);
+    const ay = /^[0-9]{4}(-[0-9]{2})?$/.test(String(p.admissionYear ?? '')) ? String(p.admissionYear) : String(new Date().getFullYear());
+    let s = null;
+    await c.query('SAVEPOINT student_insert');
+    try {
+      s = await c.query(
+        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'active','admissions',$8)
+         ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id, name, admission_no`,
+        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).slice(0, 8).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, String(p.leadId)]);
+      await c.query('RELEASE SAVEPOINT student_insert');
+    } catch (e) {
+      // admission_no collision on the deterministic form → fall back to the full
+      // lead uuid (still deterministic, still idempotent via source_ref).
+      await c.query('ROLLBACK TO SAVEPOINT student_insert');
+      await c.query('RELEASE SAVEPOINT student_insert');
+      s = await c.query(
+        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'active','admissions',$8)
+         ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id, name, admission_no`,
+        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, String(p.leadId)]);
+    }
+    if (!s.rows[0]) throw Object.assign(new Error('could not allocate an admission number for this conversion'), { statusCode: 409 });
+    const student = s.rows[0];
+    if (lead.guardian_name && lead.guardian_phone) {
+      await c.query(`INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary)
+                     VALUES ($1,$2,$3,$4,'guardian',true)`, [req.user.tenant_id, student.id, lead.guardian_name, lead.guardian_phone]);
+    }
+    await c.query(
+      `INSERT INTO app.enrollment_history (tenant_id, student_id, from_grade, from_section, to_grade, to_section, changed_by, reason)
+       VALUES ($1,$2,$3,$4,$3,$4,$5,$6)`,
+      [req.user.tenant_id, student.id, grade, section, req.user.id, `admission via ${a.code} — funnel conversion`]);
+    await emitEvent(c, req.user.tenant_id, { type: 'people', label: `Student created from admissions — ${student.name} (${grade}-${section})`, ref: student.id });
+    return { type: 'student', id: student.id, name: student.name, admissionNo: student.admission_no, grade, section };
+  };
+
   app.post('/actions/:id/decide', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
     if (!['approved','dismissed'].includes(decision)) return bad(reply, "decision must be 'approved' or 'dismissed'");
@@ -518,9 +970,360 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
             [req.user.tenant_id, p.title ?? a.title, p.body ?? a.detail, a.code]);
           execution = { type: 'notification', id: n.rows[0].id };
         }
+        if (a.code.startsWith('students.create.') && p.leadId != null) {
+          // Wave 2 · L1-2.3: the admissions→student executor. Any executor error
+          // throws inside withUser → the whole tx (status flip included) rolls
+          // back atomically; known executor conditions surface as honest 4xx.
+          try {
+            execution = await executeStudentCreation(c, req, a, p);
+          } catch (e) {
+            if (e.statusCode) return bad(reply, e.message, e.statusCode);
+            throw e;
+          }
+        }
       }
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `${decision === 'approved' ? 'Approved' : 'Dismissed'} action: ${a.title}`, recordType: 'Action', recordRef: a.code, reason: note ?? 'decided in Action Center', policyRef: a.policy_ref, aiInvolved: a.ai_involved, risk: 'medium', outcome: execution ? `executed: ${execution.type} ${execution.id}` : 'no execution' });
       return { ok: true, decision, execution };
+    });
+  });
+
+  // ---- payments live loop: refund + settlement reconciliation (Wave 3 · L1-3.1) ----
+  // Razorpay REST keys resolve exactly like the rail's own doors (plugin settings
+  // first, env fallback). Network calls happen BEFORE any ledger mutation and
+  // never inside a lock we can't release — a gateway refusal leaves the ledger
+  // byte-identical.
+  const RZP_REFUND_API = (paymentId) => `https://api.razorpay.com/v1/payments/${paymentId}/refund`;
+  const resolveRzpKeys = async (tenantId) => {
+    const s = (await q(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='payments.razorpay'`, [tenantId])).rows[0]?.settings ?? {};
+    const keyId = s.key_id ?? process.env.RAZORPAY_KEY_ID ?? null;
+    const keySecret = s.key_secret ?? process.env.RAZORPAY_KEY_SECRET ?? null;
+    return { configured: Boolean(keyId && keySecret), keyId, keySecret };
+  };
+  const rzpRefund = async (keyId, keySecret, razorpayPaymentId, amountCents) => {
+    const res = await fetch(RZP_REFUND_API(razorpayPaymentId), {
+      method: 'POST',
+      headers: { authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: Number(amountCents), speed: 'normal' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { ok: false, http: res.status };
+    const body = await res.json().catch(() => ({}));
+    return { ok: true, refundId: body?.id ?? null, status: body?.status ?? 'processed' };
+  };
+
+  app.post('/payments/:id/refund', { preHandler: require('owner', 'finance') }, async (req, reply) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id))) return bad(reply, 'payment id must be a uuid');
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const p = (await c.query(`SELECT * FROM app.payments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!p) return bad(reply, 'payment not found', 404);
+      if (p.status === 'refunded') return bad(reply, 'payment already refunded', 409);
+      if (p.status !== 'confirmed') return bad(reply, `only confirmed payments can be refunded (this one is ${p.status})`, 409);
+      // Gateway leg first (razorpay): a refused refund must not touch the ledger.
+      let gateway = { mode: p.method === 'razorpay' ? 'gateway' : 'manual' };
+      if (p.method === 'razorpay') {
+        const op = (await c.query(
+          `SELECT razorpay_payment_id FROM plugin_razorpay.order_log WHERE payment_id=$1 AND razorpay_payment_id IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1`, [p.id])).rows[0];
+        const { configured, keyId, keySecret } = await resolveRzpKeys(req.user.tenant_id);
+        if (!configured || !op) {
+          gateway = { mode: 'manual', note: !configured ? 'gateway keys not configured — refund recorded manually, attach proof' : 'no razorpay payment id on the order log — refund recorded manually' };
+        } else {
+          const r = await rzpRefund(keyId, keySecret, op.razorpay_payment_id, p.amount_cents);
+          if (!r.ok) return bad(reply, `gateway refused the refund (HTTP ${r.http}) — ledger untouched`, 409);
+          gateway = { mode: 'gateway', refundId: r.refundId, status: r.status };
+        }
+      }
+      // Ledger reversal (full refund this sprint): payment → 'refunded' finally
+      // used; obligation paid_cents reversed with floor 0 and status recomputed.
+      const o = p.obligation_id
+        ? (await c.query(`SELECT id, amount_cents, paid_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [p.obligation_id])).rows[0]
+        : null;
+      if (o) {
+        const newPaid = BigInt(o.paid_cents) - BigInt(p.amount_cents) < 0n ? 0n : BigInt(o.paid_cents) - BigInt(p.amount_cents);
+        const newStatus = newPaid <= 0n ? 'open' : (newPaid < BigInt(o.amount_cents) ? 'partial' : 'paid');
+        await c.query(`UPDATE app.fee_obligations SET paid_cents=$2, status=$3 WHERE id=$1`, [o.id, newPaid.toString(), newStatus]);
+      }
+      const upd = await c.query(
+        `UPDATE app.payments SET status='refunded', refunded_at=now(), refund_reason=$2, refund_gateway_ref=$3 WHERE id=$1 RETURNING id, status, refunded_at`,
+        [p.id, reason || null, gateway.refundId ?? gateway.note ?? null]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Refunded payment', recordType: 'Payment', recordRef: p.id, reason: reason || 'owner/finance refund', policyRef: 'Fees §4.2', risk: 'high', outcome: `status refunded via ${gateway.mode}${gateway.refundId ? ` (${gateway.refundId})` : ''} — obligation paid_cents reversed` });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.refunded — ₹${Number(p.amount_cents) / 100} (${gateway.mode})`, ref: p.id });
+      return { payment: upd.rows[0], gateway };
+    });
+  });
+
+  app.post('/payments/reconcile', { preHandler: require('owner', 'finance') }, async (req) => {
+    // Settlement reconciliation sweep: three discrepancy classes between the
+    // kernel ledger and the rail's own order_log. Each finding is emitted as an
+    // event so the Action Center/ops see it; the report is the cron payload.
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const ghost = (await c.query(
+        `SELECT p.id, p.amount_cents, p.receipt_no, ol.status AS rail_status, ol.razorpay_order_id
+         FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
+         WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed' AND ol.status <> 'captured'
+         ORDER BY p.confirmed_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
+      const missing = (await c.query(
+        `SELECT p.id, p.status AS ledger_status, p.amount_cents, ol.razorpay_order_id, ol.razorpay_payment_id
+         FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
+         WHERE p.tenant_id=$1 AND p.method='razorpay' AND ol.status = 'captured' AND p.status NOT IN ('confirmed','refunded')
+         ORDER BY ol.created_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
+      const orphan = (await c.query(
+        `SELECT p.id, p.amount_cents, p.receipt_no, p.gateway_ref
+         FROM app.payments p
+         WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed'
+           AND NOT EXISTS (SELECT 1 FROM plugin_razorpay.order_log ol WHERE ol.payment_id = p.id)
+         ORDER BY p.confirmed_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
+      for (const g of ghost) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed locally, rail says ${g.rail_status} (order ${g.razorpay_order_id})`, ref: g.id });
+      for (const m of missing) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — rail captured, ledger still ${m.ledger_status} (order ${m.razorpay_order_id})`, ref: m.id });
+      for (const w of orphan) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed with no rail order log entry`, ref: w.id });
+      return { checked: { confirmedRazorpay: ghost.length + missing.length + orphan.length }, discrepancies: { ghostLocalConfirmed: ghost, missingLocalConfirmation: missing, orphanNoRailLog: orphan }, total: ghost.length + missing.length + orphan.length };
+    });
+  });
+
+  // ---- fee dunning (Wave 3 · L1-3.2) ----
+  // Overdue-obligation reminders: one queued communication per overdue obligation
+  // per 7-day window (dedup_key), guardians with a phone only, honest copy, and
+  // quiet hours from plugin settings (comms.whatsapp settings.quiet_hours, IST —
+  // default 21:00–08:00). During quiet hours the sweep WRITES NOTHING — there is
+  // no delivery worker yet, so queueing at 2am would risk a 2am send.
+  const IST_NOW_MS = () => Date.now() + 5.5 * 3600 * 1000;
+  const IST_TODAY = () => new Date(IST_NOW_MS()).toISOString().slice(0, 10);
+  const IST_MINUTE_OF_DAY = () => {
+    const d = new Date(IST_NOW_MS());
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+  };
+  const parseHm = (s) => {
+    const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(s ?? ''));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const inQuietHours = (q0, q1, minute) => q0 === null || q1 === null ? false : (q0 <= q1 ? (minute >= q0 && minute < q1) : (minute >= q0 || minute < q1));
+  const dunningQuietHours = async (tenantId) => {
+    const s = (await q(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='comms.whatsapp'`, [tenantId])).rows[0]?.settings ?? {};
+    const qs = s.quiet_hours ?? {};
+    return { start: qs.start ?? '21:00', end: qs.end ?? '08:00' };
+  };
+  const DUNNING_SELECT = `
+    SELECT o.id, o.student_id, o.label, o.due_on, o.amount_cents, o.paid_cents,
+           s.name AS student_name, s.guardian_phone
+    FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
+    WHERE o.tenant_id = $1 AND o.status IN ('open','partial') AND o.due_on < $2::date AND o.amount_cents > o.paid_cents
+      AND NOT EXISTS (SELECT 1 FROM app.communications cm
+                       WHERE cm.dedup_key = 'dunning:' || o.id::text AND cm.created_at > now() - interval '7 days')`;
+
+  app.post('/fees/dunning/run', { preHandler: require('owner', 'finance') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const quiet = await dunningQuietHours(req.user.tenant_id);
+      const q0 = parseHm(quiet.start), q1 = parseHm(quiet.end);
+      const minute = IST_MINUTE_OF_DAY();
+      if (inQuietHours(q0, q1, minute)) {
+        const opensAt = minute < (q1 ?? 0) ? quiet.end : `${quiet.end} (next day IST)`;
+        return { queued: 0, quietHours: quiet, note: `quiet hours in effect (IST) — sweep writes nothing until ${opensAt}` };
+      }
+      const rows = (await c.query(`${DUNNING_SELECT} ORDER BY o.due_on LIMIT 200`, [req.user.tenant_id, IST_TODAY()])).rows;
+      let queued = 0; let skippedNoContact = 0;
+      for (const o of rows) {
+        if (!o.guardian_phone) { skippedNoContact += 1; continue; }
+        const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
+        await c.query(
+          `INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, status, policy_ref, dedup_key)
+           VALUES ($1,'guardian',$2::jsonb,'whatsapp','FEE_REMINDER',$3,'queued','Fees §4.2',$4)`,
+          [req.user.tenant_id, JSON.stringify([o.guardian_phone]),
+           `Fee reminder: ${o.student_name} — ${o.label}, ₹${Number(due) / 100} was due on ${o.due_on}. Please pay via the parent portal or at the school office. If you have already paid, please share the receipt with the office — no action otherwise.`,
+           `dunning:${o.id}`]);
+        queued += 1;
+      }
+      if (queued > 0) {
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Ran fee dunning sweep', recordType: 'Fees', recordRef: IST_TODAY(), reason: 'overdue obligations', policyRef: 'Fees §4.2', outcome: `${queued} reminders queued (7-day dedup per obligation) · ${skippedNoContact} skipped without guardian contact` });
+        await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee dunning — ${queued} reminder(s) queued for overdue fees`, ref: IST_TODAY() });
+      }
+      return { queued, skippedNoContact, quietHours: quiet, template: 'FEE_REMINDER' };
+    });
+  });
+
+  // ---- timetable clash-check (Wave 4 · L1-4.2) ----
+  // Read-only planner check: would a proposed (teacher, room) double-book against
+  // the weekly grid AND the day's substitutions (the effective-teacher overlay)?
+  // The v1 grid is section-agnostic (one grid per school — ops.timetable:33), so
+  // section clashes are reported as not-applicable rather than fabricated.
+  app.post('/timetable/clash-check', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    if (!DAYS.includes(b.dayOfWeek)) return bad(reply, `dayOfWeek must be one of ${DAYS.join(', ')}`);
+    const proposals = Array.isArray(b.proposals) ? b.proposals : [b];
+    if (proposals.length === 0 || proposals.length > 50) return bad(reply, 'provide 1–50 proposals');
+    for (const pr of proposals) {
+      if (!pr || (pr.teacherName == null && pr.room == null)) return bad(reply, 'each proposal needs a teacherName and/or room');
+      if (pr.teacherName != null && (typeof pr.teacherName !== 'string' || !pr.teacherName.trim() || pr.teacherName.length > 80)) return bad(reply, 'teacherName must be a non-empty string (≤80 chars)');
+      if (pr.room != null && (typeof pr.room !== 'string' || !pr.room.trim() || pr.room.length > 40)) return bad(reply, 'room must be a non-empty string (≤40 chars)');
+    }
+    if (b.date != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.date))) return bad(reply, 'date must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const period = b.periodId
+        ? (await c.query(`SELECT id, seq, label, start_time, end_time FROM app.timetable_periods WHERE id=$1`, [b.periodId])).rows[0]
+        : b.periodSeq
+          ? (await c.query(`SELECT id, seq, label, start_time, end_time FROM app.timetable_periods WHERE seq=$1`, [String(b.periodSeq)])).rows[0]
+          : null;
+      if (!period) return bad(reply, 'period not found — pass periodId or periodSeq', 404);
+      const results = [];
+      for (const pr of proposals) {
+        const teacher = pr.teacherName?.trim();
+        const room = pr.room?.trim();
+        const grid = (await c.query(
+          `SELECT id, subject, teacher_name, room FROM app.timetable_slots
+           WHERE period_id=$1 AND day_of_week=$2 AND (
+             ($3::text IS NOT NULL AND lower(teacher_name) = lower($3))
+             OR ($4::text IS NOT NULL AND room IS NOT NULL AND lower(room) = lower($4)))`,
+          [period.id, b.dayOfWeek, teacher ?? null, room ?? null])).rows;
+        const teacherClashes = teacher ? grid.filter((g) => g.teacher_name.toLowerCase() === teacher.toLowerCase()).map((g) => ({ slotId: g.id, subject: g.subject, teacher: g.teacher_name, room: g.room, via: 'grid' })) : [];
+        const roomClashes = room ? grid.filter((g) => g.room && g.room.toLowerCase() === room.toLowerCase() && !teacherClashes.some((t) => t.slotId === g.id)).map((g) => ({ slotId: g.id, subject: g.subject, teacher: g.teacher_name, room: g.room, via: 'grid' })) : [];
+        let substitutionClashes = [];
+        if (b.date && teacher) {
+          const subs = (await c.query(
+            `SELECT sub.id, sub.absent_teacher, sub.substitute, s.subject, s.room
+             FROM app.timetable_substitutions sub JOIN app.timetable_slots s ON s.id = sub.slot_id
+             WHERE s.period_id=$1 AND s.day_of_week=$2 AND sub.date=$3::date AND sub.status='assigned'
+               AND lower(sub.substitute) = lower($4)`,
+            [period.id, b.dayOfWeek, b.date, teacher])).rows;
+          substitutionClashes = subs.map((x) => ({ substitutionId: x.id, absentTeacher: x.absent_teacher, subject: x.subject, room: x.room, via: 'substitution' }));
+        }
+        results.push({ proposal: { teacherName: teacher ?? null, room: room ?? null }, teacherClashes, roomClashes, substitutionClashes, clean: teacherClashes.length === 0 && roomClashes.length === 0 && substitutionClashes.length === 0 });
+      }
+      return { period, date: b.date ?? null, results, note: 'slots are section-agnostic in v1 (one grid per school) — section clashes are undetectable until per-section slots ship' };
+    });
+  });
+
+  // ---- exam depth: per-exam board policy (Wave 4 · L1-4.3) ----
+  // The plugin already ships a bulk-marks door (one tx, ≤300 rows, eligibility,
+  // audit) — that half of L1-4.3 exists on main. This adds the missing half: a
+  // PER-EXAM board policy json (the settings-carried one is tenant-wide).
+  // VALIDATION ONLY this sprint: shape-checked and stored; nothing consumes it
+  // yet (the reply says so — no fabricated downstream behavior).
+  const BOARD_POLICY_SHAPE = (bp) => {
+    if (!bp || typeof bp !== 'object' || Array.isArray(bp)) return 'boardPolicy must be an object';
+    if (typeof bp.board !== 'string' || !bp.board.trim() || bp.board.trim().length > 40) return 'board is required (≤40 chars, e.g. CBSE)';
+    if (bp.rounding !== undefined && !['nearest', 'floor', 'ceil'].includes(bp.rounding)) return 'rounding must be nearest|floor|ceil';
+    if (bp.components !== undefined) {
+      if (!bp.components || typeof bp.components !== 'object' || Array.isArray(bp.components)) return 'components must be an object of {name: percent}';
+      const entries = Object.entries(bp.components);
+      if (entries.length === 0 || entries.length > 20) return 'components needs 1–20 entries';
+      let sum = 0;
+      for (const [k, v] of entries) {
+        if (typeof k !== 'string' || !k.trim() || k.length > 40) return 'component names must be non-empty (≤40 chars)';
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100) return 'component percents must be numbers 0..100';
+        sum += v;
+      }
+      if (sum > 100.0001) return `component percents sum to ${sum} — cannot exceed 100`;
+    }
+    if (bp.gradingScale !== undefined) {
+      if (!Array.isArray(bp.gradingScale) || bp.gradingScale.length === 0 || bp.gradingScale.length > 20) return 'gradingScale must be a non-empty array (≤20 bands)';
+      let prev = null;
+      for (const band of bp.gradingScale) {
+        if (!band || typeof band.min !== 'number' || !Number.isFinite(band.min) || band.min < 0 || band.min > 100) return 'each grading band needs min 0..100';
+        if (typeof band.grade !== 'string' || !band.grade.trim() || band.grade.length > 10) return 'each grading band needs a grade label (≤10 chars)';
+        if (prev !== null && band.min >= prev) return 'grading bands must be strictly descending by min';
+        prev = band.min;
+      }
+    }
+    if (bp.notes !== undefined && (typeof bp.notes !== 'string' || bp.notes.length > 500)) return 'notes must be a string (≤500 chars)';
+    const allowed = ['board', 'rounding', 'components', 'gradingScale', 'notes'];
+    for (const k of Object.keys(bp)) if (!allowed.includes(k)) return `unknown boardPolicy key "${k}" (allowed: ${allowed.join(', ')})`;
+    return null;
+  };
+
+  app.post('/exams/:id/board-policy', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id))) return bad(reply, 'exam id must be a uuid');
+    const err = BOARD_POLICY_SHAPE(req.body);
+    if (err) return bad(reply, err);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const e = (await c.query(`SELECT id, name FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!e) return bad(reply, 'exam not found', 404);
+      await c.query(`UPDATE plugin_exams.exam SET board_policy=$2::jsonb, updated_at=now() WHERE id=$1`, [e.id, JSON.stringify(req.body)]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Set exam board policy', recordType: 'Exam', recordRef: e.name, reason: `board ${req.body.board}`, outcome: 'stored — validation only, nothing consumes it yet' });
+      return { examId: e.id, boardPolicy: req.body, note: 'validation only — no downstream behavior reads this yet' };
+    });
+  });
+
+  app.get('/exams/:id/board-policy', { preHandler: me }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const e = (await c.query(`SELECT id, name, board_policy FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!e) return bad(reply, 'exam not found', 404);
+      return { examId: e.id, boardPolicy: e.board_policy ?? null };
+    });
+  });
+
+  // ---- L1-5.1 admissions follow-up queue (kernel ranking service, D-36/D-38) ----
+  // Deterministic rule, NO model (docs/11 §7, pol_14): the server ranks leads for
+  // follow-up so the rule lives in one audited place instead of being recomputed
+  // per screen. ruleVersion 'followups-1':
+  //   score = days-in-stage × stage weight (inquiry 1.0, school-visit 1.2,
+  //   applied 1.5, assessment 2.0, offer 2.5 — later stages are closer to
+  //   enrollment and more expensive to lose); stuck = >7 days in stage; stuck
+  //   rows first, then score desc. enrolled/dropped never rank.
+  const FOLLOWUP_WEIGHTS = { inquiry: 1, 'school-visit': 1.2, applied: 1.5, assessment: 2, offer: 2.5 };
+  const maskPhoneLikeFunnel = (p) => {
+    if (!p) return null;
+    const d = String(p).replace(/\D/g, '').slice(-10);
+    return `${d.slice(0, 2)}xxxx${d.slice(-2)}`;
+  };
+  app.get('/admissions/followups', { preHandler: me }, async (req) => {
+    const fullPii = ['owner', 'principal', 'itadmin', 'coordinator'].includes(req.user.role);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT id, student_name, class_applied, source, stage, guardian_name, guardian_phone, updated_at,
+                GREATEST(0, extract(epoch FROM (now() - updated_at)) / 86400)::int AS days_in_stage
+         FROM plugin_admissions.lead
+         WHERE tenant_id=$1 AND stage NOT IN ('enrolled','dropped')`, [req.user.tenant_id])).rows;
+      const queue = rows.map((r) => {
+        const days = Number(r.days_in_stage);
+        const w = FOLLOWUP_WEIGHTS[r.stage] ?? 1;
+        return {
+          leadId: r.id, studentName: r.student_name, classApplied: r.class_applied, source: r.source,
+          stage: r.stage, daysInStage: days, stageWeight: w, score: Math.round(days * w * 10) / 10,
+          stuck: days > 7,
+          guardianName: fullPii ? r.guardian_name : null,
+          guardianPhone: fullPii ? r.guardian_phone : maskPhoneLikeFunnel(r.guardian_phone),
+        };
+      }).sort((a, b) => (a.stuck === b.stuck) ? b.score - a.score : (a.stuck ? -1 : 1));
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Listed admissions follow-up queue', recordType: 'AdmissionLead', recordRef: 'followups', reason: 'daily queue (docs/02 §daily-queue)', policyRef: 'deterministic ranking rule followups-1 — no model', risk: 'low', outcome: `${queue.length} open leads ranked, ${queue.filter((x) => x.stuck).length} stuck >7d` });
+      return {
+        ruleVersion: 'followups-1',
+        rule: 'score = days-in-stage × stage weight (inquiry 1.0 → offer 2.5); stuck (>7d) first; deterministic — no model',
+        masked: !fullPii,
+        queue,
+      };
+    });
+  });
+
+  // ---- L1-5.2 fees collection summary (kernel aggregate ops.bi lacks, D-38) ----
+  // ops.bi's aging door covers OVERDUE money only. This is the whole-collection
+  // view per term: billed vs collected vs outstanding vs voided, optional
+  // academic-year filter — tenant-scoped, staff-gated (parents see their own
+  // children's ledger, never school-wide aggregates).
+  app.get('/reports/fees/summary', { preHandler: require('owner', 'principal', 'coordinator', 'finance', 'itadmin') }, async (req, reply) => {
+    const ay = req.query?.academicYearId;
+    if (ay != null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(ay))) return bad(reply, 'academicYearId must be a uuid');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(
+        `SELECT o.term,
+                count(*)::int AS obligations,
+                COALESCE(SUM(o.amount_cents), 0)::bigint AS billed_cents,
+                COALESCE(SUM(o.paid_cents), 0)::bigint AS collected_cents,
+                COALESCE(SUM(o.amount_cents - o.paid_cents) FILTER (WHERE o.status IN ('open','partial')), 0)::bigint AS outstanding_cents,
+                count(*) FILTER (WHERE o.status = 'void')::int AS voided,
+                count(*) FILTER (WHERE o.status = 'paid')::int AS fully_paid
+         FROM app.fee_obligations o
+         WHERE o.tenant_id=$1 AND ($2::uuid IS NULL OR o.academic_year_id=$2::uuid)
+         GROUP BY o.term ORDER BY o.term`, [req.user.tenant_id, ay ?? null])).rows;
+      const sum = (k) => r.reduce((a, x) => a + Number(x[k]), 0);
+      const billed = sum('billed_cents'), collected = sum('collected_cents');
+      return {
+        terms: r,
+        totals: { obligations: sum('obligations'), billed_cents: billed, collected_cents: collected, outstanding_cents: sum('outstanding_cents'), voided: sum('voided'), fully_paid: sum('fully_paid') },
+        collectionPct: billed > 0 ? Math.round((collected / billed) * 1000) / 10 : null,
+        academicYearId: ay ?? null,
+        note: 'paid_cents never decreases (D-5/D-21); voided rows keep their history but are excluded from outstanding; not_due rows count in billed — collection % is whole-ledger, unlike ops.bi/fees/aging which is overdue-only',
+      };
     });
   });
 
@@ -728,7 +1531,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
 
   app.post('/migration/sources/:id/stage', { preHandler: require('owner','coordinator','itadmin') }, async (req, reply) => {
     const to = req.body?.to;
-    const valid = ['analyzed','mapped','health-check','shadow','verified'];
+    // L1-4.1: 'verified' is EARNED by a committed import (the commit door), never
+    // hand-flipped — the trust receipt must never describe work that didn't happen.
+    const valid = ['analyzed','mapped','health-check','shadow'];
     if (!valid.includes(to)) return bad(reply, `stage must be one of ${valid.join(', ')}`);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`UPDATE app.migration_sources SET status=$2 WHERE id=$1 RETURNING *`, [req.params.id, to]);
@@ -738,19 +1543,152 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
+  // ---- migration engine: staged rows → validate → commit (Wave 4 · L1-4.1) ----
+  // Canonical row shape (columns mapping): { rowNo?, data: { admissionNo?, name,
+  //   grade, section, guardianName?, guardianPhone?, fees?: [{ term, label,
+  //   amountCents, dueOn?, paidCents? }] } }
+  // students+guardians+fees land idempotently: students carry
+  // source='migration', source_ref='mig:<sourceId>:<rowNo>'.
+  const MIG_PHONE = /^[\d+\-\s()]{6,15}$/;
+  const migValidateRow = (data) => {
+    if (!data || typeof data !== 'object') return 'row is not an object';
+    if (!data.name || !String(data.name).trim() || String(data.name).trim().length > 120) return 'name is required (≤120 chars)';
+    if (!data.grade || String(data.grade).trim().length > 20) return 'grade is required (≤20 chars)';
+    if (!data.section || String(data.section).trim().length > 10) return 'section is required (≤10 chars)';
+    if (data.guardianPhone != null && data.guardianPhone !== '' && !MIG_PHONE.test(String(data.guardianPhone))) return 'guardianPhone does not look like a phone number';
+    const fees = Array.isArray(data.fees) ? data.fees : [];
+    if (fees.length > 24) return 'fees list too long (≤24 per student)';
+    for (const f of fees) {
+      if (!f || !f.term || !String(f.term).trim() || String(f.term).trim().length > 40) return 'each fee needs a term (≤40 chars)';
+      if (!f.label || !String(f.label).trim() || String(f.label).trim().length > 80) return 'each fee needs a label (≤80 chars)';
+      if (!Number.isInteger(f.amountCents) || f.amountCents < 0) return 'each fee needs an integer amountCents ≥ 0';
+      if (f.dueOn != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(f.dueOn))) return 'fee dueOn must be YYYY-MM-DD';
+      if (f.paidCents != null && (!Number.isInteger(f.paidCents) || f.paidCents < 0 || f.paidCents > f.amountCents)) return 'fee paidCents must be an integer between 0 and amountCents';
+    }
+    return null;
+  };
+
+  app.post('/migration/sources/:id/stage-rows', { preHandler: require('owner','coordinator','itadmin') }, async (req, reply) => {
+    const rows = req.body?.rows;
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length > 5000) return bad(reply, 'rows must be a non-empty list (≤5000)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const src = (await c.query(`SELECT id, name, status FROM app.migration_sources WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!src) return bad(reply, 'source not found', 404);
+      if (src.status === 'verified' || src.status === 'activated') return bad(reply, `source is ${src.status} — connect a new source to import more`, 409);
+      // re-staging replaces the staged set (staged only; committed history stays).
+      // App-role table-level DELETE is not granted (bootstrap 054 baseline) — the
+      // scoped SECURITY DEFINER helper does the delete, tenant-guarded.
+      await c.query(`SELECT app.purge_staged_rows($1)`, [src.id]);
+      let n = 0;
+      for (const r of rows) {
+        const rowNo = Number.isInteger(r.rowNo) ? r.rowNo : n + 1;
+        if (!Number.isInteger(rowNo) || rowNo < 1 || rowNo > 1000000) return bad(reply, `rowNo must be an integer 1..1000000`);
+        await c.query(
+          `INSERT INTO app.migration_rows (tenant_id, source_id, row_no, kind, payload, status)
+           VALUES ($1,$2,$3,'student',$4::jsonb,'staged')
+           ON CONFLICT (source_id, row_no) DO UPDATE SET payload = EXCLUDED.payload, status = 'staged', error = NULL`,
+          [req.user.tenant_id, src.id, rowNo, JSON.stringify(r.data ?? {})]);
+        n += 1;
+      }
+      const total = (await c.query(`SELECT count(*)::int n FROM app.migration_rows WHERE source_id=$1`, [src.id])).rows[0].n;
+      await c.query(
+        `UPDATE app.migration_sources SET row_count=$2, status = CASE WHEN status='connected' THEN 'analyzed' ELSE status END,
+           sample_json = $3::jsonb WHERE id=$1`,
+        [src.id, total, JSON.stringify({ preview: rows.slice(0, 3), stagedAt: new Date().toISOString(), stagedCount: n })]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Staged migration rows', recordType: 'Migration', recordRef: src.name, reason: 'file staged for import', outcome: `${n} rows staged (${total} total) — nothing imported` });
+      return { staged: n, total };
+    });
+  });
+
+  app.post('/migration/sources/:id/validate', { preHandler: require('owner','coordinator','itadmin') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const src = (await c.query(`SELECT id, name FROM app.migration_sources WHERE id=$1`, [req.params.id])).rows[0];
+      if (!src) return bad(reply, 'source not found', 404);
+      const rows = (await c.query(`SELECT id, row_no, payload FROM app.migration_rows WHERE source_id=$1 AND status <> 'ok' ORDER BY row_no`, [src.id])).rows;
+      let ok = 0; const errors = [];
+      for (const row of rows) {
+        const err = migValidateRow(row.payload);
+        if (err) {
+          errors.push({ rowNo: row.row_no, error: err });
+          await c.query(`UPDATE app.migration_rows SET status='error', error=$2 WHERE id=$1`, [row.id, err]);
+        } else {
+          ok += 1;
+          await c.query(`UPDATE app.migration_rows SET status='staged', error=NULL WHERE id=$1 AND status='error'`, [row.id]);
+        }
+      }
+      await c.query(`UPDATE app.migration_sources SET flagged=$2, status = CASE WHEN status IN ('connected','analyzed') THEN 'health-check' ELSE status END WHERE id=$1`, [src.id, errors.length]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Validated migration rows', recordType: 'Migration', recordRef: src.name, outcome: `${ok} clean · ${errors.length} row errors` });
+      return { clean: ok, errors: errors.length, first: errors.slice(0, 20) };
+    });
+  });
+
+  app.post('/migration/sources/:id/commit', { preHandler: require('owner','coordinator','itadmin') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const src = (await c.query(`SELECT id, name FROM app.migration_sources WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!src) return bad(reply, 'source not found', 404);
+      const errs = (await c.query(`SELECT count(*)::int n FROM app.migration_rows WHERE source_id=$1 AND status='error'`, [src.id])).rows[0].n;
+      if (errs > 0) return bad(reply, `fix ${errs} row error(s) before committing`, 409);
+      // L1-4.1 idempotent replay: staged rows are processed; rows already
+      // committed (status 'ok' with a student) count as skips — a re-commit
+      // must NEVER create duplicates.
+      const rows = (await c.query(`SELECT id, row_no, payload, status, committed_student_id FROM app.migration_rows
+                                   WHERE source_id=$1 AND (status='staged' OR (status='ok' AND committed_student_id IS NOT NULL))
+                                   ORDER BY row_no`, [src.id])).rows;
+      let created = 0; let skipped = 0;
+      for (const row of rows) {
+        if (row.status === 'ok' && row.committed_student_id) { skipped += 1; continue; }
+        const d = row.payload ?? {};
+        const admissionNo = d.admissionNo ? String(d.admissionNo).trim() : `MIG-${String(src.id).slice(0, 8).toUpperCase()}-${row.row_no}`;
+        const s = await c.query(
+          `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'active','migration',$8)
+           ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id`,
+          [req.user.tenant_id, admissionNo, String(d.name).trim(), String(d.grade).trim(), String(d.section).trim(),
+           d.guardianName ? String(d.guardianName).trim() : null, d.guardianPhone ? String(d.guardianPhone).trim() : null,
+           `mig:${src.id}:${row.row_no}`]);
+        if (!s.rows[0]) return bad(reply, `row ${row.row_no}: admission number ${admissionNo} already belongs to another student`, 409);
+        const studentId = s.rows[0].id;
+        if (d.guardianName && d.guardianPhone) {
+          await c.query(`INSERT INTO app.guardians (tenant_id, student_id, name, phone) VALUES ($1,$2,$3,$4)`,
+            [req.user.tenant_id, studentId, String(d.guardianName).trim(), String(d.guardianPhone).trim()]);
+        }
+        for (const [i, f] of (Array.isArray(d.fees) ? d.fees : []).entries()) {
+          const paid = f.paidCents ?? 0;
+          const status = paid >= f.amountCents ? 'paid' : (paid > 0 ? 'partial' : 'open');
+          await c.query(
+            `INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, due_on, amount_cents, paid_cents, status, source_ref)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [req.user.tenant_id, studentId, String(f.term).trim(), String(f.label).trim(), f.dueOn ?? null, f.amountCents, paid, status, `mig:${src.id}:${row.row_no}:fee:${i}`]);
+        }
+        await c.query(`UPDATE app.migration_rows SET status='ok', committed_student_id=$2 WHERE id=$1`, [row.id, studentId]);
+        created += 1;
+      }
+      const imported = (await c.query(`SELECT count(*)::int n FROM app.migration_rows WHERE source_id=$1 AND status='ok'`, [src.id])).rows[0].n;
+      // the ONLY path that sets 'verified'
+      await c.query(`UPDATE app.migration_sources SET imported=$2, skipped=$3, status='verified', flagged=0 WHERE id=$1`, [src.id, imported, skipped]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Committed migration import', recordType: 'Migration', recordRef: src.name, policyRef: 'Migration §1.1', risk: 'high', outcome: `${created} students created · ${skipped} already present (idempotent replay) · source verified` });
+      await emitEvent(c, req.user.tenant_id, { type: 'migration', label: `Migration committed — ${created} students imported from ${src.name}`, ref: src.id });
+      return { created, skipped, imported, status: 'verified' };
+    });
+  });
+
   app.post('/migration/activate', { preHandler: require('owner','principal') }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const src = await c.query(`SELECT * FROM app.migration_sources`);
+      // L1-4.1: no trust receipt without a committed import — 'verified' is set
+      // by the commit door only, so a verified source with imported>0 must exist.
+      const verified = src.rows.filter((s) => s.status === 'verified' && s.imported > 0);
+      if (verified.length === 0) return bad(reply, 'nothing to activate — commit an import (a verified source with imported records) first', 409);
       const totalRows = src.rows.reduce((a, s) => a + s.row_count, 0);
       const imported = src.rows.reduce((a, s) => a + s.imported, 0);
       const flagged = src.rows.reduce((a, s) => a + s.flagged, 0);
       const feeTotal = (await c.query(`SELECT COALESCE(SUM(amount_cents),0)::bigint AS t FROM app.fee_obligations`)).rows[0].t;
       const paidTotal = (await c.query(`SELECT COALESCE(SUM(paid_cents),0)::bigint AS t FROM app.fee_obligations`)).rows[0].t;
-      await c.query(`UPDATE app.migration_sources SET status='verified'`);
+      await c.query(`UPDATE app.migration_sources SET status='activated' WHERE status='verified' AND imported > 0`);
       await emitEvent(c, req.user.tenant_id, { type: 'migration', label: `Trust receipt issued — ${imported}/${totalRows} records source-linked · ${flagged} flags resolved`, severity: 'info' }, 'migration.activated', { totalRows, imported, flagged });
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Issued trust receipt (migration verified)', recordType: 'Migration', recordRef: `TR-${Date.now().toString(36).toUpperCase()}`, reason: 'dry-run verified · fix queue cleared', policyRef: 'Migration §1.1', risk: 'medium', outcome: `${imported} imported · ${flagged} flagged · fee ledger ₹${Number(feeTotal)/100} / paid ₹${Number(paidTotal)/100}` });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Issued trust receipt (migration verified)', recordType: 'Migration', recordRef: `TR-${Date.now().toString(36).toUpperCase()}`, reason: 'import committed · fix queue cleared', policyRef: 'Migration §1.1', risk: 'medium', outcome: `${imported} imported · ${flagged} flagged · fee ledger ₹${Number(feeTotal)/100} / paid ₹${Number(paidTotal)/100}` });
       return {
-        trustReceipt: { totalRows, imported, flagged, skipped: totalRows - imported - flagged, feeTotalCents: feeTotal, feePaidCents: paidTotal, differenceCents: 0, rollbackDays: 30 },
+        trustReceipt: { totalRows, imported, flagged, skipped: totalRows - imported - flagged, feeTotalCents: feeTotal, feePaidCents: paidTotal, differenceCents: (BigInt(feeTotal) - BigInt(paidTotal)).toString(), rollbackDays: 30 },
         sources: src.rows,
       };
     });

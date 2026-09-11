@@ -1,0 +1,21 @@
+// ops.bi — BI read models (L3-4.3, headless, class B, read-only by charter).
+export default {
+  id: 'ops.bi',
+  name: 'Insight Read Models',
+  version: '1.0.0',
+  class: 'B',
+  trust: 'T1',
+  description: 'School-level insight over real records, aggregates only: attendance percentage by class (windowed, per-student drill for staff), fee aging buckets by term, admissions funnel conversion and stage aging, homework completion by class. Read models are 60s-cached and row-capped (500) — slightly stale, never wrong by more than a minute. Attendance pct counts present+late over all marks (approved leave counts against attendance, conservatively; raw buckets are always included so the office can recompute).',
+  permissions: ['students.read', 'fees.read', 'events.emit', 'audit.request'],
+  events: { subscribe: [], publish: [] },
+  slots: ['reports'],
+  routes: [],
+  widgets: [],
+  settingsSchema: { type: 'object', properties: { cache_seconds: { type: 'integer', minimum: 10, maximum: 600, default: 60, description: 'Read-model staleness bound (in-process cache TTL)' } } },
+  data: { schema: 'stateless (reads kernel + plugin records; nothing persisted)', core_refs: ['attendance.id', 'fee_obligations.id', 'plugin_admissions.lead.id', 'teacher.homework.id'], retention: { on_uninstall: 'nothing-stored' }, residency: ['IN'] },
+  regions: ['IN'],
+  residency: 'IN',
+  billing: { model: 'pack', pack: 'operations' },
+  dependencies: [],
+  policy_refs: ['Platform §5.2 (artifacts)', 'Fees §4.2 (money read-only)', 'Migration §1.1 (reports over source-linked records)'],
+};

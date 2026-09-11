@@ -154,6 +154,22 @@ export const apiGenerateFeePlan = (id: string) =>
 export const apiVoidObligation = (id: string, reason: string) =>
   call<{ obligation: Record<string, unknown> }>(`/fees/obligations/${id}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
 
+/* ---- Wave-5 kernel doors (L1-5.1 ranking service, L1-5.2 collection summary) ---- */
+export interface AdmissionFollowup {
+  leadId: string; studentName: string; classApplied: string; source: string;
+  stage: string; daysInStage: number; stageWeight: number; score: number; stuck: boolean;
+  guardianName: string | null; guardianPhone: string | null;
+}
+export const apiAdmissionFollowups = () =>
+  call<{ ruleVersion: string; rule: string; masked: boolean; queue: AdmissionFollowup[] }>('/admissions/followups');
+export interface FeeSummaryTerm {
+  term: string; obligations: number; billed_cents: string | number; collected_cents: string | number;
+  outstanding_cents: string | number; voided: number; fully_paid: number;
+}
+export const apiFeesSummary = (academicYearId?: string) =>
+  call<{ terms: FeeSummaryTerm[]; totals: Record<string, number>; collectionPct: number | null; academicYearId: string | null; note: string }>(
+    `/reports/fees/summary${academicYearId ? `?academicYearId=${academicYearId}` : ''}`);
+
 /* ---- exams.assessment plugin doors (L4-3.1) ---- */
 export interface ExamSummary {
   id: string; name: string; term?: string; classGrade?: string;

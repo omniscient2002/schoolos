@@ -9,6 +9,8 @@
 // All preHandlers async (Fastify 5 law).
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
+import { createHash, createHmac } from 'node:crypto';
+import { config } from '../../config.js'; // surrogate key material stays in env (D-32: never in code/git)
 
 const ID = 'pack.dpdp';
 
@@ -208,10 +210,100 @@ export function register(app, kernel) {
         const lr = await c.query(
           `UPDATE plugin_admissions.lead SET guardian_name=NULL, guardian_phone='[erased:'||id||']'
            WHERE tenant_id=$1 AND guardian_phone=$2`, [req.user.tenant_id, sar.subject_ref]);
-        bundle = { subjectRef: sar.subject_ref, erasedAt: new Date().toISOString(),
+
+        // ── L2-3.5: erasure completion (Wave 3) ──────────────────────────────
+        // Queue-scoped surfaces (L1 BACKLOG-8 findings): guardians redaction,
+        // comms recipient hashing, webhook payload scrub, OTP phones purge —
+        // plus the SAR row itself, which previously kept the raw phone forever.
+        // Format-insensitive matching: phone formats differ per surface, so
+        // matches compare digit-normalized forms. Every rewritten value is the
+        // tenant-scoped keyed surrogate (HMAC) — ledger joins survive,
+        // re-identification needs the server key, repeat SARs are idempotent
+        // via the 060 journal (which stores only sha256(subject), never PII).
+        // The erasure execution itself writes NO phone anywhere: the bundle and
+        // the SAR row carry the surrogate; app.students/app.users stay
+        // office-lane (blocks.md note) and hash-chained audit rows redact via
+        // the post-run audit_redact rebase (findings doc).
+        const norm = normPhone(sar.subject_ref);
+        const digits = norm.replace(/\D/g, '');
+        const subjectKey = createHash('sha256').update(`dpdp-erasure:${req.user.tenant_id}:${norm}`).digest('hex');
+        const journal = await kernel.q(
+          `INSERT INTO plugin_dpdp.erasure_journal (tenant_id, subject_key, surrogate, executed_by)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (tenant_id, subject_key) DO UPDATE SET executed_at=now(), executed_by=EXCLUDED.executed_by
+           RETURNING surrogate`, [req.user.tenant_id, subjectKey,
+            createHmac('sha256', config.jwtSecret).update(`dpdp-erasure:${req.user.tenant_id}:${norm}`).digest('hex').slice(0, 24),
+            req.user.email]);
+        const surrogate = journal.rows[0].surrogate;
+        const scrub = (v) => {
+          if (typeof v === 'string') return v.replace(/(\+?\d[\d\s\-()–]{7,}\d)/g, (m) => (m.replace(/\D/g, '') === digits ? surrogate : m));
+          if (Array.isArray(v)) return v.map(scrub);
+          if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x)]));
+          return v;
+        };
+
+        const gr = await c.query(
+          `UPDATE app.guardians SET phone=$3, name='[erased:'||id||']'
+           WHERE tenant_id=$1 AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
+          [req.user.tenant_id, norm, surrogate]);
+        const commsRows = (await c.query(
+          `SELECT id, audience_json FROM app.communications
+           WHERE tenant_id=$1 AND regexp_replace(audience_json::text, '[^0-9]', '', 'g') LIKE '%' || $2 || '%'`,
+          [req.user.tenant_id, digits])).rows;
+        for (const row of commsRows) {
+          await c.query(`UPDATE app.communications SET audience_json=$3::jsonb WHERE id=$1 AND tenant_id=$2`,
+            [row.id, req.user.tenant_id, JSON.stringify(scrub(row.audience_json))]);
+        }
+        let webhookPayloadsScrubbed = 0;
+        for (const [schema, table] of [['plugin_razorpay', 'webhook_log'], ['plugin_razorpay', 'order_log'], ['plugin_upi', 'webhook_log']]) {
+          const hit = await c.query(
+            `SELECT id, payload FROM ${schema}.${table}
+             WHERE tenant_id=$1 AND regexp_replace(payload::text, '[^0-9]', '', 'g') LIKE '%' || $2 || '%'`,
+            [req.user.tenant_id, digits]).catch(() => ({ rows: [] })); // table absent → skip
+          for (const row of hit.rows) {
+            await c.query(`UPDATE ${schema}.${table} SET payload=$3::jsonb WHERE id=$1 AND tenant_id=$2`,
+              [row.id, req.user.tenant_id, JSON.stringify(scrub(row.payload))]);
+            webhookPayloadsScrubbed++;
+          }
+        }
+        const po = await kernel.q(
+          `DELETE FROM plugin_visitors.pickup_otp
+           WHERE tenant_id=$1 AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
+          [req.user.tenant_id, norm]);
+        const lo = await kernel.q(
+          `DELETE FROM app.auth_otps
+           WHERE tenant_id=$1 AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
+          [req.user.tenant_id, norm]);
+        const vp = await c.query(
+          `UPDATE plugin_visitors.visit SET visitor_phone=NULL
+           WHERE tenant_id=$1 AND regexp_replace(visitor_phone, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
+          [req.user.tenant_id, norm]);
+        const sr = await c.query(
+          `UPDATE plugin_dpdp.sar SET subject_ref=$3
+           WHERE tenant_id=$1 AND regexp_replace(subject_ref, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
+          [req.user.tenant_id, norm, surrogate]);
+        await kernel.q(
+          `UPDATE plugin_dpdp.erasure_journal SET surfaces=$2::jsonb
+           WHERE tenant_id=$1 AND subject_key=$3`,
+          [req.user.tenant_id, JSON.stringify({
+            guardiansRedacted: gr.rowCount, commsRecipientsHashed: commsRows.length,
+            webhookPayloadsScrubbed, pickupOtpPurged: po.rowCount, loginOtpPurged: lo.rowCount,
+            visitorPhonesRedacted: vp.rowCount, sarRefsSurrogated: sr.rowCount,
+          }), subjectKey]);
+
+        bundle = { subjectRef: surrogate, erasedAt: new Date().toISOString(),
           consentRowsRedacted: cr.rowCount, admissionsLeadsRedacted: lr.rowCount,
           decisionTrailPreserved: true,
-          scopeNote: 'identity redacted; consent decisions/timestamps retained for the compliance trail. Core student records are office-lane (kernel referral).' };
+          surfaces: {
+            guardiansRedacted: gr.rowCount,
+            commsRecipientsHashed: commsRows.length,
+            webhookPayloadsScrubbed,
+            pickupOtpPurged: po.rowCount,
+            loginOtpPurged: lo.rowCount,
+            visitorPhonesRedacted: vp.rowCount,
+            sarRefsSurrogated: sr.rowCount,
+          },
+          scopeNote: 'identity redacted with keyed surrogates across consent ledger, admissions funnel, guardians, comms recipients, gateway payloads, OTP vaults and the SAR trail itself; decision trail preserved. Core student records and login identities are office-lane (kernel referral); hash-chained audit rows redact via the post-run audit_redact rebase.' };
       }
       await c.query(`UPDATE plugin_dpdp.sar SET status='fulfilled', fulfilled_at=now(), bundle=$2::jsonb WHERE id=$1`,
         [sar.id, JSON.stringify(bundle)]);

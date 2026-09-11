@@ -47,11 +47,40 @@ const PRESETS: { pattern: string; label: string }[] = [
   { pattern: 'POST /students', label: 'Create students' },
   { pattern: 'PATCH /students/*', label: 'Edit student records' },
   { pattern: 'POST /students/*', label: 'Student lifecycle actions' },
-  { pattern: 'GET /fees', label: 'View fees' },
+  { pattern: 'GET /fees/obligations', label: 'View fees' },
   { pattern: 'POST /fees/payments', label: 'Record payments' },
   { pattern: 'GET /plugins/ops.bi/*', label: 'BI read models' },
   { pattern: 'GET /plugins/people.admin/users', label: 'List accounts' },
+  /* library doors (D-43 librarian flow) — server/src/plugins/library/index.js */
+  { pattern: 'GET /plugins/library/books', label: 'Library catalog' },
+  { pattern: 'POST /plugins/library/books', label: 'Add books' },
+  { pattern: 'POST /plugins/library/loans', label: 'Issue books' },
+  { pattern: 'POST /plugins/library/loans/*', label: 'Return books' },
+  { pattern: 'GET /plugins/library/loans', label: 'View loans' },
+  { pattern: 'GET /plugins/library/overdue', label: 'Overdue list' },
 ];
+
+/* D-43 acceptance quick start: the "Librarian" custom role the owner asked to
+   see demonstrated end-to-end. base teacher (so the shell shows the Library
+   module and nothing management-only) + explicit library-scoped mask grants.
+   The kernel resolution (L3-4.2) binds role_key per request; L3 verifies the
+   enforcement (librarian token cannot read finance doors). */
+const LIBRARIAN_START: { key: string; label: string; base_role: string; mask: RoleMask } = {
+  key: 'librarian',
+  label: 'Librarian',
+  base_role: 'teacher',
+  mask: {
+    allow: [
+      'GET /plugins/library/books',
+      'POST /plugins/library/books',
+      'POST /plugins/library/loans',
+      'POST /plugins/library/loans/*',
+      'GET /plugins/library/loans',
+      'GET /plugins/library/overdue',
+    ],
+    deny: [],
+  },
+};
 
 async function roleSend<T>(method: 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const token = localStorage.getItem('schoolos_token');
@@ -241,7 +270,7 @@ export default function RolesAdmin() {
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
 
-  const [editing, setEditing] = useState<CustomRole | 'new' | null>(null);
+  const [editing, setEditing] = useState<CustomRole | 'new' | 'librarian' | null>(null);
   const [assigning, setAssigning] = useState<CustomRole | null>(null);
 
   const reload = () => setTick(t => t + 1);
@@ -270,14 +299,20 @@ export default function RolesAdmin() {
       <PageHead
         title="Roles & permissions"
         sub="Custom roles: pick a builtin base, then grant or refuse specific doors. The mask is read fresh on every request; assignment changes apply within the server's binding window."
-        actions={<Button variant="secondary" icon={<Icon.Plus size={14} />} onClick={() => setEditing('new')}>New role</Button>}
+        actions={
+          <div className="u-flex" style={{ gap: 8 }}>
+            <Button variant="secondary" icon={<Icon.Book size={14} />} onClick={() => setEditing('librarian')} title="D-43 acceptance quick start — pre-fills the librarian role">Librarian role</Button>
+            <Button variant="secondary" icon={<Icon.Plus size={14} />} onClick={() => setEditing('new')}>New role</Button>
+          </div>
+        }
       />
 
       {loading && <div className="grid grid-2"><SkeletonCard lines={5} /><SkeletonCard lines={5} /></div>}
       {loadError && <ErrorState title="Could not load roles" sub={loadError} onRetry={reload} />}
       {!loading && !loadError && data && data.roles.length === 0 && (
         <Empty icon={<Icon.Users size={26} />} title="No custom roles yet"
-          sub="Every account uses its builtin role. Create a custom role when someone needs a base role plus (or minus) specific doors." />
+          sub="Every account uses its builtin role. Create a custom role when someone needs a base role plus (or minus) specific doors."
+          action={<Button variant="secondary" icon={<Icon.Book size={14} />} onClick={() => setEditing('librarian')}>Create the Librarian role</Button>} />
       )}
       {!loading && !loadError && data && data.roles.length > 0 && (
         <Section title="Custom roles" sub={`${data.roles.length} role${data.roles.length === 1 ? '' : 's'} · resolution order: custom mask → builtin base`}>
@@ -318,7 +353,8 @@ export default function RolesAdmin() {
 
       {editing && (
         <RoleForm
-          role={editing === 'new' ? null : editing}
+          role={editing === 'new' || editing === 'librarian' ? null : editing}
+          template={editing === 'librarian' ? LIBRARIAN_START : null}
           builtin={data?.builtin ?? []}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); reload(); }}
@@ -337,12 +373,12 @@ export default function RolesAdmin() {
 }
 
 /* ---- create/edit form ---- */
-function RoleForm({ role, builtin, onClose, onSaved }: { role: CustomRole | null; builtin: string[]; onClose: () => void; onSaved: () => void }) {
+function RoleForm({ role, template, builtin, onClose, onSaved }: { role: CustomRole | null; template: { key: string; label: string; base_role: string; mask: RoleMask } | null; builtin: string[]; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
-  const [key, setKey] = useState(role?.key ?? '');
-  const [label, setLabel] = useState(role?.label ?? '');
-  const [baseRole, setBaseRole] = useState(role?.base_role ?? (builtin[0] ?? 'teacher'));
-  const [mask, setMask] = useState<RoleMask>(role?.permissions ? { allow: [...role.permissions.allow], deny: [...role.permissions.deny] } : { allow: [], deny: [] });
+  const [key, setKey] = useState(role?.key ?? template?.key ?? '');
+  const [label, setLabel] = useState(role?.label ?? template?.label ?? '');
+  const [baseRole, setBaseRole] = useState(role?.base_role ?? template?.base_role ?? (builtin[0] ?? 'teacher'));
+  const [mask, setMask] = useState<RoleMask>(role?.permissions ? { allow: [...role.permissions.allow], deny: [...role.permissions.deny] } : template ? { allow: [...template.mask.allow], deny: [...template.mask.deny] } : { allow: [], deny: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isNew = role === null;
@@ -372,6 +408,13 @@ function RoleForm({ role, builtin, onClose, onSaved }: { role: CustomRole | null
     <Card head={isNew ? 'New custom role' : `Edit “${role.label}”`} style={{ maxWidth: 860, margin: '0 auto', width: '100%' }}>
       <div className="u-col" style={{ padding: 'var(--s-4) var(--s-5)', gap: 12 }}>
         {error && <div role="alert" className="u-small" style={{ color: 'var(--danger)' }}>{error}</div>}
+        {template && (
+          <div className="u-small" style={{ background: 'var(--accent-weak)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '9px 12px', lineHeight: 1.55 }}>
+            Pre-filled for the D-43 acceptance demo: a librarian is a <strong>teacher-based</strong> role with
+            explicit library permissions — the shell shows them the Library module and nothing management-only,
+            and the kernel refuses finance and other management doors for this token.
+          </div>
+        )}
         <div className="grid grid-2">
           <label>Role key {isNew ? '' : '(fixed)'}
             <input className="input" value={key} onChange={e => setKey(e.target.value)} disabled={!isNew}

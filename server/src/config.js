@@ -40,6 +40,10 @@ export const config = {
     ttlMs: int(process.env.OTP_TTL_MS, 5 * 60 * 1000),
     maxAttempts: int(process.env.OTP_MAX_ATTEMPTS, 5),
   },
+  // L2-2.2: self-service password reset (056 reset-token vault).
+  auth: {
+    resetTtlMs: int(process.env.RESET_TTL_MS, 30 * 60 * 1000),
+  },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID ?? null,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? null,

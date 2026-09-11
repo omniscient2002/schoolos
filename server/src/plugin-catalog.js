@@ -9,6 +9,9 @@
 
 const CATALOG = [
   { plugin_id: 'accounting.tally', version: '1.0.0', class: 'B', permissions: ["fees.read", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
+  { plugin_id: 'ops.udise', version: '1.0.0', class: 'B', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
+  { plugin_id: 'ops.import', version: '1.0.0', class: 'B', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
+  { plugin_id: 'ops.bi', version: '1.0.0', class: 'B', permissions: ["students.read", "fees.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
   { plugin_id: 'admissions.funnel', version: '1.2.1', class: 'C', permissions: ["events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
   { plugin_id: 'comms.whatsapp', version: '1.0.0', class: 'B', permissions: ["students.read", "attendance.read", "fees.read", "comms.send", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
   { plugin_id: 'coord.view', version: '1.0.0', class: 'C', permissions: ["users.read", "students.read", "events.emit", "audit.request"], entitlement: {} },

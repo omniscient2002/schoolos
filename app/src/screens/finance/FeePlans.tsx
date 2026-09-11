@@ -175,7 +175,7 @@ export default function FeePlans() {
             <Empty
               icon={<Icon.Offline size={22} />}
               title="Fee-plan doors are not connected yet"
-              sub="The server does not answer GET /fee-plans (L1-2.2 pending). This screen lights up the moment the doors land — nothing is faked in the meantime."
+              sub="The server did not answer GET /fee-plans (the L1-2.2 doors are live — this is a network or session problem, not missing data). Nothing is faked in the meantime."
               action={<Button variant="secondary" icon={<Icon.Refresh size={13} />} onClick={plans.retry}>Retry</Button>}
             />
           ) : (

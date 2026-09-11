@@ -148,6 +148,7 @@ export function useNavItems(): NavItem[] {
         { to: '/insights', label: 'Insights', icon: 'Insights' },
         { to: '/fees/plans', label: 'Fee plans', icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface */
         { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1: custom roles (owner + IT admin) */
+        { to: '/plugins/settings', label: 'Plugin settings', icon: 'Settings' }, /* L5-5.2 */
       ];
     case 'itadmin':
       return [
@@ -160,6 +161,7 @@ export function useNavItems(): NavItem[] {
         { to: '/it', label: 'Platform', icon: 'Shield' },
         { to: '/memory', label: 'AI memory', icon: 'Memory' },
         { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1 */
+        { to: '/plugins/settings', label: 'Plugin settings', icon: 'Settings' }, /* L5-5.2 */
         peopleAdmin,
         kernel,
         rails,
@@ -379,6 +381,10 @@ function SwitchSchoolSection() {
   const [tenants, setTenants] = useState<TenantMembership[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
+  /* S0 fix A4: /me/switch demands the current password for password-carrying
+     accounts — the switcher prompts inline for the target that asked. */
+  const [pwFor, setPwFor] = useState<string | null>(null);
+  const [pw, setPw] = useState('');
   const activeTenantId = useMemo(() => readTenantId(), []);
 
   useEffect(() => {
@@ -391,16 +397,18 @@ function SwitchSchoolSection() {
 
   if (!tenants || tenants.length < 2) return null;
 
-  const switchTo = async (m: TenantMembership) => {
+  const switchTo = async (m: TenantMembership, passPw?: string) => {
     setSwitching(m.tenantId); setError(null);
     try {
-      const r = await switchTenant(m.tenantId);
+      const r = await switchTenant(m.tenantId, passPw || undefined);
       (await import('../services/liveApi')).setToken(r.token);
       localStorage.setItem('schoolos.session', JSON.stringify({ name: r.user.name, role: r.user.role, email: r.user.email }));
       window.location.reload();
     } catch (e) {
+      const err = e as Error & { passwordRequired?: boolean };
       setSwitching(null);
-      setError((e as Error).message || 'could not switch');
+      if (err.passwordRequired) { setPwFor(m.tenantId); setError('Enter your password to switch schools.'); }
+      else setError((e as Error).message || 'could not switch');
     }
   };
 
@@ -411,13 +419,24 @@ function SwitchSchoolSection() {
       {error && <div role="alert" className="u-xs" style={{ padding: '2px 10px 6px', color: 'var(--danger)' }}>{error}</div>}
       <div className="scroll-thin" style={{ maxHeight: 220, overflowY: 'auto' }}>
         {tenants.map(m => (
-          <button key={m.tenantId} role="menuitem" className="dropdown-item" disabled={switching !== null}
-            onClick={() => void switchTo(m)}>
-            <span className="u-truncate" style={{ flex: 1 }}>
-              {m.name} <span className="u-xs u-faint">— {m.role}</span>
-            </span>
-            {m.tenantId === activeTenantId && <Icon.Check size={13} />}
-          </button>
+          <div key={m.tenantId}>
+            <button role="menuitem" className="dropdown-item" disabled={switching !== null}
+              onClick={() => void switchTo(m, pwFor === m.tenantId ? pw : undefined)}>
+              <span className="u-truncate" style={{ flex: 1 }}>
+                {m.name} <span className="u-xs u-faint">— {m.role}</span>
+              </span>
+              {m.tenantId === activeTenantId && <Icon.Check size={13} />}
+            </button>
+            {pwFor === m.tenantId && (
+              <div style={{ padding: '2px 10px 8px' }}>
+                <input type="password" autoComplete="current-password" value={pw} autoFocus
+                  onChange={e => setPw(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && pw) void switchTo(m, pw); }}
+                  placeholder="Current password" aria-label={`Password for ${m.name}`}
+                  style={{ width: '100%', fontSize: 'var(--text-sm)' }} />
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </>
