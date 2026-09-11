@@ -86,3 +86,63 @@ outbox, auth_otps, plugins, roles, api_keys, webhooks, migration engine, academi
 **Invariants that hold everywhere:** tenant pin via RLS (no cross-tenant read/write), audit row on every
 mutation, no table-level DELETE for the app role (D-35), dev doors dual-gated + loud, honesty rule on all
 failure copy, TypeScript-free server (plain ESM node) with the parity gate guarding the UI contract.
+
+---
+
+# UNIT A DEEP-DIVE (end-to-end review, every line read)
+
+## Boot sequence (`node src/index.js`)
+1. Guard: `WORKER_ROLE=1` on the HTTP entry exits(1) — workers must boot the worker script (guards differ).
+2. `buildApp()`: Fastify (logger; `trustProxy` opt-in only — XFF spoofing defeats limiters otherwise) →
+   CORS (`corsOrigins`) → JWT (`jwtSecret`, TTL 12h) → rate-limit (300/min; login 20, otp 5, verify 10,
+   reset 5, renew 30, mfa-verify 10; key = req.ip unless TRUST_PROXY) → cookie/CSRF helpers →
+   `authenticate` decoration → health/ready → auth doors → password/MFA/api-keys/webhooks →
+   `registerRoutes` (61 domain doors) → `registerOnboarding` (mounted BEFORE plugins so /onboard exists
+   with zero plugins) → `loadPlugins` (the single plugin registration point) → `/dataset` → `/capabilities`
+   → AI gateway doors → workflow rules → `/metrics` → 60s counter flush (unref'd, merged on boot) →
+   error handler → onClose (flush cleared, pool.end).
+3. Signal handling: SIGINT/SIGTERM → app.close with 15s force-exit; unhandledRejection logged,
+   uncaughtException exits(1).
+
+## Request lifecycle (every authenticated door)
+`req` → rate-limit → CORS → `authenticate` hook:
+X-API-Key? → GET-only, sha256 lookup, scope check (API_DOOR_SCOPES allowlist), synthetic principal.
+Bearer/cookie? → CSRF double-submit (cookie mutations) → JWT verify → **jti denylist** (`auth.revoked_token`)
+→ **live user row** (active, role, pg_role, session_epoch, force_change, mfa_enrolled_at) →
+**epoch match** (`ep` claim) → mustChange/mfaPending door-restriction claims → `req.user` = DB truth.
+Handler → `withUser(tenant, role)` → BEGIN → `set_config(tenant_id/role)` → `SET LOCAL ROLE schoolos_app`
+→ fn → COMMIT/ROLLBACK → audit rows ride the same tx → onSend (no-store planes, security headers,
+request counter) → error handler (5xx logged + counted; generic body).
+
+## The auth state machine (the intellectual core)
+Four issue paths — password, phone-OTP, Google SSO (+dev simulator), MFA-verify, renew — ALL converge on
+one `issueSession()` helper (D-37c): stamps `mustChange` from the DB row (never caller's word), sets
+HttpOnly session cookie + JS-readable CSRF cookie, audits via RLS path. **Every token carries jti +
+epoch**; logout denylists the jti; password change/reset bumps the epoch (kills all other sessions
+without a live-jti registry); students get 30m shared-computer TTLs; `mustChange` sessions reach only
+/me/password, /me, /auth/logout; `mfaPending` challenge tokens (5m) reach only /me/mfa/verify.
+Anti-enumeration everywhere: dummy scrypt burn on unknown email, uniform OTP failure copy, uniform reset
+copy, multi-tenant 409 picker (ids+names) instead of silent rows[0] — the P0-3 cross-tenant fix, closed at
+all four issue paths. OTP: CSPRNG 6-digit, scrypt-hashed in kernel-only vault (app role denied), attempts
+capped, consumed single-use, tenant-bound (T103). Reset: 32B token, sha256-stored, race-safe consume,
+channel-gated 503 (no fake sends). MFA: TOTP RFC-6238 + 8 single-use recovery codes (sha256), disable
+requires password re-auth, re-enroll refused while enabled, parents/students excluded by posture.
+
+## Verified findings (S0 review, every line read)
+| # | Sev | Finding |
+|---|---|---|
+| A1 | **HIGH** | `DELETE /workflow-rules/:id` (app.js:917) runs real `DELETE` via the app role — but migration 071 grants only SELECT/INSERT/UPDATE (D-35 law). Every delete call = permission denied → **500**. Fix: soft-delete (`enabled=false`) like api-keys/webhooks. |
+| A2 | **MED** | `/capabilities` reports `library: on('library.core')` (app.js:849) — the registry id is `library`; `library.core` never exists → capabilities always says Library is off, hiding an enabled module from any capabilities-driven UI. One-token fix. |
+| A3 | **MED** | `/me/reset-request` stores the **plaintext reset token in the comms ledger body** (app.js:521-536) — `app.communications` is app-role-readable, so a 30-min single-use secret persists queryable. Redact/hash the code in the ledger row (keep delivery proof, not the secret). |
+| A4 | **MED** | `/me/switch` (app.js:444) re-issues a session against another tenant with **no re-auth** — a stolen browser session escalates into the person's other-school account (teacher in A → owner in B). Require current password (or MFA) like `/me/mfa/disable`. |
+| A5 | LOW | `/auth/google/start` creates `app.oauth_states` via runtime DDL fallback in the request path (app.js:340-343) — move to a migration. |
+| A6 | LOW | `/auth/renew` issues a new jti without denylisting the old one — old token lives to natural 12h expiry (acceptable; note for a future session registry). |
+| A7 | LOW | `authenticate` catch maps DB outages to 401 "unauthorized" — /ready disambiguates, but an error-status distinction would help ops. |
+| A8 | LOW | Global rate limit keyed on req.ip without a proxy = all users behind one egress share the 300/min bucket (documented; TRUST_PROXY flips it when a proxy exists). |
+
+## Strengths worth naming
+Timing-equalized login; jti+epoch revocation without a session table; allowlist (not blocklist) dataset
+for non-demo tenants; fail-closed dev doors computed once at config; production boot guards (localhost DB,
+`*` CORS, short JWT secret all throw); statement/lock/idle timeouts on the pool; `SET LOCAL ROLE` as a
+compiled constant (not injectable); CSRF double-submit with bearer exemption; uniform no-store planes;
+honest 503 channel gates; every state change audited through the RLS path with policyRef.
