@@ -6,6 +6,8 @@ import { Avatar, Dropdown, Empty } from './ui';
 import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
 import { fmtRelative } from '../lib/format';
+import { t, useLang } from '../i18n';
+import { listTenants, switchTenant, readTenantId, type TenantMembership } from '../screens/account/tenantSwitch';
 import { useKernelNav } from '../plugins/useKernel';
 import { useSession, sessionSchoolName } from '../App';
 import { DEMO_MODE } from '../lib/demoMode';
@@ -30,6 +32,12 @@ export interface NavItem { to: string; label: string; icon: keyof typeof Icon; b
 export function useNavItems(): NavItem[] {
   const { session, domain } = useStore();
   const role = session.roleId;
+  useLang(); // L5-3.3: nav labels re-render when the language changes
+  /* L5-3.3: labels pass through t() — translated keys render in the active
+     language, everything else falls back to the English label (honest
+     partial coverage; see i18n/hi-IN.ts). Applied to the parent case and
+     the finance case as the proof surfaces. */
+  const L = (label: string, key: string) => t(key, { fallback: label });
   const kernel = { to: '/plugins', label: 'Modules', icon: 'Layers' as const };
   const library = { to: '/library', label: 'Library', icon: 'Book' as const, plugin: 'library' };
   /* build-out wave D: People console (people.admin plugin) + System services
@@ -55,6 +63,7 @@ export function useNavItems(): NavItem[] {
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
+        { to: '/fees/plans', label: 'Fee plans', icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface */
         { to: '/automation', label: 'Automation', icon: 'Automation' },
         { to: '/memory', label: 'AI memory', icon: 'Memory' },
         library,
@@ -100,8 +109,9 @@ export function useNavItems(): NavItem[] {
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
         { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
-        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* T509: finance's core surface was routed but never in the nav */
-        { to: '/people', label: 'People', icon: 'People' },
+        { to: '/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' }, /* T509: finance's core surface was routed but never in the nav */
+        { to: '/fees/plans', label: L('Fee plans', 'nav.feePlans'), icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface (blocks.md request) */
+        { to: '/people', label: L('People', 'nav.people'), icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
@@ -136,6 +146,8 @@ export function useNavItems(): NavItem[] {
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/migration', label: 'Data import', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
+        { to: '/fees/plans', label: 'Fee plans', icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface */
+        { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1: custom roles (owner + IT admin) */
       ];
     case 'itadmin':
       return [
@@ -147,6 +159,7 @@ export function useNavItems(): NavItem[] {
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/it', label: 'Platform', icon: 'Shield' },
         { to: '/memory', label: 'AI memory', icon: 'Memory' },
+        { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1 */
         peopleAdmin,
         kernel,
         rails,
@@ -172,15 +185,15 @@ export function useNavItems(): NavItem[] {
       ];
     case 'parent':
       return [
-        { to: '/parent/family', label: 'Family', icon: 'Home' },
-        { to: '/parent/consents', label: 'Consents', icon: 'Check' },
-        { to: '/parent/requests', label: 'Requests', icon: 'File' },
+        { to: '/parent/family', label: L('Family', 'nav.family'), icon: 'Home' },
+        { to: '/parent/consents', label: L('Consents', 'nav.consents'), icon: 'Check' },
+        { to: '/parent/requests', label: L('Requests', 'nav.requests'), icon: 'File' },
         { to: '/parent/copilot', label: 'AI Assistant', icon: 'Sparkle' },
-        { to: '/parent', label: 'Home', icon: 'Home' },
+        { to: '/parent', label: L('Home', 'nav.parentHome'), icon: 'Home' },
         { to: '/parent/complaints', label: 'My complaints', icon: 'Flag' },
-        { to: '/parent/chat', label: 'Messages', icon: 'Message' },
-        { to: '/parent/fees', label: 'Fees', icon: 'Wallet' },
-        { to: '/parent/ask', label: 'Ask', icon: 'Ask' },
+        { to: '/parent/chat', label: L('Messages', 'nav.messages'), icon: 'Message' },
+        { to: '/parent/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' },
+        { to: '/parent/ask', label: L('Ask', 'nav.ask'), icon: 'Ask' },
       ];
     case 'student':
       return [
@@ -209,13 +222,16 @@ export function Sidebar() {
      System services, Modules, …) — routed, role-assigned, invisible. Group
      what is named, then render the remainder under 'More' so nothing
      assigned to the role can vanish from the sidebar. */
+  /* review MINOR: grouping keys on the ROUTE, not the (now translatable)
+     English label — translated items must keep their group in every
+     language instead of collapsing into 'More'. */
   const groups: { label: string; items: NavItem[] }[] = [
-    { label: 'Daily operations', items: items.filter(i => ['Today', 'Needs your attention', 'Next', 'Ask', 'Group', 'Visitors'].includes(i.label)) },
+    { label: 'Daily operations', items: items.filter(i => ['/today', '/attention', '/next', '/ask', '/group', '/visitors', '/demo'].includes(i.to)) },
     /* CU-1: coordinator desk surfaces (nav items pointing at /coord/*) */
     { label: 'Coordination', items: items.filter(i => i.to.startsWith('/coord')) },
-    { label: 'Records', items: items.filter(i => ['People', 'Learning', 'Operations'].includes(i.label)) },
-    { label: 'Intelligence', items: items.filter(i => ['Insights', 'Automation', 'AI memory', 'Platform'].includes(i.label)) },
-    { label: 'Your space', items: items.filter(i => ['Home', 'Messages', 'Fees', 'My Day', 'Portfolio'].includes(i.label)) },
+    { label: 'Records', items: items.filter(i => ['/people', '/learning', '/operations', '/fees', '/fees/plans', '/people-admin'].includes(i.to)) },
+    { label: 'Intelligence', items: items.filter(i => ['/insights', '/automation', '/memory', '/it'].includes(i.to)) },
+    { label: 'Your space', items: items.filter(i => ['/parent', '/parent/family', '/parent/fees', '/parent/chat', '/student', '/student/home2', '/student/portfolio'].includes(i.to)) },
   ];
   /* T509: the label whitelist silently DROPPED every assigned item it didn't
      name (Maintenance, Front desk, Data import, Library, People console,
@@ -223,7 +239,7 @@ export function Sidebar() {
      remainder renders under 'More' so nothing assigned can vanish. */
   const claimed = new Set(groups.flatMap(g => g.items.map(i => i.to)));
   const rest = items.filter(i => !claimed.has(i.to));
-  if (rest.length) groups.push({ label: 'More', items: rest });
+  if (rest.length) groups.push({ label: t('nav.more', { fallback: 'More' }), items: rest });
   const visible = groups.filter(g => g.items.length);
 
   return (
@@ -357,6 +373,57 @@ export function NotificationsBell() {
 }
 
 /* ================= Profile ================= */
+/* L5-4.1: multi-school memberships for the signed-in email (L2-4.2 doors).
+   Renders nothing for single-school accounts — the menu stays clean. */
+function SwitchSchoolSection() {
+  const [tenants, setTenants] = useState<TenantMembership[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const activeTenantId = useMemo(() => readTenantId(), []);
+
+  useEffect(() => {
+    let live = true;
+    listTenants()
+      .then(list => { if (live) setTenants(list); })
+      .catch(() => { if (live) setTenants([]); /* listing failure: section just hides */ });
+    return () => { live = false; };
+  }, []);
+
+  if (!tenants || tenants.length < 2) return null;
+
+  const switchTo = async (m: TenantMembership) => {
+    setSwitching(m.tenantId); setError(null);
+    try {
+      const r = await switchTenant(m.tenantId);
+      (await import('../services/liveApi')).setToken(r.token);
+      localStorage.setItem('schoolos.session', JSON.stringify({ name: r.user.name, role: r.user.role, email: r.user.email }));
+      window.location.reload();
+    } catch (e) {
+      setSwitching(null);
+      setError((e as Error).message || 'could not switch');
+    }
+  };
+
+  return (
+    <>
+      <div role="none" className="dropdown-sep" />
+      <div role="none" className="dropdown-label">{t('nav.switchSchool', { fallback: 'Switch school' })}</div>
+      {error && <div role="alert" className="u-xs" style={{ padding: '2px 10px 6px', color: 'var(--danger)' }}>{error}</div>}
+      <div className="scroll-thin" style={{ maxHeight: 220, overflowY: 'auto' }}>
+        {tenants.map(m => (
+          <button key={m.tenantId} role="menuitem" className="dropdown-item" disabled={switching !== null}
+            onClick={() => void switchTo(m)}>
+            <span className="u-truncate" style={{ flex: 1 }}>
+              {m.name} <span className="u-xs u-faint">— {m.role}</span>
+            </span>
+            {m.tenantId === activeTenantId && <Icon.Check size={13} />}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 export function ProfileMenu() {
   const { session, setRole } = useStore();
   const navigate = useNavigate();
@@ -377,6 +444,13 @@ export function ProfileMenu() {
           </div>
           <div role="none" className="dropdown-sep" />
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
+          {/* L5-4.1: multi-school switch — lists this email's memberships and
+              re-issues the session against the chosen school (audited server
+              door). A full reload is the honest reset: every store, cache and
+              dataset refetches under the new tenant (role is per-tenant). If
+              the target account still has a temporary password, the server's
+              mustChange token routes the reload into the forced gate. */}
+          <SwitchSchoolSection />
           <button role="menuitem" className="dropdown-item" style={{ color: 'var(--danger-text)' }} onClick={async () => {
             try { if (LIVE_API) await (await import('../services/liveApi')).apiLogoutAudit(); } catch { /* ledger best-effort */ }
             localStorage.removeItem('schoolos.session');

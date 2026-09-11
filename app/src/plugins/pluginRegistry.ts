@@ -177,6 +177,47 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     slots: ['settings'],
     defaultEnabled: false,
   },
+  /* ── Wave 4/5 mirrors (D-39): headless read-model/engine plugins landed by
+     L3 in server/src/plugins/<id>/. settingsSchema rides the manifests (the
+     kernel reader serves it) and renders through the L5-5.2 generic settings
+     form. money.invoicing is NOT mirrored yet — L1-5.1 has no server
+     manifest/catalog row; this registry mirrors only real rows. */
+  {
+    id: 'ops.bi',
+    name: 'Insight Read Models',
+    version: '1.0.0',
+    class: 'B',
+    description: 'School-level insight over real records, aggregates only: attendance percentage by class (windowed, per-student drill for staff), fee aging buckets by term, admissions funnel conversion and stage aging, homework completion by class. Read models are 60s-cached and row-capped (500) — slightly stale, never wrong by more than a minute.',
+    icon: 'Insights',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['students.read', 'fees.read', 'events.emit', 'audit.request'],
+    slots: ['reports'],
+    defaultEnabled: false,
+  },
+  {
+    id: 'ops.import',
+    name: 'Migration Import Engine',
+    version: '1.0.0',
+    class: 'B',
+    description: 'Column-mapping validator, row-level error collection, shadow-load (staged analysis, zero domain writes) and dry-run diff summaries for school-data imports (students, guardians, fees). The engine is importable by the kernel migration doors; commit authority stays with the kernel.',
+    icon: 'Database',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['students.read', 'events.emit', 'audit.request'],
+    slots: ['reports'],
+    defaultEnabled: false,
+  },
+  {
+    id: 'ops.udise',
+    name: 'UDISE+ Export',
+    version: '1.0.0',
+    class: 'B',
+    description: 'Deterministic UDISE+-style statistical export from real school records: on-roll enrollment by class × section × gender bucket, staff by role, infrastructure by category and status. Aggregates only — never names, never PII. The gender split is honest about what the schema records today (a not_recorded bucket) until a students.gender column exists.',
+    icon: 'Clipboard',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['students.read', 'events.emit', 'audit.request'],
+    slots: ['settings', 'reports'],
+    defaultEnabled: false,
+  },
 ];
 
 export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id === id);

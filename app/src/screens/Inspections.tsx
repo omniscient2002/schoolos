@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
 import {PageHead, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, useToast, Drawer, DataTable, KeyValue, ClickThrough} from '../components/ui';
@@ -46,6 +47,30 @@ const RESULT_META: Partial<Record<NonNullable<InspectionRecord['result']>, { ton
 /* ============================================================ */
 
 export default function Inspections() {
+  return DEMO_MODE ? <DemoInspections /> : <LiveInspections />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LiveInspections() {
+  return (
+    <div>
+      <PageHead
+        title="Inspections"
+        sub="Round checklists, findings and sign-offs."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="There is no inspections door on the server yet. Rounds and checklists will appear here when the door exists."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoInspections() {
   const navigate = useNavigate();
   const { session, domain, actorName } = useStore();
   const toast = useToast();

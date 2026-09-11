@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import {
   PageHead, Section, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, KeyValue, Progress, Modal, useToast,
@@ -37,6 +38,30 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 type LocalRequest = { id: string; itemId: string; qty: number; on: Date };
 
 export default function MaintInventory() {
+  return DEMO_MODE ? <DemoMaintInventory /> : <LiveMaintInventory />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LiveMaintInventory() {
+  return (
+    <div>
+      <PageHead
+        title="Spare-parts inventory"
+        sub="Stock levels, consumption and reorder points."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="There is no inventory door on the server yet (L4-2.2 note filed). The demo world shows the mock registry; a live school sees nothing here rather than invented stock numbers."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoMaintInventory() {
   const { session } = useStore();
   const toast = useToast();
   const scope: string = session.activeCampus;

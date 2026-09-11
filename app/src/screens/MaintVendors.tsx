@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
 import {
@@ -49,6 +50,30 @@ function Stars({ rating, size = 13 }: { rating: number; size?: number }) {
 }
 
 export default function MaintVendors() {
+  return DEMO_MODE ? <DemoMaintVendors /> : <LiveMaintVendors />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LiveMaintVendors() {
+  return (
+    <div>
+      <PageHead
+        title="Vendor directory"
+        sub="Contracts, SLAs and escalation contacts."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="There is no vendors door on the server yet. The demo world shows fixture vendors; a live school sees nothing here until the door lands."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoMaintVendors() {
   const { domain } = useStore();
   const vendorsQ = useAsync(() => maintenanceService.vendors(), []);
   const [selected, setSelected] = useState<VendorRecord | null>(null);

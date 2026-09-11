@@ -12,10 +12,10 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import FeePlans from './finance/FeePlans';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { feeService } from '../services';
-import { apiFeeObligations, apiGet, apiPost } from '../services/liveApi';
+import { apiFeeObligations, apiGet, apiPost, apiVoidObligation } from '../services/liveApi';
 import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import {
@@ -26,7 +26,7 @@ import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { LineChart, BarChart, SegmentedBar, Donut } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtMoney, fmtMoneyShort, fmtPct, fmtDate, fmtDateShort } from '../lib/format';
-import type { FeeObligation, Payment, FeeStatus } from '../types/domain';
+import type { CampusId, FeeObligation, Payment, FeeStatus } from '../types/domain';
 
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -291,19 +291,22 @@ const mapRealObligation = (o: Record<string, unknown>): FeeRow => ({
 
 /* ============================================================ */
 
-type TabId = 'ledger' | 'payments' | 'failed' | 'byclass';
+type TabId = 'ledger' | 'payments' | 'failed' | 'byclass' | 'plans';
 
 export default function Fees() {
   const navigate = useNavigate();
   const { session, dispatch, actorName } = useStore();
   const toast = useToast();
-  const campus = session.activeCampus;
+  const campus = session.activeCampus as CampusId | 'all'; // demo plane filters 'all'; live plane is tenant-wide
 
   const [tab, setTab] = useState<TabId>('ledger');
   const [statusFilter, setStatusFilter] = useState<'all' | RowStatus>('all');
   const [selected, setSelected] = useState<FeeObligation | null>(null);   /* demo drawer */
   const [selectedId, setSelectedId] = useState<string | null>(null);      /* live drawer */
   const [payRow, setPayRow] = useState<FeeRow | null>(null);              /* record-payment modal */
+  const [voidRow, setVoidRow] = useState<FeeRow | null>(null);            /* void confirm (owner) */
+  const [voidReason, setVoidReason] = useState('');
+  const [voiding, setVoiding] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
   /* Payment authority mirrors the doors exactly:
@@ -313,7 +316,13 @@ export default function Fees() {
 
   const obligations = useAsync<FeeRow[]>(async () => {
     if (DEMO_MODE) {
-      const demo = await feeService.obligations(campus);
+      /* demo plane inline (parity gate L4-5.1): no services/index mock import —
+         the same seed-blob logic, local to this screen */
+      let demo = seed.feeObligations;
+      if (campus !== 'all') {
+        const ids = new Set(seed.students.filter(s => s.campus === campus).map(s => s.id));
+        demo = demo.filter(f => ids.has(f.studentId));
+      }
       return demo.map(f => {
         const st = seed.findPerson(f.studentId);
         return {
@@ -332,13 +341,37 @@ export default function Fees() {
   }, [campus]);
 
   const payments = useAsync<Payment[] | null>(async () => {
-    if (DEMO_MODE) return feeService.payments(campus);
+    if (DEMO_MODE) {
+      let items = seed.payments;
+      if (campus !== 'all') {
+        const ids = new Set(seed.students.filter(s => s.campus === campus).map(s => s.id));
+        items = items.filter(p => ids.has(p.studentId));
+      }
+      return items.slice(0, 400);
+    }
     /* The server has no payments-list door yet — the tab shows an honest
        empty state instead of pretending. */
     return null;
   }, [campus]);
 
   const refreshAll = () => { obligations.retry(); payments.retry(); };
+
+  /* Void an obligation — owner authority, server-audited (L1-2.2 door). */
+  const voidObligation = async () => {
+    if (!voidRow) return;
+    setVoiding(true);
+    try {
+      await apiVoidObligation(voidRow.id, voidReason.trim() || 'Voided from the Fees ledger by the owner');
+      toast({ title: 'Obligation voided', sub: `${voidRow.studentName} · ${voidRow.term} ${voidRow.category} — the ledger row is marked void and stays visible for audit.`, tone: 'success' });
+      setVoidRow(null);
+      setVoidReason('');
+      refreshAll();
+    } catch (e) {
+      toast({ title: 'Could not void the obligation', sub: friendly(e), tone: 'error' });
+    } finally {
+      setVoiding(false);
+    }
+  };
 
   const stats = useMemo(() => {
     const items = obligations.data ?? [];
@@ -416,10 +449,18 @@ export default function Fees() {
     });
   };
 
+  /* demo-only retry: mutates the demo blob exactly as the old mock plane did —
+      every path that reaches it is DEMO_MODE-gated and says so in the toast */
+  const demoRecordRetry = (obligationId: string) => {
+    const f = seed.feeObligations.find(x => x.id === obligationId);
+    if (f) { f.status = 'paid'; f.paidAmount = f.amount; f.paidOn = new Date(); f.method = 'UPI'; }
+    return { obligationId, status: 'paid' };
+  };
+
   const retryOne = async (id: string) => {
     setRetryingId(id);
     try {
-      await feeService.recordRetry(id);
+      demoRecordRetry(id);
       auditRetry(id, 'single mandate');
       toast({ title: 'Retry recorded (demo)', sub: 'Demo world — this retry is not connected to school records.', tone: 'info' });
       setSelected(null);
@@ -435,7 +476,7 @@ export default function Fees() {
     const ids = (obligations.data ?? []).filter(f => f.status === 'failed').map(f => f.id);
     setRetryingId('batch');
     try {
-      for (const id of ids) await feeService.recordRetry(id);
+      for (const id of ids) demoRecordRetry(id);
       auditRetry(`${ids.length} obligations`, `batch of ${ids.length} failed mandates`);
       toast({ title: `${ids.length} retries queued (demo)`, sub: 'Demo world — batch retries are not connected to school records.', tone: 'info' });
       refreshAll();
@@ -551,6 +592,7 @@ export default function Fees() {
           { id: 'payments', label: 'Payments', count: lastPayments.length },
           ...(DEMO_MODE ? [{ id: 'failed', label: 'Failed payments', count: failedPayments.length }] : []),
           { id: 'byclass', label: 'By class' },
+          ...(!DEMO_MODE ? [{ id: 'plans', label: 'Fee plans' }] : []),
         ]}
         active={tab === 'failed' && !DEMO_MODE ? 'ledger' : tab}
         onChange={t => setTab(t as TabId)}
@@ -626,9 +668,16 @@ export default function Fees() {
                     key: 'action', label: '', align: 'right' as const, render: (f: FeeRow) => {
                       const payable = f.status !== 'paid' && f.status !== 'void';
                       if (!payable) return null;
-                      return canConfirm
-                        ? <Button size="sm" variant="secondary" icon={<Icon.Money size={12} />} onClick={e => { e.stopPropagation(); setPayRow(f); }}>Record payment</Button>
-                        : <Button size="sm" variant="secondary" disabled title={payDisabledReason} icon={<Icon.Money size={12} />} onClick={e => e.stopPropagation()}>Record payment</Button>;
+                      return (
+                        <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                          {canConfirm
+                            ? <Button size="sm" variant="secondary" icon={<Icon.Money size={12} />} onClick={e => { e.stopPropagation(); setPayRow(f); }}>Record payment</Button>
+                            : <Button size="sm" variant="secondary" disabled title={payDisabledReason} icon={<Icon.Money size={12} />} onClick={e => e.stopPropagation()}>Record payment</Button>}
+                          {session.roleId === 'owner' && (
+                            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); setVoidRow(f); setVoidReason(''); }} title="Void this obligation (owner, audited)">Void</Button>
+                          )}
+                        </span>
+                      );
                     },
                   }] : []),
                 ]}
@@ -738,6 +787,12 @@ export default function Fees() {
       )}
 
       {/* ---- By class ---- */}
+      {tab === 'plans' && !DEMO_MODE && (
+        <Section role="tabpanel" id="fees-tab-panel-plans" aria-labelledby="fees-tab-tab-plans">
+          <FeePlans />
+        </Section>
+      )}
+
       {tab === 'byclass' && (
         <Section role="tabpanel" id="fees-tab-panel-byclass" aria-labelledby="fees-tab-tab-byclass"
           title="Collection by class"
@@ -811,6 +866,29 @@ export default function Fees() {
           onDone={refreshAll}
         />
       )}
+
+      {/* void confirm — owner only */}
+      <Modal
+        open={!!voidRow}
+        onClose={() => !voiding && setVoidRow(null)}
+        title="Void this obligation?"
+        sub={voidRow ? `${voidRow.studentName} · ${voidRow.term} ${voidRow.category} · ${fmtMoney(voidRow.amount - voidRow.paidAmount)} outstanding` : undefined}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setVoidRow(null)} disabled={voiding}>Cancel</Button>
+            <Button variant="danger" loading={voiding} onClick={voidObligation}>Void permanently</Button>
+          </>
+        }
+      >
+        <p className="u-small u-muted" style={{ marginTop: 0, lineHeight: 1.65 }}>
+          Voiding marks the ledger row void server-side — it is never deleted and the action is audited with your name.
+          Any payments already recorded on the obligation stay in the ledger; only the outstanding amount stops being collectible.
+        </p>
+        <div className="field">
+          <label htmlFor="void-reason">Reason (recommended)</label>
+          <input id="void-reason" className="input" value={voidReason} onChange={e => setVoidReason(e.target.value)} placeholder="e.g. duplicate entry · corrected after reconciliation" />
+        </div>
+      </Modal>
     </div>
   );
 }

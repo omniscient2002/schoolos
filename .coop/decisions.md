@@ -127,3 +127,6 @@
   next free number via a help.md entry BEFORE creating the file.
 - **D-41 LANE TEST DBs:** TEST_DB_NAME override in tests/helpers.js is ratified as the standard for lane-level
   runs (L2's 35/35 on schoolos_l2test stands). schoolos_test stays S0-only for gates (D-10).
+- **D-42 SOURCE TREE LAW:** app/src is TypeScript-only — no .js artifacts may exist or be committed there
+  (vite resolves .js before .ts, so a stray compiled file silently replaces the real source and crashes
+  boot). S0 deleted lib/format.js, lib/rng.js, types/domain.js (compiled CJS strays). Emit nothing into src/.

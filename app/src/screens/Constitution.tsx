@@ -96,12 +96,12 @@ export default function Constitution() {
         recordType: 'Policy', recordRef: `${refOf(p)} — ${p.title}`,
         reason: 'Draft edit saved from Constitution page', policyRef: refOf(p),
         aiInvolved: false, risk: 'medium',
-        outcome: `New version ${version} active immediately — audit entry recorded`,
+        outcome: `Draft version ${version} saved in this workspace — resets on reload (server policy store read-only today)`,
       },
     });
     toast({
-      title: 'Constitution entry updated — effective immediately, audit entry recorded',
-      sub: `${refOf(p)} · ${p.title} → ${version}`,
+      title: 'Draft saved in this workspace',
+      sub: `${refOf(p)} · ${p.title} → ${version}. Resets when you leave the page — the server policy store is read-only today (versioning door pending).`,
       tone: 'success',
     });
     setEditId(null);
@@ -114,8 +114,8 @@ export default function Constitution() {
       <PageHead
         title="School policies"
         sub={session.roleId === 'itadmin'
-          ? 'Runtime policy source. Entries are read-only at runtime — edits create new versions with full audit.'
-          : 'Every automation, message and decision in SchoolOS checks itself against these entries before it acts.'}
+          ? 'Reference policy set. The server policy store is read-only today — edits here are workspace drafts (resets on reload) with a local audit note.'
+          : 'The rules every automation is designed against; runtime enforcement rolls out with the workflow runtime.'}
       />
 
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
@@ -143,9 +143,9 @@ export default function Constitution() {
       </div>
 
       <div className="grid grid-4" style={{ marginBottom: 22 }}>
-        <Stat label="Constitution entries" value={local.length} sub="across 8 categories" />
+        <Stat label="Constitution entries" value={local.length} sub={`across ${new Set(local.map(p => p.category)).size} categories`} />
         <Stat label="AI acts" value={`${autoCount} / ${approvalCount} / ${humanCount}`} sub="AI acts: automatically / with approval / never without a human" />
-        <Stat label="Last amended" value={fmtDate(lastAmended)} sub={edited && Object.keys(edited).length ? 'includes today’s edits' : 'most recent effective date'} />
+        <Stat label="Last amended" value={fmtDate(lastAmended)} sub={edited && Object.keys(edited).length ? 'draft edits are undated until server versioning exists' : 'most recent effective date'} />
         <Stat label="Platform invariants" value={local.filter(isFloor).length} sub="locked for every school" />
       </div>
 
@@ -231,7 +231,7 @@ export default function Constitution() {
                         </span>
                       ))}
                     </div>
-                    <div className="u-xs u-faint">Status: {p.status} · changes take effect immediately and are recorded in the audit trail.</div>
+                    <div className="u-xs u-faint">Status: {p.status} · edits here are workspace drafts (resets on reload) until the server policy store accepts versions.</div>
                   </div>
                 )}
               </Card>

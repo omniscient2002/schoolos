@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
 import * as seed from '../data/dataset';
@@ -109,6 +110,30 @@ const ringColor = (wos: WorkOrderRecord[]) =>
 /* ============================================================ */
 
 export default function MaintMap() {
+  return DEMO_MODE ? <DemoMaintMap /> : <LiveMaintMap />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LiveMaintMap() {
+  return (
+    <div>
+      <PageHead
+        title="Campus asset map"
+        sub="Assets plotted by building and floor."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="The map needs an assets-with-location door that does not exist yet. The demo world plots fixture assets; a live school sees no map rather than a guessed layout."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoMaintMap() {
   const navigate = useNavigate();
   const { session, setActiveCampus, domain } = useStore();
   const toast = useToast();

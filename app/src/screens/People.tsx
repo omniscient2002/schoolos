@@ -5,9 +5,10 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import type { CampusId } from '../types/domain';
 import * as seed from '../data/dataset';
 import { peopleService } from '../services';
-import { apiPost } from '../services/liveApi';
+import { apiPost, apiStudents, apiUpdateStudent, apiWithdrawStudent, apiPromoteStudent } from '../services/liveApi';
 import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
@@ -85,6 +86,17 @@ export default function People() {
      coordinator and admissions. Everyone else gets an honest disabled button. */
   const canAddStudent = ['owner', 'principal', 'coordinator', 'admissions'].includes(session.roleId);
 
+  /* L4-3.2 — student lifecycle row actions (live roster rows only) */
+  const [editRow, setEditRow] = useState<{ id: string; name: string; guardianName: string; guardianPhone: string; busRoute: string } | null>(null);
+  const [withdrawRow, setWithdrawRow] = useState<{ id: string; name: string } | null>(null);
+  const [wdReason, setWdReason] = useState('');
+  const [wdDate, setWdDate] = useState('');
+  const [wdSchool, setWdSchool] = useState('');
+  const [promoteRow, setPromoteRow] = useState<{ id: string; name: string; grade: string; section: string } | null>(null);
+  const [promoteGrade, setPromoteGrade] = useState('');
+  const [promoteSection, setPromoteSection] = useState('');
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+
   /* keep campus in sync with role scope */
   useEffect(() => { if (scopeLocked) setCampus(session.campusScope); }, [scopeLocked, session.campusScope]);
 
@@ -99,7 +111,31 @@ export default function People() {
   useEffect(() => { setVisible(15); }, [debounced, campus, grade, klass]);
 
   const results = useAsync<Person[]>(
-    () => peopleService.search(debounced, { campus, type: tab, grade }),
+    () => {
+      if (DEMO_MODE) return peopleService.search(debounced, { campus, type: tab, grade });
+      // Live: the students roster door (staff surface; 403s the student role by design).
+      // Teacher/staff/guardian roster doors do not exist yet — those tabs say so.
+      if (tab !== 'student') return Promise.resolve([]);
+      return apiStudents({
+        ...(debounced.trim() ? { search: debounced.trim() } : {}),
+        ...(grade !== 'all' ? { grade } : {}),
+        limit: '200',
+      }).then(res => (res.students ?? []).map((r: Record<string, unknown>) => ({
+        id: String(r.id),
+        name: String(r.name ?? ''),
+        type: 'student' as const,
+        campus: session.campusScope as CampusId, // campus split is not in the door — column shows an em dash live
+        email: '',
+        phone: String(r.guardian_phone ?? ''),
+        grade: (Number.isFinite(Number(r.grade)) ? Number(r.grade) : String(r.grade)) as unknown as number,
+        section: r.section ? String(r.section) : undefined,
+        rollNo: r.admission_no ? String(r.admission_no) : undefined,
+        admissionNo: r.admission_no ? String(r.admission_no) : undefined,
+        busRoute: r.bus_route ? String(r.bus_route) : undefined,
+        status: 'active' as const,
+        guardianName: r.guardian_name ? String(r.guardian_name) : undefined,
+      } as Person)));
+    },
     [debounced, campus, tab, grade],
   );
 
@@ -110,6 +146,7 @@ export default function People() {
   const shown = rows.slice(0, visible);
 
   const counts = useMemo(() => {
+    if (!DEMO_MODE) return { student: rows.length, teacher: 0, staff: 0, guardian: 0 };
     const inScope = (arr: Person[]) => arr.filter(p => campus === 'all' || p.campus === campus);
     return {
       student: inScope(seed.students).length,
@@ -117,7 +154,7 @@ export default function People() {
       staff: inScope(seed.staff).length,
       guardian: inScope(seed.guardians).length,
     };
-  }, [campus]);
+  }, [campus, rows]);
 
   const presence = useMemo(() => {
     const ids = new Set(seed.students.filter(p => campus === 'all' || p.campus === campus).map(p => p.id));
@@ -227,6 +264,75 @@ export default function People() {
 
   const scopeWord = campus === 'all' ? 'all campuses' : campusShort(campus);
 
+  const canEdit = ['owner', 'principal', 'coordinator'].includes(session.roleId);
+  const canWithdraw = ['owner', 'principal'].includes(session.roleId);
+  const nextGradeOf = (g: string): string => {
+    const n = Number(g);
+    if (g === 'LKG') return 'UKG';
+    if (g === 'UKG') return '1';
+    if (Number.isFinite(n) && n >= 1 && n < 10) return String(n + 1);
+    return '';
+  };
+
+  const saveEdit = async () => {
+    if (!editRow) return;
+    setRowBusy('edit');
+    try {
+      const patch: Record<string, string> = {};
+      if (editRow.name.trim()) patch.name = editRow.name.trim();
+      if (editRow.guardianName.trim() || editRow.guardianPhone.trim() || editRow.busRoute.trim()) {
+        if (editRow.guardianName.trim()) patch.guardian_name = editRow.guardianName.trim();
+        if (editRow.guardianPhone.trim()) patch.guardian_phone = editRow.guardianPhone.trim();
+        if (editRow.busRoute.trim()) patch.bus_route = editRow.busRoute.trim();
+      }
+      await apiUpdateStudent(editRow.id, patch);
+      toast({ title: 'Record updated', sub: `${editRow.name} — the change is on the student ledger with an audit entry.`, tone: 'success' });
+      setEditRow(null);
+      results.retry();
+    } catch (e) {
+      toast({ title: 'Could not update the record', sub: friendly(e), tone: 'error' });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const submitWithdraw = async () => {
+    if (!withdrawRow || wdReason.trim().length < 2) return;
+    setRowBusy('withdraw');
+    try {
+      const res = await apiWithdrawStudent(withdrawRow.id, {
+        reason: wdReason.trim(),
+        ...(wdDate ? { effective_date: wdDate } : {}),
+        ...(wdSchool.trim() ? { last_school: wdSchool.trim() } : {}),
+      });
+      toast({ title: `${res.student.name ?? withdrawRow.name} withdrawn`, sub: res.note ?? 'The record is kept — the bus seat is released.', tone: 'success' });
+      setWithdrawRow(null); setWdReason(''); setWdDate(''); setWdSchool('');
+      results.retry();
+    } catch (e) {
+      toast({ title: 'Withdrawal refused', sub: friendly(e), tone: 'error' });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const submitPromote = async () => {
+    if (!promoteRow) return;
+    setRowBusy('promote');
+    try {
+      const res = await apiPromoteStudent(promoteRow.id, {
+        ...(promoteGrade.trim() ? { to_grade: promoteGrade.trim() } : {}),
+        ...(promoteSection.trim() ? { to_section: promoteSection.trim() } : {}),
+      });
+      toast({ title: `${res.student.name ?? promoteRow.name} promoted`, sub: `Class ${res.from.grade}-${res.from.section} → ${res.to.grade}-${res.to.section} — the move is on the student's history.`, tone: 'success' });
+      setPromoteRow(null); setPromoteGrade(''); setPromoteSection('');
+      results.retry();
+    } catch (e) {
+      toast({ title: 'Promotion refused', sub: friendly(e), tone: 'error' });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
   return (
     <>
       <PageHead
@@ -247,9 +353,9 @@ export default function People() {
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <Stat label="Total students" value={counts.student.toLocaleString('en-IN')} sub={`${counts.student} in ${scopeWord}`} onClick={() => setTab('student')} />
-        <Stat label="Staff & teachers" value={counts.teacher + counts.staff} sub={`${counts.teacher} teaching · ${counts.staff} administrative`} onClick={() => setTab('teacher')} />
-        <Stat label="Guardians" value={counts.guardian.toLocaleString('en-IN')} sub={`${Math.round((counts.guardian / Math.max(1, counts.student)) * 10) / 10} per student on average`} onClick={() => setTab('guardian')} />
-        <Stat label="Avg attendance" value={fmtPct(presence.avg, 1)} sub="Last 30 school days" spark={<Sparkline points={presence.daily} width={84} height={26} />} />
+        <Stat label="Staff & teachers" value={DEMO_MODE ? String(counts.teacher + counts.staff) : '—'} sub={DEMO_MODE ? `${counts.teacher} teaching · ${counts.staff} administrative` : 'Teacher/staff roster door is not connected yet'} onClick={() => setTab('teacher')} />
+        <Stat label="Guardians" value={DEMO_MODE ? counts.guardian.toLocaleString('en-IN') : '—'} sub={DEMO_MODE ? `${Math.round((counts.guardian / Math.max(1, counts.student)) * 10) / 10} per student on average` : 'Guardian roster door is not connected yet'} onClick={() => setTab('guardian')} />
+        <Stat label="Avg attendance" value={DEMO_MODE ? fmtPct(presence.avg, 1) : '—'} sub={DEMO_MODE ? 'Last 30 school days' : 'Attendance rollup comes with the ops.bi door — see Reports'} spark={DEMO_MODE ? <Sparkline points={presence.daily} width={84} height={26} /> : undefined} />
       </div>
 
       <div style={{ marginBottom: 16 }}>
@@ -269,8 +375,8 @@ export default function People() {
             <select
               className="select" style={{ width: 180 }} value={campus}
               onChange={e => setCampus(e.target.value)} aria-label="Filter by campus"
-              disabled={scopeLocked}
-              title={scopeLocked ? `Your role is scoped to ${campusShort(session.campusScope)}` : undefined}
+              disabled={scopeLocked || !DEMO_MODE}
+              title={scopeLocked ? `Your role is scoped to ${campusShort(session.campusScope)}` : !DEMO_MODE ? 'The roster door is tenant-wide — campus split is not in the door yet' : undefined}
             >
               {scopeLocked
                 ? <option value={session.campusScope}>{campusShort(session.campusScope)} · your scope</option>
@@ -285,7 +391,7 @@ export default function People() {
                 {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
               </select>
             )}
-            {tab === 'teacher' && classOptions.length > 0 && (
+            {DEMO_MODE && tab === 'teacher' && classOptions.length > 0 && (
               <select className="select" style={{ width: 140 }} value={klass} onChange={e => setKlass(e.target.value)} aria-label="Filter by class">
                 <option value="all">All classes</option>
                 {classOptions.map(c => <option key={c} value={c}>{c}</option>)}
@@ -323,6 +429,9 @@ export default function People() {
               sub="The people service did not respond. Nothing was changed — try again."
               onRetry={results.retry}
             />
+          ) : !DEMO_MODE && tab !== 'student' ? (
+            <Empty icon={<Icon.Users size={22} />} title="Roster door not connected yet"
+              sub="The server exposes the student roster (GET /students). Teacher, staff and guardian roster doors do not exist yet — this tab stays empty rather than showing seeded people as if they were real." />
           ) : rows.length === 0 ? (
             <Empty
               icon={<Icon.Search size={26} />}
@@ -349,16 +458,22 @@ export default function People() {
                         <Avatar name={p.name} size="sm" />
                         <div style={{ minWidth: 0 }}>
                           <div className="u-truncate" style={{ fontWeight: 560 }}>{p.name}</div>
-                          <div className="u-xs u-faint u-truncate">{p.email}</div>
+                          <div className="u-xs u-faint u-truncate">{DEMO_MODE ? p.email : (p.admissionNo ? `Adm ${p.admissionNo}` : '')}</div>
                         </div>
                       </div>
                     ),
                   },
                   ...(tab === 'student' ? [
-                    { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => p.grade ?? 999, render: (p: Person) => <span className="tnum">{p.grade} · {p.section}</span> },
-                    { key: 'ct', label: 'Class teacher', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 140, display: 'inline-block' }}>{classTeacherName(p)}</span> },
-                    { key: 'att', label: 'Attendance', render: (p: Person) => attendanceBadge(p) },
-                    { key: 'fee', label: 'Fees', render: (p: Person) => feeBadge(p) },
+                    { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => Number(p.grade) || 999, render: (p: Person) => <span className="tnum">{p.grade != null ? String(p.grade) : '—'} · {p.section ?? '—'}</span> },
+                    ...(DEMO_MODE ? [
+                      { key: 'ct', label: 'Class teacher', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 140, display: 'inline-block' }}>{classTeacherName(p)}</span> },
+                      { key: 'att', label: 'Attendance', render: (p: Person) => attendanceBadge(p) },
+                      { key: 'fee', label: 'Fees', render: (p: Person) => feeBadge(p) },
+                    ] : [
+                      { key: 'guardian', label: 'Guardian', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 180, display: 'inline-block' }}>{(p as unknown as { guardianName?: string }).guardianName ?? '—'}{p.phone ? <span className="u-xs u-faint"> · {p.phone}</span> : null}</span> },
+                      { key: 'bus', label: 'Bus route', render: (p: Person) => p.busRoute ? <Badge tone="info">{p.busRoute}</Badge> : <span className="u-faint">—</span> },
+                      { key: 'adm', label: 'Admission no.', render: (p: Person) => <span className="mono u-small">{p.admissionNo ?? '—'}</span> },
+                    ]),
                   ] : []),
                   ...(tab === 'teacher' ? [
                     { key: 'role', label: 'Role', render: (p: Person) => p.role ?? '—' },
@@ -384,7 +499,22 @@ export default function People() {
                       },
                     },
                   ] : []),
-                  { key: 'campus', label: 'Campus', render: (p: Person) => <span className="u-small u-muted">{campusShort(p.campus)}</span> },
+                  { key: 'campus', label: 'Campus', render: (p: Person) => <span className="u-small u-muted">{DEMO_MODE ? campusShort(p.campus) : '—'}</span> },
+                  ...(!DEMO_MODE && tab === 'student' ? [{
+                    key: 'actions', label: '', align: 'right' as const, render: (p: Person) => (
+                      <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                        <Button size="sm" variant="ghost" icon={<Icon.Edit size={12} />} disabled={!canEdit}
+                          title={canEdit ? 'Edit the record' : 'Editing is done by the owner, principal or coordinator'}
+                          onClick={e => { e.stopPropagation(); if (canEdit) setEditRow({ id: p.id, name: p.name, guardianName: String((p as unknown as { guardianName?: string }).guardianName ?? ''), guardianPhone: p.phone ?? '', busRoute: '' }); }}>Edit</Button>
+                        <Button size="sm" variant="ghost" icon={<Icon.ArrowUpRight size={12} />} disabled={!canEdit}
+                          title={canEdit ? 'Promote to the next class' : 'Promotion is done by the owner, principal or coordinator'}
+                          onClick={e => { e.stopPropagation(); if (canEdit) { setPromoteRow({ id: p.id, name: p.name, grade: String((p as unknown as { grade?: string | number }).grade ?? ''), section: String((p as unknown as { section?: string }).section ?? '') }); setPromoteGrade(nextGradeOf(String((p as unknown as { grade?: string | number }).grade ?? ''))); setPromoteSection(''); } }}>Promote</Button>
+                        <Button size="sm" variant="ghost" disabled={!canWithdraw}
+                          title={canWithdraw ? 'Withdraw / transfer out' : 'Withdrawal is done by the owner or principal'}
+                          onClick={e => { e.stopPropagation(); if (canWithdraw) { setWithdrawRow({ id: p.id, name: p.name }); setWdReason(''); setWdDate(''); setWdSchool(''); } }}>Withdraw</Button>
+                      </span>
+                    ),
+                  }] : []),
                 ]}
               />
               {shown.length < rows.length && (
@@ -469,6 +599,100 @@ export default function People() {
             Only student records can be created here. Teacher, staff and guardian records come from onboarding and migration.
           </p>
         )}
+      </Modal>
+
+      {/* ---- L4-3.2 lifecycle modals (live rows) ---- */}
+      <Modal
+        open={!!editRow}
+        onClose={() => !rowBusy && setEditRow(null)}
+        title="Edit student record"
+        sub={editRow?.name}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setEditRow(null)} disabled={!!rowBusy}>Cancel</Button>
+            <Button variant="primary" loading={rowBusy === 'edit'} onClick={saveEdit}>Save changes</Button>
+          </>
+        }
+      >
+        <div className="field">
+          <label htmlFor="ed-name">Full name</label>
+          <input id="ed-name" className="input" value={editRow?.name ?? ''} onChange={e => setEditRow(f => f ? { ...f, name: e.target.value } : f)} />
+        </div>
+        <div className="field">
+          <label htmlFor="ed-gn">Guardian name</label>
+          <input id="ed-gn" className="input" value={editRow?.guardianName ?? ''} onChange={e => setEditRow(f => f ? { ...f, guardianName: e.target.value } : f)} />
+        </div>
+        <div className="field">
+          <label htmlFor="ed-gp">Guardian phone</label>
+          <input id="ed-gp" className="input" value={editRow?.guardianPhone ?? ''} onChange={e => setEditRow(f => f ? { ...f, guardianPhone: e.target.value } : f)} />
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label htmlFor="ed-br">Bus route</label>
+          <input id="ed-br" className="input" value={editRow?.busRoute ?? ''} onChange={e => setEditRow(f => f ? { ...f, busRoute: e.target.value } : f)} placeholder="e.g. Route 7" />
+          <span className="hint">Class and section changes are not edits — they go through Promote so the move lands in the student's history.</span>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!promoteRow}
+        onClose={() => !rowBusy && setPromoteRow(null)}
+        title="Promote student"
+        sub={promoteRow ? `${promoteRow.name} · class ${promoteRow.grade}-${promoteRow.section}` : undefined}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPromoteRow(null)} disabled={!!rowBusy}>Cancel</Button>
+            <Button variant="primary" loading={rowBusy === 'promote'} onClick={submitPromote}>Promote</Button>
+          </>
+        }
+      >
+        <p className="u-small u-muted" style={{ marginTop: 0, lineHeight: 1.65 }}>
+          The server advances the class automatically (LKG → UKG → 1 … 10). Override only if the school's move differs —
+          leaving both fields as suggested promotes by the book. Academic-year-scoped bulk promotion pairs with the AY engine when it lands.
+        </p>
+        <div className="u-flex" style={{ gap: 12 }}>
+          <div className="field u-grow">
+            <label htmlFor="pr-grade">To class (prefilled with the next class)</label>
+            <input id="pr-grade" className="input" value={promoteGrade} onChange={e => setPromoteGrade(e.target.value)} />
+          </div>
+          <div className="field u-grow">
+            <label htmlFor="pr-section">To section (optional)</label>
+            <input id="pr-section" className="input" value={promoteSection} onChange={e => setPromoteSection(e.target.value)} />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!withdrawRow}
+        onClose={() => !rowBusy && setWithdrawRow(null)}
+        title="Withdraw this student?"
+        sub={withdrawRow?.name}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setWithdrawRow(null)} disabled={!!rowBusy}>Cancel</Button>
+            <Button variant="danger" loading={rowBusy === 'withdraw'} disabled={wdReason.trim().length < 2} onClick={submitWithdraw}>Withdraw</Button>
+          </>
+        }
+      >
+        <div className="u-col" style={{ gap: 10 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label htmlFor="wd-reason">Reason (goes on the record)</label>
+            <input id="wd-reason" className="input" value={wdReason} onChange={e => setWdReason(e.target.value)} placeholder="e.g. family relocated to Pune" />
+          </div>
+          <div className="u-flex" style={{ gap: 12 }}>
+            <div className="field u-grow" style={{ marginBottom: 0 }}>
+              <label htmlFor="wd-date">Effective date (optional)</label>
+              <input id="wd-date" className="input" type="date" value={wdDate} onChange={e => setWdDate(e.target.value)} />
+            </div>
+            <div className="field u-grow" style={{ marginBottom: 0 }}>
+              <label htmlFor="wd-school">Last school (optional)</label>
+              <input id="wd-school" className="input" value={wdSchool} onChange={e => setWdSchool(e.target.value)} />
+            </div>
+          </div>
+          <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
+            What happens on the server: status becomes <b>transferred</b> (effective the chosen date), the bus seat is released,
+            and attendance, fee records and guardian links are kept. This cannot be undone from the app — re-admission creates a fresh record.
+          </div>
+        </div>
       </Modal>
     </>
   );

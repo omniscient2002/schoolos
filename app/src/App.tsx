@@ -2,13 +2,14 @@ import { Suspense, lazy, useEffect, useState, createContext, useContext } from '
 import { setSessionIdentity } from './services/sessionIdentity';
 import { KernelProvider, KernelGate, useKernel } from './plugins/useKernel';
 import './plugins/registerWidgets';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { StoreProvider, useStore } from './state/store';
 import { ToastProvider, Empty } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
-import { apiMe, setToken } from './services/liveApi';
+import { apiMe, setToken, LIVE_BASE } from './services/liveApi';
 import { ensureDataset } from './data/dataset';
+import { sessionMustChange } from './screens/account/ChangePassword';
 import type { RoleId } from './types/domain';
 import { useLiveEventBridge } from './components/Maint';
 import { AiDock } from './components/AiDock';
@@ -30,6 +31,15 @@ const DEMO_BUILD = import.meta.env.VITE_DEMO_MODE === '1';
 const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
 
 const Login = lazy(() => import('./screens/Login'));
+/* L5-2.1: self-service password change — forced flow (restricted mustChange
+   session) and the voluntary /account/password page. plain lazy(), not F():
+   this screen takes props (mode/onAuthed) and F() erases them. */
+const ChangePassword = lazy(() => import('./screens/account/ChangePassword'));
+/* L4-2.1's finance invoicing surface — routed on L4's blocks.md request
+   (L5-2.2). The component is L4-owned; App.tsx only registers the route. */
+const FeePlans = F(() => import('./screens/finance/FeePlans'));
+/* L5-5.1: custom roles over L3-4.2's doors (owner/IT admin) */
+const RolesAdmin = F(() => import('./screens/RolesAdmin'));
 /* self-serve school signup — public door (Platform §1.1, migration 053) */
 const Onboard = lazy(() => import('./screens/Onboard'));
 const Today = F(() => import('./screens/Today'));
@@ -182,7 +192,7 @@ function Guard({ children }: { children: React.ReactNode }) {
      staff-only regardless (its route additionally only exists in demo mode).
      T509 (§7.5): /people-admin and /rails rendered for light roles until the
      API refused — added to the staffOnly list. */
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live', '/people-admin', '/rails'];
+  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live', '/people-admin', '/rails', '/roles'];
   if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     /* Re-scan P3 fix: an AUTHENTICATED parent/student who deep-links (or lands
        post-login — the default returnTo is /today) on a staff surface is
@@ -238,30 +248,91 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const { setRole } = useStore();
   const [session, setSession] = useState<SessionUser | null>(null);
   const [booting, setBooting] = useState(true);
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+
+  /* L5-2.1: the forced-change flow. A force_change account's login answers
+     403 + mustChange + a RESTRICTED token (limited to /me/password, /me,
+     /auth/logout by the authenticate hook). The claim is read from our own
+     just-issued token — no verification needed client-side — and every
+     route other than /account/password bounces here until the change
+     completes. */
+  const completeSignIn = async (s: SessionUser) => {
+    localStorage.setItem('schoolos.session', JSON.stringify(s));
+    await ensureDataset();
+    setRole(mapAccountRole(s.role));
+    setSession(s);
+    setSessionIdentity(s);
+  };
+  const accountScreens = (
+    <ChangePassword
+      mode="gate"
+      onAuthed={completeSignIn}
+      onCancel={() => setSession(null)}
+    />
+  );
 
   /* The front door validates against the server on every cold open.
      A stored session alone is NEVER trusted — only a live /me answer is. */
   useEffect(() => {
     let dead = false;
     (async () => {
-      try {
-        const token = localStorage.getItem('schoolos_token');
-        if (!token) { setBooting(false); return; }
-        const me = await apiMe();
-        await ensureDataset();
-        /* unit 16 (A1): the restore path mirrors the login path's setRole call —
-           without it the store's roleId stayed at its default and drifted from
-           the authenticated identity (unit-14 finding). Auth validation itself
-           is unchanged: only a live /me answer establishes a session, and token
-           handling (setToken/call) is untouched. */
-        if (!dead) { setRole(mapAccountRole(me.role)); setSession({ name: me.name, role: me.role, email: me.email, school: me.school }); setSessionIdentity({ name: me.name, email: me.email }); }
-      } catch {
-        localStorage.removeItem('schoolos.session');
-        localStorage.removeItem('schoolos_token');
-        setToken(null);
-      } finally {
-        if (!dead) setBooting(false);
+      /* L5-3.2 silent renew: no local token, but a same-origin HttpOnly
+         cookie session may still be alive (page reload, closed-tab return).
+         POST /auth/renew exchanges it for a fresh bearer token. The door
+         does not exist yet (review-verified; L2 owns it) — the probe is
+         flag-gated OFF so logged-out cold opens don't fire a guaranteed
+         404, and it can be flipped on the moment L2 ships the door. */
+      const RENEW_DOOR_LIVE = false;
+      if (RENEW_DOOR_LIVE && !localStorage.getItem('schoolos_token')) {
+        try {
+          const res = await fetch(`${LIVE_BASE}/auth/renew`, { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(3000) });
+          if (res.ok) {
+            const b = (await res.json().catch(() => ({}))) as { token?: string };
+            if (typeof b.token === 'string' && b.token) setToken(b.token);
+          }
+        } catch { /* no cookie session — fall through to login */ }
       }
+      if (!localStorage.getItem('schoolos_token')) { setBooting(false); return; }
+      /* /me is the only call whose failure means "no session" — and call()
+         has already wiped + redirected on its 401 by the time it throws. */
+      let me: Awaited<ReturnType<typeof apiMe>> | null = null;
+      try {
+        me = await apiMe();
+      } catch {
+        if (!dead) setBooting(false);
+        return;
+      }
+      /* unit 16 (A1): the restore path mirrors the login path's setRole call —
+         without it the store's roleId stayed at its default and drifted from
+         the authenticated identity (unit-14 finding). Auth validation itself
+         is unchanged: only a live /me answer establishes a session, and token
+         handling (setToken/call) is untouched. */
+      if (!dead) {
+        setRole(mapAccountRole(me.role));
+        setSession({ name: me.name, role: me.role, email: me.email, school: me.school });
+        setSessionIdentity({ name: me.name, email: me.email });
+      }
+      /* L5-2.1 (review BLOCKER-2 fix): a restored RESTRICTED session must not
+         hydrate the dataset at all — GET /dataset 403s for mustChange tokens
+         and the old code treated that as a dead session, wiping the token on
+         a mere reload. Land on the password-change screen instead and skip
+         hydration; it runs after the forced change completes a full session. */
+      if (sessionMustChange()) {
+        if (!dead && pathname !== '/account/password') {
+          navigate('/account/password?reason=forced', { replace: true });
+        }
+        setBooting(false);
+        return;
+      }
+      /* Workspace hydration failure is NOT an auth failure — the person is
+         still signed in; screens render their own error/empty states from
+         the failed dataset rather than the user being logged out (review
+         MINOR-11: a flaky connection must not wipe credentials). */
+      try {
+        await ensureDataset();
+      } catch { /* dataset errors surface per-screen; session stands */ }
+      if (!dead) setBooting(false);
     })();
     return () => { dead = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot-once effect; setRole is a stable setter, mounting must not re-run auth restore
@@ -274,7 +345,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Login onAuthed={async (s: SessionUser) => { localStorage.setItem('schoolos.session', JSON.stringify(s)); await ensureDataset(); setRole(mapAccountRole(s.role)); setSession(s); setSessionIdentity(s); }} />;
+  /* Restricted (mustChange) session: the password-change screen is the ONLY
+     render, wherever the user was headed — including straight from the login
+     403, where the restricted token exists but no session has been set yet. */
+  if (sessionMustChange()) return accountScreens;
+  if (!session) return <Login onAuthed={completeSignIn} />;
   return (
     <SessionCtx.Provider value={session}>
       {children}
@@ -318,6 +393,8 @@ function AppRoutes() {
       <Route path="/attendance" element={<S><Attendance /></S>} />
       <Route path="/operations" element={<S><Operations /></S>} />
       <Route path="/fees" element={<S><Fees /></S>} />
+      {/* L5-2.2 (L4-2.1 request): dedicated fee-plans door for finance/owner/principal */}
+      <Route path="/fees/plans" element={<S><FeePlans /></S>} />
       <Route path="/admissions" element={<S><AdmissionsHost /></S>} />
       <Route path="/visitors" element={<S><VisitorsHost /></S>} />
       <Route path="/transport" element={<S><Transport /></S>} />
@@ -370,6 +447,13 @@ function AppRoutes() {
       <Route path="/group" element={<S><Group /></S>} />
       <Route path="/it" element={<S><ItAdmin /></S>} />
       <Route path="/settings" element={<S><Settings /></S>} />
+      {/* L5-5.1: custom-roles console — owner + IT admin (server ROLES_ADMIN) */}
+      <Route path="/roles" element={<S><RolesAdmin /></S>} />
+      {/* L5-2.1: voluntary self-service password change (any signed-in role;
+          deliberately NOT in the staffOnly list — parents/students change
+          their own passwords here too). The forced flow renders the same
+          screen from AuthGate before any route exists. */}
+      <Route path="/account/password" element={<S><ChangePassword mode="page" /></S>} />
       <Route path="/parent" element={<S><ParentHome /></S>} />
       <Route path="/parent/complaints" element={<S><ParentComplaints /></S>} />
       <Route path="/parent/chat" element={<S><ParentChat /></S>} />

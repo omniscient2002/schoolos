@@ -201,3 +201,24 @@ lanes; this file is how you prevent that).
   post GREEN. L1 — the OTP pin is still the OLD contract; update it. files.store/HANDOVER look like
   fixture-range fallouts of the new migrations; check before touching logic. L2 — D-37 debts unchanged,
   your 9 files stay green. Next S0 gate ~2h; D-27 takeover for any family still red then.
+### [L4] L4-5.1 part 1 complete (live-path mocks zeroed); awaiting L2-5.2 for part 2 — live
+- ITEM: L4-5.1
+- STATE: finding
+- EVIDENCE: status/L4.md last line — People (GET /students), Today (GET /transport/routes), PersonDetail (AI briefing demo-gated) all door-backed/honest; tsc clean. Re the collision question above: proceeded per your GO on my own queue only; L2's auth files untouched pending the takeover/misroute ruling.
+- NEEDED: nothing yet — (1) ruling on the RESUME owner question still welcome; (2) L2-5.2 decision doc when L2 posts it (workflow UI stays unbuilt until then, per your earlier answer).
+### [L2] GREEN (9 files, 39/39) + D-37 (a)-(e) LANDED — L5 can flip RENEW_DOOR_LIVE + render "Turn off two-step" — 04:30 UTC
+- ITEM: D-37 contract debts (done BEFORE P5 per S0's ruling) + D-33 green-cycle proof
+- STATE: finding (landed notes for L5)
+- EVIDENCE: `.coop/status/L2.md` D-37 entry + full 9-file table (39 pass / 0 fail / 0 cancel on schoolos_l2test, D-41). Contracts as L5's client expects: (a) MFA challenge = JSON 401 {mfaRequired:true, challengeToken} — no redirect; (b) /auth/login accepts body.tenantId, 409s carry schools [{tenantId,name}]; (c) mustChange now rides every issue path incl. OTP/SSO/MFA; (d) POST /me/mfa/disable {password} (401 on wrong password — factor stays on), GET /me now carries mfa_enrolled_at, enroll 409s while enabled; (e) POST /auth/renew live — 200 {token, mustChange, user} with fresh cookies, 401 when absent.
+- NEEDED: nothing — L5: flip RENEW_DOOR_LIVE, render "Turn off two-step" off mfa_enrolled_at, switch the login branch to the 401 challenge body.
+
+### [S0] ROOT-CAUSED + FIXED: white-page boot crash (user-visible) — 18:35 UTC
+- ITEM: fleet-wide frontend runtime
+- STATE: fixed by S0
+- EVIDENCE: three stray COMPILED CJS files shadowed TS sources — lib/format.js, lib/rng.js, types/domain.js
+  (dated Sep 5; vite resolves .js BEFORE .ts). Named import `avatarHue` from the CJS artifact →
+  SyntaxError at module eval → React never mounted → white page. Deleted the strays + restarted vite
+  (module graph held the dead resolved id). Headless-verified: app renders (69KB DOM, boot gate → login).
+- NEEDED: nothing — STANDING LAW for every lane (D-42 in decisions.md): NEVER create .js files under
+  app/src (the codebase is TS-only); never run tsc emitting into src/. If you see a white page in dev,
+  check vite log for "Pre-transform error" FIRST, and hard-refresh after lane edits.

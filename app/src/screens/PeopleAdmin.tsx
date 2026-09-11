@@ -22,6 +22,7 @@ import {
   type AdminUser, type ImportReport, type ImportOkRow, type ImportFailRow,
 } from '../services/adminApi';
 import { apiOnboardStatus, type OnboardStatus } from '../services/onboardingApi';
+import { apiUpdateStudent, apiWithdrawStudent } from '../services/liveApi';
 
 const ROLE_OPTIONS = ['principal', 'coordinator', 'finance', 'admissions', 'transport', 'facilities', 'technician', 'teacher', 'itadmin', 'parent'];
 const ROLE_LABEL: Record<string, string> = {
@@ -32,7 +33,7 @@ const ROLE_LABEL: Record<string, string> = {
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const SECTIONS = ['A', 'B', 'C'];
 
-type Pane = 'accounts' | 'transfer' | 'import';
+type Pane = 'accounts' | 'transfer' | 'import' | 'lifecycle';
 
 export default function PeopleAdmin() {
   const toast = useToast();
@@ -128,6 +129,50 @@ export default function PeopleAdmin() {
     finally { setTransferring(false); }
   };
 
+  /* L4-3.2 — edit + withdraw against people.admin doors (admins) */
+  const [lcId, setLcId] = useState('');
+  const [lcName, setLcName] = useState('');
+  const [lcGuardian, setLcGuardian] = useState('');
+  const [lcPhone, setLcPhone] = useState('');
+  const [lcBus, setLcBus] = useState('');
+  const [wdId, setWdId] = useState('');
+  const [wdReason, setWdReason] = useState('');
+  const [wdDate, setWdDate] = useState('');
+  const [wdSchool, setWdSchool] = useState('');
+  const [lcBusy, setLcBusy] = useState(false);
+
+  const lcEdit = async () => {
+    if (!lcId.trim()) { toast({ title: 'Student ID is needed', tone: 'info' }); return; }
+    if (!lcName.trim() && !lcGuardian.trim() && !lcPhone.trim() && !lcBus.trim()) { toast({ title: 'Give at least one field to change', tone: 'info' }); return; }
+    setLcBusy(true);
+    try {
+      const patch: Record<string, string> = {};
+      if (lcName.trim()) patch.name = lcName.trim();
+      if (lcGuardian.trim()) patch.guardian_name = lcGuardian.trim();
+      if (lcPhone.trim()) patch.guardian_phone = lcPhone.trim();
+      if (lcBus.trim()) patch.bus_route = lcBus.trim();
+      const r = await apiUpdateStudent(lcId.trim(), patch);
+      toast({ title: `${r.student.name ?? 'Student'} updated`, sub: 'The change is on the student ledger with an audit entry.', tone: 'success' });
+      setLcName(''); setLcGuardian(''); setLcPhone(''); setLcBus('');
+    } catch (e) { toast({ title: 'Could not update', sub: friendly(e), tone: 'error' }); }
+    finally { setLcBusy(false); }
+  };
+
+  const lcWithdraw = async () => {
+    if (!wdId.trim() || wdReason.trim().length < 2) { toast({ title: 'Student ID and a reason (2+ characters) are needed', tone: 'info' }); return; }
+    setLcBusy(true);
+    try {
+      const r = await apiWithdrawStudent(wdId.trim(), {
+        reason: wdReason.trim(),
+        ...(wdDate ? { effective_date: wdDate } : {}),
+        ...(wdSchool.trim() ? { last_school: wdSchool.trim() } : {}),
+      });
+      toast({ title: `${r.student.name ?? 'Student'} withdrawn`, sub: r.note ?? 'Records kept · bus seat released.', tone: 'success' });
+      setWdId(''); setWdReason(''); setWdDate(''); setWdSchool('');
+    } catch (e) { toast({ title: 'Withdrawal refused', sub: friendly(e), tone: 'error' }); }
+    finally { setLcBusy(false); }
+  };
+
   const runImport = async (file: File) => {
     setImporting(true); setReport(null);
     try {
@@ -167,7 +212,7 @@ export default function PeopleAdmin() {
       )}
 
       <div className="seg" role="tablist" style={{ display: 'flex', gap: 8, marginBottom: 'var(--s-4)' }}>
-        {([['accounts', 'Accounts'], ['transfer', 'Change a class'], ['import', 'Import students']] as [Pane, string][])
+        {([['accounts', 'Accounts'], ['transfer', 'Change a class'], ['import', 'Import students'], ['lifecycle', 'Edit / withdraw']] as [Pane, string][])
           .map(([id, label]) => (
             <button key={id} role="tab" aria-selected={pane === id}
               onClick={() => setPane(id)}
@@ -276,6 +321,45 @@ export default function PeopleAdmin() {
               </label>
               <div style={{ display: 'flex', alignItems: 'end' }}>
                 <Button onClick={transfer} disabled={transferring}>{transferring ? 'Moving…' : 'Move student'}</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {pane === 'lifecycle' && (
+        <Card headAs="h2" head="Edit a record · withdraw a student" sub="Direct actions on the student ledger (people.admin doors). Withdrawal keeps attendance, fees and guardian links; the bus seat is released and the action is audited.">
+          {!['owner', 'principal', 'coordinator'].includes(live.role) ? (
+            <Empty title="Owner, Principal or Coordinator only" />
+          ) : (
+            <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))' }}>
+              <div style={{ display: 'grid', gap: 10, alignContent: 'start' }}>
+                <strong style={{ fontSize: 14 }}>Edit record</strong>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Student ID</span>
+                  <input value={lcId} onChange={e => setLcId(e.target.value)} placeholder="uuid from the People screen" aria-label="Student ID" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Name</span>
+                  <input value={lcName} onChange={e => setLcName(e.target.value)} aria-label="Name" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Guardian name</span>
+                  <input value={lcGuardian} onChange={e => setLcGuardian(e.target.value)} aria-label="Guardian name" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Guardian phone</span>
+                  <input value={lcPhone} onChange={e => setLcPhone(e.target.value)} aria-label="Guardian phone" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Bus route</span>
+                  <input value={lcBus} onChange={e => setLcBus(e.target.value)} aria-label="Bus route" /></label>
+                <div><Button onClick={lcEdit} disabled={lcBusy}>{lcBusy ? 'Saving…' : 'Save changes'}</Button></div>
+                <span style={{ fontSize: 12, opacity: 0.65 }}>Class and section changes go through “Change a class” so the move lands in history.</span>
+              </div>
+              <div style={{ display: 'grid', gap: 10, alignContent: 'start' }}>
+                <strong style={{ fontSize: 14 }}>Withdraw / transfer out</strong>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Student ID</span>
+                  <input value={wdId} onChange={e => setWdId(e.target.value)} placeholder="uuid from the People screen" aria-label="Student ID to withdraw" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Reason (goes on the record)</span>
+                  <input value={wdReason} onChange={e => setWdReason(e.target.value)} placeholder="e.g. family relocated" aria-label="Withdrawal reason" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Effective date (optional)</span>
+                  <input type="date" value={wdDate} onChange={e => setWdDate(e.target.value)} aria-label="Effective date" /></label>
+                <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Last school (optional)</span>
+                  <input value={wdSchool} onChange={e => setWdSchool(e.target.value)} aria-label="Last school" /></label>
+                <div><Button variant="danger" onClick={lcWithdraw} disabled={lcBusy}>{lcBusy ? 'Working…' : 'Withdraw'}</Button></div>
+                <span style={{ fontSize: 12, opacity: 0.65 }}>Owner or Principal only. Cannot be undone from the app — re-admission creates a fresh record.</span>
               </div>
             </div>
           )}

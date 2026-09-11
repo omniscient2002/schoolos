@@ -114,6 +114,9 @@ function ActionCard({ a, busy, onOpen, onApprove, onDismiss }: {
           <Badge tone={prioTone} dot>{a.priority === 'critical' ? 'Critical' : a.priority === 'high' ? 'High' : a.priority === 'normal' ? 'Normal' : 'Low'}</Badge>
           <Badge tone="outline">{kindLabel[a.kind]}</Badge>
           {a.aiInvolved && <Badge tone="ai">Rule-surfaced</Badge>}
+          {!a.payload?.proposed_by && (
+            <Badge tone="warning" dot>Owner must approve</Badge>
+          )}
           {due && <span className="u-xs u-flex" style={{ gap: 4, color: due.tone === 'danger' ? 'var(--danger)' : due.tone === 'warning' ? 'var(--warning)' : 'var(--text-3)' }}><Icon.Clock size={12} /> {due.label}</span>}
           <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Owner: {a.owner}{a.ownerRole ? ` (${a.ownerRole})` : ''} · raised {fmtTime(a.on)}</span>
         </div>
@@ -146,6 +149,7 @@ function EvidenceDrawer({ a, busy, onClose, onApprove, onDismiss }: {
   if (!a) return null;
   const due = countdown(a.deadline);
   const payloadEntries = Object.entries(a.payload ?? {}).filter(([, v]) => v !== null && v !== undefined && typeof v !== 'object');
+  const needsOwner = !a.payload?.proposed_by;
   return (
     <Drawer
       open={!!a}
@@ -165,6 +169,11 @@ function EvidenceDrawer({ a, busy, onClose, onApprove, onDismiss }: {
           <div className="u-small" style={{ color: 'var(--text-2)', lineHeight: 1.6 }}>
             <span style={{ fontWeight: 600, color: 'var(--text-3)', letterSpacing: '.04em', fontSize: 'var(--text-xs)', textTransform: 'uppercase', marginRight: 6 }}>Why it matters</span>
             {a.why}
+          </div>
+        )}
+        {needsOwner && (
+          <div className="u-small" style={{ color: 'var(--warning-text, var(--text-2))', lineHeight: 1.6, border: '1px solid var(--warning)', borderRadius: 'var(--r-sm)', padding: '8px 10px', background: 'var(--warning-weak, transparent)' }}>
+            <b>Owner must approve.</b> This item was raised without a named proposer (segregation-of-duties default), so the owning desk's approval is refused by the server — the school owner's approval still works.
           </div>
         )}
         {payloadEntries.length > 0 && (

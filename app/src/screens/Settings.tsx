@@ -6,6 +6,8 @@ import { useStore, demoAccounts } from '../state/store';
 import * as seed from '../data/dataset';
 import { apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import MfaSection from './account/MfaSection';
+import { t, useLang, setLang, LANGS, isPartial } from '../i18n';
 import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
 
 const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
@@ -16,6 +18,7 @@ const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
 
 export default function Settings() {
   const { session, actorName } = useStore();
+  const lang = useLang(); // L5-3.3: re-render on language change
   const toast = useToast();
   const navigate = useNavigate();
   /* T305: the data-export request now uses the real DPDP DSR door
@@ -41,11 +44,11 @@ export default function Settings() {
         actions={<Button variant="secondary" icon={<Icon.Download size={14} />} onClick={() => toast({ title: 'Not connected', sub: 'Configuration export requires server support — nothing was downloaded.', tone: 'info' })}>Export configuration</Button>} />
 
       <Tabs active={tab} onChange={setTab} tabs={[
-        { id: 'school', label: 'School' },
-        { id: 'roles', label: 'Roles & access' },
-        { id: 'communication', label: 'Communication' },
-        { id: 'notifications', label: 'Notifications' },
-        { id: 'data', label: 'Data & privacy' },
+        { id: 'school', label: t('settings.tabs.school', { fallback: 'School' }) },
+        { id: 'roles', label: 'Roles & access' }, /* RBAC terms keep English glossary names */
+        { id: 'communication', label: t('settings.tabs.communication', { fallback: 'Communication' }) },
+        { id: 'notifications', label: t('settings.tabs.notifications', { fallback: 'Notifications' }) },
+        { id: 'data', label: t('settings.tabs.data', { fallback: 'Data & privacy' }) },
       ]} />
 
       {tab === 'school' && (
@@ -61,6 +64,41 @@ export default function Settings() {
                   { k: 'Timezone', v: 'Asia/Kolkata (IST)' },
                   { k: 'Languages', v: 'English, Hindi (parent communication)' },
                 ]} />
+              </div>
+            </Card>
+            <Card head="Account security">
+              <div className="u-col" style={{ padding: 'var(--s-5)', gap: 10 }}>
+                <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
+                  Signed in as <strong>{actorName}</strong>. Changing your password signs out every other device immediately.
+                </div>
+                {/* L5-2.1: real self-service door — POST /me/password */}
+                <div>
+                  <Button size="sm" variant="secondary" icon={<Icon.Shield size={13} />} onClick={() => navigate('/account/password')}>Change password</Button>
+                </div>
+                {/* L5-3.1: staff TOTP enrollment (server doors from L2-3.2) */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                  <div className="u-xs u-faint" style={{ marginBottom: 6, letterSpacing: '.06em', textTransform: 'uppercase' }}>Two-step sign-in</div>
+                  <MfaSection />
+                </div>
+                {/* L5-3.3: language switcher — real coverage shown, no "fully
+                    translated" claim while hi-IN is a scaffold. */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                  <div className="u-xs u-faint" style={{ marginBottom: 6, letterSpacing: '.06em', textTransform: 'uppercase' }}>{t('settings.language', { fallback: 'Language' })}</div>
+                  <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    {LANGS.map(l => (
+                      <Button
+                        key={l.id}
+                        size="sm"
+                        variant={lang === l.id ? 'primary' : 'ghost'}
+                        onClick={() => setLang(l.id)}
+                        aria-pressed={lang === l.id}
+                      >
+                        {l.native}{l.coverage < 1 ? ` · ${Math.round(l.coverage * 100)}%` : ''}
+                      </Button>
+                    ))}
+                  </div>
+                  {isPartial(lang) && <div className="u-xs u-faint" style={{ marginTop: 6 }}>{t('settings.languagePartial', { fallback: 'Hindi covers a small part of the interface today — the rest stays in English.' })}</div>}
+                </div>
               </div>
             </Card>
             <Card head="Campuses">

@@ -18,6 +18,7 @@ import { Sparkline } from '../components/Chart';
 import { Slot } from '../plugins/Slot';
 import { Icon } from '../components/Icon';
 import { friendly } from '../lib/friendlyErrors';
+import { apiTransportRoutes, type LiveRouteRow } from '../services/liveApi';
 import { fmtDate, fmtDateShort, fmtTime, weekday } from '../lib/format';
 import type { ActionRecord, BusRoute } from '../types/domain';
 
@@ -209,12 +210,20 @@ export default function Today() {
      fiction. All fields optional; demo builds keep the demo narrative. */
   const [caps, setCaps] = useState<{ rails: { sms?: { configured: boolean; provider: string | null }, whatsapp?: { configured: boolean; provider: string | null }, razorpay?: { configured: boolean } } } | null>(null);
 
+  const [liveRoutes, setLiveRoutes] = useState<LiveRouteRow[] | null>(null);
   useEffect(() => {
     let live = true;
     setLoading(true); setError(null);
-    transportService.routes(session.campusScope)
-      .then(r => { if (live) { setRoutesData(r); setLoading(false); } })
-      .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
+    if (DEMO_MODE) {
+      transportService.routes(session.campusScope)
+        .then(r => { if (live) { setRoutesData(r); setLoading(false); } })
+        .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
+    } else {
+      // Live: the routes door carries roster + capacity only — no GPS/status.
+      apiTransportRoutes()
+        .then(r => { if (live) { setLiveRoutes(r.routes as LiveRouteRow[]); setRoutesData([]); setLoading(false); } })
+        .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
+    }
     return () => { live = false; };
   }, [session.campusScope, session.roleId, tick]);
 
@@ -501,15 +510,31 @@ export default function Today() {
       bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
     } else if (role === 'transport') {
       const delayed = routesData.filter(r => r.status === 'delayed');
+      const totalRiders = (liveRoutes ?? []).reduce((a, r) => a + Number(r.riders ?? 0), 0);
       headSub = `${weekday(now)} · ${fmtDate(now)} · Transport · ${campusLabel}`;
-      stats = [
+      stats = DEMO_MODE ? [
         { label: 'Routes on time', value: `${onTimePct}%`, sub: `${routesData.filter(r => r.status === 'on-time').length} of ${routesData.length} routes`, to: '/transport' },
         { label: 'Delayed now', value: String(delayed.length), sub: delayed.map(r => `${r.name.split('—')[0].trim()} +${r.delayMins ?? 0}m`).join(' · ') || 'None', to: '/transport' },
         { label: 'Students affected', value: String(delayed.reduce((a, r) => a + r.students, 0)), sub: 'Guardian notices queued per Transport §3.1 (delivery depends on the message rail)', to: '/transport' },
         { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
+      ] : [
+        { label: 'Routes', value: String(liveRoutes?.length ?? 0), sub: 'From GET /transport/routes — GPS status is not connected yet, so no on-time figure is shown', to: '/transport' },
+        { label: 'Riders on routes', value: String(totalRiders), sub: 'Live count of students holding a bus_route', to: '/transport' },
+        { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'transport-critical maintenance and follow-ups', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
-      bands.push({
+      if (!DEMO_MODE) {
+        bands.push({
+          id: 'fleet', label: 'Fleet', sub: `${(liveRoutes ?? []).length} routes — from the routes door (roster and capacity only; GPS status is not connected yet)`,
+          items: (liveRoutes ?? []).slice(0, 4).map(r => ({
+            id: String(r.id), icon: 'Bus' as const,
+            title: `${r.name ?? r.code}`,
+            detail: `${r.riders ?? 0} riders · vehicle ${r.vehicle ?? '—'} · capacity ${r.capacity ?? '—'}`,
+            chips: [],
+            badge: undefined, to: '/transport',
+          })),
+        });
+      } else bands.push({
         id: 'fleet', label: 'Fleet', sub: `${routesData.length} routes · live GPS`,
         items: routesData.filter(r => r.status !== 'on-time').slice(0, 4).map(r => ({
           id: r.id, icon: 'Bus' as const, title: `${r.name} — ${r.status === 'delayed' ? `delayed +${r.delayMins ?? 0} min` : 'in maintenance'}`,

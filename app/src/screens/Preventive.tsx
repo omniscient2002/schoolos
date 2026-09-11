@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
 import { PageHead, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, useToast, Drawer, KeyValue } from '../components/ui';
@@ -127,6 +128,30 @@ function MonthStrip({ plans, onPick }: { plans: MaintPlan[]; onPick: (p: MaintPl
 /* ============================================================ */
 
 export default function Preventive() {
+  return DEMO_MODE ? <DemoPreventive /> : <LivePreventive />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LivePreventive() {
+  return (
+    <div>
+      <PageHead
+        title="Preventive maintenance"
+        sub="Schedules, upcoming services and plan coverage."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="There is no preventive-schedule door on the server yet. Plans and schedules will appear here when the door exists."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoPreventive() {
   const navigate = useNavigate();
   const { session, domain, actorName } = useStore();
   const toast = useToast();

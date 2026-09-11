@@ -156,6 +156,12 @@ export default function Automation() {
   const activeCount = effective.filter(w => w.enabled).length;
   const runsThisMonth = effective.reduce((a, w) => a + w.runsThisMonth, 0);
   const awaiting = allRuns.filter(r => r.status === 'awaiting-approval').length;
+  /* L5-4.2: success rate computed from the actual run log — null when there
+     is nothing to compute (never a hardcoded number). */
+  const finished = allRuns.filter(r => r.status === 'completed' || r.status === 'failed');
+  const successRate: number | null = finished.length
+    ? Math.round((finished.filter(r => r.status === 'completed').length / finished.length) * 100)
+    : null;
 
   const openBuilder = () => {
     setNodes([{ id: 'n0', type: 'trigger', label: BUILDER_META.trigger.def, x: 28, y: 28 }]);
@@ -167,9 +173,14 @@ export default function Automation() {
     setOverrides(o => ({ ...o, [wf.id]: next }));
     try {
       await workflowService.toggle(wf.id, next);
+      /* L5-4.2 honesty: workflowService.toggle mutates the local demo store —
+         there is no server workflow runtime yet (L2-5.2, P5). Say exactly
+         what happened; no "runs are processed" promises. */
       toast({
         title: next ? `Workflow enabled — ${wf.name}` : `Workflow paused — ${wf.name}`,
-        sub: next ? 'New trigger events are processed immediately.' : 'In-flight runs finish; no new triggers are accepted.',
+        sub: next
+          ? 'Saved in this workspace only — no server runtime is connected yet, so no runs are scheduled.'
+          : 'No new runs will be started here; nothing was running on a server.',
         tone: 'success',
       });
       dispatch({
@@ -180,7 +191,7 @@ export default function Automation() {
           recordType: 'Workflow', recordRef: `${wf.id} — ${wf.name}`,
           policyRef: `Posture: ${postureLabel(wf.posture)}`,
           aiInvolved: false, risk: next ? 'low' : 'medium',
-          outcome: next ? 'Automation active — runs will be logged' : 'Automation paused by staff',
+          outcome: next ? 'Enabled in the local workspace — server runtime pending (L2-5.2)' : 'Paused by staff — local workspace',
         },
       });
     } catch {
@@ -205,7 +216,7 @@ export default function Automation() {
   const saveDraft = (def: WorkflowDef) => {
     setDrafts(d => [def, ...d]);
     setCompiled(null); setNlText('');
-    toast({ title: `Saved as draft — ${def.name}`, sub: 'Drafts run in observe mode until a Principal enables them.', tone: 'success' });
+    toast({ title: `Saved as draft — ${def.name}`, sub: 'Saved as a draft in this workspace — nothing runs until the server runtime exists.', tone: 'success' });
     dispatch({
       type: 'audit/add',
       entry: {
@@ -217,13 +228,14 @@ export default function Automation() {
   };
 
   const runObserve = (def: WorkflowDef) => {
-    toast({ title: `Observe run queued — ${def.name}`, sub: 'No messages will be sent. Every decision is logged to the trace.', tone: 'info' });
+    /* review NIT: nothing is queued anywhere — the draft is noted, not run. */
+    toast({ title: `Observe run noted — ${def.name}`, sub: 'Drafts do not execute yet: the workflow runtime ships in P5. Nothing was queued and no side effects occurred.', tone: 'info' });
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: session.roleId, action: 'Queued observe-mode run',
+        actor: actorName, actorRole: session.roleId, action: 'Noted observe-mode draft run',
         recordType: 'Workflow', recordRef: def.name, policyRef: 'Posture: AUTO (observe-only, first 3 runs)',
-        aiInvolved: true, risk: 'low', outcome: 'Shadow run — no side effects',
+        aiInvolved: true, risk: 'low', outcome: 'Draft noted for observe mode — execution waits on the workflow runtime (P5)',
       },
     });
   };
@@ -254,9 +266,30 @@ export default function Automation() {
   };
 
   const saveBuilder = () => {
+    /* review MAJOR: the toast previously claimed a save while nodes/edges were
+       discarded. The draft now REALLY lands in this workspace's drafts list
+       (local only — no server runtime exists to persist it, and the copy
+       says exactly that). */
+    const def: WorkflowDef = {
+      id: `wf_vis_${Date.now()}`,
+      name: `Visual draft · ${nodes.length} step${nodes.length === 1 ? '' : 's'}`,
+      description: `Built in the visual builder — ${edges.length} connection${edges.length === 1 ? '' : 's'}. Local draft; the server workflow runtime (L2-5.2) will own persistence and runs.`,
+      trigger: { event: 'draft.builder', label: BUILDER_META.trigger.def, condition: 'Set when the workflow runtime ships' },
+      steps: nodes.map(n => ({
+        id: n.id,
+        type: n.type === 'trigger' ? 'condition' : n.type,
+        label: n.label,
+        detail: BUILDER_META[n.type].def,
+      })),
+      enabled: false,
+      runsThisMonth: 0,
+      source: 'custom',
+      posture: 'APPROVAL',
+    };
+    setDrafts(d => [def, ...d]);
     toast({
-      title: 'Automation saved as draft',
-      sub: `${nodes.length} nodes · ${edges.length} connections · enters the library in observe mode`,
+      title: 'Draft saved in this workspace',
+      sub: `${nodes.length} nodes · ${edges.length} connections · kept in the drafts list below — it never runs until the server workflow runtime exists (P5).`,
       tone: 'success',
     });
     dispatch({
@@ -265,7 +298,7 @@ export default function Automation() {
         actor: actorName, actorRole: session.roleId, action: 'Built workflow in visual builder',
         recordType: 'Workflow', recordRef: `visual draft · ${nodes.length} nodes`,
         policyRef: 'Constitution guardrails applied at runtime',
-        aiInvolved: false, risk: 'low', outcome: 'Draft saved — observe-only until enabled',
+        aiInvolved: false, risk: 'low', outcome: 'Local draft saved — no server persistence; observe-only when the runtime ships',
       },
     });
     setBuilderOpen(false);
@@ -279,15 +312,19 @@ export default function Automation() {
         title="Automation"
         sub={session.roleId === 'owner'
           ? 'Group automation library — three campuses, one constitution-gated runtime.'
-          : 'Constitution-gated automations. Every run is logged; every approval names a human.'}
+          : 'Constitution-gated automations — drafts and approvals work here; the run engine lands with the workflow runtime (P5).' }
         actions={<Button variant="secondary" icon={<Icon.Grid size={14} />} onClick={openBuilder}>Visual builder</Button>}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Active workflows" value={activeCount} sub={`of ${effective.length} in the library`} />
-        <Stat label="Runs this month" value={fmtNum(runsThisMonth)} sub="all postures · every run logged" />
+        <Stat label="Runs this month" value={fmtNum(runsThisMonth)} sub="sample data — no server runtime yet" />
         <Stat label="Awaiting approval" value={awaiting} sub="runs paused at an approval node" />
-        <Stat label="Success rate" value="99.2%" sub="trailing 30 days · 4 failed runs auto-retried" />
+        {/* L5-4.2: the hardcoded 99.2% / "4 failed runs auto-retried" was
+            fiction — computed from the actual run log or honestly absent. */}
+        {successRate === null
+          ? <Stat label="Success rate" value="—" sub="no logged runs to compute from" />
+          : <Stat label="Success rate" value={`${successRate}%`} sub={`of ${finished.length} finished runs · sample data`} />}
       </div>
 
       <Section
@@ -342,7 +379,7 @@ export default function Automation() {
 
       <Section
         title="Describe an automation in plain words"
-        sub="SchoolOS compiles your sentence into a draft workflow, applies the Constitution, and holds the first runs in observe mode."
+        sub="A local draft-builder turns your sentence into an editable draft workflow (Constitution guardrails pre-applied). No server compiler is connected yet — drafts never run until the workflow runtime ships."
       >
         <Card>
           <textarea

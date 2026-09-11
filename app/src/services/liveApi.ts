@@ -34,12 +34,43 @@ export function setToken(t: string | null) {
   else localStorage.removeItem('schoolos_token');
 }
 
+/* Same-origin detection for the cookie-session flow (L5-3.2): the HttpOnly
+   schoolos_session cookie + JS-readable schoolos_csrf cookie only ride along
+   when the API is served from THIS origin (production serves the app itself).
+   Dev split-origin keeps the bearer flow — the server's CORS is registered
+   with credentials:false, so cross-origin credentialed requests would be
+   blocked outright. L2 owns flipping that (blocks.md). */
+const SAME_ORIGIN = (() => {
+  try { return new URL(BASE, window.location.origin).origin === window.location.origin; } catch { return false; }
+})();
+
+/* Double-submit CSRF (L2-3.1 server contract): cookie-authed MUTATIONS must
+   echo the schoolos_csrf cookie value in X-CSRF-Token. Bearer-authed requests
+   are exempt server-side, but attaching the header whenever the cookie is
+   readable is harmless and keeps one code path. */
+function csrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  for (const part of document.cookie.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === 'schoolos_csrf') return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return null;
+}
+
 async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const method = (opts.method ?? 'GET').toUpperCase();
+  const csrf = csrfToken();
   const res = await fetch(`${BASE}${path}`, {
     ...opts,
+    /* L5-3.2: same-origin deployments authenticate via the HttpOnly cookie and
+       receive Set-Cookie (login / logout Max-Age=0) — same-origin needs no CORS
+       cooperation. Cross-origin dev keeps the pure bearer flow. */
+    ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(csrf && !['GET', 'HEAD', 'OPTIONS'].includes(method) ? { 'x-csrf-token': csrf } : {}),
       ...(opts.headers ?? {}),
     },
   });
@@ -96,7 +127,84 @@ export const apiMarkAttendance = (date: string, marks: { studentId: string; stat
   call<{ ok: boolean; marked: number; absent: number; noticesQueued: number }>('/attendance/mark', { method: 'POST', body: JSON.stringify({ date, marks }) });
 export const apiFeeObligations = (status?: string) =>
   call<{ obligations: Record<string, unknown>[] }>(`/fees/obligations${status ? `?status=${status}` : ''}`);
+
+/* ---- fee plans (L4-2.1 against L1-2.2 doors — canon shapes) ----
+   Door contract: grades are grade-name STRINGS (students.grade domain), terms
+   are {term, label, amount_cents, due_on?}; list key is feePlans, create key is
+   feePlan. Idempotency is server-side: (tenant, student, term, label) unique —
+   regeneration skips what exists; no client idempotency-key header exists. */
+export interface FeePlanTerm { term: string; label: string; amount_cents: number; due_on?: string }
+export interface FeePlan {
+  id: string;
+  name: string;
+  category?: string;
+  grades: string[];
+  terms: FeePlanTerm[];
+  academic_year_id?: string | null;
+  created_at?: string;
+  created_by?: string;
+  obligations_generated?: number;
+  last_generated_at?: string | null;
+}
+export const apiFeePlans = () => call<{ feePlans: FeePlan[] }>('/fee-plans');
+export const apiCreateFeePlan = (body: { name: string; category?: string; grades: string[]; terms: FeePlanTerm[] }) =>
+  call<{ feePlan: FeePlan }>('/fee-plans', { method: 'POST', body: JSON.stringify(body) });
+export const apiGenerateFeePlan = (id: string) =>
+  call<{ inserted: number; skipped: number; students: number }>(`/fee-plans/${id}/generate`, { method: 'POST', body: '{}' });
+export const apiVoidObligation = (id: string, reason: string) =>
+  call<{ obligation: Record<string, unknown> }>(`/fees/obligations/${id}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
+
+/* ---- exams.assessment plugin doors (L4-3.1) ---- */
+export interface ExamSummary {
+  id: string; name: string; term?: string; classGrade?: string;
+  status?: string; weightage?: Record<string, number>; digest?: string | null; publishedAt?: string | null;
+}
+export const apiExams = () => call<{ exams: ExamSummary[] }>('/plugins/exams.assessment/exams');
+export interface BulkMarkRow { studentId: string; marks: number; maxMarks?: number; component?: string }
+export interface BulkMarkFailure { row: number; studentId?: string; error: string }
+export const apiExamBulkMarks = (examId: string, rows: BulkMarkRow[]) =>
+  call<{ ok: boolean; saved: number; failedRows: BulkMarkFailure[] }>(`/plugins/exams.assessment/exams/${examId}/marks/bulk`, { method: 'POST', body: JSON.stringify({ rows }) });
+export const apiExamPublish = (examId: string) =>
+  call<{ ok: boolean; actionId: string; status: string }>(`/plugins/exams.assessment/exams/${examId}/publish`, { method: 'POST', body: '{}' });
+export const apiExamPublishExecute = (examId: string) =>
+  call<{ ok: boolean; status: string; reports: number; digest: string }>(`/plugins/exams.assessment/exams/${examId}/publish/execute`, { method: 'POST', body: '{}' });
+export const apiBoardPolicy = () => call<Record<string, unknown>>('/plugins/exams.assessment/board-policy');
+
+/* ---- people.admin student lifecycle doors (L4-3.2) ---- */
+export const apiUpdateStudent = (id: string, patch: { name?: string; guardian_name?: string; guardian_phone?: string; bus_route?: string }) =>
+  call<{ ok: boolean; student: Record<string, unknown> }>(`/plugins/people.admin/students/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+export const apiWithdrawStudent = (id: string, body: { reason: string; effective_date?: string; last_school?: string }) =>
+  call<{ ok: boolean; student: Record<string, unknown>; effectiveDate: string; note: string }>(`/plugins/people.admin/students/${id}/withdraw`, { method: 'POST', body: JSON.stringify(body) });
+export const apiPromoteStudent = (id: string, body: { to_grade?: string; to_section?: string }) =>
+  call<{ ok: boolean; student: Record<string, unknown>; from: { grade: string; section: string }; to: { grade: string; section: string } }>(`/plugins/people.admin/students/${id}/promote`, { method: 'POST', body: JSON.stringify(body) });
+
+export const apiMigrationCreateSource = (body: { name: string; kind: string }) =>
+  call<{ source: Record<string, unknown> }>('/migration/sources', { method: 'POST', body: JSON.stringify(body) });
+export const apiMigrationStage = (id: string, to: 'analyzed' | 'mapped' | 'health-check' | 'shadow') =>
+  call<{ source: Record<string, unknown> }>(`/migration/sources/${id}/stage`, { method: 'POST', body: JSON.stringify({ to }) });
+export interface MigrationRow { rowNo: number; data: Record<string, unknown> }
+export const apiMigrationStageRows = (id: string, rows: MigrationRow[]) =>
+  call<{ staged: number; total: number }>(`/migration/sources/${id}/stage-rows`, { method: 'POST', body: JSON.stringify({ rows }) });
+export const apiMigrationValidate = (id: string) =>
+  call<{ clean: number; errors: number; first: { rowNo: number; error: string }[] }>(`/migration/sources/${id}/validate`, { method: 'POST', body: '{}' });
+export const apiMigrationCommit = (id: string) =>
+  call<{ created: number; skipped: number; imported: number; status: string }>(`/migration/sources/${id}/commit`, { method: 'POST', body: '{}' });
+export interface TrustReceipt { totalRows: number; imported: number; flagged: number; skipped: number; feeTotalCents: string; feePaidCents: string; differenceCents: string; rollbackDays: number }
+
+/* ---- ops.bi read-model doors (L3-4.3) — L4-4.2 swap ---- */
+export const apiBiAttendance = (days: number, grade?: string) =>
+  call<Record<string, unknown>>(`/plugins/ops.bi/attendance?days=${days}${grade ? `&grade=${encodeURIComponent(grade)}` : ''}`);
+export const apiBiAging = () => call<Record<string, unknown>>('/plugins/ops.bi/fees/aging');
+export const apiBiFunnel = () => call<Record<string, unknown>>('/plugins/ops.bi/funnel');
+
+/* ---- transport routes door (L4-5.1 door-back) ---- */
+export interface LiveRouteRow { id: string; code: string; name: string; vehicle: string | null; capacity: number | null; riders: number | null }
+export const apiTransportRoutes = () => call<{ routes: LiveRouteRow[] }>('/transport/routes');
+
 export const apiWorkOrders = () => call<{ workOrders: Record<string, unknown>[]; slaPolicy: Record<string, { responseMins: number; resolveHours: number }> }>('/work-orders');
+export const apiAssets = () => call<{ assets: Record<string, unknown>[] }>('/assets');
+export const apiWorkOrderStatus = (id: string, to: string, costCents?: number) =>
+  call<{ workOrder: Record<string, unknown> }>(`/work-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to, ...(costCents != null ? { costCents } : {}) }) });
 export const apiCases = (status?: string) => call<{ cases: Record<string, unknown>[] }>(`/cases${status ? `?status=${status}` : ''}`);
 export const apiCreateCase = (body: { kind: string; title: string; detail?: string; priority?: string; origin?: string }) =>
   call<{ case: Record<string, unknown> }>('/cases', { method: 'POST', body: JSON.stringify(body) });

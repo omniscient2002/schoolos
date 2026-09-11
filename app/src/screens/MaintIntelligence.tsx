@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
+import { DEMO_MODE } from '../lib/demoMode';
 import { maintenanceService } from '../services';
 import * as m from '../data/dataset';
 import { PageHead, Section, Card, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, DataTable, SegmentedBar, useToast } from '../components/ui';
@@ -38,6 +39,30 @@ const CAMPUS_LABEL: Record<CampusId, string> = { north: 'North', city: 'City', e
 /* ============================================================ */
 
 export default function MaintIntelligence() {
+  return DEMO_MODE ? <DemoMaintIntelligence /> : <LiveMaintIntelligence />;
+}
+
+/* LIVE: no server door yet — honest empty, no fiction (L4-2.2). */
+function LiveMaintIntelligence() {
+  return (
+    <div>
+      <PageHead
+        title="Maintenance intelligence"
+        sub="Failure patterns, repeat-fault detection and replacement forecasts."
+      />
+      <Card pad>
+        <Empty
+          icon={<Icon.Offline size={24} />}
+          title="Not connected yet"
+          sub="There is no analytics door behind these forecasts yet. Showing them without a data source would be fiction, so this screen stays empty until the door lands."
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* DEMO: fixture data over the mock service (demo world only) */
+function DemoMaintIntelligence() {
   const navigate = useNavigate();
   const { session, domain, actorName } = useStore();
   const toast = useToast();

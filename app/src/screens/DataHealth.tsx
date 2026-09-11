@@ -53,8 +53,8 @@ function duplicateGuardianRows(): ReviewTable {
     const key = g.phone.replace(/\s/g, '');
     byPhone.set(key, [...(byPhone.get(key) ?? []), g]);
   });
-  const rows = [...byPhone.entries()]
-    .filter(([, gs]) => gs.length > 1)
+  const clusters = [...byPhone.entries()].filter(([, gs]) => gs.length > 1);
+  const rows = clusters
     .slice(0, 8)
     .map(([phone, gs]) => {
       const students = gs.map(g => seed.guardianLinks.filter(l => l.guardianId === g.id).length).reduce((a, b) => a + b, 0);
@@ -69,7 +69,7 @@ function duplicateGuardianRows(): ReviewTable {
   return {
     columns: [ { key: 'names', label: 'Name variants' }, { key: 'phone', label: 'Shared phone' }, { key: 'ids', label: 'Record ids' }, { key: 'students', label: 'Links' }, { key: 'action', label: 'Suggested' } ],
     rows,
-    note: `${rows.length} of 17 duplicate clusters shown. Merge preserves both guardian roles and keeps the verified contact trail.`,
+    note: `${rows.length} of ${clusters.length} duplicate clusters shown. Merge preserves both guardian roles and keeps the verified contact trail.`,
   };
 }
 
@@ -425,7 +425,7 @@ export default function DataHealth() {
             </div>
             <div style={{ marginTop: 10 }}><Progress value={scorePct} tone={scorePct >= 97 ? undefined : 'warn'} /></div>
             <div className="u-xs u-faint" style={{ marginTop: 8, lineHeight: 1.6 }}>
-              Baseline 94 · each verified fix adds +2.6 (policy weights: high 2.4 / medium 1.1 / low 0.4). Ignored items do not move the score — they stay visible here and in the audit trail.
+              Baseline 94 · each verified fix adds +2.6. Ignored items do not move the score — they stay visible here and in the audit trail.
             </div>
             <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
               <Badge tone="warning">{openCount} open</Badge>
@@ -437,8 +437,10 @@ export default function DataHealth() {
           <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Zap size={14} /> Integration status</span>} pad>
             <div className="u-col" style={{ gap: 10 }}>
               {[
-                { name: 'Tally gateway', tone: 'success' as BadgeTone, status: 'Connected · healthy', detail: 'Last export 06:00 · 0 failures · vouchers posted' },
-                { name: 'Payment gateway', tone: 'success' as BadgeTone, status: 'Connected', detail: '23 settlement rows pending import (case_3)' },
+                /* L5-4.2: the fabricated "Connected · healthy / last export 06:00 /
+                   0 failures" Tally row is gone — no gateway is wired, say so. */
+                { name: 'Tally gateway', tone: 'neutral' as BadgeTone, status: 'Not connected', detail: 'No gateway is wired yet — voucher exports are planned, not scheduled.' },
+                { name: 'Payment gateway', tone: 'warning' as BadgeTone, status: 'Import pending · manual', detail: 'Settlement mismatches await the bank-file import (issue case_3 below) — no live gateway is connected.' },
                 { name: 'GPS tracking', tone: maintenanceVehicles.length ? 'warning' as BadgeTone : 'success' as BadgeTone, status: maintenanceVehicles.length ? `${maintenanceVehicles.length} vehicle${maintenanceVehicles.length > 1 ? 's' : ''} offline` : 'All vehicles reporting', detail: maintenanceVehicles.length ? maintenanceVehicles.map(r => `${r.name.split('—')[0].trim()} · ${r.vehicle} in workshop`).join(' · ') : 'Heartbeats nominal' },
               ].map(row => (
                 <div key={row.name} className="u-between u-small" style={{ gap: 10 }}>
@@ -527,7 +529,7 @@ export default function DataHealth() {
               </>
             )}
             <div className="u-xs u-faint" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, lineHeight: 1.6 }}>
-              Fixes run as bulk actions with your identity — every affected record keeps its history, and the action can be undone from the audit trail.
+              Preview scope: fixes apply to this workspace view only — no records were changed on the server. Real bulk fixes with your identity and an audited undo path land with the data-quality doors (L3-4.x).
             </div>
           </div>
         )}

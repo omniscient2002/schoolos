@@ -9,6 +9,7 @@ import * as seed from '../data/dataset';
 import { aiService } from '../services';
 import { apiGet, apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { DEMO_MODE } from '../lib/demoMode';
 
 /* local async hook (duplicated per screen per APP-SPEC) */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -258,6 +259,14 @@ function StudentDetail({ person }: { person: Person }) {
               <SkeletonCard lines={4} />
             ) : briefing.error ? (
               <ErrorState title="Briefing unavailable" sub="The briefing service did not respond. Evidence below is computed locally from records." onRetry={briefing.refresh} />
+            ) : !DEMO_MODE ? (
+              <div className="u-col" style={{ gap: 8 }}>
+                <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.6 }}>
+                  The AI briefing layer is not connected in live builds, so no briefing is drafted — nothing here is generated
+                  to fill the space. The evidence and records below are real.
+                </p>
+                <EvidenceChain title={`Evidence — records for ${person.name.split(' ')[0]}`} steps={chainSteps} />
+              </div>
             ) : (
               <div className="u-col" style={{ gap: 14 }}>
                 <p style={{ fontSize: 'var(--text-md)', lineHeight: 1.6, margin: 0 }}>{briefing.data?.answer}</p>
@@ -545,6 +554,11 @@ function useBriefing(studentId: string, viewer: string) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     let live = true;
+    if (!DEMO_MODE) {
+      // Live builds: the AI briefing layer is not connected — no fabricated brief.
+      setState({ id: studentId, data: null, loading: false, error: null });
+      return () => { live = false; };
+    }
     aiService.draftStudentBriefing(studentId, viewer)
       .then(d => { if (live) setState({ id: studentId, data: d, loading: false, error: null }); })
       .catch(e => { if (live) setState({ id: studentId, data: null, loading: false, error: String(e) }); });
