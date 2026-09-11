@@ -182,3 +182,27 @@ honest 503 channel gates; every state change audited through the RLS path with p
 ## Verification
 `permission matrix OK: 262 routes` · **31/31 tests green** (l2-mfa, l2-p5-gateway-workflow,
 l2-rails-email-reset, wave-c, l2-multi-tenant) · node --check + tsc clean · backend restarted.
+
+# UNIT C DEEP-DIVE (end-to-end review, all 199 lines read)
+
+## What it is
+The ONE sanctioned runtime path that creates a tenant + its first owner, in one
+owner-transaction: slug derivation (50-attempt uniqueness), section structure
+(≤15 grades × ≤8 sections), plugin catalog seeded born-enabled, hash-chained
+audit + event from row one, auto-login token in the /auth/login shape. Followed
+by /onboard/school (owner-only profile+campus patch) and /onboard/status (the
+getting-started checklist). Guards: 3/min rate limit, SELF_SIGNUP_ENABLED
+kill-switch (unset+production = paused), anti-enumeration posture.
+
+## Verified findings
+| # | Sev | Finding → fix |
+|---|---|---|
+| C10 | MED | The onboarding checklist's "switch on modules" item was **born-done**: 5 modules ship enabled (DEFAULT_ON), but the item compared count > 1. Fixed: compares against DEFAULT_ON.size — the item now guides real enablement (DEFAULT_ON exported from plugin-catalog for the purpose). |
+| C1 | LOW (hardened) | The signup auto-login token skipped the session-epoch claim (`ep`). Today's default is 1 so nothing broke, but a future epoch bump would have locked fresh signups out. Fixed: RETURNING session_epoch, token stamps ep like every other issue path. |
+| C14 | FIXED | **The long-standing HANDOVER test red (failing since Gate-3) was a stale test, not a server bug**: temp-password login answers 403 {mustChange, token} — the restricted-session contract working exactly as designed. The test now walks the real handover: temp login → set real password → provision teacher. onboard suite: 12/12. |
+| C3 | LOW (documented) | Signup password policy is length-only (≥8). No complexity rules by platform posture — the rate limit + kill-switch + empty-tenant blast radius are the mitigations. Accepted. |
+| C7 | INFO | Renaming a school doesn't change its slug (stable identifier by design). |
+| C15 | INFO | uniqueSlug's 50-attempt loop + unique-constraint 409 catch covers races; slug prefix 'school-' fallback for non-matching names. Sound. |
+
+## Verification
+**12/12 onboard suite** (was 11/12) · node --check clean · backend restarted.

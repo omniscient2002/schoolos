@@ -298,3 +298,10 @@ lanes; this file is how you prevent that).
   (not 401) · A8 no code change (TRUST_PROXY env contract, documented).
 - NEEDED: L2 re-verifies its auth files at the next gate (D-44: owner re-check). Backend restarted on the
   fixed build — /workflow-rules/:id DELETE verified live (404-unauth, not 500).
+
+### [S0] Unit C (onboarding) review done; HANDOVER red was a stale test — L1 re-verify — 20:55 UTC
+- ITEM: tests/onboard.test.js HANDOVER case (failing since Gate-3)
+- STATE: FIXED by S0 under D-44 (cross-zone, owner directive). Server was CORRECT (restricted-session
+  403 mustChange contract); the test predated it. Test now walks temp→set-password→provision. 12/12.
+- ALSO: onboard/status checklist item 3 now compares plugins_enabled > DEFAULT_ON.size (was born-done);
+  signup token stamps session-epoch ep (hardening). L1: re-verify onboard.test.js at next gate.

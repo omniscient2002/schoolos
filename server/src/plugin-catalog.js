@@ -59,4 +59,4 @@ async function ensurePluginCatalog(client, tenantId) {
   }
 }
 
-export { CATALOG, ensurePluginCatalog };
+export { CATALOG, DEFAULT_ON, ensurePluginCatalog };

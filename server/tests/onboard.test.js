@@ -163,8 +163,17 @@ test('08 · HANDOVER: owner provisions itadmin → itadmin provisions teacher', 
   assert.ok(mkBody.tempPassword ?? mkBody.temporaryPassword, 'temp password shown once');
 
   const itLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.60.0.12' }, body: JSON.stringify({ email: 'itadmin@onboard.test', password: mkBody.tempPassword ?? mkBody.temporaryPassword }) });
-  assert.equal(itLogin.status, 200, 'itadmin signs in with the temp password');
-  const itTok = (await itLogin.json()).token;
+  assert.ok([200, 403].includes(itLogin.status), `itadmin signs in with the temp password: ${itLogin.status}`);
+  // S0 repair (D-44, cross-zone — Unit C review): the restricted-session
+  // contract answers 403 {mustChange, token} for temp-password logins; the
+  // handover completes by setting a real password first, exactly like the UI.
+  const itFirst = await itLogin.json();
+  let itTok = itFirst.token;
+  if (itFirst.mustChange) {
+    const setPw = await authed(itFirst.token, '/me/password', { method: 'POST', body: JSON.stringify({ currentPassword: mkBody.tempPassword ?? mkBody.temporaryPassword, newPassword: 'it-admin-pass-9' }) });
+    assert.equal(setPw.status, 200, `itadmin sets a real password: ${setPw.status}`);
+    itTok = (await setPw.json()).token;
+  }
 
   const teacher = await authed(itTok, '/plugins/people.admin/users', { method: 'POST', body: JSON.stringify({ name: 'Tara Teacher', email: 'teacher1@onboard.test', role: 'teacher' }) });
   assert.equal(teacher.status, 200, 'itadmin continues provisioning (delegation works)');

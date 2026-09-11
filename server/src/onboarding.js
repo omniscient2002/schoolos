@@ -18,7 +18,7 @@
 //   · auto-login returns the same { token, user } shape as /auth/login
 import { randomUUID } from 'node:crypto';
 import { auditLog, emitEvent } from './audit.js';
-import { ensurePluginCatalog } from './plugin-catalog.js';
+import { ensurePluginCatalog, DEFAULT_ON } from './plugin-catalog.js';
 import { q, withUser } from './db.js';
 import { hashPassword } from './auth.js';
 
@@ -91,7 +91,7 @@ export function registerOnboarding(app) {
         [slug, schoolName, JSON.stringify(config)])).rows[0];
       const u = (await client.query(
         `INSERT INTO app.users (tenant_id, email, name, role, password_hash, active)
-         VALUES ($1,$2,$3,'owner',$4,true) RETURNING id, email, name, role, tenant_id`,
+         VALUES ($1,$2,$3,'owner',$4,true) RETURNING id, email, name, role, tenant_id, session_epoch`,
         [t.id, ownerEmail, ownerName, passwordHash])).rows[0];
       /* Every school is born with its full plugin catalog (docs/12): rows land
          'registered' — the plugin manager has real switches on day one and
@@ -109,7 +109,9 @@ export function registerOnboarding(app) {
         'platform.tenant.onboarded.v1',
         { tenantId: t.id, slug: t.slug, ownerUserId: u.id, ownerEmail: u.email, sections });
       await client.query('COMMIT');
-      const token = app.jwt.sign({ sub: u.id, role: u.role, tenant: u.tenant_id, name: u.name, jti: randomUUID() }, {});
+      /* S0 fix C1: stamp the session epoch like every other issue path —
+         a future epoch default would otherwise lock fresh signups out. */
+      const token = app.jwt.sign({ sub: u.id, role: u.role, tenant: u.tenant_id, name: u.name, jti: randomUUID(), ep: u.session_epoch ?? 1 }, {});
       return { token, user: { id: u.id, name: u.name, role: u.role, email: u.email, tenantId: u.tenant_id },
         tenant: { id: t.id, slug: t.slug, name: t.name },
         next: { checklist: ['/onboard/status'] } };
@@ -191,7 +193,10 @@ export function registerOnboarding(app) {
         checklist: [
           { id: 'itadmin', label: 'Create your IT admin (they can add the rest of the staff)', done: counts.itadmins > 0, href: '/people-admin' },
           { id: 'students', label: 'Admit your first students', done: counts.students > 0, href: '/people-admin' },
-          { id: 'plugins', label: 'Switch on the modules you need (library, fees, transport…)', done: counts.plugins_enabled > 1, href: '/plugins' },
+          /* S0 fix C10: five modules are born enabled (DEFAULT_ON) — counting
+             them made this item born-done and useless. It completes only when
+             the school switches on something beyond its birth set. */
+          { id: 'plugins', label: 'Switch on the modules you need (library, fees, transport…)', done: counts.plugins_enabled > DEFAULT_ON.size, href: '/plugins' },
         ],
       };
     });
