@@ -45,11 +45,15 @@ export function createAiGateway({ q, kernelQ }) {
     return Number.isFinite(n) && n > 0 ? n : 200;
   };
 
+  // S0 fix B6: the ledger is observability, never request-critical — a ledger
+  // write failure (fresh table, pool contention) must not turn a budget answer
+  // or a successful provider call into a 500.
   const writeLedger = (row) => kernelQ(
     `INSERT INTO app.ai_calls (tenant_id, user_id, plugin_id, purpose, provider, model, tokens_in, tokens_out, latency_ms, outcome, error, sandbox)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [row.tenantId, row.userId ?? null, row.pluginId, row.purpose, row.provider, row.model ?? null,
-      row.tokensIn ?? 0, row.tokensOut ?? 0, row.latencyMs ?? null, row.outcome, row.error ?? null, row.sandbox ?? true]);
+      row.tokensIn ?? 0, row.tokensOut ?? 0, row.latencyMs ?? null, row.outcome, row.error ?? null, row.sandbox ?? true]
+  ).catch((e) => console.error('[ai-gateway] ledger write failed:', e?.message ?? e));
 
   const call = async ({ tenantId, userId, pluginId, purpose, provider = 'logger', input, settings = {} }) => {
     const started = Date.now();

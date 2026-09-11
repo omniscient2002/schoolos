@@ -104,8 +104,12 @@ export async function buildApp(opts = {}) {
         return; // synthetic principal resolved — JWT path skipped
       }
       const via = req.headers.authorization?.startsWith('Bearer ') ? 'bearer' : 'cookie';
-      const token = via === 'bearer' ? req.headers.authorization.slice(7) : readCookie(req, SESSION_COOKIE);
-      if (via === 'cookie') {
+      const sessionCookie = readCookie(req, SESSION_COOKIE);
+      const token = via === 'bearer' ? req.headers.authorization.slice(7) : sessionCookie;
+      // S0 fix A7b: CSRF protects COOKIE-carried auth — a request with no session
+      // cookie isn't cookie-authed, so it must fall through to the 401 below
+      // (previously an absent-session renew answered 403 CSRF instead of 401).
+      if (via === 'cookie' && sessionCookie) {
         // double-submit CSRF (cookie-authed mutations only; bearer API clients exempt)
         if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
           const csrfCookie = readCookie(req, CSRF_COOKIE);
@@ -227,13 +231,10 @@ export async function buildApp(opts = {}) {
   // D-37(e): POST /auth/renew — cookie-authed (or bearer) re-issue. The app
   // calls this on 401-pending activity to keep a live session fresh without a
   // re-login; absent/invalid session → 401 (L5 flips RENEW_DOOR_LIVE only now
-  // that the door exists). Rides the full authenticate hook, so denylist,
-  // epoch, CSRF-on-cookie and mustChange/mfaPending limits all apply.
-  app.post('/auth/renew', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const hasCreds = req.headers.authorization?.startsWith('Bearer ') || readCookie(req, SESSION_COOKIE);
-    if (!hasCreds) return reply.code(401).send({ error: 'no session to renew — sign in' });
-    await app.authenticate(req, reply); // 401s on absent/expired/revoked/stale-epoch
-    if (reply.sent) return reply; // the hook already answered (401/403)
+  // that the door exists). S0 fix B12: authenticate rides the preHandler so
+  // the permission matrix classifies this door auth-only (it previously ran
+  // inside the handler and scanned as unguarded).
+  app.post('/auth/renew', { preHandler: app.authenticate, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     if (req.auth?.via === 'api-key') return reply.code(403).send({ error: 'API keys do not renew sessions.' });
     const u = await q(`SELECT id, tenant_id, name, role, email, session_epoch, force_change FROM app.users WHERE id=$1 AND active`, [req.user.id]);
     if (!u.rows[0]) return reply.code(401).send({ error: 'account disabled' });

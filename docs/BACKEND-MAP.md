@@ -146,3 +146,39 @@ for non-demo tenants; fail-closed dev doors computed once at config; production 
 `*` CORS, short JWT secret all throw); statement/lock/idle timeouts on the pool; `SET LOCAL ROLE` as a
 compiled constant (not injectable); CSRF double-submit with bearer exemption; uniform no-store planes;
 honest 503 channel gates; every state change audited through the RLS path with policyRef.
+
+---
+
+# UNIT B DEEP-DIVE (end-to-end review, all 517 lines read)
+
+## What each module does
+- **`audit.js`** — the hash-chained ledger: per-tenant `pg_advisory_xact_lock` serializes writers; each
+  row hashes (prevHash + material) and inserts via `audit_append` (owner fn, tenant-pinned). Same tx
+  emits `app.events` + `app.outbox` rows (the async spine) and links lineage. `requestAudit` stamps
+  `plugin:<id>` provenance into actor_role.
+- **`governance.js`** — per-plugin event budgets (60/min default, 64KB payload cap) + circuit breaker
+  (open → half-open self-heal after 5 min).
+- **`plugin-catalog.js`** — the 26-row born-at-signup catalog; `ensurePluginCatalog` idempotent
+  (WHERE NOT EXISTS), DEFAULT_ON = people.admin, visitors, library, timetable, files.store.
+- **`ai-gateway.js`** — one seam for every AI call: ledger every attempt (ok|error|budget), budgets
+  enforced BEFORE the provider (per-tenant daily cap; strictest per-plugin monthly cap; 0/false = off),
+  pluggable providers — 'logger' sandbox, 'openai-compatible' intentionally inert until D-32 keys.
+- **`lifecycle-gate.js`** — the uniform plugin gate (kernel OFF → honest 409 with per-plugin copy).
+- **`raw-body-parser.js`** — install-once raw-body for HMAC webhook verification.
+- **`uuid-param.js`** — :id params die 400 before any 22P02 500.
+- **`permission-matrix.js`** — the ONE tool that knows every guard: scans all 262 doors, classifies
+  public/auth/role-gated, fails CI on unguarded-or-unallowlisted doors, lints custom-role patterns
+  against door guards, writes docs/PERMISSION-MATRIX.md.
+
+## Verified findings (all fixed by S0, owner directive)
+| # | Sev | Finding → fix |
+|---|---|---|
+| B12 | **HIGH** | **The permission matrix itself was failing**: 8 authed doors classified unguarded (adminOnly() helper invisible to the scanner) + 3 deliberately-public doors missing from the allowlist. Fixed: scanner recognizes the auth-helper set (both hasAuth and the demotion check), allowlist gains reset-request/reset-confirm/mfa-verify with threat notes, `/auth/renew` moved to preHandler-auth. Matrix now PASSES: 262 · 213 role-gated · 36 auth · 13 public. |
+| B13 | MED | CSRF branch fired on **cookieless** requests (via fell to 'cookie' with no creds → absent-session renew answered 403 CSRF instead of 401). Fixed: CSRF applies only when a session cookie is actually present. |
+| B6 | LOW | AI-gateway ledger writes could 500 a budget denial or successful call. Fixed: ledger failures are logged, never request-critical. |
+| B1 | LOW (documented) | audit_log.id is a uuid — same-transaction audit rows share created_at, so a verifier sorting by (created_at, id) can misorder tied rows. The chain material itself is correct (advisory lock + same-tx prev read). Future: add a bigserial seq for verification order. |
+| B3/B4/B9 | INFO | Breaker self-heal UPDATE is app-role-legal; catalog versions have no upgrade path (informational only); lifecycle-gate FRIENDLY map falls back to capitalized prefix for new plugins. Verified OK / accepted. |
+
+## Verification
+`permission matrix OK: 262 routes` · **31/31 tests green** (l2-mfa, l2-p5-gateway-workflow,
+l2-rails-email-reset, wave-c, l2-multi-tenant) · node --check + tsc clean · backend restarted.

@@ -23,6 +23,9 @@ export const PUBLIC_ALLOWLIST = [
   { path: '/auth/google/callback', why: 'OAuth callback' },
   { path: '/auth/google/demo', why: 'demo-mode SSO' },
   { path: '/onboard/signup', why: 'self-serve tenant onboarding (053): creates an EMPTY tenant + first owner only; kill-switch SELF_SIGNUP_ENABLED, rate-limited 3/min, hash-chained audit from row one; NO data access' },
+  { path: '/me/reset-request', why: 'password-reset request (L2-2.2): rate-limited 5/min, anti-enumeration uniform 200, channel-gated 503; issues a single-use sha256-stored token — no data access' },
+  { path: '/me/reset-confirm', why: 'password-reset confirm (L2-2.2): rate-limited 10/min, single-use race-safe token consume + epoch bump; no session required by design' },
+  { path: '/me/mfa/verify', why: 'dual-path door (L2-3.2): authed enrollment-confirm OR pre-auth login challenge (5-min mfaPending token limited to this door); rate-limited 10/min' },
   { path: '/plugins/payments.upi/webhook', why: 'HMAC-signature verified in-handler (UPI_WEBHOOK_SECRET), raw-body parser' },
   { path: '/plugins/payments.razorpay/webhook', why: 'HMAC-signature verified in-handler (RAZORPAY_WEBHOOK_SECRET / settings webhook_secret), raw-body parser, replay dedupe' },
 ];
@@ -58,7 +61,12 @@ export function scanRoutes(files) {
       const ph = stmt.match(GUARD_RE);
       if (ph) {
         const body = ph[1];
-        const hasAuth = /app\.authenticate|requireRole|\brequire\(|\bme\b/.test(body);
+        /* S0 fix B12: the scanner must recognize the project's auth-wrapping
+           helper preHandlers, not just inline app.authenticate — adminOnly()
+           (api-keys/webhooks) and any future *Auth() helper authenticate
+           internally, so they ARE guards. Unrecognized helpers still classify
+           unguarded (the gate stays strict). */
+        const hasAuth = /app\.authenticate|requireRole|adminOnly|optionalAuth|\brequire\(|\bme\b/.test(body);
         const lifecycle = /lifecycleGate/.test(body);
         const quoted = [...body.matchAll(/'([a-z]+)'/g)].map((r) => r[1]).filter((r) => r !== 'plugins');
         const spread = [...body.matchAll(/\.\.\.([A-Z_]+)/g)].flatMap((r) => consts[r[1]] ?? []);
@@ -66,7 +74,10 @@ export function scanRoutes(files) {
         route.lifecycle = lifecycle;
         route.roles = roles;
         route.cls = roles.length ? 'role-gated' : hasAuth ? 'auth' : 'unguarded';
-        if (hasAuth && !roles.length && !/app\.authenticate|\bme\b|requireRole/.test(body)) route.cls = 'unguarded';
+        /* S0 fix B12: the demotion check must accept the same helper set —
+           adminOnly()/optionalAuth() authenticate internally (their body text
+           doesn't mention app.authenticate, but they ARE auth guards). */
+        if (hasAuth && !roles.length && !/app\.authenticate|adminOnly|optionalAuth|\bme\b|requireRole/.test(body)) route.cls = 'unguarded';
       }
       const pub = PUBLIC_ALLOWLIST.find((p) => p.path === route.path);
       if (route.cls === 'unguarded') route.cls = pub ? 'public' : 'UNGUARDED';
@@ -104,7 +115,32 @@ ${rows}
 `;
 }
 
-export function main() {
+/* ── L3-4.2 custom-mask lint ─────────────────────────────────────────────────────
+   Custom roles store {allow:[],deny:[]} patterns ("GET /fees", "POST /students/*").
+   lintMaskPatterns checks a stored mask against the SCANNED route list — a pattern
+   that matches no registered door is a typo that silently grants/refuses nothing,
+   which is exactly the kind of dead permission that rots. Offline (no DB): the CRUD
+   door in routes.js performs the same validation against the LIVE route set via its
+   onRoute registry; this helper keeps the two matchers honest (one implementation). */
+export function lintMaskPatterns(mask, routes) {
+  const routePairs = routes.map((r) => [r.method, r.path]);
+  const problems = [];
+  for (const kind of ['allow', 'deny']) {
+    for (const p of (mask?.[kind] ?? [])) {
+      const sp = p.indexOf(' ');
+      const [pm, pp] = [p.slice(0, sp), p.slice(sp + 1)];
+      const hit = routePairs.some(([rm, ru]) => {
+        if (pm !== '*' && pm !== rm) return false;
+        if (pp.endsWith('*')) return ru.startsWith(pp.slice(0, -1));
+        return ru === pp || ru.startsWith(pp + '/');
+      });
+      if (!hit) problems.push({ kind, pattern: p, error: 'matches no registered route' });
+    }
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+export async function main() {
   const dir = (p) => join(ROOT, p);
   const files = [dir('src/app.js'), dir('src/routes.js'),
     ...readdirSync(dir('src/plugins'), { withFileTypes: true })
@@ -119,8 +155,29 @@ export function main() {
     for (const r of s.unguarded) console.error(`  ${r.method} ${r.path} (${r.file})`);
     process.exit(1);
   }
+  // L3-4.2: when a database with app.roles is reachable, lint every stored custom
+  // mask against the scanned routes; offline (check runs before any DB), skip honestly.
+  try {
+    const { pool } = await import('../src/db.js');
+    const pr = await pool.query(`SELECT to_regclass('app.roles') IS NOT NULL AS ok`);
+    if (pr.rows[0]?.ok) {
+      const roles = (await pool.query(`SELECT key, permissions FROM app.roles`)).rows;
+      let bad = 0;
+      for (const r of roles) {
+        const lint = lintMaskPatterns(r.permissions, routes);
+        if (!lint.ok) { bad++; for (const p of lint.problems) console.error(`CUSTOM ROLE LINT — ${r.key}: ${p.kind} "${p.pattern}" ${p.error}`); }
+      }
+      if (bad) { console.error(`PERMISSION MATRIX FAIL — ${bad} custom role(s) with dead patterns`); process.exit(1); }
+      console.log(`custom roles lint OK: ${roles.length} role(s)`);
+    } else {
+      console.log('custom roles lint skipped: app.roles not on this database (migration pending)');
+    }
+    await pool.end();
+  } catch (e) {
+    console.log(`custom roles lint skipped (${String(e.message ?? e).slice(0, 80)})`);
+  }
   console.log(`permission matrix OK: ${s.total} routes · ${s.roleGated} role-gated · ${s.auth} auth · ${s.public} public · docs/PERMISSION-MATRIX.md written`);
 }
 
 import { argv } from 'node:process';
-if (argv[1] && argv[1].endsWith('permission-matrix.js')) main();
+if (argv[1] && argv[1].endsWith('permission-matrix.js')) main().catch((e) => { console.error(e); process.exit(1); });
