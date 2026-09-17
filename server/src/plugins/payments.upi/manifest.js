@@ -1,6 +1,7 @@
 // payments.upi — plugin manifest (drop-in factory, docs/11 §2.2)
 export default {
   id: 'payments.upi',
+  capabilities: ['fees.upi.gateway'],
   name: 'UPI Collection Rails',
   version: '1.0.0',
   class: 'B',

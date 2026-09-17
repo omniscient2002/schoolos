@@ -1,8 +1,18 @@
-# SchoolOS — Interactive Frontend Demo
+# SchoolOS — Frontend
 
-The complete, production-quality frontend of **SchoolOS** — the intelligent operating system for schools — running entirely on a simulated backend. Fictional school: **Meridian International Academy** (3 campuses · 1,472 students · 52 teachers · 10 bus routes). **v3 build: 61 screens · 63 route paths (1 redirect) · 10 roles · zero-TSC · headless-verified.** **v4.2 adds the plugin layer**: registry (`GET /plugins`) drives nav, routes and slot reservations live — see `docs/10-plugin-platform-v1.md`.
+The frontend of **SchoolOS**, the intelligent operating system for schools. It runs against the real
+Fastify + Postgres backend (`server/`); `app/src/services/*.ts` call the live API (`VITE_API_BASE`, default
+`http://127.0.0.1:8080`). A deterministic demo dataset still backs screens that have no live door yet, but
+the app is **not** a backend-less demo.
 
-> **No backend is connected.** Every byte flows through a clean service layer (`src/services`) backed by deterministic mock repositories (`src/mock/seed`). Swap the service implementations for REST/GraphQL and the entire UI keeps working, unchanged.
+> **Counts in this file are illustrative, not authoritative** (item 34: a hand-typed count is true once and
+> then decays). The measured numbers live in generated artifacts — route/guard counts in
+> `docs/PERMISSION-MATRIX.md`, test counts in `docs/VERIFICATION.md`, role count in `server/src/auth.js`
+> (`ROLES`). The former headline "61 screens · 63 route paths · 10 roles · no backend connected" contradicted
+> itself (line 86 said 56 screens) and the role count was wrong (the kernel defines **13** roles).
+
+**Historical note:** the plugin layer is real — the registry (`GET /plugins`) drives nav, routes and slot
+reservations from the server; see `docs/10-plugin-platform-v1.md`.
 
 ---
 
@@ -18,7 +28,7 @@ npm run build && npm run preview
 
 ---
 
-> **Golden loops (v3.1):** `/demo` launcher → `/migration` (the switch, 8 steps → first day), `/demo/day` (school-day sims → briefing → approval → propagation → loop closed), `/demo/parent` (verify → deterministic answer → pay → case → resolution → audit), `/demo/summary` (school running + follow-the-entity traces). Shared components in `components/Flow.tsx`; scripted engine in `demo/loops.ts`.
+> **Demo removed (2026-09-17):** the parallel demo app (`/demo*`, `/live`, the scripted day in `demo/loops.ts`, the mock AI Ask panel) has been deleted. `DEMO_MODE` is hard-`false`; only the live product runs. See `docs/REMOVALS.md`.
 
 ## Verify
 
@@ -34,7 +44,7 @@ npx vite build                           # production bundle
 2. **Click the top card** (Grade 8-B attendance collapsed to 23%). The evidence chain opens: attendance register → GPS deviation → route roster overlap → parent messages. Every step sourced.
 3. **Approve the drafted parent message** in the Action Center. Posture: APPROVAL REQUIRED. Delivery receipts appear. The audit ledger records the decision.
 4. **Open Memory.** The decision loop is already closed: *Bus 14 pre-route inspections* — decision → expected outcome → review date.
-5. **Switch roles** (avatar menu, top right). Ten roles — Principal, Teacher, Coordinator, Finance, Admissions, Transport, Parent, Student, Owner/Trustee, IT Admin — each with permission-accurate navigation, data scope, and AI behavior.
+5. **Switch roles** (avatar menu, top right). The kernel defines **13** roles — owner, principal, coordinator, counselor, finance, admissions, transport, facilities, technician, teacher, itadmin, parent, student — each with permission-accurate navigation, data scope, and AI behavior. (See `server/src/auth.js` `ROLES`; the client mirror is drift-guarded by `server/tests/frontend-grants.test.js`.)
 6. **Press ⌘K.** The command palette searches people, records, decisions, and screens.
 7. **Bottom demo bar.** Run the four scripted scenarios (start with *Bus 14 breaks down* — a 14-step guided journey), simulate a bus delay, a payment, or an incident; toggle **Simulation Mode** to watch the live event stream.
 
@@ -83,7 +93,7 @@ Separately: 23 gateway timeouts await settlement-file import (a *data quality* s
 src/
   App.tsx              # router, shell, boot gate, sync banner
   components/          # design-system primitives (ui), charts, icons, AI surfaces, shell, demo bar
-  screens/             # 61 role-aware screens (lazy-loaded; legacy Facilities screen killed in v4.2, /facilities → /maintenance)
+  screens/             # role-aware screens (lazy-loaded; the count is not stated here because the former "61" and "56" in this file disagreed — enumerate `src/screens/` instead)
   services/index.ts    # THE API BOUNDARY — async services with simulated latency
   mock/seed.ts         # deterministic seeded data (mulberry32 PRNG), narrative anchors
   state/store.tsx      # session + domain state (actions, cases, chat, audit, events)

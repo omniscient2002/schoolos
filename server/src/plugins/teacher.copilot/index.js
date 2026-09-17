@@ -44,7 +44,7 @@ const SUBJECTS = ['Mathematics', 'Science'];
 
 export function register(app, kernel) {
   const { withUser, requestAudit, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   // Insight doors (curriculum tree, mastery maps): the teacher lane + oversight.
@@ -178,6 +178,23 @@ export function register(app, kernel) {
   //                                          'low', persisted ONCE with
   //                                          derived_from.reason='evidence_expired';
   //                                          later reads are idempotent (no sliding)
+  // Returns `{ level, confidence, basis, decayed, freshEvidence, expiredEvidence, recovered,
+  //            change }` where `change` is null when this read changed NOTHING and otherwise
+  //            describes the write that happened: { kind:'inserted'|'refreshed'|'decayed',
+  //            stateId, fromLevel, toLevel, fromConfidence, toConfidence }.
+  //
+  // DAT-7 — this resolver writes mastery.state (INSERT / evidence-refresh UPDATE / one-shot
+  // decay UPDATE) and both doors that call it are GETs the UI polls. Those writes were
+  // unledgered: a teacher opening a mastery screen could move a student's persisted level with
+  // no audit row. The fix follows the pattern already written down in the sibling
+  // teacher.classroom leave projection (index.js lines ~305-315): the write's EFFECT is
+  // reported rather than assumed, and the LEDGER row is written once per real state change.
+  //
+  // The audit is written by the DOORS, not here, and that placement is deliberate: the actor
+  // must be the named member of staff whose read caused the write, and this helper has no
+  // request/user context to name (it is also pure with respect to tenancy/identity today).
+  // The helper's job is to say WHAT changed; each door's job is to say WHO did it. Both doors
+  // go through the single `auditMasteryChange` reporter below, so neither can drift.
   async function resolveMasteryState(c, tenantId, studentId, subject, node) {
     const now = new Date();
     const fresh = (await c.query(
@@ -193,37 +210,48 @@ export function register(app, kernel) {
 
     if (!st) {
       if (derived.basis === 'no_evidence') {
+        // nothing was written: no label is persisted without evidence (A3)
         return { level: null, confidence: null, basis: 'no_evidence', decayed: false,
-          freshEvidence: 0, expiredEvidence: 0 };
+          freshEvidence: 0, expiredEvidence: 0, change: null };
       }
       const ins = await c.query(
         `INSERT INTO mastery.state (tenant_id, student_id, subject, node_id, level, confidence, derived_from)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) RETURNING level, confidence`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) RETURNING id, level, confidence`,
         [tenantId, studentId, subject, node.id, derived.level, derived.confidence, JSON.stringify(derived)]);
       return { level: ins.rows[0].level, confidence: ins.rows[0].confidence, basis: 'evidence',
-        decayed: false, freshEvidence: fresh.length, expiredEvidence: 0 };
+        decayed: false, freshEvidence: fresh.length, expiredEvidence: 0,
+        change: { kind: 'inserted', stateId: ins.rows[0].id, fromLevel: null, toLevel: ins.rows[0].level,
+          fromConfidence: null, toConfidence: ins.rows[0].confidence } };
     }
 
     const df = st.derived_from ?? {};
     if (derived.basis === 'evidence') {
       // fresh evidence governs; refresh when it moved, or when the row still carries a
       // decay marker (recovery rewrites derived_from to the clean evidence basis)
+      let change = null;
       if (st.level !== derived.level || st.confidence !== derived.confidence || df.reason === 'evidence_expired') {
-        await c.query(
+        const u = await c.query(
           `UPDATE mastery.state SET level=$2, confidence=$3, derived_from=$4::jsonb,
              computed_at=now(), updated_at=now() WHERE id=$1`,
           [st.id, derived.level, derived.confidence, JSON.stringify(derived)]);
+        // rowCount is CHECKED, not assumed: the ledger records this as a change only when the
+        // statement actually moved a row (the sibling leave-projection pattern).
+        if (u.rowCount === 1) {
+          change = { kind: 'refreshed', stateId: st.id, fromLevel: st.level, toLevel: derived.level,
+            fromConfidence: st.confidence, toConfidence: derived.confidence };
+        }
       }
       return { level: derived.level, confidence: derived.confidence, basis: 'evidence',
         decayed: false, freshEvidence: fresh.length, expiredEvidence: 0,
-        recovered: df.reason === 'evidence_expired' };
+        recovered: df.reason === 'evidence_expired', change };
     }
 
     // no fresh evidence left
     if (df.reason === 'evidence_expired') {
-      // already decayed once — idempotent, never slides twice
+      // already decayed once — idempotent, never slides twice; nothing is written, so
+      // nothing is audited (the poll-driven no-change path must stay silent)
       return { level: st.level, confidence: st.confidence, basis: 'decayed', decayed: true,
-        freshEvidence: 0, expiredEvidence: df.expired_count ?? null };
+        freshEvidence: 0, expiredEvidence: df.expired_count ?? null, change: null };
     }
     const expired = (await c.query(
       `SELECT count(*)::int AS n FROM mastery.evidence
@@ -233,14 +261,47 @@ export function register(app, kernel) {
     // (secure→developing, developing→needs_support, floored at the bottom) = idx − 1
     const idx = LEVEL_STEP[st.level] ?? 0;
     const down = LEVELS[Math.max(idx - 1, 0)];
-    await c.query(
+    const du = await c.query(
       `UPDATE mastery.state SET level=$2, confidence='low',
          derived_from = derived_from || $3::jsonb, computed_at=now(), updated_at=now()
        WHERE id=$1`,
       [st.id, down, JSON.stringify({ reason: 'evidence_expired', from_level: st.level,
         to_level: down, expired_count: expired, decayed_at: new Date().toISOString() })]);
     return { level: down, confidence: 'low', basis: 'decayed', decayed: true,
-      freshEvidence: 0, expiredEvidence: expired };
+      freshEvidence: 0, expiredEvidence: expired,
+      change: du.rowCount === 1
+        ? { kind: 'decayed', stateId: st.id, fromLevel: st.level, toLevel: down,
+          fromConfidence: st.confidence, toConfidence: 'low' }
+        : null };
+  }
+
+  // DAT-7: the ONE place a mastery read-path write is ledgered. Both mastery doors call this
+  // immediately after resolveMasteryState and ONLY with a non-null `change`, so:
+  //   · the no-change path (the overwhelmingly common one — the UI polls these GETs) writes
+  //     NOTHING. An unconditional row here would bury the ledger in noise and make the very
+  //     evidence it exists to preserve harder to find — the reasoning recorded in the sibling
+  //     teacher.classroom leave projection.
+  //   · the actor is the real named member of staff (req.user.name), never 'system': a read by
+  //     a named teacher that changed a persisted record must name that teacher, otherwise the
+  //     row cannot answer "who changed this level".
+  // Risk is 'low' and that is the honest reading, not a default: this is a DERIVED projection of
+  // evidence rows other lanes already wrote, triggered by opening a screen — it grants nothing,
+  // reveals nothing beyond what the same GET returns, and every write is idempotent and
+  // constrained to the row's own (student, subject, node) cell. It is not a security-critical
+  // grant (which would be 'high') nor a decision a human must countersign (which would be
+  // 'medium'). The label can move in either direction (evidence-added recovery and evidence-
+  // expired decay both land here), which is exactly why the from/to levels are recorded.
+  async function auditMasteryChange(c, req, subject, change) {
+    const verb = change.kind === 'inserted' ? 'Mastery label created'
+      : change.kind === 'refreshed' ? 'Mastery label refreshed'
+        : 'Mastery label decayed (evidence expired)';
+    const from = change.fromLevel ?? 'no label';
+    await requestAudit(c, req.user.tenant_id, ID, {
+      actor: req.user.name, action: verb, recordType: 'MasteryState', recordRef: change.stateId,
+      reason: `mastery cell re-evaluated on a staff read (A3 decay resolver · ${subject})`,
+      policyRef: 'TeacherOS A3 (labels decay when evidence expires)',
+      risk: 'low',
+      outcome: `level ${from} → ${change.toLevel}${change.fromConfidence ? `; confidence ${change.fromConfidence} → ${change.toConfidence}` : `; confidence ${change.toConfidence}`}` });
   }
 
   // GET /mastery/student/:id?subject= — level + evidence links, A3-decayed.
@@ -267,6 +328,7 @@ export function register(app, kernel) {
       const map = [];
       for (const node of nodeRows) {
         const resolved = await resolveMasteryState(c, req.user.tenant_id, student.id, subject, node);
+        if (resolved.change) await auditMasteryChange(c, req, subject, resolved.change);
         const evidence = (await c.query(
           `SELECT id, kind, ref, value, observed_at, expires_at,
                   (expires_at IS NOT NULL AND expires_at <= now()) AS expired
@@ -318,6 +380,7 @@ export function register(app, kernel) {
         const student = students.find((s) => s.id === studentId);
         if (!student || !topicName[nodeId]) continue;
         const resolved = await resolveMasteryState(c, req.user.tenant_id, studentId, subject, { id: nodeId });
+        if (resolved.change) await auditMasteryChange(c, req, subject, resolved.change);
         cells.push({ studentId, studentName: student.name, section: student.section, topicId: nodeId,
           topic: topicName[nodeId], level: resolved.level,
           levelLabel: resolved.level ? LEVEL_LABEL[resolved.level] : null,

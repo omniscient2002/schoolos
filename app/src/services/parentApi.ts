@@ -13,15 +13,14 @@
    re-implements the identical contract on LIVE_BASE rather
    than widening that file's exports.
    ============================================================ */
-import { LIVE_BASE, setToken, redirectToLoginWithReturn } from './liveApi';
+import { LIVE_BASE, setToken, redirectToLoginWithReturn, authHeaders } from './liveApi';
 
 async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem('schoolos_token');
   const res = await fetch(`${LIVE_BASE}${path}`, {
     ...opts,
     headers: {
       'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...authHeaders(),
       ...(opts.headers ?? {}),
     },
   });

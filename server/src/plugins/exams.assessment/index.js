@@ -15,6 +15,7 @@ import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
 
 const ID = 'exams.assessment';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // deterministic CBSE 10-point scale (pure function, no Date/random anywhere)
 const CBSE_10 = [
@@ -82,21 +83,35 @@ const assembleReports = (e, marks, scale, policy) => {
 };
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
   const EXAM_STAFF = ['owner', 'principal', 'itadmin', 'teacher', 'coordinator'];
   const EXAM_ADMIN = ['owner', 'principal', 'itadmin', 'coordinator']; // assessment coordinator administers exams
   const MOD_TIER = ['owner', 'principal', 'itadmin', 'coordinator']; // moderation decision tier (excludes teacher)
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   // ── create exam (draft) with weightage — invariant checked at once ───────────
+  /* S0 fix F1: weightage must be a plain non-array object of FINITE non-negative
+     numbers summing to EXACTLY 100 — negative components once drove pct negative
+     and 500'd publish/assembly, and arrays silently scored every student 0. */
+  const validWeightage = (w) => {
+    if (!w || typeof w !== 'object' || Array.isArray(w)) return null;
+    const keys = Object.keys(w);
+    if (!keys.length || keys.length > 10 || keys.some((k) => typeof k !== 'string' || k.length > 40)) return null;
+    let total = 0;
+    for (const v of Object.values(w)) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) return null;
+      total += n;
+    }
+    return total === 100 ? w : null;
+  };
   app.post(`/plugins/${ID}/exams`, { preHandler: [require(...EXAM_ADMIN), lifecycleGate] }, async (req, reply) => {
     const { name, term, classGrade, weightage } = req.body ?? {};
     if (!name || !classGrade) return bad(reply, 'Exam name and class are required');
-    const w = weightage ?? { written: 100 };
-    const total = Object.values(w).reduce((a, b) => a + Number(b || 0), 0);
-    if (Math.round(total) !== 100) return bad(reply, `This exam\'s components must add up to 100% (they add up to ${total}%)`, 409);
+    const w = validWeightage(weightage ?? { written: 100 });
+    if (!w) return bad(reply, 'This exam\'s components must be non-negative numbers that add up to exactly 100%', 409);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
         `INSERT INTO plugin_exams.exam (tenant_id, name, term, class_grade, weightage, created_by)
@@ -126,6 +141,9 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/exams/:id/marks`, { preHandler: [require(...EXAM_STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const { studentId, component, marks, maxMarks } = req.body ?? {};
     if (!studentId || marks == null) return bad(reply, 'Student and marks are required');
+    // S0 fix F2: body-supplied ids get the same format guard as route params —
+    // a malformed id otherwise hits the uuid cast and 500s instead of 404.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(studentId))) return bad(reply, 'That student reference is not a valid id');
     const m = Number(marks);
     if (!Number.isFinite(m) || m < 0) return bad(reply, 'Marks can\'t be negative');
     const mm = Number(maxMarks ?? 100);
@@ -140,10 +158,10 @@ export function register(app, kernel) {
       if (!st) return bad(reply, 'student not found', 404);
       // Eligibility consumes the attendance kernel primitive (014 contract). Late counts
       // as attended (late = showed up). Settings-driven floor, default 75.
-      const minPct = Number((await q(
+      const minPct = await (async () => { const p = Number((await sysq(
         `SELECT settings->>'minAttendancePct' AS p FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
-        [req.user.tenant_id, ID])).rows[0]?.p ?? 75);
-      const att = (await q(
+        [req.user.tenant_id, ID])).rows[0]?.p); return Number.isFinite(p) && p > 0 ? p : 75; })(); // S0 fix F9: NaN floor = no floor (L2 repair: async IIFE for the await)
+      const att = (await sysq(
         `SELECT count(*)::int AS total,
                 count(*) FILTER (WHERE status IN ('present','late'))::int AS attended
          FROM app.attendance WHERE tenant_id=$1 AND student_id=$2`,
@@ -177,10 +195,11 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
       if (e.status === 'published') return bad(reply, 'This exam is already published', 409);
-      const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
-      if (Math.round(total) !== 100) return bad(reply, `Marks must add up to 100% — these add up to ${total}%`, 409);
-      // weightage freezes one weightage_lock_days window before publication (IST-first)
-      if (e.weightage_locked) return bad(reply, 'Weightage is locked right now — it can\'t be changed this close to the exam', 409);
+      if (!validWeightage(e.weightage)) return bad(reply, 'Marks must add up to exactly 100% — fix the exam\'s components first', 409);
+      // PLGX: the `weightage_locked` guard was DEAD — the flag is only ever set true by the publication
+      // UPDATE below, and `status === 'published'` (checked above) already catches that state. A guard
+      // that can never fire reads as protection that does not exist. Removed; the published check is the
+      // real gate.
       // kernel action codes are UNIQUE per (tenant, code) — recurring operations scope the
       // code per instance (dpdp composes per-kind; here per-exam)
       const open = (await c.query(`SELECT id FROM app.actions WHERE tenant_id=$1 AND code=$2 AND status='open' LIMIT 1`,
@@ -211,20 +230,20 @@ export function register(app, kernel) {
       if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
       if (e.status === 'published') return bad(reply, 'This exam is already published', 409);
       if (!e.action_id) return bad(reply, 'Publish it first — no approval was raised for this exam', 409);
-      const act = (await q(`SELECT status, payload FROM app.actions WHERE id=$1 AND tenant_id=$2`, [e.action_id, req.user.tenant_id])).rows[0];
+      const act = (await sysq(`SELECT status, payload FROM app.actions WHERE id=$1 AND tenant_id=$2`, [e.action_id, req.user.tenant_id])).rows[0];
       if (!act || act.status === 'open') return bad(reply, 'This needs approval first — decide it in the Approvals queue', 409);
       if (act.status === 'dismissed') return bad(reply, 'publication approval dismissed', 409);
       if (act.payload?.proposed_by === req.user.id) {
         return reply.code(403).send({ error: 'The person who raised this publication can\'t approve it — a second person must' });
       }
       // deterministic assembly: pure function of (marks, weightage, scale)
-      const scale = (await q(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+      const scale = (await sysq(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
       const marks = (await c.query(
         `SELECT student_id, component, marks, max_marks FROM plugin_exams.mark WHERE exam_id=$1 AND tenant_id=$2 ORDER BY student_id, component`,
         [e.id, req.user.tenant_id])).rows;
       const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
       if (Math.round(total) !== 100) return bad(reply, `Marks must add up to 100% — these add up to ${total}%`, 409);
-      const policy = readBoardPolicy((await q(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      const policy = readBoardPolicy((await sysq(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.bp);
       const reports = assembleReports(e, marks, scale, policy);
       const digest = createHash('sha256').update(canonical({ examId: e.id, weightage: e.weightage, reports: reports.map((r) => r.digest) })).digest('hex');
@@ -264,7 +283,7 @@ export function register(app, kernel) {
         // P2-1 belt-and-braces: even a pre-hardening overlay cannot serve an absurd
         // grade — re-derive on the way out and state the served pct explicitly
         const snap = mo.adjusted_snapshot.snapshot ?? {};
-        const scale = (await q(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+        const scale = (await sysq(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
         const pct = Number(snap.pct);
         const served = Number.isFinite(pct) && pct >= 0 && pct <= 100 ? { ...snap, ...gradeOf(pct, scale) } : r.snapshot;
         return { report: served, digest: mo.adjusted_snapshot.digest, generatedAt: r.created_at,
@@ -322,7 +341,7 @@ export function register(app, kernel) {
         // grade/points are RE-DERIVED via this module's gradeOf on the exam's scale;
         // a hand-supplied grade can no longer reach the served report.
         const adj = req.body?.adjustedSnapshot;
-        const scale = (await q(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+        const scale = (await sysq(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
         const pct = Number(adj?.pct);
         if (!adj || typeof adj !== 'object' || !Number.isFinite(pct) || pct < 0 || pct > 100) {
           return bad(reply, 'The adjusted percentage must be a number from 0 to 100');
@@ -373,6 +392,8 @@ export function register(app, kernel) {
         const at = { row: i };
         const studentId = row?.studentId ?? row?.student_id;
         if (!studentId) { failed.push({ ...at, error: 'studentId is required' }); return; }
+        // PLGX: a non-uuid studentId reached `= ANY($2::uuid[])` and 22P02'd the whole batch to a 500.
+        if (!UUID_RE.test(String(studentId))) { failed.push({ ...at, studentId, error: 'studentId must be a uuid' }); return; }
         const m = Number(row.marks);
         if (!Number.isFinite(m) || m < 0) { failed.push({ ...at, studentId, error: 'marks must be a number from 0 up' }); return; }
         const mm = Number(row.maxMarks ?? row.max_marks ?? 100);
@@ -390,10 +411,10 @@ export function register(app, kernel) {
       }
       const eligible = parsed.filter((p) => known.has(p.studentId));
       // attendance eligibility — one grouped query for the distinct students
-      const minPct = Number((await q(`SELECT COALESCE(settings->>'minAttendancePct', settings->>'min_attendance_pct', '75') AS p
+      const minPct = Number((await sysq(`SELECT COALESCE(settings->>'minAttendancePct', settings->>'min_attendance_pct', '75') AS p
         FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.p ?? 75);
       if (eligible.length) {
-        const att = (await q(
+        const att = (await sysq(
           `SELECT student_id,
                   count(*)::int AS total,
                   count(*) FILTER (WHERE status IN ('present','late'))::int AS attended
@@ -440,7 +461,7 @@ export function register(app, kernel) {
   // ── per-board policy (settings-carried; PUT validates the whole shape) ──────
   app.get(`/plugins/${ID}/board-policy`, { preHandler: [require(...EXAM_STAFF), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const row = (await q(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      const row = (await sysq(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0];
       const policy = readBoardPolicy(row?.bp);
       if (policy) return { policy, custom: true };
@@ -488,8 +509,8 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!e) return bad(reply, 'We couldn\'t find that exam', 404);
       if (e.status !== 'published') return bad(reply, 'Recompute verifies PUBLISHED reports — this exam has none yet', 409);
-      const scale = (await q(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale', 'cbse_10_point') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
-      const policy = readBoardPolicy((await q(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      const scale = (await sysq(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale', 'cbse_10_point') AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.gs ?? 'cbse_10_point';
+      const policy = readBoardPolicy((await sysq(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.bp);
       const marks = (await c.query(
         `SELECT student_id, component, marks, max_marks FROM plugin_exams.mark WHERE exam_id=$1 AND tenant_id=$2 ORDER BY student_id, component`,

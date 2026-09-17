@@ -7,11 +7,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { feeService } from '../services';
+import { feeService } from '../demo/seedServices';
 import {
   PageHead, Section, Card, Stat, Badge, DataTable, Button, useToast,
-  Empty, ErrorState, SkeletonCard,
-} from '../components/ui';
+  Empty, ErrorState, SkeletonCard, SampleNote} from '../components/ui';
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtMoneyShort, fmtPct, fmtDateShort, fmtRelative } from '../lib/format';
@@ -68,19 +67,16 @@ function buildAssets(): Asset[] {
       lastServiced: fmtDateShort(rng.date(-rng.int(20, 150))),
       nextDue: fmtDateShort(rng.date(dueInDays)),
       dueInDays,
-      status,
-    });
+      status});
   });
   rows.push({
     id: 'ast_lab_1', name: 'Centrifuge — Physics Lab', type: 'Lab equipment', location: 'North · Lab 2',
     campus: 'North', vendor: 'MetroLab Supplies', lastServiced: fmtDateShort(rng.date(-210)),
-    nextDue: fmtDateShort(rng.date(6)), dueInDays: 6, status: 'Due for service',
-  });
+    nextDue: fmtDateShort(rng.date(6)), dueInDays: 6, status: 'Due for service'});
   rows.push({
     id: 'ast_lab_2', name: 'Microscope set B (12 units)', type: 'Lab equipment', location: 'City · Lab 1',
     campus: 'City', vendor: 'MetroLab Supplies', lastServiced: fmtDateShort(rng.date(-40)),
-    nextDue: fmtDateShort(rng.date(120)), dueInDays: 120, status: 'In service',
-  });
+    nextDue: fmtDateShort(rng.date(120)), dueInDays: 120, status: 'In service'});
   return rows;
 }
 
@@ -94,12 +90,10 @@ function buildVendors(): Vendor[] {
     { name: 'MetroLab Supplies', service: 'Lab equipment AMC & consumables', contact: '+91 99304 22871', days: 12, covered: 2 },
     { name: 'ShineClean Housekeeping', service: 'Housekeeping — all campuses', contact: '+91 98675 30219', days: 128, covered: 3 },
     { name: 'SecureVision CCTV Systems', service: 'CCTV coverage & quarterly audit', contact: '+91 97112 88450', days: 9, covered: 3 },
-    { name: 'AquaSure Water Purifiers', service: 'RO units service contract', contact: '+91 98926 71044', days: -6, covered: 3 },
-  ];
+    { name: 'AquaSure Water Purifiers', service: 'RO units service contract', contact: '+91 98926 71044', days: -6, covered: 3 }];
   return defs.map((d, i) => ({
     id: `vnd_${i + 1}`, name: d.name, service: d.service, contact: d.contact,
-    contractEndsDays: d.days, contractEnds: fmtDateShort(rng.date(d.days)), assetsCovered: d.covered,
-  }));
+    contractEndsDays: d.days, contractEnds: fmtDateShort(rng.date(d.days)), assetsCovered: d.covered}));
 }
 
 const ASSETS = buildAssets();
@@ -119,12 +113,7 @@ const BRIEFING_TRACE = {
   reasoningRole: 'Summarizer (read-only)',
   action: 'None — surfaces the briefing and links to each domain',
   approvalStatus: 'Not required (read-only)',
-  verification: 'Every figure recomputed from source records this morning',
-  model: 'Frontier (reasoning) · ap-south-1',
-  latencyMs: 760,
-  tokens: 1180,
-  cost: '₹0.09',
-};
+  verification: 'Illustrative sample in this build — not recomputed from source records'};
 
 /* ============================================================ */
 
@@ -188,8 +177,7 @@ export default function Operations() {
     { key: 'calendar', title: 'Calendar', icon: Icon.Calendar, to: '/calendar', summary: live.nextEvent ? `Next: ${live.nextEvent.title} · ${fmtRelative(live.nextEvent.on)}` : 'No upcoming events', count: seed.calendarEvents.filter(e => e.campus === campus || e.campus === 'all').length, countLabel: 'this term', tone: 'accent' },
     { key: 'cases', title: 'Cases', icon: Icon.Clipboard, to: '/cases', summary: `${live.casesInProgress} in progress · ${live.openCases} open overall`, count: live.openCases, countLabel: 'open', tone: live.openCases > 3 ? 'warning' : undefined },
     { key: 'incidents', title: 'Incidents', icon: Icon.Alert, to: '/incidents', summary: `${live.incidentsInProgress} being worked, ${live.openIncidents} unresolved`, count: live.openIncidents, countLabel: 'open', tone: live.openIncidents > 0 ? 'warning' : 'success' },
-    { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · ${VENDORS.length} vendor contract${VENDORS.length === 1 ? '' : 's'} on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined },
-  ], [campus, collectionPct, live, openMaint]);
+    { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · ${VENDORS.length} vendor contract${VENDORS.length === 1 ? '' : 's'} on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined }], [campus, collectionPct, live, openMaint]);
 
   const openCard = (c: DomainCardDef) => {
     if (c.key === 'assets') {
@@ -201,9 +189,10 @@ export default function Operations() {
 
   return (
     <div>
+      <SampleNote>Sample operations data — the briefing, asset register and vendor figures are illustrative in this build and are not read from your school’s records.</SampleNote>
       <PageHead
         title="Operations"
-        sub={`Transport, fees, facilities, documents and people operations — ${campusName}. Every figure recomputed from records.`}
+        sub={`Transport, fees, facilities, documents and people operations — ${campusName}. Sample figures in this build — a live deployment recomputes from records.`}
         actions={<Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { fees.retry(); toast({ title: 'Operations summary refreshed', tone: 'info' }); }}>Refresh</Button>}
       />
 
@@ -238,8 +227,7 @@ export default function Operations() {
               { label: 'Route 7 · Bus 14 status', detail: 'Delayed +13 min · 38 students · incident inc_1 resolved, repair scheduled Saturday', source: 'Transport GPS · Route 7', refType: 'transport' },
               { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Fees records · recomputed', refType: 'fees' },
               { label: 'Case queue', detail: `${live.openCases} open cases on ${campusName} · 1 on a 24h SLA (Bus 14 complaint)`, source: 'Cases · live queue', refType: 'case' },
-              { label: 'Compliance watch', detail: 'Fire Safety Certificate (North) expires in 21 days · vendor quote pending', source: 'Document registry', refType: 'document' },
-            ]}
+              { label: 'Compliance watch', detail: 'Fire Safety Certificate (North) expires in 21 days · vendor quote pending', source: 'Document registry', refType: 'document' }]}
           />
           <AiTraceCard trace={BRIEFING_TRACE} />
         </div>
@@ -305,9 +293,7 @@ export default function Operations() {
                     ? <Badge tone="success" dot>In service</Badge>
                     : a.status === 'Due for service'
                       ? <Badge tone="warning" dot>Due for service</Badge>
-                      : <Badge tone="danger" dot>In workshop</Badge>,
-                },
-              ]}
+                      : <Badge tone="danger" dot>In workshop</Badge>}]}
               empty={<Empty icon={<Icon.Grid size={22} />} title="No assets on register" />}
             />
           </Card>

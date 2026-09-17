@@ -25,12 +25,10 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   return { ...state, retry: () => setTick(t => t + 1) };
 }
 import { apiAudit } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { Badge, Button, Card, DataTable, Drawer, Empty, KeyValue, PageHead, Section, Skeleton, Stat, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDateTime, fmtRelative } from '../lib/format';
-import type { AuditEntry } from '../types/domain';
 
 const ROLE_LABEL: Record<string, string> = {
   principal: 'Principal', teacher: 'Teacher', coordinator: 'Coordinator', finance: 'Finance',
@@ -65,22 +63,15 @@ const mapServerRow = (r: ServerAuditRow): LedgerRow => ({
   server: true,
 });
 
-const mapSessionEntry = (a: AuditEntry): LedgerRow => ({
-  id: a.id, on: a.on, actor: a.actor, actorRole: a.actorRole, action: a.action,
-  recordType: a.recordType, recordRef: a.recordRef, reason: a.reason, policyRef: a.policyRef,
-  aiInvolved: a.aiInvolved, risk: a.risk, outcome: a.outcome, server: false,
-});
-
 function csvEscape(v: string): string {
   return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
 export default function Audit() {
-  const { domain, actorName } = useStore();
+  const { actorName } = useStore();
   const toast = useToast();
 
   const ledger = useAsync<LedgerRow[]>(async () => {
-    if (DEMO_MODE) return domain.audit.map(mapSessionEntry); /* demo build: session entries, labelled below */
     const res = await apiAudit(200);
     return (res.entries ?? []).map(r => mapServerRow(r as unknown as ServerAuditRow));
   }, []);
@@ -93,8 +84,8 @@ export default function Audit() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const rows = ledger.data ?? [];
-  const sessionOnly = !DEMO_MODE && !ledger.loading && !ledger.error && rows.every(r => !r.server);
-  const fallback = !DEMO_MODE && (!!ledger.error || sessionOnly);
+  const sessionOnly = !ledger.loading && !ledger.error && rows.every(r => !r.server);
+  const fallback = !!ledger.error || sessionOnly;
 
   const roles = useMemo(() => Array.from(new Set(rows.map((a: LedgerRow) => a.actorRole))), [rows]);
 

@@ -4,15 +4,14 @@
 // dispatcher (scripts/comms-dispatcher.js) calls with rows claimed from
 // app.communications — sends are NOT direct, they drain the approved queue.
 //
-// Difference from rails.sms: template registry reuse. comms.whatsapp (door
-// `POST /plugins/comms.whatsapp/templates`, migration 011) keeps DLT templates in
-// that plugin's settings → 'templates' map ({ name: { body, dltId } }). This rail
-// reads the SAME registry (settings key template_registry_from, default
-// 'comms.whatsapp'), renders {template} with {params} ($1-style and {{key}} both),
+// Difference from rails.sms: template registry reuse. The enabled provider of
+// capability `comms.whatsapp.templates` owns the DLT templates in its settings
+// → 'templates' map ({ name: { body, dltId } }). This rail resolves that provider
+// from the tenant manifest, then renders {template} with {params} ($1-style and {{key}} both),
 // and passes the rendered body to the provider. An unregistered template name
 // degrades to the raw body (the dispatcher's rows carry a rendered kernel body).
 //
-// Provider is settings-driven on THIS plugin's row (kernel q() owner path):
+// Provider is settings-driven on THIS plugin's row (kernel sysq() owner path):
 //   provider = 'logger' (default) — structured log line + { ok: true }.
 //   provider = 'http-generic' — POST { to, body, template, params } as JSON to
 //     settings url with a settings-named auth header. No vendor SDK.
@@ -25,6 +24,8 @@
 // Recipients must be E.164; failures are RETURNED, never thrown.
 const ID = 'rails.whatsapp';
 export { default as manifest } from './manifest.js';
+import { decryptSettings } from '../../settings-crypto.js';
+import { enabledCapability } from '../../plugin-capabilities.js';
 
 const E164_RE = /^\+[1-9]\d{7,14}$/; // ITU-T E.164: + then 8–15 digits, no leading 0
 const redactSecrets = (s) => String(s ?? '').replace(/(auth_header_value)\s*[=:]\s*\S+/gi, '$1=[redacted]');
@@ -32,12 +33,12 @@ const redactSecrets = (s) => String(s ?? '').replace(/(auth_header_value)\s*[=:]
 // kernel q binding: register() wires it on mount; the dispatcher (a separate
 // process, loader-free) calls bindKernel(q) before its first tick.
 let kernelQ = null;
-export function bindKernel(q) { kernelQ = q; }
+export function bindKernel(ownerQuery) { kernelQ = ownerQuery; }
 
 async function readSettings(tenantId) {
   try {
     const r = await kernelQ(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
-    return r.rows[0]?.settings ?? {};
+    return decryptSettings(r.rows[0]?.settings ?? {}, tenantId);
   } catch (e) {
     console.error(`${ID}: settings read failed — degrading to logger provider:`, e.message);
     return {};
@@ -48,13 +49,14 @@ async function readSettings(tenantId) {
 async function readTemplate(tenantId, templateName) {
   if (!templateName) return null;
   try {
-    const from = 'comms.whatsapp'; // registry owner (manifest documents the reuse)
+    const owner = await enabledCapability(kernelQ, tenantId, 'comms.whatsapp.templates');
+    if (!owner) return null;
     // registry rows are { body, dltId } objects — take .body, never the JSON blob
     // (a literal `{"body":…}` string sent to a guardian would be a real send bug).
     const r = await kernelQ(
       `SELECT COALESCE(settings->'templates'->>$1, settings->'templates'->$1->>'body') AS body
          FROM app.plugins WHERE tenant_id=$2 AND plugin_id=$3`,
-      [String(templateName), tenantId, from]);
+      [String(templateName), tenantId, owner.plugin_id]);
     const raw = r.rows[0]?.body ?? null;
     if (raw && raw.trimStart().startsWith('{')) {
       try { return JSON.parse(raw)?.body ?? raw; } catch { return raw; }
@@ -181,5 +183,5 @@ export async function sendWhatsapp({ to, template, params, body, dedupKey, tenan
 // Loader contract: register(app, kernel) — the rail mounts no doors; it only
 // binds the kernel q for owner-path settings reads.
 export function register(app, kernel) {
-  bindKernel(kernel.q);
+  bindKernel(kernel.sysq);
 }

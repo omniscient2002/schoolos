@@ -1,6 +1,7 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
 import { pool } from '../../db.js';
+import { canReach } from '../../custom-roles.js';
 // teacher.support — runtime module (migration 032, TeacherOS lane TS-2).
 // Concerns (P10 · M9.2): one-tap staff flags; every status transition APPENDS a row to
 // teacher.concern_status_event (append-only — the app role has no UPDATE/DELETE grant on
@@ -39,11 +40,20 @@ const INTERVENTION_TRANSITIONS = {
   in_progress: ['reassessed'],
   reassessed: ['improved', 'continue', 'escalate'],
 };
-const STAFF = ['owner', 'principal', 'itadmin', 'coordinator', 'teacher'];       // staff-side surfaces
-const ROUTE_AUTHORITY = ['owner', 'principal', 'itadmin', 'coordinator'];        // concern routing tier
+const STAFF = ['owner', 'principal', 'itadmin', 'coordinator', 'counselor', 'teacher'];  // staff-side surfaces
+// RBAC-2: three DISTINCT tiers, because they answer three different questions and used to borrow each
+// other's lists (a single ROUTE_AUTHORITY powered both "who sees the board" and "who may assign it", and
+// the safety box was readable by finance, transport and lab staff).
+//   · routing — who may ASSIGN a concern to a designee ("the coordinator routes, support decides")
+const ROUTE_AUTHORITY = ['owner', 'principal', 'itadmin', 'coordinator'];
+//   · oversight — who sees the WHOLE board rather than only their own filings/routed-to-them rows
+const CONCERN_OVERSIGHT = ['owner', 'principal', 'itadmin', 'coordinator', 'counselor'];
 const SAFEGUARD_AUTHORITY = ['owner', 'principal', 'itadmin'];                   // full safety-box authority
-// designated box readers — every staff role EXCEPT teacher (never teachers, by rule)
-const BOX_READERS = ['owner', 'principal', 'itadmin', 'coordinator', 'finance', 'admissions', 'transport', 'facilities', 'technician', 'counselor'];
+// designated box readers — the safeguarding tier only: every staff role EXCEPT teacher (never teachers, by
+// rule) AND except the roles with no safeguarding mandate at all (finance, admissions, transport,
+// facilities, technician). A transport coordinator or a lab assistant had no business reading a child's
+// safety box, and a counselor — the role whose whole job this is — could not be issued at all.
+const BOX_READERS = ['owner', 'principal', 'itadmin', 'coordinator', 'counselor'];
 const IST_NOW = () => new Date(Date.now() + 5.5 * 3600 * 1000); // Asia/Kolkata clock
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -51,7 +61,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const bad = (reply, error, code = 400) => reply.code(code).send({ error });
   const settingsFor = (c, tenantId) =>
     c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID])
@@ -137,10 +147,10 @@ export function register(app, kernel) {
 
   // queue — role-scoped (the /my-cases privacy pattern): a teacher sees ONLY the
   // concerns they filed; oversight tier sees the board; anyone else routed-to-them.
-  app.get('/teacher/concerns', { preHandler: [require(...STAFF, 'counselor'), lifecycleGate] }, async (req) => {
+  app.get('/teacher/concerns', { preHandler: [require(...STAFF), lifecycleGate] }, async (req) => {
     const status = req.query.status ? String(req.query.status) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const oversight = ROUTE_AUTHORITY.includes(req.user.role);
+      const oversight = CONCERN_OVERSIGHT.includes(req.user.role);
       const rows = (await c.query(
         `SELECT id, student_id, category, urgency, detail, evidence_ref, status, routed_to, routed_role, outcome, outcome_note, created_at
          FROM teacher.concern
@@ -209,7 +219,7 @@ export function register(app, kernel) {
   });
 
   // designee outcome → closed (append event; the row keeps the current-status pointer)
-  app.post('/teacher/concern/:id/outcome', { preHandler: [require(...STAFF, 'counselor'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+  app.post('/teacher/concern/:id/outcome', { preHandler: [require(...STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (!CONCERN_OUTCOMES.includes(b.outcome)) return bad(reply, 'Outcome must be resolved, monitoring, referred_out or escalated');
     if (!b.note || !String(b.note).trim()) return bad(reply, 'Please add a short outcome note (what support was given)');
@@ -240,13 +250,15 @@ export function register(app, kernel) {
   });
 
   // status history — filer, designee or oversight (append-only event rows)
-  app.get('/teacher/concern/:id/events', { preHandler: [require(...STAFF, 'counselor'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+  app.get('/teacher/concern/:id/events', { preHandler: [require(...STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const con = (await c.query(
         `SELECT id, filed_by, routed_to FROM teacher.concern WHERE id=$1 AND tenant_id=$2`,
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!con) return bad(reply, 'We couldn\'t find that concern', 404);
-      const allowed = con.filed_by === req.user.id || con.routed_to === req.user.id || ROUTE_AUTHORITY.includes(req.user.role) || req.user.role === 'counselor';
+      // visibility of a board the caller oversees — CONCERN_OVERSIGHT (the counselor's tier), not the
+      // ASSIGNMENT tier this used to borrow while bolting `counselor` on the end
+      const allowed = con.filed_by === req.user.id || con.routed_to === req.user.id || CONCERN_OVERSIGHT.includes(req.user.role);
       if (!allowed) return bad(reply, 'You don\'t have access to this concern\'s history', 403);
       const rows = (await c.query(
         `SELECT from_status, to_status, note, actor_id, created_at FROM teacher.concern_status_event
@@ -307,7 +319,8 @@ export function register(app, kernel) {
   // itadmin. Any other designated staff see ONLY their assigned queue (?assigned=1).
   app.get('/safety/box', { preHandler: [require(...BOX_READERS), lifecycleGate] }, async (req, reply) => {
     const mine = req.query.assigned === '1' || req.query.assigned === 'true';
-    const authority = SAFEGUARD_AUTHORITY.includes(req.user.role);
+    // RBAC-1: permission, not scope — a custom role granted this safeguarding door has the authority.
+    const authority = canReach(req, [...SAFEGUARD_AUTHORITY]);
     if (mine && !authority && !['coordinator', 'counselor'].includes(req.user.role)) {
       return bad(reply, 'The safety box is read by the designated safeguarding authority only', 403);
     }
@@ -368,12 +381,17 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!box) return bad(reply, 'We couldn\'t find that safety report', 404);
       if (box.status === 'closed') return bad(reply, 'This report is closed', 409);
+      /* Review round 20, P2: this filter said "any staff role except teacher/parent/student", while the READ
+       * gates (`/safety/box`, the assigned queue) and the close door accept only BOX_READERS. Narrowing the
+       * readers without narrowing the assignment created a state the product cannot resolve: a report assigned
+       * to the finance office can be neither read nor closed by its assignee — the assignee is not in the
+       * reader set, so the doors refuse them at the gate. The assignable set IS the reader set, one list, so
+       * they cannot drift apart again. */
       const staff = (await c.query(
         `SELECT id, name, role FROM app.users
-         WHERE id=$1 AND tenant_id=$2 AND active
-           AND role NOT IN ('teacher','parent','student')`,
-        [b.assignedTo, req.user.tenant_id])).rows[0];
-      if (!staff) return bad(reply, 'Safety reports are assigned to designated (non-teacher) staff only', 400);
+         WHERE id=$1 AND tenant_id=$2 AND active AND role = ANY($3::text[])`,
+        [b.assignedTo, req.user.tenant_id, BOX_READERS])).rows[0];
+      if (!staff) return bad(reply, `Safety reports are assigned to the designated safeguarding roles only (${BOX_READERS.join(', ')})`, 400);
       await c.query(`UPDATE safety.box SET status='assigned', assigned_to=$2, assigned_by=$3, updated_at=now() WHERE id=$1`,
         [box.id, staff.id, req.user.id]);
       await requestAudit(c, req.user.tenant_id, ID, {
@@ -392,7 +410,9 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!box) return bad(reply, 'We couldn\'t find that safety report', 404);
       if (box.status === 'closed') return bad(reply, 'This report is already closed', 409);
-      const can = SAFEGUARD_AUTHORITY.includes(req.user.role) || box.assigned_to === req.user.id;
+      // RBAC-1: a mask grant that reaches this door counts as authority here too (the gate above already
+      // proved reach); the assignee path is unchanged.
+      const can = canReach(req, [...SAFEGUARD_AUTHORITY]) || box.assigned_to === req.user.id;
       if (!can) return bad(reply, 'Only the safeguarding authority or the assigned owner can close a report', 403);
       await c.query(`UPDATE safety.box SET status='closed', closed_at=now(), updated_at=now() WHERE id=$1`, [box.id]);
       await requestAudit(c, req.user.tenant_id, ID, {
@@ -564,12 +584,12 @@ export function register(app, kernel) {
     });
   });
 
-  // list — teachers see plans they own; oversight tier sees all (optionally per student)
+  // list — teachers see plans they own; the support/oversight tier sees all (optionally per student)
   app.get('/interventions', { preHandler: [require(...STAFF), lifecycleGate] }, async (req, reply) => {
     const studentId = req.query.student;
     if (studentId && !UUID.test(String(studentId))) return bad(reply, 'Student filter needs a valid ID');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const oversight = ROUTE_AUTHORITY.includes(req.user.role);
+      const oversight = CONCERN_OVERSIGHT.includes(req.user.role);
       const rows = (await c.query(
         `SELECT p.id, p.student_id, s.name AS student_name, p.owner_id, u.name AS owner_name,
                 p.objective, p.activity, p.target_end, p.status, p.outcome, p.created_at, p.updated_at
@@ -600,7 +620,9 @@ export function register(app, kernel) {
       const p = (await c.query(`SELECT id, status, owner_id FROM intervention.plan WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!p) return bad(reply, 'We couldn\'t find that intervention plan', 404);
-      if (p.owner_id !== req.user.id && !ROUTE_AUTHORITY.includes(req.user.role)) {
+      // the support/oversight tier maintains plans (the author stays recorded in `owner_id`); the routing
+      // tier is about ASSIGNMENT, so using it here meant a counselor could not maintain a support plan
+      if (p.owner_id !== req.user.id && !CONCERN_OVERSIGHT.includes(req.user.role)) {
         return bad(reply, 'Only the plan owner or the oversight tier can move a plan forward', 403);
       }
       const allowed = INTERVENTION_TRANSITIONS[p.status] ?? [];
@@ -692,12 +714,16 @@ export function register(app, kernel) {
         [b.slotId, req.user.tenant_id])).rows[0];
       if (!slot) return bad(reply, 'We couldn\'t find that slot', 404);
       if (slot.status !== 'open') return bad(reply, `That slot is already ${slot.status}`, 409);
-      const child = (await c.query(`SELECT id, name, guardian_name FROM app.students WHERE id=$1 AND tenant_id=$2`,
+      const child = (await c.query(`SELECT id FROM app.students WHERE id=$1 AND tenant_id=$2`,
         [b.studentId, req.user.tenant_id])).rows[0];
       if (!child) return bad(reply, 'We couldn\'t find that student', 404);
-      if (child.guardian_name !== req.user.name) {
-        return bad(reply, 'You can only book meetings for your own child', 403);
-      }
+      // PLGX-4: guardianship is structural (`family.child_link`), never a display-name equality — the old
+      // `child.guardian_name !== req.user.name` check admitted any account named after a real guardian and
+      // refused a legitimate guardian whose account name differed.
+      const linked = (await c.query(
+        `SELECT 1 FROM family.child_link cl WHERE cl.tenant_id=$1 AND cl.user_id=$2 AND cl.student_id=$3 LIMIT 1`,
+        [req.user.tenant_id, req.user.id, child.id])).rows[0];
+      if (!linked) return bad(reply, 'You can only book meetings for your own child', 403);
       let bk;
       try {
         bk = (await c.query(

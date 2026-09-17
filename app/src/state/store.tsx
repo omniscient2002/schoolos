@@ -184,29 +184,19 @@ interface Ctx {
 const StoreCtx = createContext<Ctx | null>(null);
 
 const ROLE_CAMPUS: Record<RoleId, CampusId | 'all'> = {
-  principal: 'all', teacher: 'north', coordinator: 'north', finance: 'all', admissions: 'all',
+  /* a counsellor works with children across the school, so their scope is the whole tenant like the
+     principal's office — never a single campus (RBAC-2). */
+  principal: 'all', counselor: 'all', teacher: 'north', coordinator: 'north', finance: 'all', admissions: 'all',
   transport: 'north', parent: 'north', student: 'north', owner: 'all', itadmin: 'all',
   facilities: 'north', technician: 'north',
 };
 
-export const demoAccounts: { id: RoleId; name: string; title: string; email: string }[] = [
-  { id: 'principal', name: 'Dr. Meera Krishnan', title: 'Principal — Group', email: 'meera.k@meridian.edu' },
-  { id: 'teacher', name: 'Priya Iyer', title: 'Class Teacher 8-B · Mathematics', email: 'priya.iyer@meridian.edu' },
-  { id: 'coordinator', name: 'Arjun Bhat', title: 'Admin Coordinator — North', email: 'arjun.bhat@meridian.edu' },
-  { id: 'finance', name: 'Deepa Rao', title: 'Finance Lead — Group', email: 'deepa.rao@meridian.edu' },
-  { id: 'admissions', name: 'Anita Deshpande', title: 'Admissions Head', email: 'anita.d@meridian.edu' },
-  { id: 'transport', name: 'Rajeev Nair', title: 'Transport Supervisor — North', email: 'rajeev.nair@meridian.edu' },
-  { id: 'parent', name: 'Kavita Sharma', title: 'Guardian — Aarav (8-B)', email: 'kavita.s@gmail.com' },
-  { id: 'student', name: 'Aarav Sharma', title: 'Grade 8-B · Roll 14', email: 'st.north.aarav@student.meridian.edu' },
-  { id: 'owner', name: 'Vikram Mehta', title: 'Trustee / Group Owner', email: 'vikram.mehta@meridian.edu' },
-  { id: 'itadmin', name: 'Sanjay Kulkarni', title: 'IT Administrator', email: 'sanjay.k@meridian.edu' },
-  { id: 'facilities', name: 'Vikram Joshi', title: 'Facility Manager — North', email: 'vikram.joshi@meridian.edu' },
-  { id: 'technician', name: 'Arif Shaikh', title: 'AV & Electrical Technician — North', email: 'arif.s@meridian.edu' },
-];
-
-/* The fixed demo student/guardian pair for parent & student experiences */
-export const DEMO_STUDENT_ID = seed.DEMO_STUDENT.id;
-export const DEMO_GUARDIAN_ID = seed.DEMO_GUARDIAN?.id ?? '';
+/* P0 (PRD-12): the former `DEMO_STUDENT_ID` / `DEMO_GUARDIAN_ID` exports here
+   dereferenced seed.DEMO_STUDENT at MODULE scope — before ensureDataset() had
+   hydrated that live binding, so they always held `undefined` — and nothing in
+   the app imported them. Removed rather than left as a trap: the demo pair is
+   now read inside the component that needs it, behind the fixture guards in
+   lib/demoMode. */
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   // activeCampus starts at the demo's 'north' but snaps to the tenant's own
@@ -236,12 +226,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<Ctx>(() => {
-    /* T304 (D-5): no `!`-asserts — an unrecognised role falls back to the
-       first demo account instead of crashing on `account.name`. */
-    const account = demoAccounts.find(a => a.id === session.roleId) ?? demoAccounts[0];
+    /* The live /me identity is the only actor name. There is no demo roster to
+       fall back to any more; before /me settles the store is behind AuthGate. */
     return {
       session,
-      actorName: sessionUserName() ?? account.name,
+      actorName: sessionUserName() ?? 'Unknown account',
       setRole: r => setSession((s: Session) => ({ ...s, roleId: r, campusScope: ROLE_CAMPUS[r], activeCampus: ROLE_CAMPUS[r] === 'all' ? s.activeCampus : ROLE_CAMPUS[r] as CampusId })),
       setActiveCampus: c => setSession((s: Session) => ({ ...s, activeCampus: c })),
       domain,

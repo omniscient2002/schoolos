@@ -15,10 +15,9 @@
      BRIEFS     17:00 end-of-day banner (dismissible) + weekly
 
    Data: GET /teacher/home + /teacher/brief?when=eod|week
-   (frozen §4 contracts) via teacherFixtures.ts, which probes the
-   live door and falls back to a typed local fixture while the
-   server lanes build. Fixture mode is never silent — the page
-   carries a visible "Demo data" badge.
+   (frozen §4 contracts) via teacherFixtures.ts. An absent door
+   throws an honest "not connected yet" error — the page renders
+   its real empty/loading/error paths, never sample data.
 
    Every card zone exercises the 12-state contract (§P12);
    empty/loading/error/denied are fully real, the remaining
@@ -33,14 +32,14 @@ import { CardStates, StateChip, StateNotice } from '../components/teacher/States
 import { friendly } from '../lib/friendlyErrors';
 import { fmtDate, weekday } from '../lib/format';
 import {
-  getTeacherHome, getTeacherBrief, teacherDoorLive, _resetTeacherDoors,
+  getTeacherHome, getTeacherBrief, _resetTeacherDoors,
   type TeacherHomeAggregate, type TeacherNeed, type TeacherBrief,
 } from '../services/teacherFixtures';
 
 /* ---------- async card state ---------- */
 type DoorPhase<T> = { loading: boolean; data: T | null; err?: string };
 
-function useTeacherDoor<T>(fetcher: () => Promise<{ ok: boolean; data: T | null }>, deps: unknown[], doorKey: 'home' | 'brief') {
+function useTeacherDoor<T>(fetcher: () => Promise<{ ok: boolean; data: T | null }>, deps: unknown[]) {
   const [phase, setPhase] = useState<DoorPhase<T>>({ loading: true, data: null });
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -51,8 +50,8 @@ function useTeacherDoor<T>(fetcher: () => Promise<{ ok: boolean; data: T | null 
       .catch(e => { if (live) setPhase({ loading: false, data: null, err: friendly((e as Error)?.message ?? e) }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick, doorKey]);
-  return { ...phase, retry: () => setTick(t => t + 1), isFixture: !teacherDoorLive[doorKey] };
+  }, [...deps, tick]);
+  return { ...phase, retry: () => setTick(t => t + 1) };
 }
 
 /* ---------- greeting ---------- */
@@ -226,16 +225,15 @@ export default function TeacherHome() {
     return () => clearInterval(t);
   }, []);
 
-  const home = useTeacherDoor<TeacherHomeAggregate>(() => getTeacherHome(), [session.roleId], 'home');
-  const eod = useTeacherDoor<TeacherBrief>(() => getTeacherBrief('eod'), [session.roleId], 'brief');
-  const week = useTeacherDoor<TeacherBrief>(() => getTeacherBrief('week'), [session.roleId], 'brief');
+  const home = useTeacherDoor<TeacherHomeAggregate>(() => getTeacherHome(), [session.roleId]);
+  const eod = useTeacherDoor<TeacherBrief>(() => getTeacherBrief('eod'), [session.roleId]);
+  const week = useTeacherDoor<TeacherBrief>(() => getTeacherBrief('week'), [session.roleId]);
 
   const isEod = clock.getHours() >= 17;
   const showEodBanner = isEod && !briefDismissed && !!eod.data;
 
   const loading = home.loading;
   const agg = home.data;
-  const source = home.isFixture ? 'fixture' : 'live';
 
   const now = clock;
   const headSub = `${weekday(now)} · ${fmtDate(now)} · ${dayStatus(agg) || 'Preparing your day'}${agg ? ` · ${agg.glance.periods} period${agg.glance.periods === 1 ? '' : 's'} today` : ''}`;
@@ -272,7 +270,6 @@ export default function TeacherHome() {
         sub={loading ? 'Putting your day together…' : headSub}
         actions={
           <span className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {source === 'fixture' && <Badge tone="accent">Demo data</Badge>}
             <Badge tone={agg?.now ? 'success' : 'neutral'} dot>{agg?.now ? 'Class in session' : 'Between classes'}</Badge>
           </span>
         }
@@ -390,11 +387,6 @@ export default function TeacherHome() {
                 {needs.map((n, i) => <NeedRow key={n.id} need={n} divider={i > 0} onOpen={openNeed} />)}
               </Card>
             )}
-            {home.isFixture && (
-              <div className="u-xs u-faint" style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
-                Built from demo data while the school server door is being switched on. Live records replace this automatically.
-              </div>
-            )}
           </Section>
 
           {/* ---------- WHAT SHOULD I DO NEXT ---------- */}
@@ -450,9 +442,6 @@ export default function TeacherHome() {
                 </div>
                 <div className="u-xs u-faint" style={{ marginTop: 10, lineHeight: 1.5 }}>
                   Counted from your timetable and the school calendar at {now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}.
-                </div>
-                <div style={{ marginTop: 10 }}>
-                  <StateChip source={source} />
                 </div>
               </Card>
             )}

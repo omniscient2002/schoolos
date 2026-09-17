@@ -1,7 +1,10 @@
 # FEATURES-STATUS — SchoolOS 13-plane enterprise candidate
 
-> Living document, updated per release cycle. Server counts are migration-backed door counts;
-> tests are the serial suite (`npm test`), last full run **183/183 green**.
+> Living document, updated per release cycle. **Every count below is illustrative, not authoritative.**
+> Pass/test counts are generated into `docs/VERIFICATION.md`; route and guard counts into
+> `docs/PERMISSION-MATRIX.md`; migration/module counts into `docs/VERIFICATION.md`. The per-plane door/test
+> figures in the table were typed by hand and have not all been re-measured (an earlier "183/183" here was
+> stale), so read them as the shape of a plane, never as a current count.
 
 ## Role planes (13)
 
@@ -25,16 +28,16 @@
 
 - **Threat model + attack matrix**: `docs/SECURITY-MATRIX.md` — 40+ attacks classified; RT-1…RT-11 fixed and regression-pinned.
 - **A3 logout revocation**: migration 038 `auth.revoked_token`; jti minted on every login; `/auth/logout` revokes immediately; denylist self-cleans. Regression: `tests/auth-revocation.test.js` (2/2).
-- **§43 permission matrix**: `server/scripts/permission-matrix.js` — every route classified; **177 routes: 146 role-gated · 23 auth-only · 8 reviewed-public · 0 unguarded**. Artifact: `docs/PERMISSION-MATRIX.md`. Fails closed in `npm run check`.
+- **§43 permission matrix**: `server/scripts/permission-matrix.js` — every route classified, **0 unguarded**. The exact route/guard counts are generated into `docs/PERMISSION-MATRIX.md` (never typed here; the "177 routes" once in this line was stale). Fails closed in `npm run check`.
 - **RLS**: every tenant table scoped by `schoolos.tenant_id` GUC under `schoolos_app`; restrictive dual-policy holes audited (RT-9); cross-tenant probes pinned per suite.
 - **Gates**: §37 secret scan clean · §45 no raw-HTML injection paths · §47 prod JWT_SECRET ≥32 guard · npm audit 0 vulns · DPDP consent ledger append-only.
 
 ## Acceptance gates (last run)
 
-- Full serial suite: **183 tests / 183 pass / 0 fail / 0 cancelled** (`npm test`).
+- Full serial suite: see **`docs/VERIFICATION.md`** for the measured counts, run log and source fingerprint (`npm test`, or regenerate with `node server/scripts/verification-artifact.js`).
 - Factory check (`npm run check`): permission matrix + DB + RLS baseline — **green**.
 - Web build (`npm run build`): **green** (tsc 0 errors, vite).
-- All work committed and pushed (`main`).
+- Source revision: identified by the fingerprint in `docs/VERIFICATION.md` (this lane runs no `git` commands, so a commit hash is not available to assert here).
 
 ## Known follow-ups
 

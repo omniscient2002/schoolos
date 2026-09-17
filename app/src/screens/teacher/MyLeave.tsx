@@ -18,10 +18,10 @@ import { Icon } from '../../components/Icon';
 import { fmtDate, fmtDateTime } from '../../lib/format';
 import { useStore } from '../../state/store';
 import {
-  createLeave, isFlowDoorLive, listMyLeave,
+  createLeave, listMyLeave,
   type LeaveKind, type TeacherLeaveRequest,
 } from '../../services/teacherFixtures';
-import { AsyncGate, DeniedState, FixtureTag, onEnter, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+import { AsyncGate, DeniedState, onEnter, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
 
 const KINDS: { id: LeaveKind; label: string; hint: string }[] = [
   { id: 'casual', label: 'Casual leave', hint: 'A day here or there — functions, errands.' },
@@ -102,7 +102,6 @@ export default function MyLeave() {
       <PageHead
         title="My leave"
         sub="Ask for leave in under a minute. Approval, substitute and handover happen without follow-up messages."
-        actions={<FixtureTag source={isFlowDoorLive('leave') ? 'live' : 'fixture'} />}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 18 }}>

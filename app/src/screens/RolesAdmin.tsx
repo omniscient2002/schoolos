@@ -23,7 +23,7 @@
    the doors' ROLES_ADMIN; light roles never reach this route (staffOnly).
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
-import { apiGet, apiPost, LIVE_BASE } from '../services/liveApi';
+import { apiGet, apiPost, apiRequest } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { Badge, Button, Card, Empty, ErrorState, PageHead, Section, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
@@ -82,16 +82,10 @@ const LIBRARIAN_START: { key: string; label: string; base_role: string; mask: Ro
   },
 };
 
-async function roleSend<T>(method: 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-  const token = localStorage.getItem('schoolos_token');
-  const res = await fetch(`${LIVE_BASE}${path}`, {
-    method,
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-  return data;
+/* FEX-6/7: role mutations ride the ONE transport so they carry the 401 session-reset and the CSRF header a
+   cookie-authenticated request needs, instead of a bespoke fetch that had neither. */
+function roleSend<T>(method: 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
+  return apiRequest<T>(path, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
 }
 
 /* ---- mask editor: pattern rows + real-door presets ---- */

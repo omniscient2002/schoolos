@@ -26,7 +26,7 @@ import { Icon } from '../../components/Icon';
 import { useAsync } from './teacherKit';
 import {
   A3Evidence, ClassPicker, DecayNote, EvidenceDrawer, EvidenceList, FilterRow,
-  InsightsFixtureTag, InsightsPageHead, InsightsRoleGate, InsightsSkeleton, MasteryChip,
+  InsightsPageHead, InsightsRoleGate, InsightsSkeleton, MasteryChip,
 } from './InsightsShared';
 import {
   MASTERY_LABEL, MASTERY_STYLE, TREND_INFO,
@@ -48,7 +48,6 @@ function StudentView({ classGrade, studentId, onPickStudent }: {
   const roster = useMemo(() => rosterFor(classGrade), [classGrade]);
   const state = useAsync(() => getMasteryStudent(studentId), [studentId]);
   const data = state.data?.data ?? null;
-  const source = state.data?.source ?? 'fixture';
 
   const counts = useMemo(() => {
     const t = data?.topics ?? [];
@@ -72,9 +71,6 @@ function StudentView({ classGrade, studentId, onPickStudent }: {
             {roster.length === 0 && <option value={studentId}>No students listed</option>}
             {roster.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
-        </div>
-        <div style={{ alignSelf: 'flex-end' }}>
-          <InsightsFixtureTag source={source} />
         </div>
         <div style={{ alignSelf: 'flex-end' }}>
           <Button

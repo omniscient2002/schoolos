@@ -12,7 +12,7 @@ export default {
   class: 'C',
   trust: 'T1',
   description: 'Infirmary log, sick passes and guardian health notices. Visits are append-first (corrections append); sent-home and hospital-referral outcomes raise a per-instance kernel approval action (clinic.notify.<visitId>) executed by the decide handler onto the comms rail — guardian notice is an approved communication, never a plugin-direct send (Comms §1.2). Health history is nurse-lane PII: no teacher/finance/parent read.',
-  permissions: ['students.read', 'events.emit', 'audit.request'],
+  permissions: ['students.read', 'events.emit', 'audit.request', 'actions.raise'],
   events: { subscribe: [], publish: ['clinic.visit.logged.v1', 'clinic.sick_pass.issued.v1'] },
   eventSubscriptions: [],
   slots: ['settings', 'reports'],

@@ -161,7 +161,12 @@ test('P-copilot budget: 100 copilot_call rows this calendar month → ask answer
     `SELECT count(*)::int AS n FROM parent.copilot_call WHERE user_id=$1 AND verb='ask'
      AND at >= date_trunc('month', (now() AT TIME ZONE 'Asia/Kolkata')::timestamp AT TIME ZONE 'Asia/Kolkata')`, [uid])).rows[0].n;
   const need = 100 - used;
-  assert.ok(need >= 0, 'budget count consistent');
+  // TST-4: `assert.ok(need >= 0)` was true by construction (need = 100 - used, and a SQL count is never
+  // negative), so it could not fail. Assert the facts that CAN be wrong: the seeded usage is a whole number
+  // inside the monthly cap, so the top-up below reaches exactly 101 attempts and the 429 is meaningful.
+  assert.ok(Number.isInteger(used) && used >= 0 && used <= 100,
+    `seeded monthly usage must be 0..100, got ${used}`);
+  assert.ok(need >= 0 && need <= 100, `top-up size must be 0..100, got ${need}`);
   if (need > 0) {
     await pool.query(
       `INSERT INTO parent.copilot_call (tenant_id, user_id, verb, question, sources, budget_class, at)
@@ -182,12 +187,21 @@ test('P-copilot budget: 100 copilot_call rows this calendar month → ask answer
 
 test('cross-guardian 403: draft for an unlinked child refuses without data', async () => {
   const p = await login('parent@meridian.edu');
-  const { pool } = await import('../src/db.js');
-  const foreign = await pool.query(
+  /* TST-5: this was `if (!foreign.rows[0]) return;`. A student outside this guardian's child_link set is
+     what the whole invariant is about, so its existence is asserted rather than assumed — a bare return
+     here reported pass while checking nothing. `pool.query` is NOT used for the read: src/db.js made the
+     pool default the constrained schoolos_app role, and app.students/family.child_link are RLS-protected,
+     so a bare read fails closed to zero rows and this assertion would then fire for a reason unrelated to
+     guardianship. withUser() sets the tenant GUC and the app role, i.e. the real request path. */
+  const { sysq, withUser } = await import('../src/db.js');
+  const tenant = (await sysq(`SELECT tenant_id FROM app.users WHERE email='parent@meridian.edu'`)).rows[0].tenant_id;
+  const foreign = await withUser(tenant, 'parent', (c) => c.query(
     `SELECT s.id FROM app.students s
-     WHERE NOT EXISTS (SELECT 1 FROM family.child_link l WHERE l.student_id=s.id AND l.user_id=(SELECT id FROM app.users WHERE email='parent@meridian.edu'))
-     LIMIT 1`);
-  if (!foreign.rows[0]) return; // demo env fully linked — skip
+     WHERE s.tenant_id=$1
+       AND NOT EXISTS (SELECT 1 FROM family.child_link l WHERE l.student_id=s.id AND l.user_id=(SELECT id FROM app.users WHERE email='parent@meridian.edu'))
+     LIMIT 1`, [tenant]));
+  assert.ok(foreign.rows[0],
+    'fixture: a student not linked to parent@meridian.edu must exist — without one the cross-guardian refusal cannot be exercised');
   const r = await app.inject({ method: 'POST', url: '/parent/copilot/draft', headers: H(p.token), payload: { kind: 'question_to_teacher', params: { childId: foreign.rows[0].id, focus: 'how is my child doing' } } });
   assert.equal(r.statusCode, 403);
   assert.ok(!/attendance|homework|report/i.test(r.body), 'error must not leak data shape');

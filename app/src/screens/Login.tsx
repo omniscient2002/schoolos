@@ -9,7 +9,6 @@ import { LIVE_BASE, setToken } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { Badge } from '../components/ui';
-import { DEMO_MODE } from '../lib/demoMode';
 import { t } from '../i18n';
 import { listTenants, switchTenant, type PickSchool } from './account/tenantSwitch';
 
@@ -52,21 +51,6 @@ async function otpVerifyFull(phone: string, code: string, tenantId?: string): Pr
 }
 
 type Method = 'password' | 'phone' | 'google';
-/* Display-only credential cheat-sheet. Authentication always hits the server. */
-const ROLES = [
-  { email: 'principal@meridian.edu', role: 'Principal', name: 'Dr. Meera Krishnan' },
-  { email: 'owner@meridian.edu', role: 'Owner', name: 'Vikram Mehta' },
-  { email: 'itadmin@meridian.edu', role: 'IT Admin', name: 'Sam Dsouza' },
-  { email: 'teacher@meridian.edu', role: 'Teacher', name: 'Priya Iyer' },
-  { email: 'coordinator@meridian.edu', role: 'Coordinator', name: 'Rahul Verma' },
-  { email: 'finance@meridian.edu', role: 'Finance', name: 'Ms. Rao' },
-  { email: 'admissions@meridian.edu', role: 'Admissions', name: 'Sneha Kulkarni' },
-  { email: 'transport@meridian.edu', role: 'Transport', name: 'Rajeev Nair' },
-  { email: 'facilities@meridian.edu', role: 'Facilities', name: 'Vikram Joshi' },
-  { email: 'technician@meridian.edu', role: 'Technician', name: 'Arif Shaikh' },
-  { email: 'parent@meridian.edu', role: 'Parent', name: 'Kavita Sharma' },
-  { email: 'student@meridian.edu', role: 'Student', name: 'Aarav Sharma' },
-];
 
 export interface SessionUser { name: string; role: string; email: string }
 export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) => Promise<void> | void }) {
@@ -523,34 +507,6 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
         )}
         </>)
         }
-
-        {/* P0 fix 2a: the demo credential grid (and the demo password it
-            fills) renders ONLY under VITE_DEMO_MODE=1 — production sign-in
-            is credentials-only. */}
-        {DEMO_MODE && (
-          <div className="login-roles">
-            <div className="login-roles-title">Try SchoolOS: pick a role</div>
-            <div className="login-roles-grid">
-              {ROLES.map(r => (
-                <button key={r.email} className="login-role" onClick={() => { setMethod('password'); setEmail(r.email); setPassword('schoolos-demo'); }}>
-                  <b>{r.role}</b><span>{r.name}</span>
-                  <code>{r.email}</code>
-                </button>
-              ))}
-            </div>
-            <div className="login-hint">Password for all: <code>schoolos-demo</code> · phone logins use the numbers below</div>
-            <details className="login-phones">
-              <summary>Phone numbers (OTP method)</summary>
-              <div className="login-phones-grid">
-                {[['Principal', '+919845000101'], ['Coordinator', '+919845000102'], ['Finance', '+919845000103'], ['Admissions', '+919845000104'], ['Transport', '+919845000105'], ['Facilities', '+919845000106'], ['Technician', '+919845000107'], ['Teacher', '+919845000108'], ['IT Admin', '+919845000109'], ['Parent', '+919845000201'], ['Student', '+919845000202'], ['Owner', '+919845000301']].map(([r, p]) => (
-                  <button key={p} className="login-role" onClick={() => { setMethod('phone'); setPhone(p); }}>
-                    <b>{r}</b><code>{p}</code>
-                  </button>
-                ))}
-              </div>
-            </details>
-          </div>
-        )}
 
         <div className="login-foot">
           <Icon.Shield size={12} /> Protected by tenancy-isolated sessions · every sign-in is written to the audit trail

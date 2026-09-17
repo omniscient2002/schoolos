@@ -20,7 +20,7 @@ import { fmtDate } from '../../lib/format';
 import { useAsync } from './teacherKit';
 import { Field, onEnter } from './teacherKit';
 import {
-  ClassPicker, FilterRow, InsightsFixtureTag, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
+  ClassPicker, FilterRow, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
 } from './InsightsShared';
 import { getCurriculumTree, saveCurriculumProgress, type CurriculumNode } from '../../services/teacherFixtures';
 
@@ -130,7 +130,6 @@ export default function CurriculumProgress() {
   const [classGrade, setClassGrade] = useState('8-B');
   const state = useAsync(() => getCurriculumTree(classGrade), [classGrade]);
   const data = state.data?.data ?? null;
-  const source = state.data?.source ?? 'fixture';
 
   const refresh = () => state.retry();
 
@@ -143,7 +142,6 @@ export default function CurriculumProgress() {
       <InsightsPageHead
         title="Curriculum coverage"
         sub="What the class has covered against the term plan — tick what you finished; the office owns the plan itself."
-        actions={<InsightsFixtureTag source={source} />}
       />
 
       <FilterRow>

@@ -8,10 +8,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { transportService } from '../services';
+import { transportService } from '../demo/seedServices';
 import {
   PageHead, Section, Card, Stat, Badge, Button, useToast, Progress,
-  Empty, ErrorState, Skeleton, SkeletonCard,
+  Empty, ErrorState, SampleNote, Skeleton, SkeletonCard,
 } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtTime } from '../lib/format';
@@ -278,6 +278,7 @@ export default function Transport() {
   return (
     <div>
       <style>{MAP_STYLE}</style>
+      <SampleNote>Sample transport data — route ridership and delay figures are illustrative in this build; live GPS doors are not connected.</SampleNote>
       <PageHead
         title="Transport"
         sub={isTransportRole

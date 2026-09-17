@@ -1,6 +1,7 @@
 // rails.whatsapp — plugin manifest (drop-in factory, docs/11 §2.2)
 export default {
   id: 'rails.whatsapp',
+  capabilities: ['comms.whatsapp.delivery'],
   name: 'WhatsApp Dispatch Rail',
   version: '1.0.0',
   class: 'B',
@@ -23,7 +24,6 @@ export default {
       phone_number_id: { type: 'string', description: 'cloud-api: the WhatsApp Business phone number id' },
       access_token: { type: 'string', description: 'cloud-api: Bearer token — secret-class, never logged' },
       api_version: { type: 'string', default: 'v20.0', description: 'cloud-api: Graph API version' },
-      template_registry_from: { type: 'string', default: 'comms.whatsapp', description: 'plugin id whose settings → templates registry renders bodies' },
     },
     required: [],
   },
@@ -31,6 +31,6 @@ export default {
   regions: ['IN'],
   residency: 'IN',
   billing: { model: 'rails', metered: ['messages_sent'] },
-  dependencies: ['comms.whatsapp (template registry, optional — degrades to logger)'],
+  dependencies: ['comms.whatsapp.templates capability (optional — degrades to logger)'],
   policy_refs: ['Comms §1.2'],
 };

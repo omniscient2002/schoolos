@@ -2,3 +2,4 @@
 @import './styles/tokens.css';
 @import './styles/base.css';
 @import './styles/components.css';
+@import './styles/polish.css';    /* refinement layer — shared surface/control/chrome polish (imported last so it settles the system) */

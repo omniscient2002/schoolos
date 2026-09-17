@@ -1,6 +1,7 @@
 // transport.gps — plugin manifest (drop-in factory, docs/11 §2.2)
 export default {
   id: 'transport.gps',
+  capabilities: ['transport.gps.ingest'],
   name: 'Transport GPS Rail',
   version: '1.0.0',
   class: 'B',

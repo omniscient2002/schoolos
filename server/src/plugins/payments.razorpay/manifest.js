@@ -3,6 +3,7 @@
 // FACTS only — settlement stays kernel-only (staff confirm, Fees §4.2).
 export default {
   id: 'payments.razorpay',
+  capabilities: ['fees.razorpay.gateway'],
   name: 'Razorpay Order Rails',
   version: '1.0.0',
   class: 'B',

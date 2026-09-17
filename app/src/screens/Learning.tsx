@@ -9,8 +9,7 @@ import * as seed from '../data/dataset';
 import { makeRng } from '../lib/rng';
 import { useStore } from '../state/store';
 import {
-  Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, Modal, PageHead, Progress, SkeletonCard, Stat, Tabs, useToast,
-} from '../components/ui';
+  Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, Modal, PageHead, Progress, SampleNote, SkeletonCard, Stat, Tabs, useToast} from '../components/ui';
 import { BarChart, Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { clamp, fmtDate, fmtDateShort } from '../lib/format';
@@ -287,6 +286,7 @@ export default function Learning() {
   if (load.loading) {
     return (
       <>
+        <SampleNote>Sample teaching data — assignments, assessments and mastery are generated for illustration in this build, not read from your sections’ records.</SampleNote>
         <PageHead title="Learning" sub="Assignments, assessments, mastery and timetable for your scope." />
         <div className="grid grid-4" style={{ marginBottom: 20 }}>
           {[0, 1, 2, 3].map(i => <SkeletonCard key={i} lines={2} />)}

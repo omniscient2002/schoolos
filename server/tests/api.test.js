@@ -12,6 +12,12 @@ before(async () => {
   const { buildApp } = await import('../src/app.js');
   app = await buildApp({ logger: false });
   await app.ready();
+  // PLG-10: `/transport/events` now resolves an ENABLED `transport.gps` provider before it budgets and
+  // emits, so the transport-policy assertions below only describe a live deployment once the module is
+  // switched on. Enabling it here keeps the test honest about the real precondition.
+  const owner = await loginAs(app, 'owner@meridian.edu');
+  const on = await app.inject({ method: 'POST', url: '/plugins/transport.gps/enable', headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' }, payload: {} });
+  assert.equal(on.statusCode, 200, `transport.gps must enable for the transport-policy suite: ${on.body}`);
 });
 
 after(async () => { if (app) await app.close(); });

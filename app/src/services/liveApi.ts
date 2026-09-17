@@ -14,9 +14,21 @@ const BASE = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080
    app — split-origin serving silently no-oped enablement; see backlog ledger). */
 export const LIVE_BASE = BASE;
 
-export interface ApiUser { id: string; name: string; role: string; email: string; tenantId: string; school?: { name: string | null; slug: string | null } }
+export interface ApiUser {
+  id: string; name: string; role: string; email: string; tenantId: string;
+  school?: { name: string | null; slug: string | null };
+  /* RBAC-3/RBAC-6: the caller's own custom-role binding and mask (see app/src/lib/grants.ts). Display
+     hint only — the server re-decides every door. */
+  role_key?: string | null;
+  custom?: { allow: string[]; deny: string[] } | null;
+}
 
-let token: string | null = localStorage.getItem('schoolos_token');
+/* FEX-3: the session bearer lives in MEMORY ONLY. Persisting it to localStorage made any XSS a full,
+ * durable account takeover. Production is same-origin: the HttpOnly `schoolos_session` cookie is the
+ * durable credential (see `call()` below), and a cold open exchanges it for a fresh in-memory bearer via
+ * POST /auth/renew. Any legacy token a previous build wrote is cleared once, here. */
+let token: string | null = null;
+try { if (typeof localStorage !== 'undefined') localStorage.removeItem('schoolos_token'); } catch { /* storage blocked */ }
 
 /* P0 fix 4: every 401 session-reset carries the user back to the login
    screen WITH the screen they were on, so a mid-task session expiry
@@ -30,8 +42,18 @@ export function redirectToLoginWithReturn(): void {
 
 export function setToken(t: string | null) {
   token = t;
-  if (t) localStorage.setItem('schoolos_token', t);
-  else localStorage.removeItem('schoolos_token');
+}
+
+/** The in-memory session bearer, for the small modules that share this brain but build their own fetch
+ *  (FEX-3). Empty when the session rides the HttpOnly cookie only (same-origin, before /auth/renew). */
+export function getToken(): string | null {
+  return token;
+}
+
+/** `Authorization` header for this session, or an empty object. Use with `credentials:'same-origin'` so the
+ *  HttpOnly cookie covers a cold open before the in-memory bearer is renewed. */
+export function authHeaders(): Record<string, string> {
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 /* Same-origin detection for the cookie-session flow (L5-3.2): the HttpOnly
@@ -82,9 +104,18 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
     redirectToLoginWithReturn();
     throw new Error('session expired');
   }
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const message = (body as { error?: string }).error ?? `HTTP ${res.status}`;
+    const requestId = res.headers.get('x-request-id');
+    throw new Error(requestId ? `${message} (request ${requestId})` : message);
+  }
   return body as T;
 }
+
+/* FEX-6/7/8: the ONE transport — the same 401 session-reset, CSRF echo and bearer handling as every other
+ * door. Screens that used to hand-roll their own fetch (and silently skipped the session-reset path) call
+ * this instead of re-implementing the contract. */
+export const apiRequest = call;
 
 /* ---- auth ---- */
 export async function apiLogin(email: string, password: string) {
@@ -109,6 +140,21 @@ export const apiLogoutAudit = () => call<{ ok: boolean }>('/auth/logout', { meth
 /* The demo domain dataset — server-owned (server/src/generated). */
 export const apiDataset = () => call<Record<string, unknown>>('/dataset');
 export const apiMe = () => call<ApiUser>('/me');
+
+/* Effective access (PERFECT-100 §6.2 item 14 · RBAC-6 · FE-2): the server's answer to "which
+   surfaces may I render?", computed from the route registry + the caller's custom mask. A RENDER hint
+   only — every door re-decides on the server. See app/src/lib/effective.ts. */
+export interface EffectiveAccessDto {
+  role: string;
+  base_role?: string;
+  role_key?: string | null;
+  custom?: { allow: string[]; deny: string[] } | null;
+  scope?: { classes?: Array<{ grade: string; section: string }> };
+  capabilities?: Record<string, boolean>;
+  nav?: string[];
+  doors?: string[];
+}
+export const apiMeEffective = () => call<EffectiveAccessDto>('/me/effective');
 /* Generic GET escape hatch for small service modules (capabilitiesApi) that
    share the single fetch brain instead of spawning another wrapper. */
 export const apiGet = <T,>(path: string) => call<T>(path);
@@ -218,6 +264,8 @@ export interface LiveRouteRow { id: string; code: string; name: string; vehicle:
 export const apiTransportRoutes = () => call<{ routes: LiveRouteRow[] }>('/transport/routes');
 
 export const apiWorkOrders = () => call<{ workOrders: Record<string, unknown>[]; slaPolicy: Record<string, { responseMins: number; resolveHours: number }> }>('/work-orders');
+export const apiCreateWorkOrder = (body: { title: string; description?: string; category: string; priority: string; assetId?: string }) =>
+  call<{ workOrder: Record<string, unknown> }>('/work-orders', { method: 'POST', body: JSON.stringify(body) });
 export const apiAssets = () => call<{ assets: Record<string, unknown>[] }>('/assets');
 export const apiWorkOrderStatus = (id: string, to: string, costCents?: number) =>
   call<{ workOrder: Record<string, unknown> }>(`/work-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to, ...(costCents != null ? { costCents } : {}) }) });
@@ -289,10 +337,11 @@ export const apiVisitorPickup = (id: string) =>
    which would log the desk out on a wrong guardian code. This wrapper performs the
    same request without the 401 redirect — additive only; token handling untouched. */
 export const apiVisitorVerify = async (id: string, code: string) => {
-  const token = localStorage.getItem('schoolos_token');
+  const csrf = csrfToken();
   const res = await fetch(`${LIVE_BASE}/plugins/ops.visitors/visitors/${id}/pickup/verify`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
+    headers: { 'content-type': 'application/json', ...authHeaders(), ...(csrf ? { 'x-csrf-token': csrf } : {}) },
     body: JSON.stringify({ code }),
   });
   const body = await res.json().catch(() => ({}));

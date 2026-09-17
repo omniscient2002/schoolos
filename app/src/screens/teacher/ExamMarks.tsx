@@ -9,13 +9,10 @@
    The grid surfaces per-student validation errors — client checks
    (numbers, marks ≤ max) AND every server failedRow (attendance
    floor, unknown student, DB rejects) renders against its row.
-   Demo world: the plugin marks doors are live-school features,
-   so this screen is live-only and says so in the demo build.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../state/store';
 import { apiGet, apiExams, apiExamBulkMarks, apiExamPublish, apiExamPublishExecute, apiBoardPolicy, type ExamSummary, type BulkMarkFailure } from '../../services/liveApi';
-import { DEMO_MODE } from '../../lib/demoMode';
 import { friendly } from '../../lib/friendlyErrors';
 import {
   PageHead, Card, Badge, Button, Empty, Stat, useToast, SkeletonCard, ErrorState, KeyValue, Modal,
@@ -190,21 +187,6 @@ export default function ExamMarks() {
       setBusy(null);
     }
   };
-
-  if (DEMO_MODE) {
-    return (
-      <div className="u-col" style={{ gap: 14 }}>
-        <PageHead title="Exam marks" sub="Bulk marks entry, per-student validation and the approval-gated publish flow." />
-        <Card pad>
-          <Empty
-            icon={<Icon.Book size={24} />}
-            title="Demo world — exam marks are a live-school feature"
-            sub="Marks, attendance eligibility floors and report-card publication run against the real assessment ledger. The demo data is read-only, so there is nothing to enter here."
-          />
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="u-col" style={{ gap: 14 }}>

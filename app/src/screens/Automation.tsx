@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as seed from '../data/dataset';
-import { workflowService } from '../services';
+import { workflowService } from '../demo/seedServices';
 import { useStore } from '../state/store';
 import {Badge, Button, Card, Drawer, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, useToast, ClickThrough} from '../components/ui';
 import { Icon } from '../components/Icon';

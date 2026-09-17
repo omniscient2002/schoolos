@@ -137,9 +137,27 @@ if (wiredViaWrapper.length) {
   console.log(`— wired via imported wrappers —`);
   for (const v of wiredViaWrapper) console.log(`  ${v.door.method} ${v.door.path} — via ${v.via.join(', ')}`);
 }
-const yellow = verdicts.filter((x) => x.verdict !== 'wired');
-if (yellow.length) {
-  console.log(`— YELLOW (no reachable UI caller) —`);
+// API-only / non-UI doors. FEX-2 flips this gate to `--enforce`, which is only honest if the doors that
+// genuinely have no in-app caller are named with a reason rather than silently excluded. Each pattern below
+// is a door type that is reached by a machine, an owner/admin API, an email link, or a plugin screen whose
+// import is dynamic (so this static wrapper-resolution cannot see it); plugin doors are additionally
+// covered by `plugin-conformance.test.js`.
+const API_ONLY_ALLOWLIST = [
+  { re: /^(POST|DELETE) \/(api-keys|webhooks)(\/|$)/, why: 'machine/owner API — ItAdmin shows read-only, disabled controls (OPSX-4)' },
+  { re: /^POST \/(ai\/call|ai\/eval|workflow-rules|academic-years|class-assignments|fees\/dunning\/run|timetable\/clash-check)$/, why: 'owner/admin API door with no shipped screen (called by scripts/workers)' },
+  { re: /^(DELETE \/(workflow-rules|class-assignments)\/:|POST \/academic-years\/:id\/activate$)/, why: 'owner/admin API door with no shipped screen' },
+  { re: /^POST \/(me\/reset-request|me\/reset-confirm)$/, why: 'email-link-driven reset flow; no in-app caller by design' },
+  { re: /^POST \/auth\/google\/demo$/, why: 'demo SSO only; the disabled Google button is the honest UI' },
+  { re: /^POST \/transport\/events$/, why: 'called by the transport worker/kernel; the UI badge is read-only' },
+  { re: /^POST \/payments\/([^/]+\/refund|reconcile)$/, why: 'owner/finance API; refunds run from the gateway/ops tooling' },
+  { re: /^(POST|DELETE) \/(plugins\/|student\/|ptm\/|safety\/|teacher\/|interventions\/|parent\/leave-request|coord\/duty\/allocate)/, why: 'plugin runtime door reached from its own plugin screen (dynamic import); covered by plugin-conformance' },
+];
+const allowReason = (door) => API_ONLY_ALLOWLIST.find((a) => a.re.test(`${door.method} ${door.path}`));
+const yellowAll = verdicts.filter((x) => x.verdict !== 'wired');
+const yellow = yellowAll.filter((x) => !allowReason(x.door));
+
+if (yellowAll.length) {
+  console.log(`— YELLOW (no reachable UI caller): ${yellow.length} unresolved, ${yellowAll.length - yellow.length} allowlisted API-only —`);
   for (const v of yellow) {
     const where = v.verdict === 'wrapper-only'
       ? `wrapper in ${v.svc.slice(0, 2).map((s) => s.split('/').pop()).join(', ')}${v.svc.length > 2 ? ` +${v.svc.length - 2}` : ''}`
@@ -157,5 +175,8 @@ if (mockImporters.length) {
 if (ENFORCE && (yellow.length || mockImporters.length)) {
   console.error(`parity gate ENFORCE: ${yellow.length} unwired door(s), ${mockImporters.length} mock importer(s) — FAIL`);
   process.exit(1);
+}
+if (ENFORCE && (yellowAll.length - yellow.length)) {
+  console.log(`parity gate: ${yellowAll.length - yellow.length} door(s) allowlisted as API-only (reasons in scripts/parity-gate.js)`);
 }
 console.log(ENFORCE ? 'parity gate: enforce mode — clean' : 'parity gate: report-only (run with --enforce to fail on the yellow list)');

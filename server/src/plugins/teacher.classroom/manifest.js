@@ -16,7 +16,7 @@ export default {
   class: 'C',
   trust: 'T1',
   description: 'The teacher classroom lane: post homework per class and subject with due dates, one-shot student submissions (text or link) with automatic late detection, the assigning-teacher-only review desk (reviewed / graded / resubmit_requested with grade and feedback), and the pending/reviewed/late/missing inbox. Staff leave rides per-instance kernel actions (teacher.leave.<requestId>); the coordinator decides on the kernel door. Privacy pins: students can ONLY submit and always as themselves — a second submit is refused; teachers see only the homework they assigned; review belongs to the assigning teacher alone.',
-  permissions: ['students.read', 'events.emit', 'audit.request'],
+  permissions: ['students.read', 'events.emit', 'audit.request', 'actions.raise'],
   events: {
     subscribe: [],
     publish: [

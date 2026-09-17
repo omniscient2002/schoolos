@@ -18,13 +18,11 @@ const OUTCOME_META: Record<ReceptionCall['outcome'], { label: string; tone: 'suc
   resolved: { label: 'Resolved by AI', tone: 'success' },
   handoff: { label: 'Handed to staff', tone: 'warning' },
   'callback-scheduled': { label: 'Callback booked', tone: 'info' },
-  voicemail: { label: 'No response', tone: 'neutral' },
-};
+  voicemail: { label: 'No response', tone: 'neutral' }};
 
 const INTENT_ICON: Record<string, keyof typeof Icon> = {
   transport: 'Bus', fees: 'Money', attendance: 'Clipboard', documents: 'Document',
-  admissions: 'Graduation', maintenance: 'Wrench', hours: 'Clock', emergency: 'Alert', other: 'Phone',
-};
+  admissions: 'Graduation', maintenance: 'Wrench', hours: 'Clock', emergency: 'Alert', other: 'Phone'};
 
 function CallBubbles({ call }: { call: ReceptionCall }) {
   return (
@@ -40,8 +38,7 @@ function CallBubbles({ call }: { call: ReceptionCall }) {
               fontSize: 'var(--text-sm)', lineHeight: 1.6,
               background: isStaff ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
                 : isAi ? 'color-mix(in srgb, var(--ai) 10%, transparent)' : 'var(--surface-3)',
-              border: '1px solid var(--border-subtle)',
-            }}>
+              border: '1px solid var(--border-subtle)'}}>
               <div className="u-xs u-faint" style={{ marginBottom: 3 }}>
                 {isStaff ? 'Staff (joined live)' : isAi ? 'Reception AI' : 'Caller'} · {t.at}s
               </div>
@@ -64,28 +61,49 @@ export default function Reception() {
   const onCampus = d.visitors.filter(v => !v.out);
   const isDeskStaff = ['coordinator', 'principal', 'owner', 'facilities'].includes(session.roleId);
 
+  /* ---- empty-world guards (P0) ----
+     A tenant with no desk records yet gets no front-desk configuration: the
+     /dataset key arrives blanked, so `deskSettings.languages.join()` threw and
+     every rate divided by zero calls rendered as "NaN%". Nothing here is
+     invented to fill the gap — each field states its own absence. */
+  const hasCalls = d.calls.length > 0;
+  const desk = d.deskSettings as Partial<typeof d.deskSettings>;
+  const unset = <span className="u-muted">Not set yet</span>;
+  const from = (v: string | undefined) => (v && v.trim() ? v : unset);
+  const languages = (desk.languages ?? []).join(' · ');
+  const deskProfile = [
+    { k: 'Answers from', v: 'Calendar · transport GPS · fees records · attendance · documents · asset records' },
+    { k: 'Languages', v: languages || unset },
+    { k: 'Never does', v: 'Disclose student data to unverified callers · negotiate fees · medical or safeguarding advice' },
+    { k: 'Handoff', v: desk.escalationNumber ? `${desk.escalationNumber} — with call summary, caller history, and sentiment attached` : unset },
+    { k: 'Emergency', v: from(desk.emergencyPolicy) },
+    { k: 'Recording', v: from(desk.recordingConsentLine) }];
+
   return (
     <div>
       <PageHead
         title="Front desk"
-        sub={`The AI receptionist — every call answered in ${a.avgAnswerSec}s from school records · ${d.deskSettings.hours}`}
+        sub={hasCalls
+          ? `The AI receptionist — every call answered in ${a.avgAnswerSec}s from school records · ${d.deskSettings.hours}`
+          : `The AI receptionist — answers from school records, never guesses · ${d.deskSettings.hours ?? 'desk hours not set yet'}`}
         actions={
           <div className="u-inline" style={{ gap: 8 }}>
             <Badge tone="success" dot>Desk online</Badge>
             {isDeskStaff && (
               <Button variant="secondary" icon={<Icon.Phone size={14} />} onClick={() => toast({
                 title: 'Simulated call ringing…', tone: 'info',
-                sub: 'Demo: the AI answers in 3s with the consent line, then grounds every answer in school records.',
-              })}>Test call</Button>
+                sub: 'Demo: the AI answers in 3s with the consent line, then grounds every answer in school records.'})}>Test call</Button>
             )}
           </div>
         }
       />
 
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
-        <Stat label="Calls today" value={a.callsToday} sub={`${a.missedCalls} missed · 0 hold time`} />
-        <Stat label="Answered by AI" value={`${Math.round((a.answeredByAi / a.callsToday) * 100)}%`} sub="rest handed off with full context" />
-        <Stat label="Avg first answer" value={`${a.avgAnswerSec}s`} sub="vs 26s industry ring average" />
+        <Stat label="Calls today" value={a.callsToday} sub={hasCalls ? `${a.missedCalls} missed · 0 hold time` : 'No calls on the desk log yet'} />
+        {hasCalls && (
+          <Stat label="Answered by AI" value={`${Math.round((a.answeredByAi / a.callsToday) * 100)}%`} sub="rest handed off with full context" />
+        )}
+        <Stat label="Avg first answer" value={hasCalls ? `${a.avgAnswerSec}s` : '—'} sub={hasCalls ? 'vs 26s industry ring average' : 'No calls to measure yet'} />
         <Stat label="On campus now" value={onCampus.length} sub={`${d.gatePasses.length} gate passes issued today`} />
       </div>
 
@@ -103,13 +121,15 @@ export default function Reception() {
           >
             {tab === 'calls' && (
               <div className="u-col" style={{ gap: 8 }}>
+                {d.calls.length === 0 && (
+                  <Empty icon={<Icon.Phone size={20} />} title="No calls on the desk log yet" sub="Calls answered by the front desk appear here with their transcript and what grounded each answer." />
+                )}
                 {d.calls.map(c => {
                   const I = Icon[INTENT_ICON[c.intents[0]] ?? 'Phone'];
                   return (
                     <button key={c.id} onClick={() => setOpenId(c.id)} className="u-inline" style={{
                       gap: 12, alignItems: 'center', textAlign: 'left', width: '100%',
-                      padding: '10px 12px', borderRadius: 'var(--r-md)', border: '1px solid var(--border-subtle)', background: 'var(--surface-1)', cursor: 'pointer',
-                    }}>
+                      padding: '10px 12px', borderRadius: 'var(--r-md)', border: '1px solid var(--border-subtle)', background: 'var(--surface-1)', cursor: 'pointer'}}>
                       <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface-3)', display: 'grid', placeItems: 'center', color: 'var(--text-2)' }}><I size={16} /></span>
                       <div className="u-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
                         <span className="u-inline" style={{ gap: 8 }}>
@@ -132,6 +152,9 @@ export default function Reception() {
 
             {tab === 'visitors' && (
               <div className="u-col" style={{ gap: 8 }}>
+                {d.visitors.length === 0 && (
+                  <Empty icon={<Icon.Users size={20} />} title="No visitors signed in today" sub="Walk-ins and pre-registered visitors appear here as the front desk signs them in." />
+                )}
                 {d.visitors.map(v => (
                   <div key={v.id} className="u-inline" style={{ gap: 12, alignItems: 'center' }}>
                     <Avatar name={v.name} size="sm" />
@@ -172,6 +195,9 @@ export default function Reception() {
 
           <Card headAs="h2" head="What the desk answers" sub="Intent mix today — and what resolves without a human">
             <div className="u-col" style={{ gap: 9 }}>
+              {d.deskIntents.length === 0 && (
+                <Empty icon={<Icon.Clipboard size={20} />} title="No intent mix yet" sub="Once the desk answers calls, this shows what callers ask for and how much of it resolves without a human." />
+              )}
               {d.deskIntents.map(i => (
                 <div key={i.id} className="u-col" style={{ gap: 3 }}>
                   <div className="u-between">
@@ -190,14 +216,7 @@ export default function Reception() {
 
         <div className="u-col" style={{ gap: 'var(--s-4)' }}>
           <Card headAs="h2" head="How this desk works" sub="Grounded, consented, hand-off ready">
-            <KeyValue items={[
-              { k: 'Answers from', v: 'Calendar · transport GPS · fees records · attendance · documents · asset records' },
-              { k: 'Languages', v: d.deskSettings.languages.join(' · ') },
-              { k: 'Never does', v: 'Disclose student data to unverified callers · negotiate fees · medical or safeguarding advice' },
-              { k: 'Handoff', v: `${d.deskSettings.escalationNumber} — with call summary, caller history, and sentiment attached` },
-              { k: 'Emergency', v: d.deskSettings.emergencyPolicy },
-              { k: 'Recording', v: d.deskSettings.recordingConsentLine },
-            ]} cols={1} />
+            <KeyValue items={deskProfile} cols={1} />
             <div className="divider" />
             <div className="u-small u-muted" style={{ lineHeight: 1.65 }}>
               Every answer is grounded in a record and cited on the call log. When confidence is low or the topic is sensitive,
@@ -205,13 +224,14 @@ export default function Reception() {
             </div>
           </Card>
 
-          <Card headAs="h2" head="Today's desk performance" sub="Recomputed from the call log">
-            <KeyValue items={[
+          <Card headAs="h2" head="Today's desk performance" sub={hasCalls ? 'Recomputed from the call log' : 'Nothing on the call log today yet'}>
+            <KeyValue items={hasCalls ? [
               { k: 'Handoff rate', v: `${a.handoffRate}% (target ≤ 15%)` },
               { k: 'Avg call', v: `${Math.round(a.avgDurationSec)}s` },
-              { k: 'Guardrail triggers', v: `${a.guardrailTriggers} — hazard report auto-handoff (Front Desk §1.3)` },
-              { k: 'Cost today', v: '₹11.40 (voice minutes + ASR + LLM) vs ₹1,200 part-time desk hour' },
-            ]} cols={1} />
+              { k: 'Guardrail triggers', v: `${a.guardrailTriggers} — hazard report auto-handoff (Front Desk §1.3)` }] : [
+              { k: 'Handoff rate', v: <span className="u-muted">No calls to measure yet</span> },
+              { k: 'Avg call', v: <span className="u-muted">No calls to measure yet</span> },
+              { k: 'Guardrail triggers', v: <span className="u-muted">No calls to measure yet</span> }]} cols={1} />
             <AiTraceCard
               trace={{
                 trigger: 'Live call answering (phone/WhatsApp)',
@@ -220,12 +240,7 @@ export default function Reception() {
                 reasoningRole: 'Voice receptionist (deterministic retrieval + templates)',
                 action: 'Answers, files reports, books callbacks — never approves anything',
                 approvalStatus: 'Not required (read-only + message filing)',
-                verification: 'Transcript stored beside parsed fields; wrong parses are visible and editable',
-                model: 'Voice ASR (hi/en) + Fast (classification) · ap-south-1',
-                latencyMs: 900,
-                tokens: 640,
-                cost: '₹0.23/call avg',
-              }}
+                verification: 'Transcript stored beside parsed fields; wrong parses are visible and editable'}}
             />
           </Card>
 
@@ -236,8 +251,7 @@ export default function Reception() {
                 { label: '1 · Answer from records', detail: 'Facts only — timings, status, balances, references', source: 'Read-only retrieval', refType: 'reception' },
                 { label: '2 · Book a callback', detail: 'Route to owning team with transcript + records attached', source: 'Callback queue', refType: 'reception' },
                 { label: '3 · Live human handoff', detail: 'Low confidence, frustration, or sensitive topics — summary travels with the call', source: 'Front office', refType: 'reception' },
-                { label: '4 · Emergency interrupt', detail: 'Safety/medical keywords ring the duty principal and nurse immediately', source: 'Front Desk §1.4', refType: 'reception' },
-              ]}
+                { label: '4 · Emergency interrupt', detail: 'Safety/medical keywords ring the duty principal and nurse immediately', source: 'Front Desk §1.4', refType: 'reception' }]}
             />
           </Card>
         </div>
@@ -268,12 +282,7 @@ export default function Reception() {
                 reasoningRole: 'Voice receptionist (deterministic retrieval + templates)',
                 action: call.outcome === 'handoff' ? `Connected ${call.handedOffTo} with full context` : 'Answered and logged; nothing executed',
                 approvalStatus: 'Not required (read-only)',
-                verification: 'Transcript + parsed outcomes stored for spot-check and tuning',
-                model: 'Voice ASR (hi/en) + Fast (classification) · ap-south-1',
-                latencyMs: 820,
-                tokens: Math.round(call.durationSec * 14),
-                cost: '₹0.21',
-              }}
+                verification: 'Transcript + parsed outcomes stored for spot-check and tuning'}}
             />
           </div>
         )}

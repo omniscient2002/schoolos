@@ -7,7 +7,7 @@
    ============================================================ */
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { FIRST_PARTY_PLUGINS, KERNEL_VERSION } from './pluginRegistry';
-import { LIVE_API, LIVE_BASE, apiEnablePlugin } from '../services/liveApi';
+import { LIVE_API, LIVE_BASE, apiEnablePlugin, getToken, authHeaders } from '../services/liveApi';
 import { useSession } from '../App';
 import type { PluginManifest } from './pluginTypes';
 import { Empty } from '../components/ui';
@@ -25,17 +25,14 @@ function loadEnabled(): Set<string> {
   return new Set(defaults);
 }
 
-function urlOverride(): string[] | null {
-  const q = new URLSearchParams(window.location.search).get('plugins');
-  return q ? q.split(',').map(s => s.trim()).filter(Boolean) : null;
-}
-
 interface KernelCtx {
   enabled: Set<string>;
   /** Server-reported per-plugin "settings exist" flag. The registry strips
       setting VALUES for non-owner roles (redteam P1-2) — this is the only
       settings-related signal the UI may show. */
   configured: Record<string, boolean>;
+  available: Record<string, boolean>;
+  requiredPlan: Record<string, string | null>;
   isEnabled: (id: string) => boolean;
   enable: (id: string) => void;
   disable: (id: string) => void;
@@ -48,10 +45,10 @@ const Ctx = createContext<KernelCtx | null>(null);
 export function KernelProvider({ children }: { children: ReactNode }) {
   const [enabled, setEnabled] = useState<Set<string>>(loadEnabled);
   const [configured, setConfigured] = useState<Record<string, boolean>>({});
+  const [available, setAvailable] = useState<Record<string, boolean>>({});
+  const [requiredPlan, setRequiredPlan] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
-    const o = urlOverride();
-    if (o) setEnabled(new Set(o));
   }, []);
 
   // docs/11 §8: when running against the live API, the server plugin table is
@@ -66,21 +63,19 @@ export function KernelProvider({ children }: { children: ReactNode }) {
            often does not exist yet on a fresh browser — wait (bounded) for login
            instead of no-oping until the next reload. Mirrors the dataset loader's
            bounded wait. */
-        let token = localStorage.getItem('schoolos_token');
-        for (let i = 0; i < 40 && !token; i++) {
+        /* FEX-3: wait (bounded) for THIS session's in-memory bearer — set by login or the /auth/renew
+           exchange — instead of for a value persisted in localStorage. */
+        for (let i = 0; i < 40 && !getToken(); i++) {
           await new Promise(r => setTimeout(r, 250));
-          token = localStorage.getItem('schoolos_token');
         }
-        if (!token) return;
+        if (!getToken()) return;
         // Same-origin deploy contract (orchestrator verdict, 2026-09-06): the
         // relative fetch is intentional — API serves the app / VITE_API_BASE is
         // pinned at build. Split-origin serving is a hardening-backlog item.
-        /* unit 14: same origin as every other API door (LIVE_BASE collapses to
-           relative in same-origin deploys, preserving the deploy contract) */
-        const res = await fetch(`${LIVE_BASE}/plugins`, { headers: { authorization: `Bearer ${token}` } });
+        const res = await fetch(`${LIVE_BASE}/plugins`, { credentials: 'same-origin', headers: { ...authHeaders() } });
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean; settings?: unknown }> = Array.isArray(data.plugins) ? data.plugins : [];
+        const rows: Array<{ plugin_id: string; enabled: boolean; configured?: boolean; settings?: unknown; available?: boolean; requiredPlan?: string | null }> = Array.isArray(data.plugins) ? data.plugins : [];
         if (!rows.length || cancelled) return;
         const live = new Set(rows.filter(r => r.enabled).map(r => r.plugin_id));
         // configured = server's flag (non-privileged rows) or settings-key presence
@@ -89,10 +84,12 @@ export function KernelProvider({ children }: { children: ReactNode }) {
           r.plugin_id,
           r.configured === true || (r.settings != null && typeof r.settings === 'object' && Object.keys(r.settings as object).length > 0),
         ])));
+        setAvailable(Object.fromEntries(rows.map(r => [r.plugin_id, r.available !== false])));
+        setRequiredPlan(Object.fromEntries(rows.map(r => [r.plugin_id, r.requiredPlan ?? null])));
         setEnabled(prev => {
           const next = new Set<string>([...prev].filter(id => live.has(id)));
           for (const id of live) if (FIRST_PARTY_PLUGINS.some(p => p.id === id)) next.add(id);
-          if (!urlOverride()) localStorage.setItem(LS_KEY, JSON.stringify([...next]));
+          localStorage.setItem(LS_KEY, JSON.stringify([...next]));
           return next;
         });
       } catch { /* offline or mock — localStorage mirror stays authoritative */ }
@@ -103,20 +100,22 @@ export function KernelProvider({ children }: { children: ReactNode }) {
   const value = useMemo<KernelCtx>(() => ({
     enabled,
     configured,
+    available,
+    requiredPlan,
     isEnabled: id => enabled.has(id),
     enable: id => setEnabled(prev => {
       const next = new Set(prev); next.add(id);
-      if (!urlOverride()) localStorage.setItem(LS_KEY, JSON.stringify([...next]));
+      localStorage.setItem(LS_KEY, JSON.stringify([...next]));
       return next;
     }),
     disable: id => setEnabled(prev => {
       const next = new Set(prev); next.delete(id);
-      if (!urlOverride()) localStorage.setItem(LS_KEY, JSON.stringify([...next]));
+      localStorage.setItem(LS_KEY, JSON.stringify([...next]));
       return next;
     }),
     manifestFor: id => FIRST_PARTY_PLUGINS.find(p => p.id === id),
     all: FIRST_PARTY_PLUGINS,
-  }), [enabled, configured]);
+  }), [enabled, configured, available, requiredPlan]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

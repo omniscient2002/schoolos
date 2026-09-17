@@ -76,6 +76,29 @@ test('AE · approve → student exists with guardian + enrollment_history admiss
   assert.equal(eh.reason.includes('students.create.'), true, 'history row carries the action provenance');
   const a = (await sql(`SELECT status FROM app.actions WHERE id=$1`, [actionId])).rows[0];
   assert.equal(a.status, 'approved');
+
+  /* DAT-6 · the conversion's AUDIT ROW. This path creates a STUDENT, a guardian row, an `enrollment_history`
+   * entry and a funnel state change — the largest single privileged mutation in the product — and the row
+   * itself says "audit trail" (`routes.js:1121`), but until now NOTHING asserted the trail existed. Code that
+   * is present and untested is code that a later refactor deletes silently; the previous version of this file
+   * verified every side effect of the conversion EXCEPT the one an auditor actually reads.
+   *
+   * Asserted on the CONTENT, not merely on a row count: an audit entry that says "a student was created"
+   * without naming which lead, which student, or which class cannot answer the question an audit asks. */
+  const led = (await sql(`SELECT actor, action, record_type, record_ref, policy_ref
+                            FROM app.audit_log
+                           WHERE record_type='Student' AND record_ref=$1`, [ex.id])).rows;
+  assert.equal(led.length, 1, 'the conversion must leave exactly one audit row for the created student');
+  assert.match(led[0].action, /Student created from admissions lead/,
+    'the row must name the ACT, so a reader is not left inferring it from the record type');
+  assert.ok(led[0].action.includes(ex.admissionNo),
+    'the audit row must carry the admission number — joining the ledger to the register must not require a guess');
+  assert.ok(led[0].action.includes('5-A'), 'and the class the student was placed in');
+  assert.ok(led[0].action.includes('primary guardian recorded'),
+    'and whether guardian PII was written, which is the part of this mutation with privacy consequences');
+  assert.ok(led[0].actor, 'an audit row with no actor cannot be attributed and answers nothing');
+  assert.equal(led[0].policy_ref, 'Admissions §3 — lead conversion',
+    'the policy reference is what lets an auditor trace WHY the write was permitted');
 });
 
 test('AE · double-approve is a 409 (one decision per action, atomic)', async () => {

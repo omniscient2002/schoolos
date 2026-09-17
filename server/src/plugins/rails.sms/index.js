@@ -5,7 +5,7 @@
 // app.communications — sends are NOT direct, they drain the approved queue.
 //
 // Provider is settings-driven (per-tenant row app.plugins.settings, read via the
-// kernel q() owner path exactly like ops.visitors:22-27):
+// kernel sysq() owner path exactly like ops.visitors:22-27):
 //   provider = 'logger' (default) — structured log line + { ok: true }; the rail
 //     is honest: ok means "accepted for delivery", never "carrier confirmed".
 //   provider = 'http-generic' — POST { to, body } as JSON to settings url with a
@@ -15,6 +15,7 @@
 // Recipients must be E.164 (+XXXXXXXXXX); failures are RETURNED, never thrown.
 const ID = 'rails.sms';
 export { default as manifest } from './manifest.js';
+import { decryptSettings } from '../../settings-crypto.js';
 
 const E164_RE = /^\+[1-9]\d{7,14}$/; // ITU-T E.164: + then 8–15 digits, no leading 0
 const redactSecrets = (s) => String(s ?? '').replace(/(auth_header_value)\s*[=:]\s*\S+/gi, '$1=[redacted]');
@@ -23,12 +24,12 @@ const redactSecrets = (s) => String(s ?? '').replace(/(auth_header_value)\s*[=:]
 // process, loader-free) calls bindKernel(q) before its first tick. Reading the
 // settings column is an owner-path read — never the constrained app role.
 let kernelQ = null;
-export function bindKernel(q) { kernelQ = q; }
+export function bindKernel(ownerQuery) { kernelQ = ownerQuery; }
 
 async function readSettings(tenantId) {
   try {
     const r = await kernelQ(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
-    return r.rows[0]?.settings ?? {};
+    return decryptSettings(r.rows[0]?.settings ?? {}, tenantId);
   } catch (e) {
     console.error(`${ID}: settings read failed — degrading to logger provider:`, e.message);
     return {};
@@ -106,5 +107,5 @@ export async function sendSms({ to, body, dedupKey, tenantId }) {
 // Loader contract: register(app, kernel) — the rail mounts no doors; it only
 // binds the kernel q for owner-path settings reads.
 export function register(app, kernel) {
-  bindKernel(kernel.q);
+  bindKernel(kernel.sysq);
 }

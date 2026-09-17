@@ -22,8 +22,11 @@ export { default as manifest } from './manifest.js';
 
 const AY_RE = /^\d{4}-\d{2}$/;
 const csvCell = (v) => {
+  // S0 fix H4 (MED): neutralize spreadsheet formulas — user-controlled free text
+  // (grade/section/category) must not execute in Excel/Sheets on import.
   const s = String(v ?? '');
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const q = /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return /^[=+\-@\t\r]/.test(s) ? `'${q}` : q;
 };
 
 /* current Indian academic year (April–March), computed in IST */
@@ -37,8 +40,8 @@ export function currentAy(now = new Date()) {
 
 export function register(app, kernel) {
   registerSettingsFormDoors(app, kernel, ID, manifestDef);
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   // ── the documented column mapping (self-describing contract) ──────────────────
@@ -73,7 +76,7 @@ export function register(app, kernel) {
     const format = String(req.query?.format ?? 'csv').toLowerCase();
     if (!['csv', 'json'].includes(format)) return bad(reply, 'format must be csv or json');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const st = (await q(`SELECT settings->>'udise_code' AS code, settings->>'school_name' AS name FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      const st = (await sysq(`SELECT settings->>'udise_code' AS code, settings->>'school_name' AS name FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0] ?? {};
       const code = (st.code ?? '').trim();
       if (!code) return bad(reply, "Set the school's UDISE code first — Modules → UDISE+ → Settings (every export row carries it)", 409);

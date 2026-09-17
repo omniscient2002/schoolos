@@ -1,6 +1,7 @@
 // rails.email — plugin manifest (drop-in factory, docs/11 §2.2; rails.sms parity)
 export default {
   id: 'rails.email',
+  capabilities: ['auth.password_reset', 'comms.email.delivery'],
   name: 'Email Rail',
   version: '1.0.0',
   class: 'B',

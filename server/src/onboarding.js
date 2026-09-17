@@ -19,7 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import { auditLog, emitEvent } from './audit.js';
 import { ensurePluginCatalog, DEFAULT_ON } from './plugin-catalog.js';
-import { q, withUser } from './db.js';
+import { q, sysq, withUser } from './db.js';
 import { hashPassword } from './auth.js';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
@@ -41,7 +41,7 @@ async function uniqueSlug(base) {
   if (!SLUG_RE.test(candidate)) candidate = `school-${candidate}`.slice(0, 63);
   for (let n = 0; n < 50; n++) {
     const attempt = n === 0 ? candidate : `${candidate}-${n + 1}`;
-    const hit = await q(`SELECT 1 FROM app.tenants WHERE slug=$1`, [attempt]);
+    const hit = await sysq(`SELECT 1 FROM app.tenants WHERE slug=$1`, [attempt]);
     if (!hit.rows[0]) return attempt;
   }
   throw new Error('could not derive a unique school code — try a different name');
@@ -150,7 +150,9 @@ export function registerOnboarding(app) {
     }
     if (!Object.keys(patches).length) return reply.code(400).send({ error: 'Nothing to update — send schoolName, address, board, phone or campuses' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const cur = (await c.query(`SELECT name, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      // RTE-19: lock the row for the JSONB read-modify-write. Without `FOR UPDATE` a concurrent profile
+      // update loses one writer's `config` change.
+      const cur = (await c.query(`SELECT name, config FROM app.tenants WHERE id=$1 FOR UPDATE`, [req.user.tenant_id])).rows[0];
       if (!cur) return reply.code(404).send({ error: 'School not found' });
       const nextConfig = { ...(cur.config ?? {}) };
       const sets = [];

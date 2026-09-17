@@ -7,17 +7,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { CampusId } from '../types/domain';
 import * as seed from '../data/dataset';
-import { peopleService } from '../services';
 import { apiPost, apiStudents, apiUpdateStudent, apiWithdrawStudent, apiPromoteStudent } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
   Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, Modal, PageHead, Skeleton, Stat, useToast,
 } from '../components/ui';
-import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
-import { fmtDate, fmtMoneyShort, fmtPct } from '../lib/format';
 import type { Person } from '../types/domain';
 
 /* Local async hook (duplicated per screen per APP-SPEC §async pattern) */
@@ -42,33 +38,11 @@ const GRADES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 const campusShort = (id: string) => seed.campuses.find(c => c.id === id)?.shortName ?? id;
 
-function classTeacherName(p: Person) {
-  const sec = seed.sectionOfStudent(p);
-  return sec ? seed.findPerson(sec.classTeacherId)?.name ?? '—' : '—';
-}
-
-function attendanceBadge(p: Person) {
-  const r = seed.studentAttendanceRate(p.id);
-  const label = fmtPct(r.rate, 1);
-  if (r.rate >= 95) return <Badge tone="success">{label}</Badge>;
-  if (r.rate >= 85) return <Badge tone="neutral">{label}</Badge>;
-  if (r.rate >= 75) return <Badge tone="warning">{label}</Badge>;
-  return <Badge tone="danger">{label}</Badge>;
-}
-
-function feeBadge(p: Person) {
-  const f = seed.studentFeeSummary(p.id);
-  if (f.hasFailed) return <Badge tone="danger">Failed</Badge>;
-  if (f.overdue > 0) return <Badge tone="warning">Overdue {fmtMoneyShort(f.overdue)}</Badge>;
-  if (f.due > 0) return <Badge tone="info">Due {fmtMoneyShort(f.due)}</Badge>;
-  return <Badge tone="success">Paid</Badge>;
-}
-
 function csvCell(v: string) { return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; }
 
 export default function People() {
   const navigate = useNavigate();
-  const { session, dispatch, actorName } = useStore();
+  const { session } = useStore();
   const toast = useToast();
 
   const scopeLocked = session.campusScope !== 'all';
@@ -80,7 +54,7 @@ export default function People() {
   const [klass, setKlass] = useState('all');
   const [visible, setVisible] = useState(15);
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
+  const [form, setForm] = useState({ name: '', phone: '', grade: '6', section: 'A', guardianName: '' });
   const [saving, setSaving] = useState(false);
   /* Directory creation authority — POST /students allows owner, principal,
      coordinator and admissions. Everyone else gets an honest disabled button. */
@@ -112,8 +86,7 @@ export default function People() {
 
   const results = useAsync<Person[]>(
     () => {
-      if (DEMO_MODE) return peopleService.search(debounced, { campus, type: tab, grade });
-      // Live: the students roster door (staff surface; 403s the student role by design).
+      // The students roster door (staff surface; 403s the student role by design).
       // Teacher/staff/guardian roster doors do not exist yet — those tabs say so.
       if (tab !== 'student') return Promise.resolve([]);
       return apiStudents({
@@ -145,49 +118,7 @@ export default function People() {
   }, [results.data, klass]);
   const shown = rows.slice(0, visible);
 
-  const counts = useMemo(() => {
-    if (!DEMO_MODE) return { student: rows.length, teacher: 0, staff: 0, guardian: 0 };
-    const inScope = (arr: Person[]) => arr.filter(p => campus === 'all' || p.campus === campus);
-    return {
-      student: inScope(seed.students).length,
-      teacher: inScope(seed.teachers).length,
-      staff: inScope(seed.staff).length,
-      guardian: inScope(seed.guardians).length,
-    };
-  }, [campus, rows]);
-
-  const presence = useMemo(() => {
-    const ids = new Set(seed.students.filter(p => campus === 'all' || p.campus === campus).map(p => p.id));
-    const daily = seed.TERM_DAYS.map(d => {
-      const t = d.getTime();
-      let non = 0;
-      seed.attendance.forEach(a => {
-        if (a.date.getTime() === t && ids.has(a.studentId) && (a.status === 'absent' || a.status === 'late')) non++;
-      });
-      return ids.size ? ((ids.size - non) / ids.size) * 100 : 0;
-    });
-    const avg = daily.length ? daily.reduce((a, b) => a + b, 0) / daily.length : 0;
-    return { daily, avg };
-  }, [campus]);
-
-  const classOptions = useMemo(() => {
-    const set = new Set<string>();
-    seed.teachers.filter(t => campus === 'all' || t.campus === campus).forEach(t => t.classes?.forEach(c => set.add(c)));
-    return [...set].sort((a, b) => (Number(a.split('-')[0]) || 0) - (Number(b.split('-')[0]) || 0) || a.localeCompare(b));
-  }, [campus]);
-
-  const wardsOf = (gid: string) =>
-    seed.guardianLinks.filter(l => l.guardianId === gid)
-      .map(l => seed.findPerson(l.studentId)?.name)
-      .filter((w): w is string => Boolean(w))
-      .slice(0, 2)
-      .join(', ');
-
-  const guardianVerified = (gid: string) => {
-    const links = seed.guardianLinks.filter(l => l.guardianId === gid);
-    if (!links.length) return null;
-    return links.every(l => l.verified);
-  };
+  const counts = useMemo(() => ({ student: rows.length, teacher: 0, staff: 0, guardian: 0 }), [rows]);
 
   const detailOf = (p: Person) => {
     if (p.type === 'student') return `${p.grade}-${p.section} · ${p.admissionNo ?? ''}`;
@@ -214,25 +145,6 @@ export default function People() {
   const submitPerson = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
-    /* Demo world: the demo directory is read-only (fixture ids cannot enter the
-       server), so the request is noted in this session only. */
-    if (DEMO_MODE) {
-      setTimeout(() => {
-        dispatch({
-          type: 'audit/add',
-          entry: {
-            actor: actorName, actorRole: session.roleId, action: 'Requested new directory record',
-            recordType: 'Person', recordRef: `${form.name.trim()} (${form.type})`, reason: 'Front-office intake',
-            aiInvolved: false, risk: 'low', outcome: 'Noted in session · demo world',
-          },
-        });
-        toast({ title: 'Request noted (demo)', sub: 'Demo world — nothing was sent. In a live school this enrols the student via the server.', tone: 'info' });
-        setSaving(false);
-        setAddOpen(false);
-        setForm({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
-      }, 420);
-      return;
-    }
     if (!form.grade || !form.section) {
       setSaving(false);
       toast({ title: 'Grade and section are required', sub: 'The server needs a class to enrol the student into.', tone: 'error' });
@@ -253,7 +165,7 @@ export default function People() {
         tone: 'success',
       });
       setAddOpen(false);
-      setForm({ name: '', type: 'student', campus: session.activeCampus as string, phone: '', grade: '6', section: 'A', guardianName: '' });
+      setForm({ name: '', phone: '', grade: '6', section: 'A', guardianName: '' });
       results.retry();
     } catch (e) {
       toast({ title: 'Could not enrol the student', sub: friendly(e), tone: 'error' });
@@ -353,9 +265,9 @@ export default function People() {
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <Stat label="Total students" value={counts.student.toLocaleString('en-IN')} sub={`${counts.student} in ${scopeWord}`} onClick={() => setTab('student')} />
-        <Stat label="Staff & teachers" value={DEMO_MODE ? String(counts.teacher + counts.staff) : '—'} sub={DEMO_MODE ? `${counts.teacher} teaching · ${counts.staff} administrative` : 'Teacher/staff roster door is not connected yet'} onClick={() => setTab('teacher')} />
-        <Stat label="Guardians" value={DEMO_MODE ? counts.guardian.toLocaleString('en-IN') : '—'} sub={DEMO_MODE ? `${Math.round((counts.guardian / Math.max(1, counts.student)) * 10) / 10} per student on average` : 'Guardian roster door is not connected yet'} onClick={() => setTab('guardian')} />
-        <Stat label="Avg attendance" value={DEMO_MODE ? fmtPct(presence.avg, 1) : '—'} sub={DEMO_MODE ? 'Last 30 school days' : 'Attendance rollup comes with the ops.bi door — see Reports'} spark={DEMO_MODE ? <Sparkline points={presence.daily} width={84} height={26} /> : undefined} />
+        <Stat label="Staff & teachers" value="—" sub="Teacher/staff roster door is not connected yet" onClick={() => setTab('teacher')} />
+        <Stat label="Guardians" value="—" sub="Guardian roster door is not connected yet" onClick={() => setTab('guardian')} />
+        <Stat label="Avg attendance" value="—" sub="Attendance rollup comes with the ops.bi door — see Reports" />
       </div>
 
       <div style={{ marginBottom: 16 }}>
@@ -375,8 +287,8 @@ export default function People() {
             <select
               className="select" style={{ width: 180 }} value={campus}
               onChange={e => setCampus(e.target.value)} aria-label="Filter by campus"
-              disabled={scopeLocked || !DEMO_MODE}
-              title={scopeLocked ? `Your role is scoped to ${campusShort(session.campusScope)}` : !DEMO_MODE ? 'The roster door is tenant-wide — campus split is not in the door yet' : undefined}
+              disabled
+              title={scopeLocked ? `Your role is scoped to ${campusShort(session.campusScope)}` : 'The roster door is tenant-wide — campus split is not in the door yet'}
             >
               {scopeLocked
                 ? <option value={session.campusScope}>{campusShort(session.campusScope)} · your scope</option>
@@ -389,12 +301,6 @@ export default function People() {
               <select className="select" style={{ width: 140 }} value={grade} onChange={e => setGrade(e.target.value)} aria-label="Filter by grade">
                 <option value="all">All grades</option>
                 {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
-              </select>
-            )}
-            {DEMO_MODE && tab === 'teacher' && classOptions.length > 0 && (
-              <select className="select" style={{ width: 140 }} value={klass} onChange={e => setKlass(e.target.value)} aria-label="Filter by class">
-                <option value="all">All classes</option>
-                {classOptions.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             )}
           </div>
@@ -429,7 +335,7 @@ export default function People() {
               sub="The people service did not respond. Nothing was changed — try again."
               onRetry={results.retry}
             />
-          ) : !DEMO_MODE && tab !== 'student' ? (
+          ) : tab !== 'student' ? (
             <Empty icon={<Icon.Users size={22} />} title="Roster door not connected yet"
               sub="The server exposes the student roster (GET /students). Teacher, staff and guardian roster doors do not exist yet — this tab stays empty rather than showing seeded people as if they were real." />
           ) : rows.length === 0 ? (
@@ -458,49 +364,19 @@ export default function People() {
                         <Avatar name={p.name} size="sm" />
                         <div style={{ minWidth: 0 }}>
                           <div className="u-truncate" style={{ fontWeight: 560 }}>{p.name}</div>
-                          <div className="u-xs u-faint u-truncate">{DEMO_MODE ? p.email : (p.admissionNo ? `Adm ${p.admissionNo}` : '')}</div>
+                          <div className="u-xs u-faint u-truncate">{p.admissionNo ? `Adm ${p.admissionNo}` : ''}</div>
                         </div>
                       </div>
                     ),
                   },
                   ...(tab === 'student' ? [
                     { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => Number(p.grade) || 999, render: (p: Person) => <span className="tnum">{p.grade != null ? String(p.grade) : '—'} · {p.section ?? '—'}</span> },
-                    ...(DEMO_MODE ? [
-                      { key: 'ct', label: 'Class teacher', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 140, display: 'inline-block' }}>{classTeacherName(p)}</span> },
-                      { key: 'att', label: 'Attendance', render: (p: Person) => attendanceBadge(p) },
-                      { key: 'fee', label: 'Fees', render: (p: Person) => feeBadge(p) },
-                    ] : [
-                      { key: 'guardian', label: 'Guardian', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 180, display: 'inline-block' }}>{(p as unknown as { guardianName?: string }).guardianName ?? '—'}{p.phone ? <span className="u-xs u-faint"> · {p.phone}</span> : null}</span> },
-                      { key: 'bus', label: 'Bus route', render: (p: Person) => p.busRoute ? <Badge tone="info">{p.busRoute}</Badge> : <span className="u-faint">—</span> },
-                      { key: 'adm', label: 'Admission no.', render: (p: Person) => <span className="mono u-small">{p.admissionNo ?? '—'}</span> },
-                    ]),
+                    { key: 'guardian', label: 'Guardian', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 180, display: 'inline-block' }}>{(p as unknown as { guardianName?: string }).guardianName ?? '—'}{p.phone ? <span className="u-xs u-faint"> · {p.phone}</span> : null}</span> },
+                    { key: 'bus', label: 'Bus route', render: (p: Person) => p.busRoute ? <Badge tone="info">{p.busRoute}</Badge> : <span className="u-faint">—</span> },
+                    { key: 'adm', label: 'Admission no.', render: (p: Person) => <span className="mono u-small">{p.admissionNo ?? '—'}</span> },
                   ] : []),
-                  ...(tab === 'teacher' ? [
-                    { key: 'role', label: 'Role', render: (p: Person) => p.role ?? '—' },
-                    { key: 'subjects', label: 'Subjects', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 180, display: 'inline-block' }}>{p.subjects?.join(' · ') ?? '—'}</span> },
-                    { key: 'classes', label: 'Classes', render: (p: Person) => <span className="tnum">{p.classes?.join(', ') ?? '—'}</span> },
-                    { key: 'joined', label: 'Joined', render: (p: Person) => <span className="u-small u-muted">{p.joinedOn ? fmtDate(p.joinedOn) : '—'}</span> },
-                  ] : []),
-                  ...(tab === 'staff' ? [
-                    { key: 'role', label: 'Role', render: (p: Person) => p.role ?? '—' },
-                    { key: 'phone', label: 'Phone', render: (p: Person) => <span className="mono u-small">{p.phone}</span> },
-                    { key: 'joined', label: 'Joined', render: (p: Person) => <span className="u-small u-muted">{p.joinedOn ? fmtDate(p.joinedOn) : '—'}</span> },
-                  ] : []),
-                  ...(tab === 'guardian' ? [
-                    { key: 'relation', label: 'Relation', render: (p: Person) => p.role ?? 'Guardian' },
-                    { key: 'wards', label: 'Ward(s)', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 170, display: 'inline-block' }}>{wardsOf(p.id) || '—'}</span> },
-                    { key: 'phone', label: 'Phone', render: (p: Person) => <span className="mono u-small">{p.phone}</span> },
-                    {
-                      key: 'verified', label: 'WhatsApp',
-                      render: (p: Person) => {
-                        const v = guardianVerified(p.id);
-                        if (v === null) return <span className="u-faint">—</span>;
-                        return v ? <Badge tone="success" dot>Verified</Badge> : <Badge tone="warning" dot>Unverified</Badge>;
-                      },
-                    },
-                  ] : []),
-                  { key: 'campus', label: 'Campus', render: (p: Person) => <span className="u-small u-muted">{DEMO_MODE ? campusShort(p.campus) : '—'}</span> },
-                  ...(!DEMO_MODE && tab === 'student' ? [{
+                  { key: 'campus', label: 'Campus', render: () => <span className="u-small u-muted">—</span> },
+                  ...(tab === 'student' ? [{
                     key: 'actions', label: '', align: 'right' as const, render: (p: Person) => (
                       <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
                         <Button size="sm" variant="ghost" icon={<Icon.Edit size={12} />} disabled={!canEdit}
@@ -532,15 +408,13 @@ export default function People() {
       <Modal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        title={DEMO_MODE ? 'Add a person to the directory (demo)' : 'Enrol a student'}
-        sub={DEMO_MODE
-          ? 'Demo world — the request is noted in this session only; nothing is sent anywhere.'
-          : 'Creates the student record immediately via the server (owner, principal, coordinator or admissions). It is audited with your name and role.'}
+        title="Enrol a student"
+        sub="Creates the student record immediately via the server (owner, principal, coordinator or admissions). It is audited with your name and role."
         footer={
           <>
             <Button variant="ghost" onClick={() => setAddOpen(false)} disabled={saving}>Cancel</Button>
             <Button variant="primary" icon={<Icon.Check size={14} />} loading={saving} disabled={!form.name.trim()} onClick={submitPerson}>
-              {DEMO_MODE ? 'Log request' : 'Enrol student'}
+              Enrol student
             </Button>
           </>
         }
@@ -549,56 +423,34 @@ export default function People() {
           <label htmlFor="np-name">Full name</label>
           <input id="np-name" className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Meera Nair" />
         </div>
-        {DEMO_MODE ? (
+        <>
           <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <div className="field u-grow" style={{ minWidth: 150 }}>
-              <label htmlFor="np-type">Record type</label>
-              <select id="np-type" className="select" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-                <option value="student">Student</option>
-                <option value="teacher">Teacher</option>
-                <option value="staff">Staff</option>
-                <option value="guardian">Guardian</option>
+            <div className="field u-grow" style={{ minWidth: 120 }}>
+              <label htmlFor="np-grade">Grade</label>
+              <select id="np-grade" className="select" value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value }))}>
+                {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
               </select>
             </div>
-            <div className="field u-grow" style={{ minWidth: 150 }}>
-              <label htmlFor="np-campus">Campus</label>
-              <select id="np-campus" className="select" value={form.campus} onChange={e => setForm(f => ({ ...f, campus: e.target.value }))} disabled={scopeLocked}>
-                {seed.campuses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <div className="field u-grow" style={{ minWidth: 120 }}>
+              <label htmlFor="np-section">Section</label>
+              <select id="np-section" className="select" value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))}>
+                {['A', 'B', 'C'].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           </div>
-        ) : (
-          <>
-            <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
-              <div className="field u-grow" style={{ minWidth: 120 }}>
-                <label htmlFor="np-grade">Grade</label>
-                <select id="np-grade" className="select" value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value }))}>
-                  {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
-                </select>
-              </div>
-              <div className="field u-grow" style={{ minWidth: 120 }}>
-                <label htmlFor="np-section">Section</label>
-                <select id="np-section" className="select" value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))}>
-                  {['A', 'B', 'C'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor="np-guardian">Guardian name (optional)</label>
-              <input id="np-guardian" className="input" value={form.guardianName} onChange={e => setForm(f => ({ ...f, guardianName: e.target.value }))} placeholder="e.g. Ramesh Nair" />
-            </div>
-          </>
-        )}
+          <div className="field">
+            <label htmlFor="np-guardian">Guardian name (optional)</label>
+            <input id="np-guardian" className="input" value={form.guardianName} onChange={e => setForm(f => ({ ...f, guardianName: e.target.value }))} placeholder="e.g. Ramesh Nair" />
+          </div>
+        </>
         <div className="field" style={{ marginBottom: 0 }}>
-          <label htmlFor="np-phone">{DEMO_MODE ? 'Phone (optional)' : 'Guardian phone (optional)'}</label>
+          <label htmlFor="np-phone">Guardian phone (optional)</label>
           <input id="np-phone" className="input" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="+91 98…" />
           <span className="hint">Numbers are WhatsApp-verified before absence alerts are enabled (Attendance §1.1).</span>
         </div>
-        {!DEMO_MODE && (
-          <p className="u-xs u-faint" style={{ marginBottom: 0, lineHeight: 1.6 }}>
-            Only student records can be created here. Teacher, staff and guardian records come from onboarding and migration.
-          </p>
-        )}
+        <p className="u-xs u-faint" style={{ marginBottom: 0, lineHeight: 1.6 }}>
+          Only student records can be created here. Teacher, staff and guardian records come from onboarding and migration.
+        </p>
       </Modal>
 
       {/* ---- L4-3.2 lifecycle modals (live rows) ---- */}

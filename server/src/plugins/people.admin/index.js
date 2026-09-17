@@ -30,6 +30,9 @@ import multipart from '@fastify/multipart';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
 import { hashPassword } from '../../auth.js';
+import { ROLES } from '../../auth.js';
+import { toE164 } from '../_shared/phone.js';
+import { istToday } from '../../ist.js';
 
 const ID = 'people.admin';
 // cross-plugin mount guard (files.store shares it): exactly one @fastify/multipart
@@ -37,11 +40,11 @@ const ID = 'people.admin';
 const MULTIPART_MOUNTED = Symbol.for('schoolos.multipart.mounted');
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
   const ADMIN = ['owner', 'itadmin'];                                 // identity authority
   const ROSTER = ['owner', 'principal', 'coordinator', 'admissions']; // roster authority
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   if (!app[MULTIPART_MOUNTED]) {
@@ -53,7 +56,11 @@ export function register(app, kernel) {
   }
 
   // Provisionable roles: ROLES minus 'owner' (owner creation is structurally forbidden).
-  const ROLES_NO_OWNER = ['principal', 'coordinator', 'finance', 'admissions', 'transport', 'facilities', 'technician', 'teacher', 'itadmin', 'parent', 'student'];
+  /* RBAC-2: this list used to be a hand-copied duplicate of `auth.js` ROLES, and it had silently fallen
+     behind — the counsellor existed in five gate lists and a shipped screen but could not be appointed here
+     ("Role must be one of: principal, coordinator, …"). Derived now, so the only place a role is declared is
+     `auth.js` (plus migration 079's CHECK, which is what makes the two fail loudly instead of drifting). */
+  const ROLES_NO_OWNER = ROLES.filter((r) => r !== 'owner');
 
   // Temporary password generator — readable, CSPRNG (Math.random is not a secret
   // source; ops.visitors precedent). Shown once in the door response, never stored
@@ -71,7 +78,16 @@ export function register(app, kernel) {
     const b = req.body ?? {};
     const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
     const name = typeof b.name === 'string' ? b.name.trim() : '';
-    const phone = typeof b.phone === 'string' && b.phone.trim() ? b.phone.trim() : null;
+    /* Review round 20, P2: this stored whatever was typed. Both OTP doors now compare the NORMALISED E.164
+       form, so a phone saved as "+91 98450 00101" (the format the seed itself uses) could never be matched:
+       the sign-in would answer the uniform "sent" and deliver nothing, forever, with no error anywhere. Store
+       the same shape the doors look up. `toE164` also rejects what cannot be a phone at all, which is better
+       done here — at the desk, with the operator present — than silently at sign-in time. */
+    let phone = null;
+    if (typeof b.phone === 'string' && b.phone.trim()) {
+      phone = toE164(b.phone);
+      if (!phone) return bad(reply, 'That phone number is not usable — enter it with the country code, e.g. +91 98450 00101');
+    }
     const role = typeof b.role === 'string' ? b.role.trim() : '';
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return bad(reply, 'Enter a valid email address');
     if (!name) return bad(reply, 'Enter the person\'s full name');
@@ -327,7 +343,8 @@ export function register(app, kernel) {
     const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
     if (reason.length < 2) return bad(reply, 'Tell us why the student is leaving (this goes on the record)');
     if (reason.length > 300) return bad(reply, 'Keep the reason under 300 characters');
-    let effectiveDate = new Date().toISOString().slice(0, 10);
+    // DAT-7: default the effective date in IST, not UTC (a 02:00 IST withdrawal is not "yesterday").
+    let effectiveDate = istToday();
     if (b.effective_date != null) {
       const d = String(b.effective_date);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) return bad(reply, 'The effective date must look like 2026-04-01');
@@ -467,12 +484,20 @@ export function register(app, kernel) {
         const section = (cells[iSection] ?? '').trim().toUpperCase();
         const admissionNo = iAdm === -1 ? '' : (cells[iAdm] ?? '').trim();
         const guardianName = iGn === -1 ? null : ((cells[iGn] ?? '').trim() || null);
-        const guardianPhone = iGp === -1 ? null : ((cells[iGp] ?? '').trim() || null);
+        // PLGX: the CSV lane stored the raw guardian phone, so a value like "98450 00101" (no country
+        // code) landed undeliverable while the create door normalizes through toE164. Normalize here too.
+        const rawPhone = iGp === -1 ? '' : String(cells[iGp] ?? '').trim();
+        const guardianPhone = rawPhone ? toE164(rawPhone) : null;
         try {
+          if (rawPhone && !guardianPhone) throw new Error('guardian phone is not usable — enter it with the country code, e.g. +91 98450 00101');
           if (!name) throw new Error('name is required');
           if (name.length > 120) throw new Error('name is too long (max 120 characters)');
           if (!grade) throw new Error('grade is required');
+          if (grade.length > 16) throw new Error('grade is too long (max 16 characters)');
           if (!section) throw new Error('section is required');
+          // S0 fix D4: the promote/transfer doors cap class+section at 16 — the
+          // import lane must not sneak a longer value past that contract.
+          if (section.length > 16) throw new Error('section is too long (max 16 characters)');
           if (admissionNo && seenAdm.has(admissionNo)) throw new Error(`duplicate admission number in file (${admissionNo}) — keeping the first`);
           if (admissionNo) seenAdm.add(admissionNo);
           await c.query('SAVEPOINT import_row');
@@ -512,7 +537,7 @@ export function register(app, kernel) {
     // Multipart lane: a file field named `csv`. JSON lane: {csv}. The smaller 2MB
     // CSV cap is enforced in code (the shared parser limit is files.store's 5MB).
     if (req.isMultipart?.()) {
-      const file = await req.file();
+      const file = await req.file({ limits: { fileSize: 2 * 1024 * 1024, files: 1 } });
       if (!file) return bad(reply, 'Attach the CSV file (field name: csv)');
       const buf = await file.toBuffer();
       return importStudents(req, reply, buf.toString('utf8'));

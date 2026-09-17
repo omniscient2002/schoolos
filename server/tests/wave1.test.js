@@ -28,9 +28,13 @@ before(async () => {
 
 after(async () => { if (app) await app.close(); });
 
-const sql = (text, params = []) => {
+const sql = async (text, params = []) => {
   const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
-  return c.connect().then(() => c.query(text, params)).then(async r => { await c.end(); return r; });
+  await c.connect();
+  // try/finally: a failing query used to leak the client, which keeps the test process alive forever
+  // and makes the whole file hang (the runner reports a 670s "file" failure and every later file as
+  // failed without running). A failing assertion must fail the test, not wedge the suite.
+  try { return await c.query(text, params); } finally { await c.end().catch(() => {}); }
 };
 const H = (t) => ({ authorization: `Bearer ${t}` });
 
@@ -87,8 +91,12 @@ describe('wave-1 plugin runtimes', () => {
     const p = await loginAs(app);
     // 8-B seed: some students absent (human-marked), rest unmarked
     const victims = (await sql(`SELECT id FROM app.students WHERE grade='8' AND section='B' ORDER BY admission_no LIMIT 2`)).rows;
-    await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status)
-               SELECT tenant_id, id, current_date, 'absent' FROM app.students WHERE id = ANY($1)`, [victims.map(v => v.id)]);
+    // Migration 092 requires marked_by on every new attendance row; name a real user (the marker) so
+    // the fixture does not trip the CHECK before the autofill logic under test is reached.
+    await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
+               SELECT s.tenant_id, s.id, current_date, 'absent',
+                      (SELECT id FROM app.users u WHERE u.tenant_id = s.tenant_id LIMIT 1)
+               FROM app.students s WHERE s.id = ANY($1)`, [victims.map(v => v.id)]);
     const before = (await sql(`SELECT count(*)::int n FROM app.attendance WHERE school_date=current_date`)).rows[0].n;
 
     const r1 = await app.inject({ method: 'POST', url: '/plugins/ops.timetable/attendance/autofill',

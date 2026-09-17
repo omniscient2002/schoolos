@@ -5,9 +5,7 @@
    note. Calm aesthetic throughout.
    ============================================================ */
 import { useState } from 'react';
-import * as seed from '../data/dataset';
-import { useStore } from '../state/store';
-import { Badge, Button, Card, Drawer, Modal, PageHead, Progress, Tabs, useToast } from '../components/ui';
+import { Badge, Button, Card, Drawer, Modal, PageHead, Progress, SampleNote, Tabs, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 
 interface Skill { id: string; skill: string; subject: string; color: string; problems: number }
@@ -42,7 +40,6 @@ const QUESTIONS: Record<string, Question> = {
 
 export default function StudentLearning() {
   const toast = useToast();
-  const { session } = useStore();
 
   const [tab, setTab] = useState('practice');
   const [activeSkill, setActiveSkill] = useState<Skill | null>(null);
@@ -84,9 +81,6 @@ export default function StudentLearning() {
       <PageHead
         title="Learning"
         sub="Practice a little every day — that is all this page asks."
-        actions={session.roleId === 'student'
-          ? <Badge tone="accent" dot>Grade {seed.DEMO_STUDENT.grade}-{seed.DEMO_STUDENT.section} · Roll {seed.DEMO_STUDENT.rollNo ?? '—'}</Badge>
-          : undefined}
       />
 
       <Tabs
@@ -145,7 +139,9 @@ export default function StudentLearning() {
       {/* ---------- progress ---------- */}
       {tab === 'progress' && (
         <div className="u-col" style={{ gap: 16 }}>
-          <Card head={<>This term, by subject <span className="u-small u-faint" style={{ fontWeight: 400 }}>· based on classwork and unit tests so far</span></>}>
+          <Card head="This term, by subject">
+            {/* Honesty: no results door is connected in this build; the per-subject numbers are illustrative. */}
+            <SampleNote>Sample progress — no results door is connected in this build, so these per-subject figures are illustrative and not read from your marks.</SampleNote>
             <div className="u-col" style={{ gap: 14 }}>
               {PROGRESS.map(p => (
                 <div key={p.subject}>

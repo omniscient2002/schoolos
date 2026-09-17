@@ -23,17 +23,13 @@ function useNow(ms = 30000) {
 
 const FLOW: SchoolCase['status'][] = ['open', 'triaged', 'in-progress', 'resolved', 'closed'];
 const STATUS_LABEL: Record<SchoolCase['status'], string> = {
-  open: 'Open', triaged: 'Triaged', 'in-progress': 'In-progress', resolved: 'Resolved', closed: 'Closed',
-};
+  open: 'Open', triaged: 'Triaged', 'in-progress': 'In-progress', resolved: 'Resolved', closed: 'Closed'};
 const STATUS_TONE: Record<SchoolCase['status'], 'info' | 'warning' | 'accent' | 'success' | 'neutral'> = {
-  open: 'info', triaged: 'warning', 'in-progress': 'accent', resolved: 'success', closed: 'neutral',
-};
+  open: 'info', triaged: 'warning', 'in-progress': 'accent', resolved: 'success', closed: 'neutral'};
 const PRIORITY_TONE: Record<SchoolCase['priority'], 'danger' | 'warning' | 'neutral' | 'outline'> = {
-  critical: 'danger', high: 'warning', normal: 'neutral', low: 'outline',
-};
+  critical: 'danger', high: 'warning', normal: 'neutral', low: 'outline'};
 const ORIGIN_LABEL: Record<SchoolCase['origin'], string> = {
-  'parent-whatsapp': 'WhatsApp', phone: 'Phone', 'walk-in': 'Walk-in', system: 'System', staff: 'Staff',
-};
+  'parent-whatsapp': 'WhatsApp', phone: 'Phone', 'walk-in': 'Walk-in', system: 'System', staff: 'Staff'};
 const CAMPUS_LABEL: Record<SchoolCase['campus'], string> = { north: 'North', city: 'City', east: 'East' };
 
 function fmtH(hours: number): string {
@@ -57,12 +53,7 @@ const TRIAGE_TRACE: AiTrace = {
   reasoningRole: 'Triage (classify + link only)',
   action: 'Prepared the reply draft; sending needs staff approval',
   approvalStatus: 'Reply draft awaiting staff send',
-  verification: 'Facts in the draft were matched against the case file',
-  model: 'Fast (classification) · ap-south-1',
-  latencyMs: 290,
-  tokens: 380,
-  cost: '₹0.01',
-};
+  verification: 'Facts in the draft were matched against the case file'};
 
 export default function CaseDetail() {
   const { id } = useParams<{ id: string }>();
@@ -110,8 +101,7 @@ export default function CaseDetail() {
       '',
       'If you would like to discuss this, reply here and we will call you back.',
       '',
-      `— ${k.owner}, ${CAMPUS_LABEL[k.campus]} Campus, Meridian International Academy`,
-    ].join('\n');
+      `— ${k.owner}, ${CAMPUS_LABEL[k.campus]} Campus, Meridian International Academy`].join('\n');
   };
 
   const openReply = () => {
@@ -133,9 +123,7 @@ export default function CaseDetail() {
         actor: actorName, actorRole: session.roleId, action: 'Note added to case',
         recordType: 'Case', recordRef: `${c.id} — ${c.title}`,
         reason: noteText.trim().slice(0, 120), aiInvolved: false, risk: 'low',
-        outcome: 'Internal note appended to the case file',
-      },
-    });
+        outcome: 'Internal note appended to the case file'}});
     toast({ title: 'Note added to the case file', sub: 'Internal — never visible to guardians', tone: 'success' });
     setNoteText('');
     setNoteOpen(false);
@@ -150,9 +138,7 @@ export default function CaseDetail() {
         recordType: 'Communication', recordRef: `${c.id} — ${c.title}`,
         reason: 'Guardian-facing reply drafted from case facts', policyRef: 'Communication §2.1',
         aiInvolved: true, risk: 'low',
-        outcome: 'Reply queued for delivery · logged to comm log + audit',
-      },
-    });
+        outcome: 'Reply queued for delivery · logged to comm log + audit'}});
     toast({ title: 'Reply queued for delivery · logged to comm log + audit', sub: `To the guardian of ${c.id} · template respected quiet hours`, tone: 'success' });
     setReplyOpen(false);
     setReplyText('');
@@ -165,9 +151,7 @@ export default function CaseDetail() {
         actor: actorName, actorRole: session.roleId, action: 'Sent case to the Principal',
         recordType: 'Case', recordRef: `${c.id} — ${c.title}`,
         reason: 'Needs a decision above the current owner', aiInvolved: false, risk: 'high',
-        outcome: 'Recorded · the Principal can see it in the Action Center',
-      },
-    });
+        outcome: 'Recorded · the Principal can see it in the Action Center'}});
     toast({ title: 'Case sent to the Principal', sub: 'They now have 4 hours to respond · saved to the activity log', tone: 'success' });
   };
 
@@ -232,8 +216,7 @@ export default function CaseDetail() {
                   style={{
                     border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '10px 12px',
                     background: m.internal ? 'var(--surface-2)' : 'var(--surface)',
-                    borderLeft: m.internal ? '3px solid var(--warning)' : '3px solid var(--border-strong)',
-                  }}
+                    borderLeft: m.internal ? '3px solid var(--warning)' : '3px solid var(--border-strong)'}}
                 >
                   <div className="u-between" style={{ marginBottom: 4 }}>
                     <span className="u-small" style={{ fontWeight: 620 }}>{m.from}</span>
@@ -280,8 +263,7 @@ export default function CaseDetail() {
                 { k: 'Opened by', v: c.openedBy },
                 { k: 'Owner', v: c.owner },
                 { k: 'Opened on', v: fmtDate(c.openedOn) },
-                { k: 'Deadline', v: `${c.slaHours}h` },
-              ]}
+                { k: 'Deadline', v: `${c.slaHours}h` }]}
             />
           </Card>
 
@@ -329,8 +311,7 @@ export default function CaseDetail() {
                   { label: 'Origin', detail: `${ORIGIN_LABEL[c.origin]} · opened by ${c.openedBy}`, source: 'Communication log' },
                   { label: 'Language', detail: c.origin === 'parent-whatsapp' ? 'Detected: English · Hindi template attached for the reply' : 'Not applicable — internal origin', source: 'Reply classifier' },
                   { label: 'Sentiment', detail: c.kind === 'complaint' ? 'Frustrated — priority raised, reply drafted with acknowledgement' : 'Neutral — routine handling', source: 'Sentiment scorer' },
-                  { label: 'Linked records', detail: (c.linkedRecords ?? []).length ? (c.linkedRecords ?? []).map(l => l.label).join(' · ') : 'None attached yet', source: 'Record linker · verified IDs' },
-                ]}
+                  { label: 'Linked records', detail: (c.linkedRecords ?? []).length ? (c.linkedRecords ?? []).map(l => l.label).join(' · ') : 'None attached yet', source: 'Record linker · verified IDs' }]}
               />
               <AiTraceCard trace={TRIAGE_TRACE} compact />
             </div>

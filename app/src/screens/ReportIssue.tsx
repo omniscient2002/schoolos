@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useStore } from '../state/store';
-import { maintenanceService } from '../services';
+import { maintenanceService } from '../demo/seedServices';
+import { apiCreateWorkOrder, apiWorkOrderStatus } from '../services/liveApi';
 import * as m from '../data/dataset';
 import { PageHead, Card, Badge, Button, Modal, useToast, KeyValue, Empty, Avatar } from '../components/ui';
 import { Icon } from '../components/Icon';
@@ -69,11 +70,30 @@ export default function ReportIssue() {
       setPhase('input');
       return;
     }
-    const wo = res.data;
+    let wo = res.data;
+    try {
+      /* The deterministic classifier remains useful for the one-line UX, but
+         the record itself must come from the server. The previous path only
+         appended to the browser's in-memory woStore and disappeared on reload. */
+      const persisted = await apiCreateWorkOrder({
+        title: wo.title,
+        description: wo.description,
+        category: wo.category,
+        priority: wo.priority,
+        assetId: undefined,
+      });
+      const row = persisted.workOrder as Record<string, unknown>;
+      wo = { ...wo, id: String(row.id), status: String(row.status ?? 'reported') as WorkOrderRecord['status'], reportedOn: new Date(String(row.created_at ?? new Date().toISOString())) };
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The server could not save this report');
+      setPhase('input');
+      return;
+    }
     /* keep the store authoritative so other screens update live */
     dispatch({ type: 'wo/create', wo });
-    const rec = await maintenanceService.recommend(wo.category, wo.campus);
-    setRecs(Array.isArray(rec) ? rec : (rec as { data?: typeof rec }).data ?? []);
+    // There is no live technician-recommendation door yet. Do not show the
+    // demo roster or imply that a notification was sent for a real school.
+    setRecs([]);
     setCreated(wo);
     setPhase('classified');
   };
@@ -81,9 +101,15 @@ export default function ReportIssue() {
   const assign = async (techName: string) => {
     if (!created) return;
     setPhase('assigned');
-    dispatch({ type: 'wo/patch', id: created.id, patch: { assignedTo: techName, assignedOn: new Date(), status: 'assigned' }, actor: actorName, note: `Assigned to ${techName}` });
-    await maintenanceService.assign(created.id, techName, actorName);
-    toast({ title: `Assigned to ${techName.split(' ')[0]}`, sub: `${created.id} · notification sent · SLA clock adjusted`, tone: 'success' });
+    try {
+      await apiWorkOrderStatus(created.id, 'assigned');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The server could not assign this report');
+      setPhase('classified');
+      return;
+    }
+    setCreated({ ...created, status: 'assigned', assignedTo: techName, assignedOn: new Date() });
+    toast({ title: `Assigned to ${techName.split(' ')[0]}`, sub: `${created.id} · work order status updated`, tone: 'success' });
     setTimeout(() => setPhase('done'), 900);
   };
 

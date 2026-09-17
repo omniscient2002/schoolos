@@ -96,7 +96,10 @@ GET  /health
 (`pg_dumpall --globals-only` — the roles `schoolos`/`schoolos_app`, their
 passwords and memberships) plus `<db>.dump` (custom-format `pg_dump`, default db
 `schoolos`; override with `BACKUP_DATABASES`). Every dump is verified with
-`pg_restore --list` before it counts. Retention: `BACKUP_KEEP_DAYS` nights
+`pg_restore --list` before it counts. The same night also contains
+`files.tar.gz`, a verified archive of `FILES_DIR` (or the default
+`server/storage`) so uploaded bytes are restored with `app.files` metadata.
+Retention: `BACKUP_KEEP_DAYS` nights
 (default 7). The script exits non-zero on any failure and deletes the failed
 artifact; a missing night directory or a leftover `.incomplete` marker means that
 night did not complete — treat it as **no backup for that night**.
@@ -133,8 +136,15 @@ psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE schoolos OWNER schoolos;"
 #    default-privilege entries with "permission denied" errors.)
 pg_restore -h 127.0.0.1 -U postgres -d schoolos -j 4 \
   /var/backups/schoolos/<date>/schoolos.dump
-# 4) verify the restored system gates green (reachability, migrations, RLS baseline)
+# 4) restore private uploads beside the configured FILES_DIR. The archive
+#    contains a top-level `storage/` directory when the default was used.
+mkdir -p /srv/schoolos/server
+tar -xzf /var/backups/schoolos/<date>/files.tar.gz \
+  -C /srv/schoolos/server
+# 5) verify the restored system gates green (reachability, migrations, RLS baseline)
 cd server && DATABASE_URL=postgres://schoolos:schoolos_dev_pw@127.0.0.1:5432/schoolos node scripts/check.js
+# 6) before serving restored traffic, replay encrypted DPDP erasure tokens
+node scripts/replay-erasure-journal.js
 ```
 
 **RPO with this scheme is ≤ 24h.** WAL archiving / point-in-time recovery is a

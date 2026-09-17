@@ -26,17 +26,17 @@ import { uuidParams } from '../_shared/uuid-param.js';
 const ID = 'library';
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
   const STAFF = ['owner', 'principal', 'coordinator', 'facilities'];
   const STUDENT = ['student'];
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
   const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 
   // plugin settings via the kernel owner path (ops.visitors settings() precedent)
   const settings = async (tenantId) =>
-    (await q(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID])).rows[0]?.settings ?? {};
+    (await sysq(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID])).rows[0]?.settings ?? {};
 
   // IDENTITY PIN: student role → own app.students row (034/036 name-match; the kernel
   // has no user↔student FK). Fail-closed: no match ⇒ no data, never a guess.
@@ -218,6 +218,8 @@ export function register(app, kernel) {
   app.get(`/plugins/${ID}/loans`, { preHandler: [require(...STAFF), lifecycleGate] }, async (req, reply) => {
     const state = req.query?.state === 'all' ? 'all' : 'open';
     const studentId = typeof req.query?.studentId === 'string' && req.query.studentId ? req.query.studentId : null;
+    // PLGX: studentId was interpolated into `$3::uuid` raw — `?studentId=abc` was a 22P02 → 500.
+    if (studentId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId)) return bad(reply, 'studentId must be a uuid');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
         `SELECT l.id, l.status, l.issued_at, l.due_on, l.returned_at, l.fine_cents,
@@ -252,12 +254,16 @@ export function register(app, kernel) {
          LEFT JOIN app.guardians g ON g.student_id = s.id AND g.is_primary
          WHERE l.tenant_id=$1 AND l.status='issued' AND l.due_on < (now() AT TIME ZONE 'UTC')::date
          ORDER BY l.due_on ASC LIMIT 200`, [req.user.tenant_id])).rows;
+      // PLGX-12: the STAFF set includes `facilities`, and this returned the guardian's full phone to them.
+      // Contact details are the office's to hold; facilities get the masked tail only.
+      const fullPhone = ['owner', 'principal', 'coordinator'].includes(req.user.role);
+      const mask = (p) => { if (!p) return null; const d = String(p).replace(/\D/g, '').slice(-10); return `${d.slice(0, 2)}xxxx${d.slice(-2)}`; };
       // overdue chase rows flattened to the client Loan shape + nested aliases
       return { loans: rows.map((r) => ({
         id: r.id, dueOn: r.due_on, daysOverdue: Number(r.days_overdue ?? 0),
         bookTitle: r.book_title, bookCode: r.book_code,
         studentName: r.student_name, studentGrade: r.grade, studentSection: r.section,
-        guardianPhone: r.guardian_phone ?? null,
+        guardianPhone: fullPhone ? (r.guardian_phone ?? null) : mask(r.guardian_phone),
         book: { code: r.book_code, title: r.book_title },
         student: { id: r.student_id, name: r.student_name, class: `${r.grade}-${r.section}` },
       })) };

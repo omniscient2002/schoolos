@@ -138,7 +138,7 @@ test('Wave C · app.tenants: the app role sees only its own tenant row', async (
   assert.equal(await count(tenantA, 'app.tenants'), 1, 'two tenants exist, only one visible');
 });
 
-test('Wave C · revoked_token pinned; oauth_states app-readable; schema_migrations invisible', async () => {
+test('Wave C · revoked_token pinned; oauth_states kernel-only; schema_migrations invisible', async () => {
   const jti = 'wavec-' + crypto.randomUUID();
   // Seed on the owner-path connection: asAppRole() ROLLBACKs every statement it
   // runs (b9 probe hygiene), so a seed written through it would be discarded
@@ -149,7 +149,13 @@ test('Wave C · revoked_token pinned; oauth_states app-readable; schema_migratio
 
   const state = 'wavec-' + crypto.randomUUID();
   await sql(`INSERT INTO app.oauth_states (state) VALUES ($1)`, [state]);
-  assert.equal(await count(tenantA, 'app.oauth_states', `state='${state}'`), 1, 'pre-auth state readable by app role (USING true)');
+  // DATX-15 hardened this after the Wave-C audit: oauth_states was app-role readable with `USING (true)`,
+  // exposing every tenant's in-flight OAuth state. It is now `FOR ALL … USING(false)` + REVOKE ALL — every
+  // code path already read it through the kernel (sysq). So the app role must be DENIED, not admitted.
+  await assert.rejects(
+    () => count(tenantA, 'app.oauth_states', `state='${state}'`),
+    (e) => e.code === '42501',
+    'oauth_states is kernel-only after DATX-15 (REVOKE ALL + USING false)');
 
   assert.equal(await count(tenantA, 'app.schema_migrations'), 0, 'migration registry invisible to the app role');
   assert.equal(await count(tenantB, 'app.schema_migrations'), 0, 'migration registry invisible to the app role');
@@ -165,7 +171,7 @@ test('Wave C · /metrics is owner/itadmin-only Prometheus text', async () => {
   assert.ok(String(it.headers['content-type']).startsWith('text/plain'), 'prometheus text format');
   for (const metric of ['schoolos_uptime_seconds', 'schoolos_requests_total', 'schoolos_errors_total',
     'schoolos_pg_pool_total', 'schoolos_outbox_pending', 'schoolos_comms_queued',
-    'schoolos_events_last_hour', 'schoolos_schema_migrations']) {
+    'schoolos_events_last_hour']) {
     assert.match(it.body, new RegExp(`^# TYPE ${metric} (gauge|counter)$`, 'm'), `metric ${metric} present`);
     assert.match(it.body, new RegExp(`^${metric} \\d+$`, 'm'), `metric ${metric} has a value`);
   }

@@ -8,6 +8,35 @@ import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.js';
 import { hashPassword } from '../src/auth.js';
 
+// ── PERFECT-100 §5.7 TST-2 / item 30 — DETERMINISTIC SEED ─────────────────────
+// The seed used `Math.random()` for attendance status and a couple of ledger values,
+// which made the WHOLE SUITE NON-DETERMINISTIC. Measured: three fresh seeds of the same
+// database gave the same student 70%, 80% and 90% attendance —
+//
+//   seed1: MER-2601:100% MER-2602:100% MER-2603:70%
+//   seed2: MER-2601:100% MER-2602:100% MER-2603:80%
+//   seed3: MER-2601:90%  MER-2602:100% MER-2603:90%
+//
+// Because the exams eligibility gate enforces a 75% attendance floor, a 70% draw made
+// `tests/exam-depth.test.js` fail at publish → the suite went red for reasons that had
+// nothing to do with the code under test. Same defect class as the calendar-dependent
+// tests: a fixture that answers differently each run turns a green suite into a coin
+// flip and destroys its value as evidence.
+//
+// `rand()` keeps the same distribution and call sequence but starts from a fixed point,
+// so the demo corpus is identical on every run while the data still looks varied.
+// Change SEED_RNG_SEED only to deliberately reshuffle the demo dataset.
+const SEED_RNG_SEED = 0x5c40010 % 0xffffffff;
+let _rngState = SEED_RNG_SEED >>> 0;
+/** mulberry32 — tiny, fast, well-distributed, and reproducible across platforms. */
+const rand = () => {
+  _rngState = (_rngState + 0x6D2B79F5) >>> 0;
+  let t = _rngState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+
 
 // ── P0 guard (ops audit): seed wipes tenant data. Refuse in production unless
 // the operator passes --i-know-this-wipes-data explicitly.
@@ -18,6 +47,29 @@ if ((process.env.NODE_ENV === 'production' || process.env.SEED_GUARD === 'strict
   process.exit(1);
 }
 
+/* ── Incident guard (L2, 2026-09-12): the TRUNCATE below is CASCADE over
+   app.tenants — it nukes EVERY tenant, not just the demo one. A dev DB that
+   carries real self-signup schools must never be silently wiped (one was:
+   tenant 'lkmmm' and its two users). Count non-demo tenants and refuse
+   unless the operator says --allow-nuke. A fresh DB (no tables yet) is, by
+   definition, safe — the migrate step runs before seed in every pipeline. ── */
+{
+  const c = new pg.Client({ connectionString: config.databaseUrl });
+  await c.connect();
+  try {
+    const { rows: [extra] } = await c.query(`SELECT count(*)::int AS n FROM app.tenants WHERE slug <> 'meridian'`);
+    if (extra.n > 0 && !process.argv.includes('--allow-nuke')) {
+      console.error(`REFUSING to seed: this DB holds ${extra.n} non-demo tenant(s); the CASCADE wipe would destroy them.\n`
+        + 'For a deliberate full reset re-run with: node scripts/seed.js --allow-nuke');
+      process.exit(1);
+    }
+  } catch (e) {
+    if (e.code !== '42P01') throw e; // missing tables = fresh DB = nothing to lose
+  } finally {
+    await c.end();
+  }
+}
+
 const client = new pg.Client({ connectionString: config.databaseUrl });
 await client.connect();
 
@@ -25,6 +77,25 @@ const DEMO_PW = 'schoolos-demo';
 
 // ---- tenant (clean re-seed: truncate all tenant-scoped tables) ----
 await client.query(`TRUNCATE app.tenants CASCADE`);
+// DATX-5: TRUNCATE app.tenants CASCADE cannot reach tables with NO FK path to app.tenants, so a re-seed
+// left their rows behind (8 tables the re-audit named). Truncate them explicitly. `capability_contracts`
+// keeps its PLATFORM rows (tenant_id IS NULL — migration 007 dropped the FK on purpose) and only clears
+// tenant-scoped ones; the rest are tenant-scoped and safe to empty. Guarded by to_regclass so a deployment
+// without a given plugin table is unaffected.
+{
+  const noFkTables = ['teacher.homework', 'teacher.submission', 'teacher.submission_needs_linking',
+    'plugin_visitors.pickup_otp', 'plugin_dpdp.erasure_journal', 'auth.revoked_token',
+    'app.audit_log_cold', 'auth.request_throttles'];
+  for (const tbl of noFkTables) {
+    if ((await client.query('SELECT to_regclass($1) AS oid', [tbl])).rows[0]?.oid) {
+      // CASCADE: some of these reference each other (e.g. teacher.submission → teacher.homework).
+      await client.query(`TRUNCATE ${tbl} CASCADE`);
+    }
+  }
+  if ((await client.query(`SELECT to_regclass('app.capability_contracts') AS oid`)).rows[0]?.oid) {
+    await client.query(`DELETE FROM app.capability_contracts WHERE tenant_id IS NOT NULL`);
+  }
+}
 const t = (await client.query(
   `INSERT INTO app.tenants (slug, name, config) VALUES ('meridian', 'Meridian International Academy', '{"campuses":["north","south"]}'::jsonb) RETURNING id`
 )).rows[0];
@@ -109,10 +180,10 @@ for (const s of students) {
     ['Installment 3 — November', 2250000, '2026-11-05'],
   ];
   for (const [label, cents, due] of parts) {
-    const paid = label.includes('July') ? cents : (label.includes('November') ? 0 : (Math.random() < 0.8 ? 0 : 1850000));
+    const paid = label.includes('July') ? cents : (label.includes('November') ? 0 : (rand() < 0.8 ? 0 : 1850000));
     await client.query(
       `INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, due_on, amount_cents, paid_cents, status, source_ref)
-       VALUES ($1,$2,'Term 2',$3,$4,$5,$6,$7,'TALLY-txn-${Math.floor(Math.random()*9000)+1000}')`,
+       VALUES ($1,$2,'Term 2',$3,$4,$5,$6,$7,'TALLY-txn-${Math.floor(rand()*9000)+1000}')`,
       [T, s.id, label, due, cents, paid, paid >= cents ? 'paid' : 'open']);
   }
 }
@@ -188,9 +259,9 @@ for (let d = 10; d >= 1; d--) {
     const is8B = s.grade === '8' && s.section === 'B';
     const disrupted = iso === today.toISOString().slice(0,10);
     let status = 'present';
-    if (is8B && disrupted) status = s.route === 'Route 7' ? 'absent' : (Math.random() < 0.9 ? 'present' : 'absent');
-    else if (Math.random() < 0.055) status = 'absent';
-    else if (Math.random() < 0.02) status = 'late';
+    if (is8B && disrupted) status = s.route === 'Route 7' ? 'absent' : (rand() < 0.9 ? 'present' : 'absent');
+    else if (rand() < 0.055) status = 'absent';
+    else if (rand() < 0.02) status = 'late';
     await client.query(
       `INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (tenant_id, student_id, school_date) DO NOTHING`,
@@ -278,5 +349,81 @@ for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sq
   await client.query(catalogSql);
 }
 
+// ---- catalog rows the replay above does not contain (078 + every future catalog addition) ------------
+// The replay list is hard-coded and stops at 048; `TRUNCATE app.tenants CASCADE` above wipes app.plugins, so
+// any plugin added to the registry by a LATER migration, or seeded by src/plugin-catalog.js, silently
+// disappears in every seeded environment — which is every test and the demo (found by independent review of
+// migration 078: the three credential rails vanished here, taking the new OTP/reset channel gates with
+// them). Rather than grow the list until the next person forgets it too, run the catalog itself: the same
+// function /onboard/signup and the GET /plugins self-heal call, so the seed can never drift from it again.
+{
+  const { ensurePluginCatalog } = await import('../src/plugin-catalog.js');
+  for (const t of (await client.query('SELECT id FROM app.tenants')).rows) {
+    await ensurePluginCatalog(client, t.id);
+  }
+  // The demo tenant was just rebuilt, so its core modules must match the
+  // modules enabled for a fresh signup. The catalog function remains
+  // non-destructive for normal existing tenants.
+  const { DEFAULT_ON } = await import('../src/plugin-catalog.js');
+  await client.query(
+    `UPDATE app.plugins SET status='enabled', enabled_at=COALESCE(enabled_at, now()), updated_at=now()
+     WHERE tenant_id=$1 AND plugin_id = ANY($2::text[])`,
+    [(await client.query("SELECT id FROM app.tenants WHERE slug='meridian'")).rows[0]?.id, [...DEFAULT_ON]],
+  );
+}
+
+// ---- RLS predicate hardening MUST come after the replay above ────────────────
+// PERFECT-100 §8 / migration 074. This is not a redundancy — it is load-bearing.
+//
+// The replay above re-CREATES the RLS policies defined in migrations 009–048, and those
+// files write their predicates with an inline `current_setting('schoolos.tenant_id', true)`.
+// So the replay UNDOES migration 074. Measured on one database, step by step:
+//
+//     after migrate     → inline=0  helper=91
+//     after bootstrap   → inline=0  helper=91
+//     after seed        → inline=50 helper=44      ← the replay rewound 47 policies
+//
+// A predicate that inlines current_setting can RAISE instead of DENY — 22P02 when the GUC
+// is an empty string, 42704 when it was never set — which turns an access-control rule into
+// a 500 for the whole request. Because `migrate.js` refuses to run once a recorded
+// migration's checksum drifts, the old migrations CANNOT be edited to fix this at source.
+// The hardening migration is idempotent, so re-applying it here is safe and cheap.
+//
+// RULE FOR FUTURE WORK: anything that hardens, replaces or constrains a policy created by
+// the migrations above must be re-applied here too, or the seed silently reverts it on
+// every run and the regression appears only in seeded (i.e. every test and demo)
+// environments. `tests/rls-policy-hardening.test.js` asserts the invariant and fails when
+// this block is removed.
+for (const mig of ['074_rls_policy_hardening.sql']) {
+  const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', mig), 'utf8');
+  await client.query(catalogSql);
+}
+
 console.log(`Seeded tenant meridian: ${students.length} students, ${users.length} users, ${wos.length} WOs, 5 migration sources, 7 catalog plugins (3 migrations replayed).`);
+
+// ---- D-35 grant tightening MUST be the LAST thing this script does -----------------------------
+// The replay above re-runs migrations 010/018/020/021/036, several of which `GRANT ... DELETE` to the app role
+// explicitly. `bootstrap.js` revokes those, but bootstrap runs BEFORE seed in the documented order
+// (migrate → bootstrap → seed, and `tests/helpers.js` does exactly that), so whatever this file grants last is
+// the posture the database keeps. Measured on a freshly built database: with this block absent, the app role
+// held table-level DELETE on 12 tables, including both Razorpay money ledgers (`plugin_razorpay.order_log`,
+// `plugin_razorpay.webhook_log`) — D-35 says it must never hold DELETE at all. That is the same 12-table
+// violation SEC-2b recorded as fixed; it was not fixed, it was re-created by the next seed.
+//
+// So the tightening lives in a shared module and is applied at the END of every path that can widen grants,
+// which is what makes the ordering safe to change rather than a trap for the next person.
+{
+  const { tightenAppRoleDeletes, tightenAppRoleColumns, dropRedundantIndexes } = await import('../src/grant-tightening.js');
+  const { revoked, granted } = await tightenAppRoleDeletes(client);
+  console.log(`app-role table DELETE tightened after replay: revoked in ${revoked.length} schema(s), re-granted on ${granted.length || 0} (${granted.join(', ') || 'none'})`);
+  // DATX-1: the replay also re-grants table-level UPDATE/SELECT on schema app, undoing 077's
+  // column scope. Re-apply the column tightening as the same final step.
+  const cols = await tightenAppRoleColumns(client);
+  console.log(`app-role column grants tightened after replay (077 scope): ${cols.join(', ') || 'none'}`);
+  // DATX-12: the replay re-runs 032, which re-creates `intervention_plan_student_idx` — an index 106 drops
+  // as fully covered. A migration-only drop is invisible after a seed, so the shared last-run module owns it.
+  const droppedIdx = await dropRedundantIndexes(client);
+  console.log(`redundant indexes dropped after replay: ${droppedIdx.join(', ') || 'none'}`);
+}
+
 await client.end();

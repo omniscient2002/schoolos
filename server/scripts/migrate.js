@@ -10,13 +10,16 @@
 //     history rewrites make rebuilds untrustworthy ("migration file drifted after apply").
 import { readdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { config } from '../src/config.js';
+import { stripTopLevelTransactions } from '../src/migration-sql.js';
 
 const LOCK_ID = 727272;
-const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
+// MIGRATIONS_DIR lets the runner's behavioural test point it at a scratch directory (FEX-12); the
+// default is the repository's own migrations, unchanged for every real boot.
+const dir = process.env.MIGRATIONS_DIR ? resolve(process.env.MIGRATIONS_DIR) : join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const client = new pg.Client({ connectionString: config.databaseUrl });
 await client.connect();
 
@@ -44,9 +47,14 @@ try {
     const onDisk = sha256(f);
     const recorded = applied.get(f);
     if (recorded == null) {
-      // Applied before 041 introduced checksums — adopt the current file once.
+      // A NULL checksum is historical state, not permission to silently bless
+      // whatever happens to be on disk. Re-baselining is an explicit operator
+      // action so an edited migration cannot launder itself on the next boot.
+      if (process.env.MIGRATION_REBASELINE !== 'true') {
+        throw new Error(`migration ${f} has no recorded checksum — set MIGRATION_REBASELINE=true for an explicit one-time rebaseline`);
+      }
       await client.query('UPDATE app.schema_migrations SET checksum=$1 WHERE name=$2', [onDisk, f]);
-      console.log(`checksum adopted ${f}`);
+      console.warn(`checksum rebaselined explicitly ${f}`);
     } else if (recorded !== onDisk) {
       throw new Error(`migration file drifted after apply: ${f} (recorded ${recorded.slice(0, 12)}…, on disk ${onDisk.slice(0, 12)}…) — restore the file or re-baseline deliberately`);
     }
@@ -54,7 +62,10 @@ try {
 
   for (const f of files) {
     if (applied.has(f)) { console.log(`skip ${f}`); continue; }
-    const sql = readFileSync(join(dir, f), 'utf8');
+    // DATX-6: 031/034-040 carry a top-level BEGIN;/COMMIT; that would close the runner's transaction
+    // early. Strip them so the per-file transaction stays atomic. (Editing an applied file is forbidden,
+    // so this belongs in the runner.)
+    const sql = stripTopLevelTransactions(readFileSync(join(dir, f), 'utf8'));
     console.log(`applying ${f} …`);
     try {
       await client.query('BEGIN');

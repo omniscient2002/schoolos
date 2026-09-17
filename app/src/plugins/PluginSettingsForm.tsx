@@ -93,7 +93,13 @@ export default function PluginSettingsForm({ pluginId, onSaved }: { pluginId: st
       if (isSecretField(k, f)) {
         const typed = secrets[k];
         if (typed != null && typed !== '') body[k] = typed;
-        else if (req && values[k] == null) errors[k] = 'required';
+        else {
+          // GET /plugins returns a mask for stored secrets. Never send that
+          // placeholder back as a replacement; an untouched secret is a
+          // write-only field and the server preserves its encrypted value.
+          delete body[k];
+          if (req && values[k] == null) errors[k] = 'required';
+        }
         continue; // blank secret = keep the stored value (never clear)
       }
       const raw = values[k];
@@ -161,7 +167,7 @@ export default function PluginSettingsForm({ pluginId, onSaved }: { pluginId: st
   }
 
   return (
-    <div className="u-col" style={{ gap: 12 }}>
+    <div className="u-col roll" style={{ gap: 12 }}>
       {!privileged && (
         <p className="u-small" style={{ color: 'var(--text-2)' }}>
           You can see that settings exist, but only the <strong>owner</strong> or <strong>IT admin</strong> can view or edit the values.

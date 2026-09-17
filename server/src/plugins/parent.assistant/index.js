@@ -31,13 +31,27 @@ const BUDGET_CLASS = 'P-copilot';
 const MONTHLY_CAP = 100;
 // banned interpretive words — never in any output (test scans the whole payload)
 const BANNED = /failing|disengaged|\brisk\b|at-risk|weak/i;
+// PRD-13: tests are a backstop; sanitize at the response boundary so a future
+// factual template or stored label cannot leak interpretive judgement.
+const safeText = (value) => String(value)
+  .replace(/at-risk/gi, 'needs support')
+  .replace(/failing/gi, 'needs attention')
+  .replace(/disengaged/gi, 'less connected')
+  .replace(/\brisk\b/gi, 'consideration')
+  .replace(/weak/gi, 'developing');
+const safePayload = (value) => {
+  if (typeof value === 'string') return safeText(value);
+  if (Array.isArray(value)) return value.map(safePayload);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, safePayload(v)]));
+  return value;
+};
 const IST = '(now() AT TIME ZONE \'Asia/Kolkata\')';
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 const HONEST_UNKNOWN = 'I don\'t have that information yet — please ask the class teacher';
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, requestAudit, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
 
   // ── shared helpers (034 myChildren pattern) ─────────────────────────────────
   const myChildren = async (c, userId) =>
@@ -241,7 +255,7 @@ export function register(app, kernel) {
         recordRef: when, reason: 'parent assistant brief',
         policyRef: 'PARENTOS-PLAN · deterministic-only assistant · DPDP Act 2023', risk: 'low',
         outcome: `factual aggregation for ${data.children.length} linked child${data.children.length === 1 ? '' : 'ren'} · no LLM` });
-      return payload;
+      return safePayload(payload);
     });
   });
 
@@ -337,8 +351,8 @@ export function register(app, kernel) {
         policyRef: 'P-copilot budget classes · deterministic-only · DPDP Act 2023',
         aiInvolved: false, risk: 'low',
         outcome: `keyword-routed to ${sources.map((x) => x.kind).join(', ')} · composed from own-child records · budget ${used + 1}/${MONTHLY_CAP} this month` });
-      return { ok: true, question, intent, answer, sources, label: 'deterministic_answer',
-        deterministic: true, budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } };
+      return safePayload({ ok: true, question, intent, answer, sources, label: 'deterministic_answer',
+        deterministic: true, budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } });
     });
   });
 
@@ -404,9 +418,9 @@ export function register(app, kernel) {
         policyRef: 'P-copilot budget classes · deterministic-only · drafts are never auto-sent',
         aiInvolved: false, risk: 'low',
         outcome: `deterministic template (labelled ai_draft) · no model call · budget ${used + 1}/${MONTHLY_CAP} this month` });
-      return { ok: true, kind, title, draft, label: 'ai_draft', deterministic: true,
+      return safePayload({ ok: true, kind, title, draft, label: 'ai_draft', deterministic: true,
         child_id: child?.id ?? null,
-        budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } };
+        budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } });
     });
   });
 
@@ -454,7 +468,7 @@ export function register(app, kernel) {
         recordRef: topic, reason: 'parent assistant explain',
         policyRef: 'PARENTOS-PLAN · plain-language explains from real numbers', risk: 'low',
         outcome: `deterministic explain built from own-child records` });
-      return { topic, meaning, why, what_you_can_do: whatYouCanDo, deterministic: true };
+      return safePayload({ topic, meaning, why, what_you_can_do: whatYouCanDo, deterministic: true });
     });
   });
 }

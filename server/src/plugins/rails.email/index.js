@@ -14,6 +14,7 @@
 // Failures are RETURNED, never thrown (rails.sms parity).
 const ID = 'rails.email';
 export { default as manifest } from './manifest.js';
+import { decryptSettings } from '../../settings-crypto.js';
 import net from 'node:net';
 import tls from 'node:tls';
 
@@ -21,12 +22,12 @@ const redactSecrets = (s) => String(s ?? '')
   .replace(/(password|secret|token)\s*[=:]\s*\S+/gi, '$1=[redacted]');
 
 let kernelQ = null;
-export function bindKernel(q) { kernelQ = q; }
+export function bindKernel(ownerQuery) { kernelQ = ownerQuery; }
 
 async function readSettings(tenantId) {
   try {
     const r = await kernelQ(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
-    return r.rows[0]?.settings ?? {};
+    return decryptSettings(r.rows[0]?.settings ?? {}, tenantId);
   } catch (e) {
     console.error(`${ID}: settings read failed — degrading to logger provider:`, e.message);
     return {};
@@ -40,7 +41,7 @@ async function readSettings(tenantId) {
 function smtpSend(s, { to, subject, body }) {
   return new Promise((resolve) => {
     const port = Number(s.port) || (s.secure ? 465 : 587);
-    const state = { stage: 'greeting', buf: '', done: false };
+    const state = { stage: 'greeting', buf: '', done: false, lines: [] }; // S0 fix H1: multiline accumulator
     const finish = (r) => { if (state.done) return; state.done = true; try { state.socket?.end(); } catch { /* noop */ } resolve(r); };
     const fail = (error) => finish({ ok: false, provider: 'smtp', sandbox: false, ref: null, error });
 
@@ -52,9 +53,9 @@ function smtpSend(s, { to, subject, body }) {
     // ehlo runs twice (plain, then after STARTTLS); shared body via makeEhlo()
     const makeEhlo = (nextStage) => (text, code) => {
       if (code !== 250) return fail(`EHLO refused: ${firstLine(text)}`);
-      if (!s.secure && /starttls/i.test(text)) { write('STARTTLS'); setStage('starttls'); return; }
+      if (!state.tlsActive && /starttls/i.test(text)) { write('STARTTLS'); setStage('starttls'); return; } // S0 fix H2: runtime state, not the settings flag — no second STARTTLS inside TLS
       if (s.username && s.password) { write('AUTH LOGIN'); setStage('auth_user'); return; }
-      write(`MAIL FROM:<${s.from_address}>`); setStage('mail_from');
+      write(`MAIL FROM:<${String(s.from_address ?? '').replace(/[\r\n<>]/g, '')}>`); setStage('mail_from'); // S0 fix H22
     };
     const stages = {
       ehlo: makeEhlo('ehlo2'),
@@ -65,6 +66,7 @@ function smtpSend(s, { to, subject, body }) {
         const raw = state.socket;
         const sec = tls.connect({ socket: raw, rejectUnauthorized: s.reject_unauthorized !== false }, () => { /* resumed by data events */ });
         state.socket = sec;
+        state.tlsActive = true; // S0 fix H2
         attach(sec);
         write('EHLO schoolos.local');
         setStage('ehlo2');
@@ -100,11 +102,17 @@ function smtpSend(s, { to, subject, body }) {
         while ((idx = state.buf.indexOf('\r\n')) !== -1) {
           const line = state.buf.slice(0, idx);
           state.buf = state.buf.slice(idx + 2);
-          if (!/^\d{3}([ -])/.test(line)) continue; // response not yet terminated
-          const code = parseInt(line.slice(0, 3), 10);
+          // S0 fix H1 (HIGH): only code+SPACE terminates a response — dash lines are
+          // continuations (EHLO capabilities). Treating "250-…" as complete meant
+          // STARTTLS was never seen on :587 and leftover lines desynced the state
+          // machine against real providers.
+          state.lines.push(line);
+          if (!/^\d{3} /.test(line)) continue;
+          const text = state.lines.join('\n'); state.lines = [];
+          const code = parseInt(text.slice(0, 3), 10);
           const handler = stages[state.stage] ?? startStage[state.stage];
           if (!handler) return fail(`unexpected SMTP stage ${state.stage}`);
-          handler(line, code);
+          handler(text, code); // full accumulated response (all EHLO capability lines)
           return; // one command → one response; the rest waits for the next turn
         }
       });
@@ -160,5 +168,5 @@ export async function sendEmail({ to, subject, body, dedupKey, tenantId }) {
 // Loader contract: register(app, kernel) — the rail mounts no doors; it only
 // binds the kernel q for owner-path settings reads.
 export function register(app, kernel) {
-  bindKernel(kernel.q);
+  bindKernel(kernel.sysq);
 }

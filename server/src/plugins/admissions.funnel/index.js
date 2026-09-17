@@ -51,12 +51,12 @@ const currentSessionYear = () => {
 const mmdd = (d) => `${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
   const FULL_PII = ['owner', 'principal', 'itadmin', 'coordinator']; // admissions office sees guardian contacts
   const ADMIN = ['owner', 'principal', 'itadmin', 'finance', 'coordinator'];
 
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
 
   // ── capture enquiry (admin roles; session window + dedupe guard) ─────────────
   app.post(`/plugins/${ID}/leads`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {

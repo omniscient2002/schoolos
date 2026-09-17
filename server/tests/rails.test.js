@@ -102,8 +102,11 @@ describe('rails.sms (internal rail function — inserts nothing, returns the out
   test('3 · rails.whatsapp reuses the comms.whatsapp DLT template registry', async () => {
     const T = (await sql(`SELECT id FROM app.tenants LIMIT 1`)).rows[0].id;
     // register a template exactly like the comms.whatsapp door does (settings → templates)
+    // PLG-10: the rail resolves its template owner through the `comms.whatsapp.templates` CAPABILITY, and
+    // the resolver only selects an ENABLED provider — a row carrying templates but switched off is not the
+    // owner. Enable it (the seeded row already carries the manifest that declares the capability).
     await sql(
-      `UPDATE app.plugins SET settings = jsonb_set(COALESCE(settings,'{}'::jsonb), '{templates}',
+      `UPDATE app.plugins SET status='enabled', settings = jsonb_set(COALESCE(settings,'{}'::jsonb), '{templates}',
          COALESCE(settings->'templates','{}'::jsonb) || jsonb_build_object('WAVE_A_TEST', $2::jsonb), true)
        WHERE tenant_id=$1 AND plugin_id='comms.whatsapp'`,
       [T, JSON.stringify({ body: 'Fee of ₹{{amount}} due for {{student}}', dltId: null })]);
@@ -132,29 +135,71 @@ describe('comms dispatcher (scripts/comms-dispatcher.js)', () => {
     assert.equal(r.status, 0, `node --check failed: ${r.stderr}`);
   });
 
-  test('5 · drain: sms row with a resolvable recipient → sent + sent_at via the logger rail (SKIP without DB)', async (t) => {
-    const up = await sql(`SELECT 1 FROM information_schema.tables WHERE table_schema='app' AND table_name='communications'`).catch(() => ({ rows: [] }));
-    if (!up.rows[0]) return t.skip('no database in this environment');
+  test('5 · drain: the REAL dispatcher claims, sends, and books an undeliverable honestly', async () => {
+    /* TST-5: this was
+         const up = await sql(`SELECT 1 FROM information_schema.tables WHERE ...`
+           + ` AND table_name='communications'`).catch(() => ({ rows: [] }));
+         if (!up.rows[0]) return t.skip('no database in this environment');
+       two failures in two lines. The `.catch(() => ({ rows: [] }))` turned ANY error — a dead
+       connection, a permission fault, a typo in the catalog query — into "the table is absent", and
+       the bare skip then retired the whole test. The skip's stated reason was also false: setupTestDb()
+       creates the database and runs migrate, and 043_comms_dispatch.sql creates app.communications
+       unconditionally, so the only way to land here is a genuinely broken fixture. Asserted instead. */
+    const up = await sql(`SELECT to_regclass('app.communications') IS NOT NULL AS ok`);
+    assert.ok(up.rows[0].ok,
+      'fixture: app.communications must exist (migration 043) — the real dispatcher cannot be exercised without it');
     const T = (await sql(`SELECT id FROM app.tenants LIMIT 1`)).rows[0].id;
+
+    /* TST-4: this test used to spawn an inline script that RE-IMPLEMENTED the drain — read the queued row, call
+       sendSms, UPDATE status — so it passed with `scripts/comms-dispatcher.js` deleted. A test that duplicates
+       the code under test verifies the duplication. The dispatcher now exports `tick()` (and `shutdown`, so a
+       test process ends without a stranded pool), and this drives the real worker. */
+    await sql(`DELETE FROM app.communications WHERE dedup_key IN ('wave-a-dispatch-1','wave-a-dispatch-bad')`);
     await sql(
       `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, dedup_key)
-       VALUES ($1, $2::jsonb, 'sms', 'WAVE_A', 'dispatcher drain check', 'queued', 'Wave A', 'wave-a-dispatch-1')`,
+       VALUES ($1, $2::jsonb, 'sms', 'WAVE_A', 'dispatcher drain check', 'queued', 'Wave A', 'wave-a-dispatch-1'),
+              ($1, '[]'::jsonb, 'sms', 'WAVE_A', 'no recipient at all', 'queued', 'Wave A', 'wave-a-dispatch-bad')`,
       [T, JSON.stringify(['+919812345678'])]);
-    const r = spawnSync(process.execPath, ['-e', `
-      import('./src/plugins/rails.sms/index.js').then(async (sms) => {
-        const pg = (await import('pg')).default;
-        const pool = new pg.Pool({ connectionString: ${JSON.stringify(process.env.DATABASE_URL)} });
-        sms.bindKernel((text, params) => pool.query(text, params));
-        const row = (await pool.query("SELECT id, tenant_id, channel, template, body, audience_json, dedup_key, attempts FROM app.communications WHERE dedup_key='wave-a-dispatch-1' AND status='queued'")).rows[0];
-        const out = await sms.sendSms({ to: '+919812345678', body: row.body, dedupKey: row.dedup_key, tenantId: row.tenant_id });
-        if (!out.ok) throw new Error(out.error);
-        await pool.query("UPDATE app.communications SET status='sent', sent_at=now() WHERE id=$1", [row.id]);
-        await pool.end();
-      })`], { cwd: SERVER_ROOT, encoding: 'utf8' });
-    assert.equal(r.status, 0, `drain failed: ${r.stderr}`);
-    const row = (await sql(`SELECT status, sent_at FROM app.communications WHERE dedup_key='wave-a-dispatch-1'`)).rows[0];
-    assert.equal(row.status, 'sent');
-    assert.ok(row.sent_at, 'sent_at stamped on drain');
+
+    const { tick, shutdown, processClaimedRow } = await import('../scripts/comms-dispatcher.js');
+    const dbPool = (await import('../src/db.js')).pool;
+    try {
+      // ── half 1: the real worker claims and drains ──────────────────────────────
+      await tick();
+    } catch (e) {
+      await shutdown();
+      throw e;
+    }
+
+    const ok = (await sql(`SELECT status, sent_at, provider, attempts FROM app.communications WHERE dedup_key='wave-a-dispatch-1'`)).rows[0];
+    assert.equal(ok.status, 'sent', 'the real dispatcher drained the row');
+    assert.ok(ok.sent_at, 'sent_at stamped by the dispatcher, not by the test');
+    assert.equal(ok.provider, 'logger', 'and the row names the carrier that took it');
+
+    /* ── half 2: the honesty gate, on the path the worker itself calls ───────────
+       A row with no resolvable recipient has no carrier: the dispatcher writes a durable log line and reports
+       provider='log-only'. In development that counts as sent (the text IS on the operator's console); in
+       PRODUCTION it is not a delivery, because no message would reach anyone. That distinction is exactly what
+       the old inline test could not express — it had no notion of a carrier. Driven through the exported
+       `processClaimedRow` instead of a live HTTP provider, because a real network failure is timing-dependent
+       and the invariant under test is the DECISION, not the socket. */
+    const badRow = (await sql(`SELECT * FROM app.communications WHERE dedup_key='wave-a-dispatch-bad'`)).rows[0];
+    assert.ok(badRow, 'fixture: the recipient-less row exists');
+    const c = await dbPool.connect();
+    let decision;
+    try {
+      decision = await processClaimedRow(c, badRow, { allowSandbox: false });
+    } finally {
+      c.release();
+      await shutdown();
+    }
+    assert.equal(decision.outcome, 'undeliverable',
+      `a carrier that only writes a log line is not a delivery in production: ${JSON.stringify(decision)}`);
+    assert.match(String(decision.error ?? ''), /log line|no message would reach/i, 'and the reason names the carrier');
+    const after = (await sql(`SELECT sent_at, last_error FROM app.communications WHERE dedup_key='wave-a-dispatch-bad'`)).rows[0];
+    assert.equal(after.sent_at, null, 'no send timestamp for a message nobody received');
+    assert.ok(after.last_error, 'and an operator can read why');
+    await sql(`DELETE FROM app.communications WHERE dedup_key IN ('wave-a-dispatch-1','wave-a-dispatch-bad')`);
   });
 });
 

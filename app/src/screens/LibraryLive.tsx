@@ -12,6 +12,7 @@ import {
 } from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
 import { useSession } from '../App';
+import { roleOrGrant } from '../lib/grants';
 import {
   libraryBooks, libraryAddBook, libraryIssue, libraryReturn,
   libraryLoans, libraryOverdue, libraryMyLoans,
@@ -23,7 +24,14 @@ const inr = (cents: number) => `₹${(cents / 100).toFixed(2)}`;
 export default function LibraryLive() {
   const toast = useToast();
   const live = useSession();
-  const isStaff = ['owner', 'principal', 'coordinator', 'facilities'].includes(live.role);
+  /* RBAC-3: the built-in list is not enough — a CUSTOM role can be granted the library doors (the
+     shipped "Librarian" preset is teacher-based, and `teacher` is not in the server's library STAFF list,
+     so this screen used to show the module title with none of its controls). `roleOrGrant` also asks the
+     caller's own mask from /me. Still a rendering decision: every door re-decides server-side. */
+  const isStaff = roleOrGrant(live, ['owner', 'principal', 'coordinator', 'facilities'], [
+    'GET /plugins/library/books', 'POST /plugins/library/books',
+    'POST /plugins/library/loans', 'GET /plugins/library/loans',
+  ]);
   const isStudent = live.role === 'student';
 
   const [books, setBooks] = useState<LibraryBook[] | null>(null);

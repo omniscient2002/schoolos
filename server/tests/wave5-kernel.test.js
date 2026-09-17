@@ -88,6 +88,17 @@ test('FU · PII masking mirrors the funnel door; masked roles cannot see contact
   assert.equal(t.json().masked, true);
 });
 
+test('RTE-3 · families cannot read the admissions follow-up queue', async () => {
+  // The door was gated on the broad `me`, so a parent or student read every open lead's
+  // name/class/source/stage; masking two fields authorised nobody. It now mirrors the funnel's staff gate.
+  const parent = await loginAs(app, 'parent@meridian.edu');
+  const student = await loginAs(app, 'student@meridian.edu');
+  for (const who of [parent, student]) {
+    const r = await app.inject({ method: 'GET', url: '/admissions/followups', headers: H(who.token) });
+    assert.equal(r.statusCode, 403, `${who.user?.role ?? 'family'} must not read the lead queue: ${r.body}`);
+  }
+});
+
 test('FS · whole-collection summary: billed/collected/outstanding/void per term', async () => {
   const r = await app.inject({ method: 'GET', url: '/reports/fees/summary', headers: H(financeToken) });
   assert.equal(r.statusCode, 200, r.body);

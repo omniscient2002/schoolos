@@ -1,8 +1,11 @@
 # Backend Map — Every Entry Point, Every Logical Unit
 
-State: post-Wave-4 (67 migrations, 25 plugins). Totals: **~12,100 lines of backend source** across the
-composition root (2 files), **26 plugin services**, and **19 operational scripts**.
-**~264 HTTP doors** (61 core-domain in `routes.js`, 33 auth/kernel in `app.js`, ~170 in plugins).
+State: post-Wave-4 at the time of writing; **counts here are a snapshot and drift — the generated
+`docs/VERIFICATION.md` carries the live migration/module counts and `docs/PERMISSION-MATRIX.md` the live door
+census.** (This header said 67 migrations / 25 plugin dirs / 26 plugin services / ~264 doors; the tree has since
+grown past all of those. `server/src/routes.js` + `src/app.js` + `src/plugins/*/index.js` is the authority.)
+Totals at the time of writing: **~12,100 lines of backend source** across the composition root (2 files),
+the plugin services, and the operational scripts.
 Every door runs behind the same substrate: Fastify hook → `authenticate` → role gate → `withUser`
 (RLS session vars) → handler → audit ledger row. There are no unauthenticated doors except
 `/health`, `/ready`, `/auth/*`, `/onboard/*`, and webhook receivers (signature-verified).

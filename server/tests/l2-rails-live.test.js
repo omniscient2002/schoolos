@@ -134,14 +134,24 @@ describe('L2-3.3 · rails live adapters (sandbox-verified)', () => {
     const t = (await sql(`SELECT id FROM app.tenants WHERE slug='meridian'`)).rows[0];
     await sql(`INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, status, dedup_key)
                VALUES ($1,'email','["teacher@meridian.edu"]','email','PASSWORD_RESET','seed','sent','reset_seed')`, [t.id]);
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
-    await client.connect();
-    try {
-      await client.query('BEGIN');
-      const due = await client.query(
-        `SELECT id FROM app.communications WHERE status='queued' AND template='PASSWORD_RESET'`);
-      assert.equal(due.rows.length, 0, 'sent reset rows never re-drain');
-      await client.query('COMMIT');
-    } finally { await client.end(); }
+    /* TST-4: this asserted that a query for QUEUED reset rows returns zero — which was true because nothing
+       was queued at all, so it passed whatever the claim predicate said, including a predicate that would
+       re-drain a sent row. The discriminating pair is planted here: one QUEUED row and one SENT row, then the
+       claim predicate must select exactly the queued one. */
+    // the unique index on dedup_key is PARTIAL, so `ON CONFLICT (dedup_key)` cannot infer it (42P10) — clear
+    // the probe first and insert plainly
+    await sql(`DELETE FROM app.communications WHERE dedup_key='reset_probe_queued'`);
+    await sql(`INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, status, dedup_key)
+               VALUES ($1,'email','["teacher@meridian.edu"]','email','PASSWORD_RESET','queued probe','queued','reset_probe_queued')`, [t.id]);
+    const rows = (await sql(
+      `SELECT dedup_key FROM app.communications
+        WHERE tenant_id=$1 AND status='queued' AND template='PASSWORD_RESET'`, [t.id])).rows.map((r) => r.dedup_key);
+    assert.deepEqual(rows, ['reset_probe_queued'],
+      'the claim predicate takes the queued reset row and leaves the SENT one alone');
+    const sent = (await sql(
+      `SELECT count(*)::int AS n FROM app.communications
+        WHERE tenant_id=$1 AND status='queued' AND dedup_key='reset_seed'`, [t.id])).rows[0].n;
+    assert.equal(sent, 0, 'the already-sent reset row is not claimable — re-draining it would re-deliver a consumed token');
+    await sql(`DELETE FROM app.communications WHERE dedup_key='reset_probe_queued'`);
   });
 });

@@ -67,7 +67,13 @@ describe('L2-4.1 · scoped API keys', () => {
     const mutation = await app.inject({ method: 'POST', url: '/api-keys', payload: {}, headers: { 'x-api-key': rawKey } });
     assert.equal(mutation.statusCode, 403);
     assert.match(mutation.json().error, /read-only/);
-    const unscoped = await app.inject({ method: 'GET', url: '/students', headers: { 'x-api-key': rawKey } });
+    // API-5/PRD-6: `/students` is now itself a scoped read door (`students.read`), so a key without that
+    // scope gets the scope-specific message — not the "not a read door" one. The unscoped case (a door the
+    // key plane does not expose at all) is asserted on `/me/effective`.
+    const scoped = await app.inject({ method: 'GET', url: '/students', headers: { 'x-api-key': rawKey } });
+    assert.equal(scoped.statusCode, 403);
+    assert.match(scoped.json().error, /students\.read/);
+    const unscoped = await app.inject({ method: 'GET', url: '/me/effective', headers: { 'x-api-key': rawKey } });
     assert.equal(unscoped.statusCode, 403);
     assert.match(unscoped.json().error, /scoped read doors/);
     const bad = await app.inject({ method: 'GET', url: '/me', headers: { 'x-api-key': 'sk_nope' } });
@@ -119,6 +125,37 @@ describe('L2-4.1 · outbound webhooks', () => {
       assert.equal(again, 0, 'at-least-once scheduled exactly once');
       await c2.query('COMMIT');
     } finally { await c2.end(); }
+  });
+
+  test('AUTH-5 · webhook registration refuses private/link-local/CGNAT targets (SSRF)', async () => {
+    const o = await loginAs(app, 'itadmin@meridian.edu');
+    const register = (url) => app.inject({ method: 'POST', url: '/webhooks', payload: { url, events: ['x'] }, headers: { authorization: `Bearer ${o.token}`, 'content-type': 'application/json' } });
+    for (const bad of ['https://169.254.169.254/latest/meta-data/', 'https://10.0.0.5/hook', 'https://192.168.1.10/hook', 'https://172.16.0.9/hook', 'https://100.64.0.1/hook', 'http://example.com/hook']) {
+      const r = await register(bad);
+      assert.equal(r.statusCode, 400, `${bad} must be refused: ${r.body}`);
+      assert.match(r.json().error, /refused/);
+    }
+    // the sandbox affordance the tests use is still allowed
+    const ok = await register(`http://127.0.0.1:${receiver.address().port}/hook`);
+    assert.equal(ok.statusCode, 200, ok.body);
+  });
+
+  test('OPSX-7 · the CLI runs discovery and delivery in SEPARATE transactions', async () => {
+    // Prior defect: `tick()` ran enqueueFromEvents (which takes FOR UPDATE locks on the app.outbox page)
+    // and processDueDeliveries (up to BATCH×8s of POSTs) in ONE transaction, so the outbox locks were held
+    // across every network call and the relay's SKIP LOCKED discovery skipped the page — delivery starved
+    // emission. The production loop must call `tickOnce`, which commits discovery before sending.
+    const worker = await import('../scripts/webhook-worker.js');
+    const { pool } = await import('../src/db.js');
+    const r = await worker.tickOnce(pool);
+    assert.equal(typeof r.enqueued, 'number');
+    assert.equal(typeof r.claimed, 'number');
+    assert.equal(typeof r.delivered, 'number');
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../scripts/webhook-worker.js', import.meta.url), 'utf8');
+    const cli = src.slice(src.indexOf('CLI guard'));
+    assert.match(cli, /tickOnce\(pool\)/, 'the CLI loop must use the split-transaction entry point');
+    assert.ok(!/await tick\(/.test(cli), 'the CLI must not run discovery + delivery in one transaction');
   });
 
   test('receiver failure → retry scheduled; persistent failure → parked (DLQ state)', async () => {

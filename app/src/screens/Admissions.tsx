@@ -8,11 +8,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { admissionsService } from '../services';
+import { admissionsService } from '../demo/seedServices';
 import {
   PageHead, Card, Stat, Badge, Avatar, Button, useToast,
-  Dropdown, Empty, ErrorState, SkeletonCard,
-} from '../components/ui';
+  Dropdown, Empty, ErrorState, SkeletonCard, SampleNote} from '../components/ui';
 import { AiTraceCard } from '../components/Ai';
 import { SegmentedBar } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -42,12 +41,10 @@ const STAGES: { id: LeadStage; label: string; color: string; closed?: boolean }[
   { id: 'interview', label: 'Interview', color: 'var(--accent-text)' },
   { id: 'offer', label: 'Offer', color: 'var(--ai)' },
   { id: 'accepted', label: 'Accepted', color: 'var(--chart-teal)' },
-  { id: 'enrolled', label: 'Enrolled', color: 'var(--success)' },
-];
+  { id: 'enrolled', label: 'Enrolled', color: 'var(--success)' }];
 const COLLAPSED: { id: LeadStage; label: string }[] = [
   { id: 'rejected', label: 'Rejected' },
-  { id: 'withdrawn', label: 'Withdrawn' },
-];
+  { id: 'withdrawn', label: 'Withdrawn' }];
 const ALL_STAGES = [...STAGES.map(s => s.id), ...COLLAPSED.map(s => s.id)];
 
 const STALL_TRACE = {
@@ -57,12 +54,7 @@ const STALL_TRACE = {
   reasoningRole: 'Investigator (read-only)',
   action: 'None — analysis and draft follow-up tasks only',
   approvalStatus: 'Not required (read-only)',
-  verification: 'Aging recomputed from lastTouch timestamps on every lead',
-  model: 'Frontier (reasoning) · ap-south-1',
-  latencyMs: 640,
-  tokens: 940,
-  cost: '₹0.08',
-};
+  verification: 'Illustrative sample in this build — not recomputed from lead timestamps'};
 
 function daysInStage(l: Lead) {
   return Math.max(0, Math.round((Date.now() - l.lastTouch.getTime()) / 86400000));
@@ -91,8 +83,7 @@ function LeadCard({ lead, onMove, dragging, busy, onDragStart, onDragEnd }: {
       style={{
         padding: '10px 12px', marginBottom: 8, cursor: 'grab',
         opacity: dragging ? 0.45 : busy ? 0.7 : 1,
-        borderColor: stale ? 'var(--warning-weak-2)' : undefined,
-      }}
+        borderColor: stale ? 'var(--warning-weak-2)' : undefined}}
     >
       <div className="u-between" style={{ gap: 8 }}>
         <span className="u-truncate" style={{ fontWeight: 590, fontSize: 'var(--text-md)' }}>{lead.name}</span>
@@ -153,8 +144,7 @@ function KanbanColumn({ stage, leads, collapsedOpen, onToggleCollapsed, onMove, 
       style={{
         minWidth: 218, width: 218, flexShrink: 0, display: 'flex', flexDirection: 'column',
         background: 'var(--surface-2)', border: `1px solid ${hover ? 'var(--accent-weak-2)' : 'var(--border)'}`,
-        borderRadius: 'var(--r-lg)', padding: 8, transition: 'border-color var(--t-fast) var(--ease)',
-      }}
+        borderRadius: 'var(--r-lg)', padding: 8, transition: 'border-color var(--t-fast) var(--ease)'}}
       onDragOver={e => { e.preventDefault(); setHover(true); }}
       onDragLeave={() => setHover(false)}
       onDrop={e => {
@@ -242,13 +232,11 @@ export default function Admissions() {
 
   const columns = useMemo(() => STAGES.map(stage => ({
     stage,
-    leads: filtered.filter(l => l.stage === stage.id),
-  })), [filtered]);
+    leads: filtered.filter(l => l.stage === stage.id)})), [filtered]);
 
   const collapsedColumns = useMemo(() => COLLAPSED.map(stage => ({
     stage: { ...stage, color: 'var(--text-3)' },
-    leads: filtered.filter(l => l.stage === stage.id),
-  })), [filtered]);
+    leads: filtered.filter(l => l.stage === stage.id)})), [filtered]);
 
   const stats = useMemo(() => {
     const weekAgo = Date.now() - 7 * 86400000;
@@ -281,8 +269,7 @@ export default function Admissions() {
       { value: interview, color: 'var(--accent-text)', label: `Interview — ${interview}` },
       { value: offers, color: 'var(--ai)', label: `Offer — ${offers}` },
       { value: accepted, color: 'var(--chart-teal)', label: `Accepted — ${accepted}` },
-      { value: enrolled, color: 'var(--success)', label: `Enrolled — ${enrolled}` },
-    ];
+      { value: enrolled, color: 'var(--success)', label: `Enrolled — ${enrolled}` }];
   }, [filtered]);
 
   const sources = useMemo(() => Array.from(new Set(localLeads.map(l => l.source))).sort(), [localLeads]);
@@ -302,9 +289,7 @@ export default function Admissions() {
           actor: actorName, actorRole: session.roleId, action: `Moved lead to ${label}`,
           recordType: 'Admission lead', recordRef: `${lead.name} (Grade ${lead.grade})`,
           reason: 'Stage change from admissions funnel', policyRef: 'Approvals §1.2 · offers remain human-decided (pol_14)',
-          aiInvolved: false, risk: 'low', outcome: `Stage → ${stage}`,
-        },
-      });
+          aiInvolved: false, risk: 'low', outcome: `Stage → ${stage}`}});
       toast({ title: `${lead.name} → ${label}`, sub: 'Lead moved. Owner notified; audit entry recorded.', tone: 'success' });
     } catch {
       toast({ title: 'Could not move lead', sub: 'The service did not accept the change. Try again.', tone: 'error' });
@@ -315,6 +300,7 @@ export default function Admissions() {
 
   return (
     <div>
+      <SampleNote>Sample funnel data — lead counts, conversion and the stall analysis are illustrative in this build, not read from your admissions records.</SampleNote>
       <PageHead
         title="Admissions"
         sub="Drag a card between stages, or use the arrow menu on each card. Offers and rejections stay human-decided (pol_14)."

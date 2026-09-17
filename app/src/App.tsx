@@ -7,25 +7,17 @@ import { StoreProvider, useStore } from './state/store';
 import { ToastProvider, Empty } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
-import { apiMe, setToken, LIVE_BASE } from './services/liveApi';
+import { apiMe, apiMeEffective, setToken, getToken, LIVE_BASE } from './services/liveApi';
+import type { EffectiveAccess } from './lib/effective';
 import { ensureDataset } from './data/dataset';
 import { sessionMustChange } from './screens/account/ChangePassword';
-import type { RoleId } from './types/domain';
 import { useLiveEventBridge } from './components/Maint';
-import { AiDock } from './components/AiDock';
 import { SkeletonCard } from './components/ui';
 import { Icon } from './components/Icon';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TeacherProvider } from './state/teacherContext';
-
-/* P0 fix 2a: demo gating. This file reads the flag INLINE (not via
-   lib/demoMode, which is the canonical gate for Shell/Login) on purpose:
-   Vite replaces `import.meta.env.VITE_DEMO_MODE` per-file at build time,
-   so in a production build this folds to `false` BEFORE Rollup's
-   tree-shaking — the /demo* + /live lazy chunks are then eliminated from
-   dist entirely, not merely gated at runtime. Dev keeps the flag via
-   app/.env.development. */
-const DEMO_BUILD = import.meta.env.VITE_DEMO_MODE === '1';
+import { mapAccountRole, isLightRole } from './lib/roles';
+import { canSurface } from './lib/effective';
 
 /* ---------- lazy screens ---------- */
 const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
@@ -46,7 +38,6 @@ const PluginSettings = F(() => import('./screens/PluginSettings'));
 const Onboard = lazy(() => import('./screens/Onboard'));
 const Today = F(() => import('./screens/Today'));
 const Attention = F(() => import('./screens/Attention'));
-const Ask = F(() => import('./screens/Ask'));
 const Next = F(() => import('./screens/Next'));
 const People = F(() => import('./screens/People'));
 const PersonDetail = F(() => import('./screens/PersonDetail'));
@@ -99,7 +90,6 @@ const ParentHome = F(() => import('./screens/ParentHome'));
 const ParentComplaints = F(() => import('./screens/ParentComplaints'));
 const ParentChat = F(() => import('./screens/ParentChat'));
 const ParentFees = F(() => import('./screens/ParentFees'));
-const ParentAsk = F(() => import('./screens/ParentAsk'));
 const FamilyHome = F(() => import('./screens/parent/FamilyHome'));
 const ParentConsents = F(() => import('./screens/parent/Consents'));
 const ParentRequests = F(() => import('./screens/parent/Requests'));
@@ -107,7 +97,6 @@ const ParentCopilot = F(() => import('./screens/parent/Copilot'));
 const StudentHome = F(() => import('./screens/StudentHome'));
 const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
-const StudentAsk = F(() => import('./screens/StudentAsk'));
 const StudentHome2 = F(() => import('./screens/student/StudentHome2'));
 /* StudentOS staff desks (SU-3): print center + wellbeing + noticeboard */
 const PrintQueue = F(() => import('./screens/student/PrintQueue'));
@@ -126,16 +115,6 @@ const CoordCurriculum = F(() => import('./screens/coord/CurriculumMonitor'));
 const CoordEscalations = F(() => import('./screens/coord/EscalationsQueue'));
 const CoordApprovals = F(() => import('./screens/coord/ApprovalCenter'));
 const NotFound = F(() => import('./screens/NotFound'));
-/* Demo screens (P0 fix 2a): under a production build (no VITE_DEMO_MODE)
-   DEMO_BUILD folds to false at build time, so these ternaries collapse and
-   Rollup tree-shakes the Demo/LiveMode chunks out of dist entirely — no
-   demo screen code ships at all. The /demo* + /live routes are also
-   unregistered below, so this is belt-and-braces. */
-const Demo = DEMO_BUILD ? lazy(() => import('./screens/Demo')) : NotFound;
-const DemoDay = DEMO_BUILD ? lazy(() => import('./screens/DemoDay')) : NotFound;
-const DemoParent = DEMO_BUILD ? lazy(() => import('./screens/DemoParent')) : NotFound;
-const DemoSummary = DEMO_BUILD ? lazy(() => import('./screens/DemoSummary')) : NotFound;
-const LiveMode = DEMO_BUILD ? lazy(() => import('./screens/LiveMode')) : NotFound;
 
 /* ---------- shared page frame ---------- */
 function PageShell({ children }: { children: React.ReactNode }) {
@@ -177,43 +156,29 @@ function SyncBanner() {
 function dispatchFlush() { window.dispatchEvent(new CustomEvent('schoolos:flush-sync')); }
 
 /* ---------- role screen guard ---------- */
-const mapAccountRole = (r: string): RoleId =>
-  (['owner','principal','teacher','coordinator','finance','admissions','transport','parent','student','itadmin','facilities','technician'] as RoleId[]).includes(r as RoleId)
-    ? (r as RoleId) : 'principal';
+/* RBAC-3b: an unrecognised role now fails CLOSED to the lightest surface. It used to become 'principal'
+   — the broadest role — so any role string this client did not know rendered the management shell and
+   passed the staff-only guard: a guess in the direction of maximum privilege. See app/src/lib/roles.ts. */
 
 function Guard({ children }: { children: React.ReactNode }) {
   const { session } = useStore();
   const live = useSession();
   const { pathname } = useLocation();
-  /* Light-role check uses BOTH the live authenticated role (a parent
-     sign-in must land on the calm surface) and the demo view switcher
-     (staff previewing a light role sees the same gates). */
-  const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
-  /* staffOnly drift fix (P0): /plugins, /settings, /library were missing and
-     every parent/student route probe answered with the real screen; /live is
-     staff-only regardless (its route additionally only exists in demo mode).
-     T509 (§7.5): /people-admin and /rails rendered for light roles until the
-     API refused — added to the staffOnly list. */
-  const staffOnly = ['/fees', '/admissions', '/visitors', '/reception', '/migration', '/transport', '/insights', '/automation', '/constitution', '/memory', '/data-health', '/ai-governance', '/ai-usage', '/it', '/maintenance', '/group', '/audit', '/action-center', '/cases', '/incidents', '/operations', '/learning', '/attendance', '/calendar', '/documents', '/operations/hr', '/today', '/attention', '/ask', '/next', '/people', '/coord', '/teacher', '/print-queue', '/wellbeing-queue', '/noticeboard', '/plugins', '/settings', '/library', '/live', '/people-admin', '/rails', '/roles'];
-  if (light && staffOnly.some(p => pathname === p || pathname.startsWith(p + '/'))) {
-    /* Re-scan P3 fix: an AUTHENTICATED parent/student who deep-links (or lands
-       post-login — the default returnTo is /today) on a staff surface is
-       redirected to their own home instead of meeting a dead-end "Not
-       available" screen whose guidance pointed at the demo role switcher
-       (which exists only under VITE_DEMO_MODE=1). The demo-preview path
-       (staff member previewing a light role via the switcher) keeps the
-       informative locked screen below — it needs the "switch back" copy. */
-    const liveIsLight = ['parent', 'student'].includes(live.role);
-    if (liveIsLight) {
-      return <Navigate to={live.role === 'student' ? '/student/home2' : '/parent/family'} replace />;
-    }
+  /* The live authenticated role is governed by `GET /me/effective`. The
+     legacy list remains only for the explicit demo-role preview, which has no
+     server session and therefore no effective-access payload. */
+  /* PERFECT-100 §6.2 item 14: a route the SERVER says this caller may not reach is not rendered,
+     whichever role they hold — a teacher deep-linking /roles now meets an honest screen instead of one
+     that loads and then fails every request. Applied only when the store's role matches the authenticated
+     identity, so the demo preview switcher (no server session) is unaffected; a surface the server has no
+     opinion about is allowed, because the server still enforces every door. */
+  if (mapAccountRole(live.role) === session.roleId && live.effective && !canSurface(live.effective, pathname)) {
     return (
       <PageShell>
         <div className="empty" style={{ padding: '80px 0' }}>
           <Icon.Lock size={28} />
-          <h3>Not available on this account</h3>
-          <p>This page is for school staff. Parents and students see their own pages only.</p>
-          <p style={{ marginTop: 8 }}>Want to explore everything? Sign out and sign in again as <strong>principal@meridian.edu</strong> — or use the role switcher in the menu (top right).</p>
+          <h3>Not available for your role</h3>
+          <p>This page is not part of what your account can reach. If you think that is wrong, ask your school owner or IT admin.</p>
         </div>
       </PageShell>
     );
@@ -235,7 +200,19 @@ function S({ children }: { children: React.ReactNode }) {
 
 /** Session gate — the front door. No valid session → the Login screen,
  * whatever the URL. Session persists in localStorage; sign-out clears it. */
-export interface SessionUser { name: string; role: string; email: string; school?: { name: string | null; slug: string | null } }
+export interface SessionUser {
+  name: string; role: string; email: string;
+  school?: { name: string | null; slug: string | null };
+  /* RBAC-3/RBAC-6: the caller's OWN custom-role binding + mask, straight from /me. A display hint for
+     choosing which controls to render — never an authorization decision (the server re-decides on every
+     door). Without it a teacher-based custom role such as the shipped "Librarian" preset sees a module's
+     title and none of its controls, because screens could only compare the built-in role string. */
+  role_key?: string | null;
+  custom?: { allow: string[]; deny: string[] } | null;
+  /* PERFECT-100 §6.2 item 14: the server's effective-access answer (which surfaces this caller may
+     render). A display hint from GET /me/effective — never an authorization decision. */
+  effective?: EffectiveAccess;
+}
 const SessionCtx = createContext<SessionUser | null>(null);
 export function useSession(): SessionUser { const v = useContext(SessionCtx); if (!v) throw new Error('useSession outside AuthGate'); return v; }
 /* The school brand for the signed-in session: the tenant's own name from /me.
@@ -260,11 +237,25 @@ function AuthGate({ children }: { children: React.ReactNode }) {
      route other than /account/password bounces here until the change
      completes. */
   const completeSignIn = async (s: SessionUser) => {
-    localStorage.setItem('schoolos.session', JSON.stringify(s));
+    /* RBAC-3: /me is the authority for the session AND for the caller's own custom-role mask. The login
+       response carries only {name, role, email}, so after a fresh sign-in a teacher-based custom role
+       (the shipped "Librarian" preset) had no mask in the session and screens fell back to comparing the
+       built-in role — the module rendered with its title and none of its controls until a manual reload.
+       One extra request, and a failure must never block sign-in: the mask is a rendering hint, not a
+       session requirement, so the login response stays the fallback. */
+    let full = s;
+    try {
+      const me = await apiMe();
+      full = { name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null };
+      /* item 14: the effective-access answer rides the session the same way the mask does — one extra
+         request, and a failure must never block sign-in (the server still enforces every door). */
+      try { full = { ...full, effective: await apiMeEffective() }; } catch { /* render hint only */ }
+    } catch { /* keep what login returned */ }
+    localStorage.setItem('schoolos.session', JSON.stringify(full));
     await ensureDataset();
-    setRole(mapAccountRole(s.role));
-    setSession(s);
-    setSessionIdentity(s);
+    setRole(mapAccountRole(full.role));
+    setSession(full);
+    setSessionIdentity(full);
   };
   const accountScreens = (
     <ChangePassword
@@ -286,7 +277,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
          flag-gated OFF so logged-out cold opens don't fire a guaranteed
          404, and it can be flipped on the moment L2 ships the door. */
       const RENEW_DOOR_LIVE = true // /auth/renew LANDED (D-37(e));
-      if (RENEW_DOOR_LIVE && !localStorage.getItem('schoolos_token')) {
+      if (RENEW_DOOR_LIVE && !getToken()) {
         try {
           const res = await fetch(`${LIVE_BASE}/auth/renew`, { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(3000) });
           if (res.ok) {
@@ -295,7 +286,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
           }
         } catch { /* no cookie session — fall through to login */ }
       }
-      if (!localStorage.getItem('schoolos_token')) { setBooting(false); return; }
+      if (!getToken()) { setBooting(false); return; }
       /* /me is the only call whose failure means "no session" — and call()
          has already wiped + redirected on its 401 by the time it throws. */
       let me: Awaited<ReturnType<typeof apiMe>> | null = null;
@@ -310,9 +301,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
          the authenticated identity (unit-14 finding). Auth validation itself
          is unchanged: only a live /me answer establishes a session, and token
          handling (setToken/call) is untouched. */
+      let effective: EffectiveAccess | undefined;
+      try { effective = await apiMeEffective(); } catch { /* render hint only; server still enforces */ }
       if (!dead) {
         setRole(mapAccountRole(me.role));
-        setSession({ name: me.name, role: me.role, email: me.email, school: me.school });
+        setSession({ name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null, effective });
         setSessionIdentity({ name: me.name, email: me.email });
       }
       /* L5-2.1 (review BLOCKER-2 fix): a restored RESTRICTED session must not
@@ -387,7 +380,6 @@ function AppRoutes() {
       <Route path="/login" element={<Navigate to="/today" replace />} />
       <Route path="/today" element={<S><Today /></S>} />
       <Route path="/attention" element={<S><Attention /></S>} />
-      <Route path="/ask" element={<S><Ask /></S>} />
       <Route path="/next" element={<S><Next /></S>} />
       <Route path="/people" element={<S><People /></S>} />
       <Route path="/people/:id" element={<S><PersonDetail /></S>} />
@@ -416,15 +408,6 @@ function AppRoutes() {
       <Route path="/maintenance/map" element={<S><MaintMap /></S>} />
       <Route path="/reception" element={<S><Reception /></S>} />
       <Route path="/migration" element={<S><Migration /></S>} />
-      {/* Demo surfaces (P0 fix 2a): /demo* + /live render ONLY under the
-          explicit VITE_DEMO_MODE=1 runtime flag — a production build gets
-          no demo routes (unknown path falls through to NotFound). /live
-          additionally sits behind the Guard (staffOnly '/live'). */}
-      {DEMO_BUILD && <Route path="/demo" element={<S><Demo /></S>} />}
-      {DEMO_BUILD && <Route path="/demo/day" element={<S><DemoDay /></S>} />}
-      {DEMO_BUILD && <Route path="/demo/parent" element={<S><DemoParent /></S>} />}
-      {DEMO_BUILD && <Route path="/demo/summary" element={<S><DemoSummary /></S>} />}
-      {DEMO_BUILD && <Route path="/live" element={<S><LiveMode /></S>} />}
       <Route path="/plugins" element={<S><PluginsScreen /></S>} />
       {/* live admin/ops surfaces (build-out wave D): real doors behind the
           plugin gates — the demo Library remains the fallback when off */}
@@ -463,7 +446,6 @@ function AppRoutes() {
       <Route path="/parent/complaints" element={<S><ParentComplaints /></S>} />
       <Route path="/parent/chat" element={<S><ParentChat /></S>} />
       <Route path="/parent/fees" element={<S><ParentFees /></S>} />
-      <Route path="/parent/ask" element={<S><ParentAsk /></S>} />
       <Route path="/parent/family" element={<S><FamilyHome /></S>} />
       <Route path="/parent/consents" element={<S><ParentConsents /></S>} />
       <Route path="/parent/requests" element={<S><ParentRequests /></S>} />
@@ -472,7 +454,6 @@ function AppRoutes() {
       <Route path="/student/home2" element={<S><StudentHome2 /></S>} />
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
       <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
-      <Route path="/student/ask" element={<S><StudentAsk /></S>} />
       {/* TeacherOS: command center + P6 classroom doors (staff-gated) */}
       <Route path="/teacher" element={<S><TeacherHome /></S>} />
       <Route path="/teacher/homework" element={<S><TeacherHomework /></S>} />
@@ -499,9 +480,10 @@ function AppRoutes() {
 /* ---------- app frame ---------- */
 function Frame() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const { session, dispatch } = useStore();
+  const { dispatch } = useStore();
   const live = useSession();
-  const light = ['parent', 'student'].includes(live.role) || ['parent', 'student'].includes(session.roleId);
+  /* FEX-7 one role notion: the authenticated server role decides light/staff chrome. */
+  const light = isLightRole(live.role);
   useLiveEventBridge(dispatch);
 
   useEffect(() => {
@@ -532,7 +514,6 @@ function Frame() {
             <main id="main-content" tabIndex={-1} style={{ flex: 1, minWidth: 0 }}>
               <AppRoutes />
             </main>
-            {!light && <AiDock />}
           </div>
         </div>
       </div>

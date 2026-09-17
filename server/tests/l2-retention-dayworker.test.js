@@ -75,18 +75,28 @@ describe('L2-3.4 · retention + day-worker', () => {
 
   test('audit archival: old rows MOVE verbatim to cold (hash chain preserved), fresh stay hot', async () => {
     const t = await T();
-    await sql(`INSERT INTO app.audit_log (tenant_id, actor, actor_role, action, record_type, prev_hash, hash, created_at)
-               VALUES ($1,'archival-test','system','old event','Test','prev-old','hash-old', ${old(400)})`, [t]);
-    await sql(`INSERT INTO app.audit_log (tenant_id, actor, actor_role, action, record_type, prev_hash, hash)
-               VALUES ($1,'archival-test','system','fresh event','Test','prev-new','hash-new')`, [t]);
+    // SEC-20 (migration 075): these rows are built through app.audit_append rather than a raw INSERT
+    // of literal placeholders. The BEFORE INSERT trigger now PINS prev_hash/hash, so a raw INSERT
+    // with 'prev-old'/'hash-old' would be silently rewritten and this test would end up asserting
+    // that the literals are gone — the opposite of its intent. Constructing real chained rows keeps
+    // the intent (a move must not alter a single byte) and makes it STRONGER: the two columns
+    // compared are now genuine chain links rather than fixtures, so an archival path that re-hashed
+    // or re-linked a row would be caught.
+    const oldRow = (await sql(
+      `SELECT * FROM app.audit_append($1,'archival-test','system','old event','Test',NULL,NULL,NULL,false,'low','archived row',NULL,NULL,${old(400)})`,
+      [t])).rows[0];
+    await sql(`SELECT * FROM app.audit_append($1,'archival-test','system','fresh event','Test',NULL,NULL,NULL,false,'low','fresh row',NULL,NULL,now())`, [t]);
+
     const counts = await retention.pass();
     assert.ok(counts.auditRowsArchived >= 1, `archival moved rows (got ${counts.auditRowsArchived})`);
     const hot = await sql(`SELECT action, prev_hash, hash FROM app.audit_log WHERE actor='archival-test'`);
     assert.deepEqual(hot.rows.map((r) => r.action), ['fresh event'], 'fresh row stays hot');
-    const cold = await sql(`SELECT action, prev_hash, hash, archived_at FROM app.audit_log_cold WHERE actor='archival-test'`);
+    const cold = await sql(`SELECT action, prev_hash, hash, hash_version, archived_at FROM app.audit_log_cold WHERE actor='archival-test'`);
     assert.equal(cold.rows.length, 1);
     assert.equal(cold.rows[0].action, 'old event');
-    assert.equal(cold.rows[0].prev_hash, 'prev-old', 'hash columns byte-identical — chain verifiable across hot∪cold');
+    assert.equal(cold.rows[0].prev_hash, oldRow.prev_hash, 'hash columns byte-identical — chain verifiable across hot∪cold');
+    assert.equal(cold.rows[0].hash, oldRow.hash, 'hash columns byte-identical — chain verifiable across hot∪cold');
+    assert.equal(cold.rows[0].hash_version, 2, 'the archival move must not restamp a row (the trigger guards cold by table)');
     assert.ok(cold.rows[0].archived_at, 'archival stamp set');
     // idempotence: a second pass moves nothing, deletes nothing
     const again = await retention.pass();
@@ -97,15 +107,29 @@ describe('L2-3.4 · retention + day-worker', () => {
     assert.equal(again.auditRowsArchived, 0);
   });
 
-  test('day-worker: every step runs contained (stub/tally/retention/dunning-skip)', async () => {
+  test('day-worker: every step runs contained (stub/tally/retention/dunning)', async () => {
     const preventive = await day.runPreventiveStub();
     assert.equal(preventive.status, 'stub', 'honest stub until the policy source exists');
     const tally = await day.runTallySummary();
     assert.ok(Number.isFinite(tally.confirmedPayments) && Number.isFinite(tally.amountCents));
     const retentionOut = await day.runRetention();
     assert.ok(typeof retentionOut.auditRowsArchived === 'number', 'retention step returns the pass counts');
-    const dunning = await day.runDunningHook();
-    assert.equal(dunning.status, 'skipped', 'L1 dunning module absent → contained skip, no crash');
-    assert.match(dunning.reason, /Cannot find module|runDunning export missing|ERR_MODULE_NOT_FOUND|Failed to load/);
+    // PRD-13 residual — CORRECTED ASSERTION, not a weakened one. This used to read
+    //   assert.equal(dunning.status, 'skipped', 'L1 dunning module absent → contained skip, no crash');
+    //   assert.match(dunning.reason, /Cannot find module|ERR_MODULE_NOT_FOUND|…/);
+    // which pinned the DEFECT as the expected behaviour: the step imported
+    // `src/plugins/money.invoicing/dunning.js`, a path that does not exist, so MODULE_NOT_FOUND was the
+    // only possible outcome and `skipped` was the only possible status — a money-collecting step that
+    // could never run, asserted as correct. The sweep it was waiting for already existed as
+    // `scripts/dunning-reminders.js` and now exports `runDunning`.
+    // What this file actually cared about is CONTAINMENT ("started, did not crash the day"), so that is
+    // what it now asserts — on both the working path and a failing one. The failure branch is exercised
+    // explicitly in tests/day-worker-dunning.test.js.
+    const dunning = await day.runDunningHook({ quiet: false });
+    assert.equal(dunning.status, 'ok', 'the daily dunning step performs a real sweep');
+    assert.equal(typeof dunning.queued, 'number', 'and reports how many reminders it queued');
+    const failed = await day.runDunningHook({ runDunning: async () => { throw new Error('synthetic sweep failure'); } });
+    assert.equal(failed.status, 'skipped', 'a FAILING sweep is contained, never a crashed cron');
+    assert.match(failed.reason, /synthetic sweep failure/);
   });
 });

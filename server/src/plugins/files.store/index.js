@@ -31,8 +31,10 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { uuidParams } from '../_shared/uuid-param.js';
 import multipart from '@fastify/multipart';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { canReach } from '../../custom-roles.js';
 
 const ID = 'files.store';
 // shared mount guard with people.admin (both Wave B plugins want the multipart
@@ -76,9 +78,9 @@ const extOf = (name) => {
 };
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   // root-instance multipart registration (payments.upi content-parser precedent),
@@ -144,7 +146,7 @@ export function register(app, kernel) {
       }
       const fields = {};
       let filePart = null;
-      for await (const part of req.parts()) {
+      for await (const part of req.parts({ limits: { fileSize: MAX_BYTES, files: 1 } })) {
         if (part.type === 'file') { if (!filePart) filePart = part; continue; }
         fields[part.fieldname] = part.value;
       }
@@ -200,7 +202,7 @@ export function register(app, kernel) {
 
   // ── download (uploader / admin / scope=student guardians & the student) ─────
   app.get(`/plugins/${ID}/:id/download`,
-    { preHandler: [require(...UPLOAD_STAFF, 'parent', 'student'), lifecycleGate] },
+    { preHandler: [require(...UPLOAD_STAFF, 'parent', 'student'), uuidParams('id'), lifecycleGate] },
     async (req, reply) => {
       // audit-before-send contract: the ledger row (downloaded OR refused) must
       // COMMIT before the response is transmitted. The previous shape returned
@@ -213,23 +215,22 @@ export function register(app, kernel) {
         if (!row) return { refused: 404, msg: 'We couldn\'t find that file' };
         // ── scoped access decision (fail-closed) ────────────────────────────
         const isUploader = row.uploader_id === req.user.id;
-        const isAdmin = DOWNLOAD_ADMINS.includes(req.user.role);
+        // RBAC-1: a custom role granted this download door is an admin FOR THIS DOOR (permission, not
+        // scope). The `scoped` decision further down is deliberately NOT lifted — see 270.
+        const isAdmin = canReach(req, [...DOWNLOAD_ADMINS]);
         let allowed = isUploader || isAdmin;
         if (!allowed && row.scope === 'student') {
           if (req.user.role === 'parent') {
-            // guardian of THAT child: the 034 structural bridge first, then the
-            // seed name-match convention (guardian row carries the same name)
+            // Guardian access is structural only. A display-name match is not
+            // an identity proof and can collide with another family.
             allowed = !!(await c.query(
-              `SELECT 1 FROM family.child_link cl WHERE cl.tenant_id=$1 AND cl.user_id=$2 AND cl.student_id=$3
-               UNION ALL
-               SELECT 1 FROM app.guardians g WHERE g.student_id=$3 AND lower(g.name)=lower($4) LIMIT 1`,
-              [req.user.tenant_id, req.user.id, row.ref_id, req.user.name])).rows[0];
-          } else if (req.user.role === 'student') {
-            // the child themself: 036 name-match identity pin (fail-closed)
-            allowed = !!(await c.query(
-              `SELECT 1 FROM app.students WHERE id=$1 AND tenant_id=$2 AND status='active' AND lower(name)=lower($3)`,
-              [row.ref_id, req.user.tenant_id, req.user.name])).rows[0];
+              `SELECT 1 FROM family.child_link cl WHERE cl.tenant_id=$1 AND cl.user_id=$2 AND cl.student_id=$3 LIMIT 1`,
+              [req.user.tenant_id, req.user.id, row.ref_id])).rows[0];
           }
+          // PLGX-4: the `student` name-match fallback is DELETED. A display-name equality is not an
+          // identity proof (375 students / 76 distinct names in a seeded school), and it is exactly the
+          // DOT-22 anti-pattern. A student may still download a file they uploaded themselves (isUploader
+          // above); a structural user↔student link is Phase 2. Refusing is the honest position until then.
         }
         if (!allowed) {
           await requestAudit(c, req.user.tenant_id, ID, {
@@ -263,7 +264,9 @@ export function register(app, kernel) {
   // ── list metadata (staff) — no bytes, ever ─────────────────────────────────
   app.get(`/plugins/${ID}`, { preHandler: [require(...UPLOAD_STAFF), lifecycleGate] }, async (req, reply) => {
     const scope = typeof req.query?.scope === 'string' && SCOPES.includes(req.query.scope) ? req.query.scope : null;
+    // PLGX: refId was interpolated into `$2::uuid` raw, so `?refId=abc` was a 22P02 → 500. Validate.
     const refId = typeof req.query?.refId === 'string' && req.query.refId ? req.query.refId : null;
+    if (refId && !UUID_RE.test(refId)) return bad(reply, 'refId must be a uuid');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // privacy pin: non-admin staff see only what they uploaded; admins see the tenant
       const scoped = DOWNLOAD_ADMINS.includes(req.user.role);

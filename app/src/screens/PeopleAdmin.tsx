@@ -23,10 +23,18 @@ import {
 } from '../services/adminApi';
 import { apiOnboardStatus, type OnboardStatus } from '../services/onboardingApi';
 import { apiUpdateStudent, apiWithdrawStudent } from '../services/liveApi';
+import { KNOWN_ROLES } from '../lib/roles';
 
-const ROLE_OPTIONS = ['principal', 'coordinator', 'finance', 'admissions', 'transport', 'facilities', 'technician', 'teacher', 'itadmin', 'parent'];
+/* Review round 20, P2: this list is what a school actually sees when appointing someone, and it was missing
+   `counselor` — the role RBAC-2 added, whose whole purpose is the safeguarding work this product ships
+   screens for. The API door accepted it while the only provisioning UI could not offer it, so the 13th role
+   was reachable only by hand-written requests. Owner is intentionally absent: the server refuses to
+   provision owners through this console (ROLES_NO_OWNER), so the option must not exist either.
+   `server/tests/frontend-grants.test.js` now fails if this list and the server's ROLES disagree. */
+const ROLE_OPTIONS = KNOWN_ROLES.filter((r) => r !== 'owner' && r !== 'student');
 const ROLE_LABEL: Record<string, string> = {
-  principal: 'Principal', coordinator: 'Coordinator', finance: 'Accounts (Finance)',
+  principal: 'Principal', coordinator: 'Coordinator', counselor: 'Counsellor (wellbeing)',
+  finance: 'Accounts (Finance)',
   admissions: 'Admissions desk', transport: 'Transport in-charge', facilities: 'Facilities',
   technician: 'Technician', teacher: 'Teacher', itadmin: 'IT admin', parent: 'Parent',
 };
@@ -243,7 +251,7 @@ export default function PeopleAdmin() {
                 <label style={{ display: 'grid', gap: 4 }}>
                   <span style={{ fontSize: 13, opacity: 0.75 }}>Role in the school</span>
                   <select value={role} onChange={e => setRole(e.target.value)} aria-label="Role">
-                    {ROLE_OPTIONS.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                    {ROLE_OPTIONS.map(r => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
                   </select>
                 </label>
                 <div style={{ display: 'flex', alignItems: 'end' }}>

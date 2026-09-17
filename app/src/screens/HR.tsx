@@ -7,11 +7,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { actionService } from '../services';
+import { actionService } from '../demo/seedServices';
 import {
   PageHead, Section, Card, Stat, Badge, Avatar, DataTable, Button, useToast,
-  Empty, ErrorState, SkeletonCard, KeyValue, Timeline,
-} from '../components/ui';
+  Empty, ErrorState, SkeletonCard, KeyValue, Timeline, SampleNote} from '../components/ui';
 import { AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort, fmtRelative } from '../lib/format';
@@ -55,8 +54,7 @@ function buildLeaveRequests(): LeaveRequest[] {
     { type: 'sick', daysAhead: -2, span: 2, status: 'approved', sub: true, reason: 'Viral — recovered, back tomorrow' },
     { type: 'on-duty', daysAhead: 8, span: 2, status: 'pending', sub: true, reason: 'Science exhibition procurement' },
     { type: 'casual', daysAhead: 11, span: 3, status: 'pending', sub: true, reason: 'Sister\'s wedding' },
-    { type: 'sick', daysAhead: -9, span: 1, status: 'rejected', sub: false, reason: 'Requested during exam duty — moved to next week' },
-  ];
+    { type: 'sick', daysAhead: -9, span: 1, status: 'rejected', sub: false, reason: 'Requested during exam duty — moved to next week' }];
   /* Empty-world law: no teachers → no synthetic leave rows. */
   if (!pool.length) return [];
   return defs.map((d, i) => {
@@ -71,8 +69,7 @@ function buildLeaveRequests(): LeaveRequest[] {
       status: d.status,
       substituteNeeded: d.sub,
       reason: d.reason,
-      appliedOn: rng.date(d.daysAhead - 2, 9, 30),
-    };
+      appliedOn: rng.date(d.daysAhead - 2, 9, 30)};
   });
 }
 
@@ -84,11 +81,10 @@ interface StaffDoc { id: string; title: string; owner: string; expiresOn: Date; 
 function buildStaffDocs(): StaffDoc[] {
   const rng = makeRng(6161);
   return [
-    { id: 'sdoc_1', title: 'First-aid certification — Nurse', owner: seed.staff.find(s => s.role === 'Nurse')?.name ?? 'Staff', expiresOn: rng.date(9, 9) },
+    { id: 'sdoc_1', title: 'First-aid certification — Nurse', owner: seed.staff.find(s => s.designation === 'Nurse')?.name ?? 'Staff', expiresOn: rng.date(9, 9) },
     { id: 'sdoc_2', title: 'Bus driver licences (batch)', owner: 'Transport — 10 drivers', expiresOn: rng.date(48, 9) },
-    { id: 'sdoc_3', title: 'Lab chemical handling cert', owner: seed.staff.find(s => s.role === 'Lab Assistant')?.name ?? 'Staff', expiresOn: rng.date(21, 9) },
-    { id: 'sdoc_4', title: 'Fire-warden training', owner: seed.staff.find(s => s.role === 'Admin Officer')?.name ?? 'Staff', expiresOn: rng.date(120, 9) },
-  ];
+    { id: 'sdoc_3', title: 'Lab chemical handling cert', owner: seed.staff.find(s => s.designation === 'Lab Assistant')?.name ?? 'Staff', expiresOn: rng.date(21, 9) },
+    { id: 'sdoc_4', title: 'Fire-warden training', owner: seed.staff.find(s => s.designation === 'Admin Officer')?.name ?? 'Staff', expiresOn: rng.date(120, 9) }];
 }
 const STAFF_DOCS = buildStaffDocs();
 
@@ -99,12 +95,7 @@ const SUB_TRACE = {
   reasoningRole: 'Proposer (ranks candidates; assigns nothing)',
   action: 'Ranked two candidates by free periods and subject match — awaiting approval',
   approvalStatus: 'APPROVAL REQUIRED — Academic Coordinator',
-  verification: 'Free periods recomputed against tomorrow\'s timetable after ranking',
-  model: 'Frontier (reasoning) · ap-south-1',
-  latencyMs: 620,
-  tokens: 880,
-  cost: '₹0.07',
-};
+  verification: 'Free periods recomputed against tomorrow\'s timetable after ranking'};
 
 function leaveTypeBadge(t: LeaveType) {
   if (t === 'sick') return <Badge tone="warning" dot>Sick</Badge>;
@@ -152,27 +143,22 @@ export default function HR() {
           risk: leave.substituteNeeded && decision === 'approved' ? 'medium' : 'low',
           outcome: createsTask
             ? 'Approved · cover task created for Academic Coordinator (timetable uncovered periods)'
-            : decision === 'approved' ? 'Approved · no cover required' : 'Rejected · applicant notified with reason',
-        },
-      });
+            : decision === 'approved' ? 'Approved · no cover required' : 'Rejected · applicant notified with reason'}});
       if (createsTask) {
         dispatch({
           type: 'event/add',
-          e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.cover.task', label: `Cover task created — ${leave.teacherName} out ${fmtDateShort(leave.from)}–${fmtDateShort(leave.to)}`, severity: 'info', ref: '/operations/hr' },
-        });
+          e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.cover.task', label: `Cover task created — ${leave.teacherName} out ${fmtDateShort(leave.from)}–${fmtDateShort(leave.to)}`, severity: 'info', ref: '/operations/hr' }});
         toast({
           title: 'Leave approved — cover task created',
           sub: `${leave.teacherName} needs a substitute. Task assigned to the Academic Coordinator with the uncovered periods.`,
-          tone: 'success',
-        });
+          tone: 'success'});
       } else {
         toast({
           title: decision === 'approved' ? 'Leave approved' : 'Leave rejected',
           sub: decision === 'approved'
             ? `${leave.teacherName} — ${fmtDateShort(leave.from)} to ${fmtDateShort(leave.to)}.`
             : `${leave.teacherName} notified with the recorded reason.`,
-          tone: decision === 'approved' ? 'success' : 'info',
-        });
+          tone: decision === 'approved' ? 'success' : 'info'});
       }
     }, 300);
   };
@@ -185,8 +171,7 @@ export default function HR() {
       decision: 'approved',
       actor: actorName,
       role: session.roleId,
-      note: `Substitute assigned: ${candidate}`,
-    });
+      note: `Substitute assigned: ${candidate}`});
     dispatch({
       type: 'audit/add',
       entry: {
@@ -196,13 +181,10 @@ export default function HR() {
         policyRef: 'Approvals §1.2',
         aiInvolved: true,
         risk: 'low',
-        outcome: 'Substitute pack generated — timetable, seating, medical notes',
-      },
-    });
+        outcome: 'Substitute pack generated — timetable, seating, medical notes'}});
     dispatch({
       type: 'event/add',
-      e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.substitute.assigned', label: `Substitute assigned for 7-A — ${candidate}`, severity: 'info', ref: '/operations/hr' },
-    });
+      e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.substitute.assigned', label: `Substitute assigned for 7-A — ${candidate}`, severity: 'info', ref: '/operations/hr' }});
     toast({ title: 'Substitute pack generated', sub: 'Timetable, seating, medical notes', tone: 'success' });
   };
 
@@ -211,11 +193,11 @@ export default function HR() {
 
   const candidates = [
     { name: 'Mr. Naveen Kaul', subject: 'Mathematics', freePeriods: 3, why: 'Teaches 8-C tomorrow; Mathematics aligns with Ms. Mishra\'s 7-A load.' },
-    { name: 'Ms. Swati Rao', subject: 'Science', freePeriods: 4, why: 'Widest availability; Science covers two of the five affected periods.' },
-  ];
+    { name: 'Ms. Swati Rao', subject: 'Science', freePeriods: 4, why: 'Widest availability; Science covers two of the five affected periods.' }];
 
   return (
     <div>
+      <SampleNote>Sample HR data — leave requests, staff documents and attendance figures are illustrative in this build, not read from your school’s records.</SampleNote>
       <PageHead
         title="HR — Staff"
         sub={canDecide
@@ -266,27 +248,23 @@ export default function HR() {
                       <div className="u-xs u-faint">applied {fmtRelative(l.appliedOn)}</div>
                     </div>
                   </div>
-                ),
-              },
+                )},
               { key: 'type', label: 'Type', render: l => leaveTypeBadge(l.type) },
               {
                 key: 'dates', label: 'Dates', render: l => (
                   <span className="u-small">{fmtDateShort(l.from)} → {fmtDateShort(l.to)} <span className="u-faint">({Math.max(1, Math.round((l.to.getTime() - l.from.getTime()) / 86400000) + 1)}d)</span></span>
-                ),
-              },
+                )},
               { key: 'reason', label: 'Reason', render: l => <span className="u-small u-muted">{l.reason}</span> },
               {
                 key: 'sub', label: 'Cover', render: l => l.substituteNeeded
                   ? <Badge tone="ai" dot>Substitute needed</Badge>
-                  : <span className="u-xs u-faint">No cover</span>,
-              },
+                  : <span className="u-xs u-faint">No cover</span>},
               {
                 key: 'status', label: 'Status', align: 'right', render: l => l.status === 'approved'
                   ? <Badge tone="success" dot>Approved</Badge>
                   : l.status === 'rejected'
                     ? <Badge tone="danger" dot>Rejected</Badge>
-                    : <Badge tone="warning" dot>Pending</Badge>,
-              },
+                    : <Badge tone="warning" dot>Pending</Badge>},
               {
                 key: 'actions', label: '', align: 'right', render: l => l.status !== 'pending' ? (
                   <span className="u-xs u-faint">—</span>
@@ -295,9 +273,7 @@ export default function HR() {
                     <Button size="sm" variant="primary" icon={<Icon.Check size={12} />} loading={busyId === l.id} disabled={!canDecide} onClick={() => decide(l, 'approved')}>Approve</Button>
                     <Button size="sm" variant="danger-ghost" icon={<Icon.X size={12} />} loading={busyId === l.id} disabled={!canDecide} onClick={() => decide(l, 'rejected')}>Reject</Button>
                   </span>
-                ),
-              },
-            ]}
+                )}]}
           />
         </Card>
       </Section>
@@ -330,8 +306,7 @@ export default function HR() {
                   items={[
                     { k: 'Leave', v: <span className="u-small">Family function · approved per HR policy §2.1 · 2 days from {fmtDateShort(new Date(Date.now() + 86400000))}</span> },
                     { k: 'Impact', v: <span className="u-small">5 periods across 7-A and 8-C tomorrow morning</span> },
-                    { k: 'Evidence', v: act3.evidence.map(e => e.detail).join(' · ') },
-                  ]}
+                    { k: 'Evidence', v: act3.evidence.map(e => e.detail).join(' · ') }]}
                 />
                 {assignedSub && (
                   <div className="u-flex" style={{ gap: 8, padding: '9px 12px', background: 'var(--success-weak)', borderRadius: 'var(--r-md)' }}>
@@ -379,8 +354,7 @@ export default function HR() {
                 items={[
                   { time: '09:05', title: 'AI ranked candidates', body: 'Free periods recomputed against tomorrow\'s timetable; subject match weighted first.', dot: 'ai' },
                   { time: '09:05', title: 'Coordinator notified', body: 'Approval created with a 16:00 deadline today.', dot: 'accent' },
-                  ...(assignedSub ? [{ time: fmtTime(), title: `Substitute assigned — ${assignedSub}`, body: 'Pack generated: timetable, seating, medical notes. Guardians of 7-A informed via class group.', dot: 'accent' as const }] : []),
-                ]}
+                  ...(assignedSub ? [{ time: fmtTime(), title: `Substitute assigned — ${assignedSub}`, body: 'Pack generated: timetable, seating, medical notes. Guardians of 7-A informed via class group.', dot: 'accent' as const }] : [])]}
               />
             </div>
           </Card>

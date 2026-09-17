@@ -4,9 +4,9 @@
    ============================================================ */
 import { useEffect, useState } from 'react';
 import * as seed from '../data/dataset';
-import { memoryService } from '../services';
+import { memoryService } from '../demo/seedServices';
 import { useStore } from '../state/store';
-import { Avatar, Badge, Button, Card, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, Timeline, useToast } from '../components/ui';
+import { Avatar, Badge, Button, Card, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, Timeline, useToast , SampleNote} from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
@@ -29,11 +29,9 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 }
 
 const STATUS_TONE: Record<DecisionRecord['status'], 'success' | 'warning' | 'info'> = {
-  validated: 'success', 'review-due': 'warning', open: 'info',
-};
+  validated: 'success', 'review-due': 'warning', open: 'info'};
 const STATUS_LABEL: Record<DecisionRecord['status'], string> = {
-  validated: 'validated', 'review-due': 'review due', open: 'open',
-};
+  validated: 'validated', 'review-due': 'review due', open: 'open'};
 const KIND_LABEL = { decision: 'Decision', meeting: 'Meeting', incident: 'Incident' } as const;
 
 function reviewLabel(d: Date): { text: string; overdue: boolean } {
@@ -48,12 +46,7 @@ const MEMORY_TRACE: AiTrace = {
   reasoningRole: 'Auditor (read-only)',
   action: 'None — surfaces review-due decisions and assembles evidence',
   approvalStatus: 'Not required (read-only)',
-  verification: 'Loop status recomputed from decision records and telemetry, never inferred',
-  model: 'Fast (classification) · ap-south-1',
-  latencyMs: 240,
-  tokens: 310,
-  cost: '₹0.02',
-};
+  verification: 'Illustrative sample in this build — not recomputed from decision records'};
 
 export default function Memory() {
   const { session, dispatch, actorName } = useStore();
@@ -99,9 +92,7 @@ export default function Memory() {
         actor: actorName, actorRole: session.roleId, action: 'Closed decision loop',
         recordType: 'Decision', recordRef: `${d.id} — ${d.title}`,
         reason: 'Outcome recorded after review', policyRef: d.policy,
-        aiInvolved: false, risk: 'low', outcome: 'Expected vs actual reconciled — memory updated',
-      },
-    });
+        aiInvolved: false, risk: 'low', outcome: 'Expected vs actual reconciled — memory updated'}});
     toast({ title: 'Outcome recorded on this device', sub: `${d.id} · reconciled locally — decision memory is not connected to school records and no review is scheduled automatically.`, tone: 'info' });
     setRecordId(null);
   };
@@ -118,9 +109,7 @@ export default function Memory() {
         actor: actorName, actorRole: session.roleId, action: 'Noted task from meeting (no task created)',
         recordType: 'Task', recordRef: item,
         reason: `From meeting intelligence (${meetingId})`, policyRef: 'Approvals §1.2',
-        aiInvolved: true, risk: 'low', outcome: `Note only · ${owner} suggested — task creation not connected`,
-      },
-    });
+        aiInvolved: true, risk: 'low', outcome: `Note only · ${owner} suggested — task creation not connected`}});
   };
 
   const recording = decisionsBase.find(d => d.id === recordId) ?? null;
@@ -128,11 +117,11 @@ export default function Memory() {
   const timelineItems = [
     ...decisionsBase.map(d => ({ on: d.decidedOn, kind: 'decision' as const, title: d.title, body: d.context })),
     ...meetings.map(m => ({ on: m.on, kind: 'meeting' as const, title: m.title, body: m.summary })),
-    ...seed.incidents.map(i => ({ on: i.openedOn, kind: 'incident' as const, title: i.title, body: i.summary })),
-  ].sort((a, b) => b.on.getTime() - a.on.getTime());
+    ...seed.incidents.map(i => ({ on: i.openedOn, kind: 'incident' as const, title: i.title, body: i.summary }))].sort((a, b) => b.on.getTime() - a.on.getTime());
 
   return (
     <>
+      <SampleNote>Sample memory data — decision loops and telemetry shown here are illustrative in this build; they are not read from your school’s records.</SampleNote>
       <PageHead
         title="AI memory"
         sub={session.roleId === 'owner'
@@ -161,8 +150,7 @@ export default function Memory() {
                   { label: 'Decision recorded', detail: '“Bus 14 pre-route inspection” · approved by Principal · dec_4', source: 'AI memory · decisions' },
                   { label: 'Expected outcome set', detail: 'Zero route delays for 4 weeks · review scheduled automatically', source: 'Decision record dec_4' },
                   { label: 'Telemetry compared', detail: 'Route 7 delays since decision: 0 · complaints for 2 days: 0', source: 'Transport + case telemetry', refType: 'transport' },
-                  { label: 'Review', detail: 'Runs in 27 days — evidence pack assembled automatically from the same records', source: 'Memory review scheduler' },
-                ]}
+                  { label: 'Review', detail: 'Runs in 27 days — evidence pack assembled automatically from the same records', source: 'Memory review scheduler' }]}
               />
             </div>
             <div className="u-col" style={{ gap: 10 }}>
@@ -185,8 +173,7 @@ export default function Memory() {
           { id: 'decisions', label: 'Decisions', count: decisionsBase.length },
           { id: 'meetings', label: 'Meetings', count: meetings.length },
           { id: 'documents', label: 'Documents', count: docs.length },
-          { id: 'timeline', label: 'Timeline', count: timelineItems.length },
-        ]}
+          { id: 'timeline', label: 'Timeline', count: timelineItems.length }]}
         active={tab}
         onChange={setTab}
       />
@@ -372,8 +359,7 @@ export default function Memory() {
                   time: `${fmtDate(t.on)} · ${KIND_LABEL[t.kind]}`,
                   title: t.title,
                   body: t.body,
-                  dot: t.kind === 'decision' ? 'accent' : t.kind === 'meeting' ? 'ai' : 'danger',
-                }))}
+                  dot: t.kind === 'decision' ? 'accent' : t.kind === 'meeting' ? 'ai' : 'danger'}))}
               />
             </Card>
           )}

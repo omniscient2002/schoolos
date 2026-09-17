@@ -43,6 +43,10 @@ describe('plugin loader (drop-in factory)', () => {
     const dir = join(process.cwd(), 'tests', '.loader-fixture');
     rmSync(dir, { recursive: true, force: true });
     const fakeApp = { log: { warn() {}, error() {}, info() {} }, get() {}, post() {} };
+    // The loader now hands each plugin `scopedKernel(kernel, id, permissions)`, and that facade requires
+    // the kernel's audit seam (`audit.request`) to exist to be able to record a refusal. A stub kernel must
+    // therefore model that contract — the real kernel always carries auditLog.
+    const fakeKernel = { auditLog: async () => ({ id: 'fixture-audit' }) };
 
     // Bad_Id: id fails the registry namespace regex (redteam P1-1 rule, loader side)
     mkdirSync(join(dir, 'Bad_Id'), { recursive: true });
@@ -52,7 +56,7 @@ describe('plugin loader (drop-in factory)', () => {
     writeFileSync(join(dir, 'no.register', 'manifest.js'), 'export default { id: "no.register" };');
     writeFileSync(join(dir, 'no.register', 'index.js'), 'export const x = 1;');
     await assert.rejects(
-      () => loadPlugins(fakeApp, {}, { dir }),
+      () => loadPlugins(fakeApp, fakeKernel, { dir }),
       (e) => /invalid plugin id/.test(e.message) && /export register\(app, kernel\)/.test(e.message),
       'broken plugins must fail the boot loudly — never half-mount');
 
@@ -63,7 +67,7 @@ describe('plugin loader (drop-in factory)', () => {
     writeFileSync(join(dir, 'good.plugin', 'manifest.js'), "export default { id: 'good.plugin' };");
     writeFileSync(join(dir, 'good.plugin', 'index.js'), `
       export function register(app) { app.get('/fixture/ping', async () => ({ ok: true })); }`);
-    const { loaded, failed } = await loadPlugins(fakeApp, {}, { dir });
+    const { loaded, failed } = await loadPlugins(fakeApp, fakeKernel, { dir });
     assert.equal(failed.length, 0);
     assert.deepEqual(loaded.map(l => l.id), ['good.plugin']);
     assert.equal(loaded[0].manifest.id, 'good.plugin');
@@ -90,24 +94,40 @@ describe('plugin loader (drop-in factory)', () => {
     assert.ok(exams, 'exams.assessment must be registered in the catalog');
     assert.equal(exams.class, 'D');
     assert.equal(exams.status, 'registered');
-    // redteam P2-1: registry hygiene on the enable door
-    const badV = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'C', version: 'not-semver' } });
-    assert.equal(badV.statusCode, 400);
-    const badM = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'C', manifest: { blob: 'x'.repeat(70000) } } });
-    assert.equal(badM.statusCode, 413);
-    const badP = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'C', permissions: ['students.read', 42] } });
-    assert.equal(badP.statusCode, 400);
+    /* PLG-4 UPDATE (2026-09-15): the enable door no longer reads `version`/`class`/`manifest`/`permissions`
+     * from the body AT ALL — they come from the on-disk manifest — so there is no client input left to
+     * validate. The old assertions here (bad version → 400, 70 KB manifest → 413, mixed permission array →
+     * 400) encoded the trust-the-body contract that change removed; keeping them would pin a vulnerability.
+     * The property that survives is STRONGER and is asserted directly: a hostile body cannot change what is
+     * recorded. (version/class/permission metadata is pinned in tests/plg-enable-metadata.test.js.) */
+    // PLG-2b: pack.cbse declares `exams.assessment@1.0.1` as a dependency, and the enable door refuses
+    // before it is enabled. Satisfy the dependency so this test can exercise the body-ignoring property.
+    const dep = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/enable', headers: { ...H(o.token), 'content-type': 'application/json' }, payload: {} });
+    assert.equal(dep.statusCode, 200, `dependency enable failed: ${dep.body}`);
+    const hostile = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
+      headers: { ...H(o.token), 'content-type': 'application/json' },
+      payload: { class: 'A', version: 'not-semver', manifest: { blob: 'x'.repeat(70000) }, permissions: ['students.read', 42] } });
+    assert.equal(hostile.statusCode, 200, 'the body is ignored, so a hostile one neither fails nor misleads');
+    assert.equal(hostile.json().plugin.manifest.blob, undefined, 'the body manifest is never stored');
+    assert.notEqual(hostile.json().plugin.version, 'not-semver', 'the stored version is the manifest\'s, not the body\'s');
   });
 
   test('redteam P1-2: settings is owner/itadmin-only; lesser roles get {hasSettings, keys}', async () => {
+    /* SEC-6 UPDATE (2026-09-14): this test used to save an invented key, `redteam_canary`, which
+     * `/plugins/:id/settings` no longer accepts — undeclared keys are now a 400 instead of being persisted
+     * silently, which is exactly the SEC-6 defect. The payload below therefore uses keys the module DOES
+     * declare (both of `pack.cbse`'s are required: affiliation_no, academic_year).
+     *
+     * The property under test is UNCHANGED and still enforced: a value written by the owner must not be
+     * visible to a teacher or a parent, and the owner must still read it back. The assertion on `keys` is
+     * stronger than before rather than weaker — the module declares five settings and its defaults are
+     * materialised, so the surfaced key list is now compared against the whole declared set instead of the
+     * single key this test happened to invent. */
     const o = await loginAs(app, 'owner@meridian.edu');
     const canary = 'SECRET-CANARY-loader-7f3';
     await app.inject({ method: 'POST', url: '/plugins/pack.cbse/settings',
       headers: { ...H(o.token), 'content-type': 'application/json' },
-      payload: { redteam_canary: canary } });
+      payload: { affiliation_no: '1130001', academic_year: canary } });
     // teacher (not privileged) must never see the value…
     const t = await loginAs(app, 'teacher@meridian.edu');
     const asTeacher = await app.inject({ method: 'GET', url: '/plugins', headers: H(t.token) });
@@ -115,7 +135,11 @@ describe('plugin loader (drop-in factory)', () => {
     const cbseTeacher = asTeacher.json().plugins.find(p => p.plugin_id === 'pack.cbse');
     assert.equal(cbseTeacher.settings, undefined);
     assert.equal(cbseTeacher.hasSettings, true, 'hasSettings flag survives redaction');
-    assert.deepEqual(cbseTeacher.keys, ['redteam_canary'], 'keys are surfaced without values');
+    // Compared as a SET: `keys` is built from Object.keys of the stored settings, so its order follows
+    // insertion (payload keys, then defaults) rather than the schema. Order is not the property under test.
+    assert.deepEqual([...cbseTeacher.keys].sort(),
+      ['academic_year', 'affiliation_no', 'board', 'report_card_template', 'weightage_strict'],
+      'keys are surfaced without values — the whole declared set, defaults included');
     assert.ok(cbseTeacher.settings_schema, 'manifest schema still guides lesser roles');
     // parent role (orchestrator verification bar): no settings values either
     const p = await loginAs(app, 'parent@meridian.edu');
@@ -125,9 +149,11 @@ describe('plugin loader (drop-in factory)', () => {
     // …and the owner still can (management surface unchanged)
     const asOwner = await app.inject({ method: 'GET', url: '/plugins', headers: H(o.token) });
     const cbseOwner = asOwner.json().plugins.find(p => p.plugin_id === 'pack.cbse');
-    assert.equal(cbseOwner.settings?.redteam_canary, canary);
-    // cleanup: clear the canary so downstream suites see a clean registry
+    assert.equal(cbseOwner.settings?.academic_year, canary);
+    // cleanup: reset the canary so downstream suites see a clean registry. `pack.cbse` requires
+    // affiliation_no and academic_year, so an empty payload is no longer a legal save — reset to a plain value.
     await app.inject({ method: 'POST', url: '/plugins/pack.cbse/settings',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: {} });
+      headers: { ...H(o.token), 'content-type': 'application/json' },
+      payload: { affiliation_no: '1130001', academic_year: '2026-27' } });
   });
 });

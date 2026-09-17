@@ -154,6 +154,23 @@ export const FIRST_PARTY_PLUGINS: PluginManifest[] = [
     defaultEnabled: false,
   },
   {
+    /* B4 (independent review of the 078 change): the rails became real registry rows and the reset door now
+       requires `rails.email` to be ENABLED — but this client mirror had entries only for sms and whatsapp, so
+       the owner's plugin manager could not show or switch the email rail on at all. The fix was reachable
+       through the API (which is how it was verified live) and unreachable through the only owner-facing UI,
+       i.e. password reset was still 503 for a real school. Mirror, not decoration. */
+    id: 'rails.email',
+    name: 'Email service',
+    version: '1.0.0',
+    class: 'B',
+    description: 'Password-reset codes and school email, through the connected mail provider. Until one is connected the platform says so instead of pretending a message was sent.',
+    icon: 'Mail',
+    kernel: '>=1.0.0 <2.0.0',
+    permissions: ['comms.send', 'events.emit'],
+    slots: ['settings'],
+    defaultEnabled: false,
+  },
+  {
     id: 'rails.sms',
     name: 'SMS service',
     version: '1.0.0',

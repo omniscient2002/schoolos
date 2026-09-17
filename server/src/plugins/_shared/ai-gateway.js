@@ -11,7 +11,7 @@
 //     in server/.env / plugin settings, never in code or git). 'openai-compatible'
 //     is the real-provider shape: requires settings {baseUrl, model, apiKey} and
 //     answers a structured honest error when any piece is missing (503-class).
-// Importable: createAiGateway({ q, kernelQ }) → { call, evalRun }.
+// Importable: createAiGateway({ sysq, kernelQ }) → { call, evalRun }.
 import { config } from '../../config.js';
 
 const TOKEN_ESTIMATE = (s) => Math.max(1, Math.ceil(String(s ?? '').length / 4));
@@ -38,9 +38,9 @@ const providers = {
 
 export function registerProvider(name, adapter) { providers[name] = adapter; }
 
-export function createAiGateway({ q, kernelQ }) {
+export function createAiGateway({ sysq, kernelQ }) {
   const dailyCap = async (tenantId) => {
-    const r = await q(`SELECT config->'ai'->>'dailyCallCap' AS cap FROM app.tenants WHERE id=$1`, [tenantId]);
+    const r = await sysq(`SELECT config->'ai'->>'dailyCallCap' AS cap FROM app.tenants WHERE id=$1`, [tenantId]);
     const n = Number(r.rows[0]?.cap);
     return Number.isFinite(n) && n > 0 ? n : 200;
   };
@@ -57,27 +57,39 @@ export function createAiGateway({ q, kernelQ }) {
 
   const call = async ({ tenantId, userId, pluginId, purpose, provider = 'logger', input, settings = {} }) => {
     const started = Date.now();
-    // budget 1: per-plugin monthly cap (app.plugins.ai_budget jsonb — its
-    // `calls` member = calls/month; {"calls":0} or false disables AI for the plugin)
-    // catalog rows can be duplicated per tenant (033 migrate + seed re-run):
-    // aggregate with the STRICTEST finite `calls`, {} / absent members = no cap.
-    // NOTE: Number(null) === 0 in JS — never feed null straight to Number here.
-    const plugin = await q(
-      `SELECT bool_or(ai_budget = 'false'::jsonb) AS off,
-              min(CASE WHEN jsonb_typeof(ai_budget) = 'object' AND ai_budget ? 'calls'
-                       THEN (ai_budget->>'calls')::int
-                       WHEN jsonb_typeof(ai_budget) = 'number' THEN (ai_budget #>> '{}')::int
-                       ELSE NULL END) AS strictest
-       FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, pluginId]);
+    // budget 1: per-plugin monthly cap (app.plugins.ai_budget jsonb).
+    // PLG-7 fixed TWO defects together: the cap was read from key `calls` while the catalog wrote
+    // `requests_per_day` and the migrations wrote `calls_per_day`, so it was ALWAYS null; and even a matched
+    // POSITIVE cap was never enforced — only `0` was. All three spellings are accepted, so existing rows take
+    // effect with no data migration, and the positive cap is counted against the plugin's OWN calls this
+    // calendar month. The catalog now writes the canonical `calls`. A numeric ai_budget (e.g. `2`) is a cap too.
+    // `false` / `{"calls":0}` disables AI for the plugin. catalog rows can be duplicated per tenant (033
+    // migrate + seed re-run): take the STRICTEST finite value across them; {} / absent members = no cap.
+    const plugin = await sysq(
+      `SELECT bool_or(p.ai_budget = 'false'::jsonb) AS off,
+              min(CASE WHEN jsonb_typeof(p.ai_budget) = 'number' THEN (p.ai_budget #>> '{}')::int
+                       WHEN jsonb_typeof(p.ai_budget) = 'object'
+                         THEN LEAST((p.ai_budget->>'calls')::int,
+                                    (p.ai_budget->>'calls_per_day')::int,
+                                    (p.ai_budget->>'requests_per_day')::int)
+                       ELSE NULL END) AS strictest,
+              (SELECT count(*)::int FROM app.ai_calls a
+                WHERE a.tenant_id=$1 AND a.plugin_id=$2 AND a.outcome <> 'budget'
+                  AND a.created_at >= date_trunc('month', now())) AS used
+       FROM app.plugins p WHERE p.tenant_id=$1 AND p.plugin_id=$2`, [tenantId, pluginId]);
     const isOff = plugin.rows[0]?.off === true;
     const strictest = plugin.rows[0]?.strictest ?? null; // null → no plugin-level cap
     if (isOff || strictest === 0) {
       await writeLedger({ tenantId, userId, pluginId, purpose, provider, outcome: 'budget', error: 'plugin ai_budget is 0 — AI disabled for this plugin', sandbox: providers[provider]?.sandbox ?? true });
       return { ok: false, code: 'budget', error: 'AI is switched off for this feature (budget 0).' };
     }
+    if (typeof strictest === 'number' && strictest > 0 && (plugin.rows[0]?.used ?? 0) >= strictest) {
+      await writeLedger({ tenantId, userId, pluginId, purpose, provider, outcome: 'budget', error: `plugin monthly cap ${strictest} reached`, sandbox: providers[provider]?.sandbox ?? true });
+      return { ok: false, code: 'budget', error: `This feature's monthly AI budget is used up (${strictest} calls a month). It resets next month.` };
+    }
     // budget 2: per-tenant daily cap (any outcome except 'budget' counts as usage)
     const cap = await dailyCap(tenantId);
-    const used = await q(
+    const used = await sysq(
       `SELECT count(*)::int AS n FROM app.ai_calls
        WHERE tenant_id=$1 AND outcome <> 'budget' AND created_at > now() - interval '24 hours'`, [tenantId]);
     if ((used.rows[0]?.n ?? 0) >= cap) {

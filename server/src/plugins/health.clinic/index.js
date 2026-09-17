@@ -15,7 +15,7 @@ const IST_NOW = () => new Date(Date.now() + 5.5 * 3600 * 1000); // Asia/Kolkata 
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const NURSE = ['owner', 'principal', 'itadmin', 'coordinator']; // clinic authority (nurse-lane)
   const ACTIONS = ['rest', 'first_aid', 'sent_home', 'hospital_referral'];
 
@@ -99,7 +99,7 @@ export function register(app, kernel) {
         [req.user.tenant_id, v.id])).rows[0];
       if (open) return reply.code(409).send({ error: 'This visit already has an active sick pass', passId: open.id });
       const ttl = await sickPassTtlHours(c, req.user.tenant_id);
-      const validUntil = new Date(IST_NOW().getTime() + ttl * 3600 * 1000);
+      const validUntil = new Date(Date.now() + ttl * 3600 * 1000); // S0 fix H8: instant stays real-epoch (IST math is for date strings only)
       const p = (await c.query(
         `INSERT INTO plugin_clinic.sick_pass (tenant_id, visit_id, student_id, valid_until, issued_by)
          VALUES ($1,$2,$3,$4,$5) RETURNING id, valid_until`,
@@ -168,7 +168,7 @@ export function register(app, kernel) {
          `${name} was sent home from the infirmary today (complaint: ${String(complaint).slice(0, 120)}). Rest advised.`,
        'guardian must be informed of health events (school duty of care)', isReferral ? 'high' : 'normal',
        visitRef,
-       JSON.stringify({ kind: 'message', visitId: visitRef, action, audience: 'guardians', channel: 'WhatsApp',
+       JSON.stringify({ kind: 'message', visitId: visitRef, studentId: student?.id ?? null, action, audience: 'guardians', channel: 'WhatsApp',
          template: isReferral ? 'CLINIC_REFERRAL' : 'CLINIC_SENT_HOME',
          draft: isReferral ? `${name} was referred to a hospital from the infirmary today. Please arrange pickup at the earliest.` :
            `${name} was sent home from the infirmary today. Rest advised; keep the child home for the day.`})])).rows[0].id;

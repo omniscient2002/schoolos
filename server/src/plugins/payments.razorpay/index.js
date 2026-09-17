@@ -5,31 +5,73 @@
 const ID = 'payments.razorpay';
 export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
-import { installRawJsonParser } from '../_shared/raw-body-parser.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { decryptSettings } from '../../settings-crypto.js';
 
 const ORDERS_API = 'https://api.razorpay.com/v1/orders';
-const UUID_RE = /^[0-9a-f-]{36}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const bad = (reply, msg, code = 400, extra = {}) => reply.code(code).send({ error: msg, ...extra });
-
-  // Raw-bytes capture shared with payments.upi (see _shared/raw-body-parser.js —
-  // Fastify refuses a second application/json parser; install-once keeps both
-  // money rails byte-exact regardless of loader mount order).
-  installRawJsonParser(app);
 
   // settings via kernel path (owner connection) — ops.visitors parity
   const settingsFor = (tenantId) =>
-    q(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
+    sysq(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID])
+      .then((r) => ({ rows: r.rows.map((row) => ({ ...row, settings: decryptSettings(row.settings, tenantId) })) }));
+
+  // ── SEC-21: the verification candidate set must NOT depend on the request payload ──────────────
+  // Previously the candidates were [env secret] + [the RESOLVED tenant's webhook_secret], and the
+  // tenant was resolved from ids the CALLER supplies (order_log by razorpay_order_id, then
+  // app.payments by notes.paymentId). Two consequences, both observable without any signature:
+  //   1. an order id that resolves to a secret-bearing tenant answered 401 while a non-existent one
+  //      answered 403 ("Payments are not set up yet") — an unauthenticated existence/rail-config
+  //      oracle, plus a timing oracle from two owner-path queries + one settings read per guess;
+  //   2. "not set up" was decided per-payload, so the 403 genuinely leaked configuration state.
+  // The candidates are now derived from the PLUGIN REGISTRY alone, so the pre-verification answer is
+  // payload-independent and identical for every unauthenticated caller.
+  //
+  // Ordering matters for cost as well as security: when the env secret is present (the documented
+  // single-deployment path) the hot path touches the database ZERO times before verifying.
+  // No cache, deliberately. A TTL cache here looked like an easy optimisation and is not worth it:
+  // webhook volume is a few per school per day, the enumeration is one indexed SELECT, and the
+  // staleness failure mode is a REAL PAYMENT being rejected for the length of the TTL right after an
+  // operator configures a secret — and, worse, a rotated-away secret still being ACCEPTED for that
+  // window. Correctness over a micro-optimisation; and because this query is payload-INDEPENDENT, its
+  // cost leaks nothing to an unauthenticated caller.
+  const MAX_TENANT_SECRETS = 50;          // defensive bound — fail closed rather than verify against a truncation
+  const tenantSecrets = async () => {
+    const r = await sysq(
+      `SELECT tenant_id, settings
+         FROM app.plugins
+        WHERE plugin_id=$1 AND status IN ('enabled','active','degraded')
+          LIMIT ${MAX_TENANT_SECRETS + 1}`, [ID]);
+    // Truncation must fail CLOSED: verifying against a partial candidate list would 401 a legitimate
+    // school whose secret fell outside the cap, and a caller could not tell that from a bad signature.
+    if (r.rows.length > MAX_TENANT_SECRETS) {
+      throw new Error(`${ID}: refusing to verify — more than ${MAX_TENANT_SECRETS} tenants have a webhook secret; use the deployment-wide RAZORPAY_WEBHOOK_SECRET instead`);
+    }
+    return r.rows.map((row) => ({ tenant_id: row.tenant_id, secret: decryptSettings(row.settings, row.tenant_id).webhook_secret }))
+      .filter((row) => row.secret);
+  };
+  /** [{secret, tenantId}] — tenantId null marks the deployment-wide env secret, which is trusted
+   *  for any tenant (it is what a single-deployment install configures). */
+  const webhookCandidates = async () => {
+    const env = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (env) return [{ secret: env, tenantId: null }];
+    const rows = await tenantSecrets();
+    return [...new Map(rows.filter((x) => x.secret).map((x) => [x.secret, x])).values()]
+      .map((x) => ({ secret: x.secret, tenantId: x.tenant_id }));
+  };
+  /** ONE response for every unauthenticated failure. The oracle existed because these differed. */
+  const unauth = (reply) => bad(reply, 'Payment event could not be verified', 401);
 
   // ── Boot guard (payments.upi parity, redteam P0-1): a money rail must not serve
   // forged facts. While ANY tenant runs this rail enabled, a webhook secret must
   // exist for it — env RAZORPAY_WEBHOOK_SECRET or the tenant's settings key.
   app.addHook('onReady', async () => {
-    const r = (await q(
+    const r = (await sysq(
       `SELECT count(*)::int AS n,
               count(*) FILTER (WHERE settings ? 'webhook_secret')::int AS with_secret
        FROM app.plugins WHERE plugin_id='${ID}' AND status IN ('enabled','active','degraded')`)).rows[0];
@@ -141,7 +183,7 @@ export function register(app, kernel) {
   });
 
   // ══ Door: signed gateway webhook (public) — payments.upi gate pattern ═════════
-  app.post(`/plugins/${ID}/webhook`, async (req, reply) => {
+  app.post(`/plugins/${ID}/webhook`, { config: { rateLimit: { max: 2000, timeWindow: '1 minute' } } }, async (req, reply) => {
     // ── Gate 0 (body shape): upi parses after HMAC; this rail must read the
     // payload BEFORE verification to pick a per-tenant secret candidate when no
     // env secret exists (gateway payloads carry no tenant). The parse is
@@ -159,36 +201,42 @@ export function register(app, kernel) {
     const rzpOrderId = body?.payload?.order?.entity?.id ?? entity.order_id ?? null;
     const paymentId = entity.notes?.paymentId ?? body?.paymentId ?? null;
 
-    // tenant resolution (read-only, owner path): order_log by gateway order id,
-    // then the kernel payments row by notes.paymentId — the 404-on-miss answer
-    // stays AFTER verification so response shape matches upi exactly.
+    // ── Gate 1: fail-closed, verification FIRST (SEC-21). The candidate set comes from the plugin
+    // registry + env only — never from the payload — so nothing an unauthenticated caller sends can
+    // change the answer they get, or the number of database queries their request causes.
+    const candidates = await webhookCandidates();
+    if (!candidates.length) return bad(reply, 'Payments are not set up yet', 403);
+
+    // ── Gate 2: HMAC sha256 over the RAW request bytes, timing-safe, any candidate.
+    // Every failure below is the SAME response: a missing signature, a malformed one and a wrong one
+    // must be indistinguishable, because telling them apart is free information for an attacker.
+    const sig = req.headers['x-razorpay-signature'];
+    if (!sig) return unauth(reply);
+    let matched = null;
+    for (const cand of candidates) {
+      const mac = createHmac('sha256', cand.secret).update(raw).digest();
+      try { if (timingSafeEqual(mac, Buffer.from(String(sig), 'hex'))) { matched = cand; break; } } catch { /* non-hex sig → next candidate */ }
+    }
+    if (!matched) return unauth(reply);
+    const verified = true;   // the row records "the HMAC matched", which is now the only way to get here
+
+    // ── Gate 3: tenant resolution — AUTHENTICATED work, so a payload-dependent answer is fine here
+    // (and the 404-on-miss still stays ahead of any write, matching upi's response shape).
     let tenantId = null;
     if (rzpOrderId) {
-      tenantId = (await q(`SELECT tenant_id FROM plugin_razorpay.order_log WHERE razorpay_order_id=$1 LIMIT 1`, [rzpOrderId])).rows[0]?.tenant_id ?? null;
+      tenantId = (await sysq(`SELECT tenant_id FROM plugin_razorpay.order_log WHERE razorpay_order_id=$1 LIMIT 1`, [rzpOrderId])).rows[0]?.tenant_id ?? null;
     }
     if (!tenantId && paymentId && UUID_RE.test(String(paymentId))) {
-      tenantId = (await q(`SELECT tenant_id FROM app.payments WHERE id=$1`, [paymentId])).rows[0]?.tenant_id ?? null;
+      tenantId = (await sysq(`SELECT tenant_id FROM app.payments WHERE id=$1`, [paymentId])).rows[0]?.tenant_id ?? null;
     }
-
-    // ── Gate 1: fail-closed, always (upi parity). Secret candidates: env first,
-    // then the resolved tenant's settings.webhook_secret. None → the route is OFF.
-    const candidates = [process.env.RAZORPAY_WEBHOOK_SECRET];
-    if (tenantId) {
-      const s = (await settingsFor(tenantId)).rows[0]?.settings ?? {};
-      if (s.webhook_secret) candidates.push(s.webhook_secret);
+    // SEC-21 (second half): bind the event to the tenant whose secret proved it. Without this, a
+    // party holding ANY tenant's webhook secret — a leaked per-school key, or a malicious tenant —
+    // could sign a body naming ANOTHER school's order id and have the resulting fact written into that
+    // school's ledger. A deployment-wide env secret is trusted for any tenant by design; a per-tenant
+    // secret is trusted only for its own tenant.
+    if (matched.tenantId && tenantId && matched.tenantId !== tenantId) {
+      return bad(reply, 'Payment event does not belong to the school that signed it', 403);
     }
-    const secrets = [...new Set(candidates.filter(Boolean))];
-    if (!secrets.length) return bad(reply, 'Payments are not set up yet', 403);
-
-    // ── Gate 2: HMAC sha256 over the RAW request bytes, timing-safe, any candidate
-    const sig = req.headers['x-razorpay-signature'];
-    if (!sig) return bad(reply, 'Payment event was not signed', 401);
-    let verified = false;
-    for (const secret of secrets) {
-      const mac = createHmac('sha256', secret).update(raw).digest();
-      try { if (timingSafeEqual(mac, Buffer.from(String(sig), 'hex'))) { verified = true; break; } } catch { /* non-hex sig → next candidate */ }
-    }
-    if (!verified) return bad(reply, 'Payment could not be verified (signature mismatch)', 401);
 
     // ── Gate 3: event identity. Razorpay payloads carry no event id, so the
     // composite `type:entityId` is the dedupe id — a REPLAY of the same webhook
@@ -213,8 +261,15 @@ export function register(app, kernel) {
       // ── Gate 5: freshness (P1-1/P2-A/P2-B semantics, upi parity): accepted ONLY
       // within ±fresh_mins of now — strictly-older AND future-dated beyond the
       // same window are rejected (negative age is not an acceptance path).
+      // SEC-21: a MISSING timestamp is now rejected instead of skipping the check. `if (ts != null)`
+      // meant replay defence was opt-in by the sender: a signed body with the timestamp field simply
+      // removed bypassed freshness entirely, and since a captured webhook is replayable by anyone who
+      // observed it (or by the gateway's own retry), that is exactly the case the window exists for.
       const ts = entity.created_at ?? body?.timestamp;
-      if (ts != null) {
+      if (ts == null) {
+        return bad(reply, 'Payment event has no timestamp — freshness cannot be established');
+      }
+      {
         const ageMins = (Date.now() / 1000 - Number(ts)) / 60;
         if (!Number.isFinite(ageMins) || Math.abs(ageMins) > Number(pl.fresh_mins)) {
           return bad(reply, `Payment event is too old (older than ${pl.fresh_mins} minutes)`);

@@ -6,10 +6,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as seed from '../data/dataset';
-import { aiService } from '../services';
 import { apiGet, apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
-import { DEMO_MODE } from '../lib/demoMode';
 
 /* local async hook (duplicated per screen per APP-SPEC) */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -36,10 +34,10 @@ import {
   Avatar, Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, useToast,
 } from '../components/ui';
 import { Sparkline } from '../components/Chart';
-import { AiHeader, AiTraceCard, EvidenceChain } from '../components/Ai';
+import { AiHeader, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort, fmtMoney, fmtMoneyShort, fmtPct } from '../lib/format';
-import type { AiEvidenceStep, AiResponse, AttendanceRecord, FeeObligation, Person, TimeSlot } from '../types/domain';
+import type { AiEvidenceStep, AttendanceRecord, FeeObligation, Person, TimeSlot } from '../types/domain';
 
 const campusShort = (id: string) => seed.campuses.find(c => c.id === id)?.shortName ?? id;
 const sectionLabel = (sectionId: string) => {
@@ -139,8 +137,6 @@ function StudentDetail({ person }: { person: Person }) {
       };
     });
   }, [person.id, classTeacher]);
-
-  const briefing = useBriefing(person.id, actorName);
 
   const attTier = !hasAttendanceRows
     ? { tone: 'outline' as const, label: 'No attendance records yet' }
@@ -242,7 +238,6 @@ function StudentDetail({ person }: { person: Person }) {
             </div>
           </div>
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <Button variant="ai" icon={<Icon.Sparkle size={14} />} onClick={() => navigate('/ask')}>Ask about this student</Button>
             <Button variant="secondary" icon={<Icon.Message size={14} />} onClick={messageGuardian}>Message guardian</Button>
           </div>
         </div>
@@ -251,30 +246,14 @@ function StudentDetail({ person }: { person: Person }) {
       <div className="grid grid-2" style={{ alignItems: 'start' }}>
         {/* ---------- left: AI briefing + context ---------- */}
         <div className="u-col" style={{ gap: 16 }}>
-          <Card
-            head={<span className="u-flex" style={{ gap: 8 }}><AiHeader label="Student 360 briefing" confidence="high" /></span>}
-            actions={<Button size="sm" variant="ghost" icon={<Icon.Refresh size={13} />} aria-label="Regenerate briefing" onClick={briefing.refresh}>Regenerate</Button>}
-          >
-            {briefing.loading ? (
-              <SkeletonCard lines={4} />
-            ) : briefing.error ? (
-              <ErrorState title="Briefing unavailable" sub="The briefing service did not respond. Evidence below is computed locally from records." onRetry={briefing.refresh} />
-            ) : !DEMO_MODE ? (
-              <div className="u-col" style={{ gap: 8 }}>
-                <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.6 }}>
-                  The AI briefing layer is not connected in live builds, so no briefing is drafted — nothing here is generated
-                  to fill the space. The evidence and records below are real.
-                </p>
-                <EvidenceChain title={`Evidence — records for ${person.name.split(' ')[0]}`} steps={chainSteps} />
-              </div>
-            ) : (
-              <div className="u-col" style={{ gap: 14 }}>
-                <p style={{ fontSize: 'var(--text-md)', lineHeight: 1.6, margin: 0 }}>{briefing.data?.answer}</p>
-                <EvidenceChain title={`Evidence — what should I know about ${person.name.split(' ')[0]}?`} steps={chainSteps} />
-                {briefing.data && <AiTraceCard trace={briefing.data.trace} compact />}
-                <div className="u-xs u-faint">Briefing is read-only. AI access follows your role scope (Privacy §1.3).</div>
-              </div>
-            )}
+          <Card head={<span className="u-flex" style={{ gap: 8 }}><AiHeader label="Student 360 briefing" confidence="high" /></span>}>
+            <div className="u-col" style={{ gap: 8 }}>
+              <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.6 }}>
+                The AI briefing layer is not connected, so no briefing is drafted — nothing here is generated
+                to fill the space. The evidence and records below are real.
+              </p>
+              <EvidenceChain title={`Evidence — records for ${person.name.split(' ')[0]}`} steps={chainSteps} />
+            </div>
           </Card>
 
           <Card head="Class & transport context">
@@ -548,31 +527,10 @@ function StudentDetail({ person }: { person: Person }) {
   );
 }
 
-/* Briefing fetch — small local hook so the card owns its own loading/error */
-function useBriefing(studentId: string, viewer: string) {
-  const [state, setState] = useState<{ id: string; data: AiResponse | null; loading: boolean; error: string | null }>({ id: '', data: null, loading: true, error: null });
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    let live = true;
-    if (!DEMO_MODE) {
-      // Live builds: the AI briefing layer is not connected — no fabricated brief.
-      setState({ id: studentId, data: null, loading: false, error: null });
-      return () => { live = false; };
-    }
-    aiService.draftStudentBriefing(studentId, viewer)
-      .then(d => { if (live) setState({ id: studentId, data: d, loading: false, error: null }); })
-      .catch(e => { if (live) setState({ id: studentId, data: null, loading: false, error: String(e) }); });
-    return () => { live = false; };
-  }, [studentId, viewer, tick]);
-  const stale = state.id !== studentId;
-  return { data: stale ? null : state.data, loading: stale || state.loading, error: stale ? null : state.error, refresh: () => setTick(t => t + 1) };
-}
-
 /* ============================================================
    Teacher / Staff profile — lighter: contact, classes, schedule
    ============================================================ */
 function StaffDetail({ person }: { person: Person }) {
-  const navigate = useNavigate();
   const { actorName, dispatch } = useStore();
   const toast = useToast();
   const [slot, setSlot] = useState<TimeSlot | null>(null);
@@ -611,7 +569,6 @@ function StaffDetail({ person }: { person: Person }) {
           </div>
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
             <Button variant="secondary" icon={<Icon.Message size={14} />} onClick={message}>Message</Button>
-            <Button variant="secondary" icon={<Icon.Sparkle size={14} />} onClick={() => navigate('/ask')}>Ask about this person</Button>
           </div>
         </div>
       </Card>

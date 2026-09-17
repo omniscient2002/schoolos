@@ -29,7 +29,7 @@ function voucherXml(v, companyName) {
 
 export function register(app, kernel) {
   const { withUser, auditLog, requestAudit, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, 'accounting.tally');
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, 'accounting.tally');
 
   // ── Day-book: confirmed money for a date window, voucher-ready ────────────────
   app.get('/plugins/accounting.tally/daybook', { preHandler: [require('owner', 'itadmin', 'finance'), lifecycleGate] }, async (req, reply) => {

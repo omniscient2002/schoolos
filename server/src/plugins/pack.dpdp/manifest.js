@@ -8,6 +8,11 @@ export default {
   id: 'pack.dpdp',
   version: '1.1.1',
   class: 'C',
+  /* PLG-1: this manifest declared nothing while its code called emitEvent/requestAudit and read (or wrote)
+     the tables below — so the stored grant was whatever a client asked for. Declared now from a static scan of
+     this plugin's own index.js: the facilities it actually calls, and nothing it does not (the catalog's
+     `memory.write` for pack.cbse/pack.dpdp was a copy-paste: no code path touches app.memory_entries). */
+  permissions: ['students.read', 'actions.raise', 'events.emit', 'audit.request'],
   description: 'DPDP Act 2023 compliance pack: immutable consent ledger, SAR (export/erasure) workflow through the kernel action spine, retention schedule hooks. Data-residency IN.',
   policyRefs: ['DPDP Act 2023 · consent and retention', 'Platform §2.4'],
   settingsSchema: {

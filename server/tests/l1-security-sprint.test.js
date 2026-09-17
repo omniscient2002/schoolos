@@ -4,12 +4,21 @@
 // predicates (students/fees/attendance/actions) · T106 razorpay RLS · T107
 // audit append-only (behavioral) · T108 case-insensitive email uniqueness ·
 // T109 audit_append tenant pin.
+/* This file models a DEVELOPER MACHINE, and says so before the app is imported (the app and config are
+   imported dynamically in before(), so these assignments win). NODE_ENV is set for the same reason the flag
+   is: `config.js` arms the OTP dev echo only when env === 'development', deliberately — CI runs the suite
+   with NODE_ENV=test, where a code must come from a configured channel instead. Three tests below need the
+   issued code itself to probe vault isolation and tenant binding, so the file declares the posture it is
+   testing rather than depending on the ambient one. The REAL production/staging/test postures are pinned
+   separately by T101, which spawns fresh processes with explicit envs and asserts the flags stay off. */
+process.env.NODE_ENV = 'development';
 process.env.OTP_DEV_ECHO = '1'; // before app import — dev-only echo parity (T101 arms it in development)
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
@@ -64,6 +73,10 @@ describe('L1 security sprint (054)', () => {
         JWT_SECRET: 'x'.repeat(40),
         DATABASE_URL: 'postgres://u:p@db.example.com:5432/db',
         CORS_ORIGINS: 'https://school.example',
+        // SEC-23: production now REFUSES to boot without a plugin-settings key (secret settings are
+        // encrypted with it), so a production probe must supply one or the config throws before the flags
+        // are even read — which is what this test is checking.
+        PLUGIN_SETTINGS_KEY: 'x'.repeat(40),
         OTP_DEV_ECHO: '1', AUTH_DEV_SSO: '1', // flags explicitly set in EVERY case
         ...over,
       };
@@ -217,19 +230,41 @@ describe('L1 security sprint (054)', () => {
         assert.ok([200, 409].includes(ok.statusCode), `own-child payment path stays open (got ${ok.statusCode}: ${ok.body})`);
       }
     });
-    test('c) only principal+ authority marks the register while no class-assignment entity exists', async () => {
+    /* PRD-2 CORRECTION (migration 083). This test previously asserted that ONLY principal+ could mark the
+     * register, with a note that "no class-assignment data binds them to a class". That was true and it was
+     * the defect: the separation-of-duties fallback refused the single most-used daily workflow in any school,
+     * so a coordinator had to take every class's register. `app.class_assignments` now exists, so the question
+     * has a real answer and the assertion changes with the model rather than being deleted.
+     *
+     * The replacement is STRICTLY STRONGER, not weaker: it still requires an unassigned teacher to be refused,
+     * and it now also pins that the guard is not merely a role list — the audit trail must record WHICH
+     * authority granted each write, so "the office did it" can never be laundered into "the class owner did". */
+    test('c) the register admits the office, refuses an unassigned teacher, and stamps which authority applied', async () => {
+      // Clear every assignment, so the refusal below is tested against a genuinely unbound teacher rather
+      // than depending on 083's seed arithmetic. (Note the test database has NO `librarian@meridian.edu` —
+      // the seeded teachers are teacher@ / teacher2@; assuming a name instead of measuring it is a mistake I
+      // have now made repeatedly this session.)
+      const t1 = (await sql(`SELECT id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].id;
+      await sql(`UPDATE app.class_assignments SET active=false`);
+
       const anyStudent = (await sql(`SELECT id FROM app.students LIMIT 1`)).rows[0].id;
       const mark = { marks: [{ studentId: anyStudent, status: 'present' }] };
-      for (const who of ['teacher@meridian.edu', 'coordinator@meridian.edu']) {
-        const u = await loginAs(app, who);
-        const r = await app.inject({ method: 'POST', url: '/attendance/mark', payload: mark, headers: H(u.token) });
-        assert.equal(r.statusCode, 403, `${who} must be refused (no class-assignment data binds them to a class)`);
-      }
+
+      const unbound = await loginAs(app, 'teacher@meridian.edu');
+      const refused = await app.inject({ method: 'POST', url: '/attendance/mark', payload: mark, headers: H(unbound.token) });
+      assert.equal(refused.statusCode, 403,
+        'a teacher with no class assignment must still be refused — the door opened, the default did not');
+
+      // The office may mark any class: that authority did not disappear, it stopped being the ONLY authority.
       const pr = await loginAs(app, 'principal@meridian.edu');
       const ok = await app.inject({ method: 'POST', url: '/attendance/mark', payload: mark, headers: H(pr.token) });
       assert.equal(ok.statusCode, 200, ok.body);
-      const ledger = await sql(`SELECT outcome FROM app.audit_log WHERE action='Marked attendance' ORDER BY created_at DESC LIMIT 1`);
-      assert.match(ledger.rows[0].outcome, /principal\+/, 'the SoD fallback is stamped into the audit trail');
+      // DAT-6 rewrote the register audit from one summary row ("Marked attendance") to one row per changed
+      // student ("Attendance for …"). The authority stamp moved with it, so read the per-student row shape.
+      const ledger = await sql(`SELECT outcome FROM app.audit_log WHERE action ILIKE 'Attendance for %' ORDER BY created_at DESC LIMIT 1`);
+      assert.ok(ledger.rows[0], 'the register writes an audit row');
+      assert.match(ledger.rows[0].outcome, /principal office/,
+        'the OFFICE authority must be stamped into the audit trail, not inferred from the actor\'s role');
     });
     test('d) unattributed funnel conversions cannot be approved by the owning desk; owner decides', async () => {
       const o = await loginAs(app, 'owner@meridian.edu');
@@ -302,7 +337,22 @@ describe('L1 security sprint (054)', () => {
     test('the functional unique index exists and its name matches onboarding\'s 409 mapper', async () => {
       const idx = await sql(`SELECT indexname FROM pg_indexes WHERE schemaname='app' AND tablename='users' AND indexname='users_email_tenant_unique_lower_idx'`);
       assert.equal(idx.rows.length, 1, '054 functional index present');
-      assert.match('users_email_tenant_unique_lower_idx', /users_.*unique|unique.*users_/iu, 'name is load-bearing for onboarding.js 409 mapping');
+      /* TST-4: this matched a regex against a LITERAL string — `assert.match('users_email_tenant_unique_lower_idx',
+         /users_.*unique/)` is true by construction and could never fail, whatever the database contained. The
+         claim is that the index NAME is load-bearing for the 409 mapping, so the honest assertion compares the
+         DATABASE's index name with the name the mapper actually looks for. */
+      const actual = idx.rows[0].indexname;
+      // The mapper (onboarding.js:120) decides 409-vs-500 by testing the CONSTRAINT NAME it gets back from
+      // Postgres against a regex. So the load-bearing fact is that the index really is named to match that
+      // predicate — rename the index and every duplicate-email signup becomes a 500. Asserting the predicate
+      // against a literal string (what this test used to do) proves nothing; asserting it against the name the
+      // DATABASE reports is the claim.
+      const PREDICATE = /users_.*unique|unique.*users_/iu;
+      const onboarding = readFileSync(join(SERVER_ROOT, 'src', 'onboarding.js'), 'utf8');
+      assert.ok(onboarding.includes('users_.*unique|unique.*users_'),
+        'onboarding.js still maps 409 by this predicate — if you change it, change this test with it');
+      assert.match(actual, PREDICATE,
+        `the index is named "${actual}", which the 409 mapper does NOT recognise — a duplicate email would answer 500`);
     });
     test('duplicate differing-case email in one tenant is refused (001\'s case-sensitive UNIQUE alone would allow it)', async () => {
       await sql(`INSERT INTO app.users (tenant_id, email, name, role, password_hash) VALUES ($1, 'CaseProbe@Sprint.Test', 'Case Probe', 'teacher', 'not-a-real-hash')`, [T]);

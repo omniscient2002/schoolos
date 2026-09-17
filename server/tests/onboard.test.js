@@ -16,8 +16,13 @@ before(async () => {
   process.env.SELF_SIGNUP_ENABLED = 'true';
   process.env.TRUST_PROXY = 'true'; // per-test unique X-Forwarded-For → the 3/min door is exercisable without waiting
   const { buildApp } = await import('../src/app.js');
-  const { q, withUser, pool } = await import('../src/db.js');
-  globals.q = q; globals.withUser = withUser;
+  const { withUser, pool, sysq } = await import('../src/db.js');
+  // PERFECT-100 §5.1 SEC-1: `q()` is now the CONSTRAINED helper — it runs as
+  // schoolos_app so RLS applies. These reads INSPECT tenant tables across the tenant
+  // boundary (they assert what the signup WROTE), which is a privileged test-side
+  // read, so they must say so explicitly. Using `q()` here returned nothing and made
+  // the suite look broken when the product was correct.
+  globals.q = sysq; globals.withUser = withUser;
   app = await buildApp({ logger: false });
   await app.listen({ port: 0, host: '127.0.0.1' });
   base = `http://127.0.0.1:${app.server.address().port}`;

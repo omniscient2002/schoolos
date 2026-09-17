@@ -1,6 +1,7 @@
 // comms.whatsapp — plugin manifest (drop-in factory, docs/11 §2.2)
 export default {
   id: 'comms.whatsapp',
+  capabilities: ['comms.whatsapp.templates'],
   name: 'WhatsApp Business Rails',
   version: '1.0.0',
   class: 'B',

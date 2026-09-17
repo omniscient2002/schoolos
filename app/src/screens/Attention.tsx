@@ -10,7 +10,6 @@ import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { apiActions, apiDecideAction } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, ClickThrough} from '../components/ui';
 import { EvidenceChain, SuggestedActions } from '../components/Ai';
@@ -317,10 +316,9 @@ export default function Attention() {
   /* optimistic reconcile layer over the server queue (mirrors ActionCenter) */
   const [decidedOnServer, setDecidedOnServer] = useState<Set<string>>(new Set());
 
-  /* live build: the decision queue is the server's (GET /actions), the same
+  /* the decision queue is the server's (GET /actions), the same
      source ActionCenter decides against — ids line up with the decide door. */
   const serverActions = useAsync(async () => {
-    if (DEMO_MODE) return [] as Record<string, unknown>[];
     const res = await apiActions();
     return (res.actions ?? []) as Record<string, unknown>[];
   }, []);
@@ -333,49 +331,27 @@ export default function Attention() {
   const refresh = () => { setDecidedOnServer(new Set()); serverActions.retry(); };
 
   const items: Signal[] = useMemo(() => {
-    const actionSignals: Signal[] = DEMO_MODE
-      ? domain.actions
-        .filter(a => a.status === 'open')
-        .map(a => ({
-          id: a.id,
-          kind: a.kind,
-          title: a.title,
-          detail: a.detail,
-          why: a.why,
-          priority: a.priority === 'urgent' ? 'critical' : a.priority,
-          chips: [
-            ...a.evidence.slice(0, 2).map(e => e.label),
-            `${a.aiInvolved ? 'SchoolOS AI' : 'Rule-based'} · ${fmtTime(a.on)} · ${a.aiInvolved ? 'medium' : 'high'} confidence · demo`,
-          ],
-          evidence: a.evidence.map(e => ({ label: e.label, detail: e.detail as string | undefined })),
-          suggested: a.actions.map((x, i) => ({ id: `${a.id}_${i}`, label: x.label, type: x.type, detail: x.detail, posture: x.posture })),
-          policyRef: a.evidence.find(e => e.label.startsWith('Policy'))?.detail?.replace(/[“”]/g, '') ?? 'Constitution v2026.1 — posture applies to all suggested actions',
-          to: '/action-center',
-          due: a.deadline ? `due ${fmtDateShort(a.deadline)}` : undefined,
-          aiInvolved: a.aiInvolved,
-          derived: false,
-        }))
-      : (serverActions.data ?? [])
-        .filter(r => r.status === 'open' && !decidedOnServer.has(String(r.id)))
-        .map(r => ({
-          id: String(r.id),
-          kind: (r.kind ?? 'approval') as Signal['kind'],
-          title: String(r.title ?? 'Untitled item'),
-          detail: String(r.detail ?? ''),
-          why: String(r.why ?? ''),
-          priority: (r.priority === 'urgent' ? 'critical' : r.priority ?? 'normal') as Signal['priority'],
-          chips: [`${r.owner_role ?? 'Staff'} desk · ${fmtTime(new Date(String(r.created_at ?? Date.now())))}`],
-          evidence: [] as { label: string; detail?: string }[],
-          suggested: [] as { id: string; label: string; type: 'investigate' | 'workflow' | 'message' | 'review'; detail?: string; posture?: 'AUTO' | 'APPROVAL' | 'HUMAN-ONLY' }[],
-          policyRef: (r.policy_ref as string) ?? 'Constitution v2026.1 — posture applies to all suggested actions',
-          to: '/action-center',
-          due: r.deadline ? `due ${fmtDateShort(new Date(String(r.deadline)))}` : undefined,
-          aiInvolved: !!r.ai_involved,
-          derived: false,
-        }));
+    const actionSignals: Signal[] = (serverActions.data ?? [])
+      .filter(r => r.status === 'open' && !decidedOnServer.has(String(r.id)))
+      .map(r => ({
+        id: String(r.id),
+        kind: (r.kind ?? 'approval') as Signal['kind'],
+        title: String(r.title ?? 'Untitled item'),
+        detail: String(r.detail ?? ''),
+        why: String(r.why ?? ''),
+        priority: (r.priority === 'urgent' ? 'critical' : r.priority ?? 'normal') as Signal['priority'],
+        chips: [`${r.owner_role ?? 'Staff'} desk · ${fmtTime(new Date(String(r.created_at ?? Date.now())))}`],
+        evidence: [] as { label: string; detail?: string }[],
+        suggested: [] as { id: string; label: string; type: 'investigate' | 'workflow' | 'message' | 'review'; detail?: string; posture?: 'AUTO' | 'APPROVAL' | 'HUMAN-ONLY' }[],
+        policyRef: (r.policy_ref as string) ?? 'Constitution v2026.1 — posture applies to all suggested actions',
+        to: '/action-center',
+        due: r.deadline ? `due ${fmtDateShort(new Date(String(r.deadline)))}` : undefined,
+        aiInvolved: !!r.ai_involved,
+        derived: false,
+      }));
     const signals = data?.signals ?? [];
     return [...actionSignals, ...signals].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9));
-  }, [DEMO_MODE, domain.actions, serverActions.data, decidedOnServer, data]);
+  }, [domain.actions, serverActions.data, decidedOnServer, data]);
 
   const kindCounts = useMemo(() => {
     const c: Record<string, number> = { all: items.length };
@@ -389,25 +365,13 @@ export default function Attention() {
   );
 
   const openSig = items.find(i => i.id === openId) ?? null;
-  const resolvedCount = DEMO_MODE
-    ? domain.actions.filter(a => a.status === 'approved' || a.status === 'dismissed').length
-    : (serverActions.data ?? []).filter(a => a.status === 'approved' || a.status === 'dismissed').length;
-  const totalForResolution = DEMO_MODE ? domain.actions.length : (serverActions.data ?? []).length;
+  const resolvedCount = (serverActions.data ?? []).filter(a => a.status === 'approved' || a.status === 'dismissed').length;
+  const totalForResolution = (serverActions.data ?? []).length;
 
-  /* decide: the real door where the server queue backs the item; demo keeps
-     the session reducer with honest copy. Success claims only 2xx truth. */
+  /* decide: the real door where the server queue backs the item.
+     Success claims only 2xx truth. */
   const decide = async (sig: Signal, decision: 'approved' | 'dismissed') => {
     setBusyId(sig.id);
-    if (DEMO_MODE) {
-      dispatch({ type: 'action/decide', id: sig.id, decision, actor: actorName, role: session.roleId });
-      setOpenId(null);
-      setConfirmDismiss(null);
-      setBusyId(null);
-      toast(decision === 'approved'
-        ? { title: 'Approved (demo)', sub: 'Demo world — kept for this session, not connected to school records.', tone: 'info' }
-        : { title: 'Dismissed (demo)', sub: 'Demo world — removed from this session\'s feed only.', tone: 'info' });
-      return;
-    }
     try {
       const res = await apiDecideAction(sig.id, decision);
       setDecidedOnServer(prev => new Set(prev).add(sig.id));
@@ -488,7 +452,7 @@ export default function Attention() {
             </span>
           </div>
 
-          {loading || (!DEMO_MODE && serverActions.loading) ? (
+          {loading || serverActions.loading ? (
             <div className="u-col" style={{ gap: 10 }}>
               <Skeleton w={220} h={12} />
               <SkeletonCard lines={3} />
@@ -501,9 +465,7 @@ export default function Attention() {
                 icon={items.length === 0 ? <span className="clear-check"><Icon.Check size={22} /></span> : <Icon.Check size={22} />}
                 title={items.length === 0 ? 'All clear — nothing needs a human right now' : 'Nothing matches these filters'}
                 sub={items.length === 0
-                  ? (DEMO_MODE
-                    ? 'Every recommendation is decided and every derived signal is acknowledged. New signals appear here as records change.'
-                    : 'The decision queue is clear and no derived signals are open. New items appear here as records change.')
+                  ? 'The decision queue is clear and no derived signals are open. New items appear here as records change.'
                   : 'Adjust the priority or kind filters to see the rest of the feed.'}
               />
             </Card>

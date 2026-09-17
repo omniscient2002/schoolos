@@ -10,7 +10,7 @@ export { default as manifest } from './manifest.js';
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const OFFICE = ['owner', 'principal', 'itadmin']; // leave-marking authority
   const DESK = ['owner', 'principal', 'itadmin', 'coordinator', 'teacher'];
 

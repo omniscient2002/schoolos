@@ -18,7 +18,7 @@ import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
 import { useAsync } from './teacherKit';
 import {
-  ClassPicker, FilterRow, InsightsFixtureTag, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
+  ClassPicker, FilterRow, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
 } from './InsightsShared';
 import { STORY_KIND_LABEL, getProgressStory, rosterFor, type StoryStep } from '../../services/teacherFixtures';
 
@@ -82,14 +82,12 @@ export default function ProgressStory() {
   const current = roster.find(r => r.id === studentId) ?? roster[0];
   const state = useAsync(() => getProgressStory(current?.id ?? 'stu_1'), [current?.id]);
   const data = state.data?.data ?? null;
-  const source = state.data?.source ?? 'fixture';
 
   return (
     <InsightsRoleGate>
       <InsightsPageHead
         title="Progress story"
         sub="How a child got here — the sequence of work behind the labels, in plain sentences. No scores without the story."
-        actions={<InsightsFixtureTag source={source} />}
       />
 
       <FilterRow>

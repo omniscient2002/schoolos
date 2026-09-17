@@ -7,7 +7,10 @@ export type CampusId = 'north' | 'city' | 'east';
 
 export interface Campus { id: CampusId; name: string; shortName: string; students: number; capacity: number; hue: string; }
 
-export type RoleId = 'principal' | 'teacher' | 'coordinator' | 'finance' | 'admissions' | 'transport' | 'parent' | 'student' | 'owner' | 'itadmin' | 'facilities' | 'technician';
+/* RBAC-2: `counselor` is the 13th role, matching server/src/auth.js ROLES. The client already authorised
+   it in WellbeingQueue's STAFF_ROLES while the server could not issue it — the role existed only as a
+   string in a screen's access list. */
+export type RoleId = 'principal' | 'teacher' | 'coordinator' | 'counselor' | 'finance' | 'admissions' | 'transport' | 'parent' | 'student' | 'owner' | 'itadmin' | 'facilities' | 'technician';
 
 export interface DemoAccount { id: RoleId; name: string; title: string; campus: CampusId | 'all'; email: string; }
 
@@ -32,6 +35,7 @@ export interface Person {
   subjects?: string[];
   classes?: string[];
   role?: string;
+  designation?: string;
   joinedOn?: string;
 }
 
@@ -130,10 +134,8 @@ export interface AiTrace {
   action: string;
   approvalStatus: string;
   verification: string;
-  model: string;
-  latencyMs: number;
-  tokens: number;
-  cost: string;
+  /* FEX-10: model/latencyMs/tokens/cost were removed. This product has no model to report these for —
+     the figures were fabricated and never measured. A trace explains the deterministic evidence chain. */
 }
 
 /* ---------- Automation ---------- */

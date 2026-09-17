@@ -8,7 +8,7 @@ export { default as manifest } from './manifest.js';
 
 export function register(app, kernel) {
   const { withUser, requestAudit, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, 'comms.whatsapp');
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, 'comms.whatsapp');
 
   app.post(`/plugins/${ID}/templates`, { preHandler: [require('owner', 'itadmin'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
@@ -40,9 +40,14 @@ export function register(app, kernel) {
 
   app.get(`/plugins/${ID}/receipts`, { preHandler: [require('owner','itadmin','principal','coordinator','transport','finance'), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // PLGX-3: this returned the message `body` (guardian/child PII) to coordinator/finance/transport,
+      // while the kernel /communications door deliberately omits it. The receipt is DELIVERY evidence, not
+      // a read channel for content — drop the body, and state the tenant predicate explicitly instead of
+      // relying on RLS alone (defence in depth, and greppable).
       const r = await c.query(
-        `SELECT id, template, body, status, policy_ref, sent_at, delivered_at, created_at
-         FROM app.communications WHERE channel='whatsapp' ORDER BY created_at DESC LIMIT 100`);
+        `SELECT id, template, status, policy_ref, sent_at, delivered_at, created_at
+         FROM app.communications WHERE tenant_id=$1 AND channel='whatsapp' ORDER BY created_at DESC LIMIT 100`,
+        [req.user.tenant_id]);
       return { receipts: r.rows };
     });
   });

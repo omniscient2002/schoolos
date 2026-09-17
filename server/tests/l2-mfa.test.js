@@ -10,6 +10,11 @@ import { totpAt, generateSecret } from '../src/totp.js';
 
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 const nowCode = (secret) => totpAt(secret, Math.floor(Date.now() / 1000 / 30));
+// 095 made TOTP moving factors single-use (`auth.mfa_secrets.last_totp_step`), so a code consumed by the
+// enrollment confirm cannot be replayed for a login challenge in the same 30s window. A real authenticator
+// shows the NEXT code once the current one advances; the server accepts a ±1 window, so `nextCode` models
+// exactly that without waiting 30 seconds.
+const nextCode = (secret) => totpAt(secret, Math.floor(Date.now() / 1000 / 30) + 1);
 
 let app;
 let sql;
@@ -34,7 +39,7 @@ const login = async (email, password) => app.inject({ method: 'POST', url: '/aut
 describe('L2-3.2 · staff MFA (TOTP)', () => {
   test('enroll → confirm with valid TOTP → enabled + 8 recovery codes (shown once)', async () => {
     const l = await login('itadmin@meridian.edu', 'schoolos-demo');
-    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: {}, headers: H(l.json().token) });
+    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: { password: 'schoolos-demo' }, headers: H(l.json().token) });
     assert.equal(enroll.statusCode, 200, enroll.body);
     const { secret, otpauth } = enroll.json();
     assert.match(secret, /^[A-Z2-7]{32}$/, 'base32 secret (RFC 4648)');
@@ -63,7 +68,7 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
     const sec = (await sql(`SELECT secret FROM auth.mfa_secrets WHERE user_id=$1`, [l.json().user.id])).rows[0].secret;
     const wrong = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { challengeToken, code: '000000' } });
     assert.equal(wrong.statusCode, 401, 'wrong code refused');
-    const ok = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { challengeToken, code: nowCode(sec) } });
+    const ok = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { challengeToken, code: nextCode(sec) } });
     assert.equal(ok.statusCode, 200, ok.body);
     assert.ok(ok.json().token, 'full session issued');
     assert.equal(app.jwt.decode(ok.json().token).mfaPending, undefined, 'challenge claim gone');
@@ -83,7 +88,7 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
     const pw = await app.inject({ method: 'POST', url: '/me/password', payload: { currentPassword: temp, newPassword: 'staff-pw-2468' }, headers: H(l1.json().token) });
     const real = pw.json().token;
     // enroll + capture recovery codes
-    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: {}, headers: H(real) });
+    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: { password: 'staff-pw-2468' }, headers: H(real) });
     const secret = enroll.json().secret;
     const confirm = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { code: nowCode(secret) }, headers: H(real) });
     const recovery = confirm.json().recoveryCodes;
@@ -91,7 +96,7 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
     // TOTP-code login works
     const l2 = await login('mfa.staff@meridian.edu', 'staff-pw-2468');
     assert.equal(l2.statusCode, 401);
-    const v = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { challengeToken: l2.json().challengeToken, code: nowCode(secret) } });
+    const v = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { challengeToken: l2.json().challengeToken, code: nextCode(secret) } });
     assert.equal(v.statusCode, 200);
     // recovery-code login works ONCE
     const l3 = await login('mfa.staff@meridian.edu', 'staff-pw-2468');
@@ -127,13 +132,13 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
     const o = await login('owner@meridian.edu', 'schoolos-demo');
     const H = { authorization: `Bearer ${o.json().token}`, 'content-type': 'application/json' };
     // confirm an enrollment so the factor is live (fresh secret, valid code)
-    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: {}, headers: H });
+    const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: { password: 'schoolos-demo' }, headers: H });
     assert.equal(enroll.statusCode, 200, enroll.body);
     const sec2 = enroll.json().secret;
     const verify = await app.inject({ method: 'POST', url: '/me/mfa/verify', payload: { code: nowCode(sec2) }, headers: H });
     assert.equal(verify.statusCode, 200, verify.body);
     // re-enroll → 409 refusal (no silent secret rotation)
-    const again = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: {}, headers: H });
+    const again = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: { password: 'schoolos-demo' }, headers: H });
     assert.equal(again.statusCode, 409);
     assert.match(again.json().error, /already on/);
     // /me exposes only the enrollment timestamp — no secret material

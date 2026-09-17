@@ -4,7 +4,7 @@
    plus a term reflection. Click through for the full view.
    ============================================================ */
 import { useState, type ReactNode } from 'react';
-import { Badge, Button, Card, Drawer, PageHead, Section } from '../components/ui';
+import { Badge, Button, Card, Drawer, PageHead, SampleNote, Section } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDate } from '../lib/format';
 
@@ -68,6 +68,10 @@ export default function StudentPortfolio() {
         sub="Chosen with your teachers — progress you can see."
         actions={<Badge tone="accent" dot>Grade 8-B · 6 pieces</Badge>}
       />
+
+      {/* Honesty: this screen has no portfolio door behind it — the pieces, comments and dates are
+          illustrative. A live build reads them from the student's own record. */}
+      <SampleNote>Sample portfolio — these pieces, teacher comments and dates are illustrative in this build and are not read from your school records.</SampleNote>
 
       <div className="grid grid-3">
         {ARTIFACTS.map(a => (

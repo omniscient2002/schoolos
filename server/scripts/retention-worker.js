@@ -132,6 +132,14 @@ export async function pass() {
     try {
       if (await tableExists(c, 'auth', 'revoked_token')) {
         const r = await c.query(`DELETE FROM auth.revoked_token WHERE exp < now()`);
+        // AUTH-9: MFA challenge rows were never swept — only ever consumed or expired, then left behind.
+        if (await tableExists(c, 'auth', 'mfa_challenges')) {
+          await c.query(`DELETE FROM auth.mfa_challenges WHERE expires_at < now() - interval '1 day'`);
+        }
+        // AUTH-4/AUTH-8: the identifier throttle table would otherwise grow one row per hashed identity forever.
+        if (await tableExists(c, 'auth', 'request_throttles')) {
+          await c.query(`DELETE FROM auth.request_throttles WHERE COALESCE(locked_until, last_attempt_at, window_started_at) < now() - interval '7 days'`);
+        }
         counts.revokedTokensDeleted = r.rowCount ?? 0;
       } else { counts.revokedTokensDeleted = 0; console.error('retention: auth.revoked_token absent — skipped'); }
     } finally { c.release(); }
@@ -153,8 +161,17 @@ export async function pass() {
     const c = await pool.connect();
     try {
       if (await tableExists(c, 'app', 'outbox') && await columnExists(c, 'app', 'outbox', 'processed_at')) {
+        // §4 H5 / migration 073: parked rows deliberately carry NO processed_at (they were
+        // never delivered), so the old purge — which aged out processed_at only — would have
+        // left every poison row in the table FOREVER, and the new parked counter would grow
+        // without bound. Both terminal states now age out on their own timestamp.
+        const hasParked = await columnExists(c, 'app', 'outbox', 'parked_at');
         const r = await c.query(
-          `DELETE FROM app.outbox WHERE processed_at IS NOT NULL AND processed_at < now() - interval '${OUTBOX_DAYS} days'`);
+          hasParked
+            ? `DELETE FROM app.outbox
+                WHERE (processed_at IS NOT NULL AND processed_at < now() - interval '${OUTBOX_DAYS} days')
+                   OR (parked_at IS NOT NULL AND parked_at < now() - interval '${OUTBOX_DAYS} days')`
+            : `DELETE FROM app.outbox WHERE processed_at IS NOT NULL AND processed_at < now() - interval '${OUTBOX_DAYS} days'`);
         counts.outboxDeleted = r.rowCount ?? 0;
       } else { counts.outboxDeleted = 0; console.error('retention: app.outbox absent — skipped'); }
     } finally { c.release(); }
@@ -170,6 +187,21 @@ export async function pass() {
            WHERE status IN ('sent','failed') AND created_at < now() - interval '${COMMS_DAYS} days'`);
         counts.communicationsDeleted = r.rowCount ?? 0;
       } else { counts.communicationsDeleted = 0; console.error('retention: app.communications absent — skipped'); }
+    } finally { c.release(); }
+  }
+
+  // ── 8b. Webhook delivery ledger (OPSX-14): terminal rows older than WEBHOOK_DAYS ──
+  // `app.webhook_deliveries` was never pruned, so its retry/DLQ rows accumulated forever. Only terminal
+  // rows are eligible; queued rows are live work.
+  {
+    const c = await pool.connect();
+    try {
+      if (await tableExists(c, 'app', 'webhook_deliveries')) {
+        const r = await c.query(
+          `DELETE FROM app.webhook_deliveries
+           WHERE status IN ('delivered','failed') AND created_at < now() - interval '${WEBHOOK_DAYS} days'`);
+        counts.webhookDeliveriesDeleted = r.rowCount ?? 0;
+      } else { counts.webhookDeliveriesDeleted = 0; }
     } finally { c.release(); }
   }
 
@@ -201,12 +233,23 @@ export async function pass() {
         // one CTE: copy-then-delete is atomic — rows MOVE byte-identical (hash
         // chain columns untouched), so hot∪cold remains a single verifiable
         // chain. A bare DELETE is never used on audit data.
+        //
+        // SEC-20: the target and source columns are now NAMED instead of relying on positional
+        // `SELECT moved.*, now()`. Positional mapping is silently wrong the moment either table
+        // gains a column, and migration 075 proved it: adding hash_version to both tables made the
+        // hot row's smallint land in cold.archived_at and the whole sweep fail with a type error
+        // ("column archived_at is of type timestamp with time zone but expression is of type
+        // smallint") — archival stopped entirely, silently, in a worker. Note this list deliberately
+        // EXCLUDES archived_at from the source and supplies now(): it is the one column that is cold-only.
+        const AUDIT_COLUMNS = `id, tenant_id, actor, actor_role, action, record_type, record_ref,
+             reason, policy_ref, ai_involved, risk, outcome, ip, prev_hash, hash, created_at, hash_version`;
         const r = await c.query(
           `WITH moved AS (
              DELETE FROM app.audit_log
              WHERE created_at < now() - interval '${AUDIT_ARCHIVE_DAYS} days'
              RETURNING *
-           ) INSERT INTO app.audit_log_cold SELECT moved.*, now() AS archived_at FROM moved`);
+           ) INSERT INTO app.audit_log_cold (${AUDIT_COLUMNS}, archived_at)
+             SELECT ${AUDIT_COLUMNS}, now() FROM moved`);
         await c.query('COMMIT');
         counts.auditRowsArchived = r.rowCount ?? 0;
       } else { counts.auditRowsArchived = 0; console.error('retention: app.audit_log_cold absent (059 not applied) — archival skipped'); }

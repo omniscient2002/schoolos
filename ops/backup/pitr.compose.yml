@@ -1,0 +1,27 @@
+# OPSX-10 — point-in-time recovery (WAL archiving) for the compose stack.
+#
+# The nightly logical dump gives a recovery point at 02:17 and nothing since. WAL archiving adds the
+# ability to restore to any instant, which is what an "RPO" claim actually requires. Enable it as an
+# override so the base stack stays unchanged for developers:
+#
+#   docker compose -f server/docker-compose.yml -f ops/backup/pitr.compose.yml up -d db
+#
+# The archive volume must live OFF the pgdata volume (a dump beside the database it protects dies with it).
+services:
+  db:
+    # `archive_command` copies each completed 16 MB WAL segment; `%p` is the path, `%f` the filename.
+    # A non-zero exit makes Postgres retry and eventually fill pg_wal, so the command is deliberately
+    # strict: `test ! -f` avoids overwriting an archive, and the copy must succeed.
+    command: >
+      postgres
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_timeout=60
+      -c archive_command='test ! -f /wal-archive/%f && cp %p /wal-archive/%f'
+    volumes:
+      - wal-archive:/wal-archive
+
+volumes:
+  wal-archive:
+    # In production this is a bind mount to encrypted, off-host storage (or a restic/rclone-synced path).
+    # A named volume here keeps the override runnable for a drill without a host dependency.

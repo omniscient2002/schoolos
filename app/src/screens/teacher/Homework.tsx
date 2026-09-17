@@ -21,10 +21,14 @@ import { fmtDate, fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
 import { useStore } from '../../state/store';
 import {
-  createHomework, isFlowDoorLive, listHomework, listSubmissions, teacherContext,
+  createHomework, listHomework, listSubmissions,
   type NewHomework, type TeacherHomework, type TeacherSubmission,
 } from '../../services/teacherFixtures';
-import { AsyncGate, dueState, FixtureTag, onEnter, TEACHER_STAFF_ROLES, useAsync, DeniedState } from './teacherKit';
+import { AsyncGate, dueState, onEnter, TEACHER_STAFF_ROLES, useAsync, DeniedState } from './teacherKit';
+
+/* class list used to prefill the assign form — the live door owns the real roster */
+const MY_CLASSES = ['8-B', '8-A', '7-A'];
+const subjectFor = (_cls: string) => 'Maths';
 
 /* one-tap due presets — plain words, no calendar gymnastics */
 const DUE_PRESETS: { id: string; label: string; days: number; hour: number }[] = [
@@ -62,8 +66,8 @@ export default function Homework() {
   const navigate = useNavigate();
   const { session, actorName } = useStore();
 
-  const [cls, setCls] = useState(teacherContext.classes[0]);
-  const [subject, setSubject] = useState(teacherContext.subjectFor(teacherContext.classes[0]));
+  const [cls, setCls] = useState(MY_CLASSES[0]);
+  const [subject, setSubject] = useState(subjectFor(MY_CLASSES[0]));
   const [title, setTitle] = useState('');
   const [detail, setDetail] = useState('');
   const [attachment, setAttachment] = useState('');
@@ -80,7 +84,7 @@ export default function Homework() {
 
   const pickClass = (c: string) => {
     setCls(c);
-    if (c !== 'all') setSubject(teacherContext.subjectFor(c));
+    if (c !== 'all') setSubject(subjectFor(c));
   };
 
   const publish = async () => {
@@ -127,8 +131,7 @@ export default function Homework() {
     <div>
       <PageHead
         title="Homework"
-        sub={`Assign in about 20 seconds — ${teacherContext.classes.join(', ')} prefilled for ${actorName.split(' ')[0]}. Submissions land in your inbox automatically.`}
-        actions={<FixtureTag source={isFlowDoorLive('hw') ? 'live' : 'fixture'} />}
+        sub={`Assign in about 20 seconds — ${MY_CLASSES.join(', ')} prefilled for ${actorName.split(' ')[0]}. Submissions land in your inbox automatically.`}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 18 }}>
@@ -142,7 +145,7 @@ export default function Homework() {
         <Card pad>
           {/* class / subject — prefilled from context (P1 rule) */}
           <div className="u-flex u-wrap" style={{ gap: 8, marginBottom: 14 }}>
-            {['all', ...teacherContext.classes].map(c => (
+            {['all', ...MY_CLASSES].map(c => (
               <button
                 key={c}
                 className={`tab ${cls === c ? 'active' : ''}`}

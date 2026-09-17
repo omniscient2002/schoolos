@@ -13,7 +13,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../state/store';
 import { apiFeePlans, apiCreateFeePlan, apiGenerateFeePlan, type FeePlan, type FeePlanTerm } from '../../services/liveApi';
-import { DEMO_MODE } from '../../lib/demoMode';
 import { friendly } from '../../lib/friendlyErrors';
 import {
   PageHead, Card, Badge, Button, Empty, Modal, Stat, useToast, SkeletonCard, ErrorState,
@@ -142,21 +141,6 @@ export default function FeePlans() {
   };
 
   /* ---------------- render ---------------- */
-  if (DEMO_MODE) {
-    return (
-      <div className="u-col" style={{ gap: 14 }}>
-        <PageHead title="Fee plans" sub="Templates that generate real ledger obligations for a grade set." />
-        <Card pad>
-          <Empty
-            icon={<Icon.Money size={24} />}
-            title="Demo world — fee plans are a live-school feature"
-            sub="In a live school this screen creates plan templates and generates obligations through the server. The demo data is read-only, so there is nothing to configure here."
-          />
-        </Card>
-      </div>
-    );
-  }
-
   return (
     <div className="u-col" style={{ gap: 14 }}>
       <PageHead

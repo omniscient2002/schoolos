@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, DataTable, Empty, Modal, PageHead, Section, Stat, Tabs, useToast } from '../components/ui';
+import { Badge, Button, Card, DataTable, Empty, Modal, PageHead, Section, Stat, Tabs, useToast , SampleNote} from '../components/ui';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtNum, fmtRelative } from '../lib/format';
@@ -29,30 +29,22 @@ const KIND_TABS: { id: string; label: string }[] = [
   { id: 'reconciliation', label: 'Payment matching' },
   { id: 'compliance', label: 'Compliance' },
   { id: 'transport', label: 'Transport' },
-  { id: 'facilities', label: 'Facilities' },
-];
+  { id: 'facilities', label: 'Facilities' }];
 const STATUSES: SchoolCase['status'][] = ['open', 'triaged', 'in-progress', 'resolved', 'closed'];
 const STATUS_LABEL: Record<SchoolCase['status'], string> = {
-  open: 'Open', triaged: 'Triaged', 'in-progress': 'In-progress', resolved: 'Resolved', closed: 'Closed',
-};
+  open: 'Open', triaged: 'Triaged', 'in-progress': 'In-progress', resolved: 'Resolved', closed: 'Closed'};
 const STATUS_TONE: Record<SchoolCase['status'], 'info' | 'warning' | 'accent' | 'success' | 'neutral'> = {
-  open: 'info', triaged: 'warning', 'in-progress': 'accent', resolved: 'success', closed: 'neutral',
-};
+  open: 'info', triaged: 'warning', 'in-progress': 'accent', resolved: 'success', closed: 'neutral'};
 const PRIORITY_TONE: Record<SchoolCase['priority'], 'danger' | 'warning' | 'neutral' | 'outline'> = {
-  critical: 'danger', high: 'warning', normal: 'neutral', low: 'outline',
-};
+  critical: 'danger', high: 'warning', normal: 'neutral', low: 'outline'};
 const ORIGIN_LABEL: Record<SchoolCase['origin'], string> = {
-  'parent-whatsapp': 'WhatsApp', phone: 'Phone', 'walk-in': 'Walk-in', system: 'System', staff: 'Staff',
-};
+  'parent-whatsapp': 'WhatsApp', phone: 'Phone', 'walk-in': 'Walk-in', system: 'System', staff: 'Staff'};
 const ORIGIN_TONE: Record<SchoolCase['origin'], 'success' | 'info' | 'neutral' | 'ai' | 'accent'> = {
-  'parent-whatsapp': 'success', phone: 'info', 'walk-in': 'neutral', system: 'ai', staff: 'accent',
-};
+  'parent-whatsapp': 'success', phone: 'info', 'walk-in': 'neutral', system: 'ai', staff: 'accent'};
 const KIND_TONE: Record<CaseKind, 'warning' | 'info' | 'ai' | 'danger' | 'accent' | 'neutral'> = {
-  complaint: 'warning', request: 'info', reconciliation: 'ai', compliance: 'danger', transport: 'accent', facilities: 'neutral', incident: 'danger', exception: 'neutral',
-};
+  complaint: 'warning', request: 'info', reconciliation: 'ai', compliance: 'danger', transport: 'accent', facilities: 'neutral', incident: 'danger', exception: 'neutral'};
 const KIND_SLA: Record<CaseKind, number> = {
-  complaint: 24, request: 48, reconciliation: 12, compliance: 240, transport: 24, facilities: 72, incident: 24, exception: 96,
-};
+  complaint: 24, request: 48, reconciliation: 12, compliance: 240, transport: 24, facilities: 72, incident: 24, exception: 96};
 const CAMPUS_LABEL: Record<SchoolCase['campus'], string> = { north: 'North', city: 'City', east: 'East' };
 
 function fmtH(hours: number): string {
@@ -76,12 +68,7 @@ const TRIAGE_TRACE: AiTrace = {
   reasoningRole: 'Triage (classify + link only)',
   action: 'Opened the case, set priority, attached linked records',
   approvalStatus: 'Auto-triage allowed; the first reply to the guardian needs staff approval',
-  verification: 'Linked records verified against IDs before attachment',
-  model: 'Fast (classification) · ap-south-1',
-  latencyMs: 310,
-  tokens: 420,
-  cost: '₹0.01',
-};
+  verification: 'Linked records verified against IDs before attachment'};
 
 export default function Cases() {
   const { session, domain, dispatch, actorName } = useStore();
@@ -94,8 +81,7 @@ export default function Cases() {
   const [q, setQ] = useState('');
   const [newOpen, setNewOpen] = useState(false);
   const [form, setForm] = useState<{ kind: CaseKind; title: string; priority: SchoolCase['priority']; owner: string; origin: SchoolCase['origin'] }>({
-    kind: 'complaint', title: '', priority: 'normal', owner: seed.staff[0]?.name ?? 'Admin Officer', origin: 'parent-whatsapp',
-  });
+    kind: 'complaint', title: '', priority: 'normal', owner: seed.staff[0]?.name ?? 'Admin Officer', origin: 'parent-whatsapp'});
 
   const owners = useMemo(
     () => Array.from(new Set([...seed.staff.map(s => s.name), ...seed.cases.map(c => c.owner)])),
@@ -123,10 +109,8 @@ export default function Cases() {
       messages: [{
         on: new Date(), from: 'SchoolOS (auto)',
         text: `Case opened by ${actorName} · SLA ${KIND_SLA[form.kind]}h · AI triage attached: language detected, sentiment scored, linked records added`,
-        internal: true,
-      }],
-      linkedRecords: [],
-    };
+        internal: true}],
+      linkedRecords: []};
     dispatch({ type: 'case/add', c });
     dispatch({
       type: 'audit/add',
@@ -134,9 +118,7 @@ export default function Cases() {
         actor: actorName, actorRole: session.roleId, action: 'Opened case',
         recordType: 'Case', recordRef: `${id} — ${c.title}`,
         reason: `Origin: ${ORIGIN_LABEL[form.origin]}`, aiInvolved: false, risk: 'low',
-        outcome: `Case created · SLA ${KIND_SLA[form.kind]}h · owner ${form.owner}`,
-      },
-    });
+        outcome: `Case created · SLA ${KIND_SLA[form.kind]}h · owner ${form.owner}`}});
     toast({ title: 'Case created — deadline clock started', sub: `${id} · ${form.owner} owns it · AI triage attached`, tone: 'success' });
     setNewOpen(false);
     setForm(f => ({ ...f, title: '' }));
@@ -145,6 +127,7 @@ export default function Cases() {
 
   return (
     <>
+      <SampleNote>Sample case metrics — the response average and triage example are illustrative in this build, not read from your case records.</SampleNote>
       <PageHead
         title="Cases"
         sub={session.roleId === 'finance'
@@ -184,8 +167,7 @@ export default function Cases() {
                   <div style={{ fontWeight: 580 }}>{c.title}</div>
                   <div className="u-xs u-faint">{CAMPUS_LABEL[c.campus]} campus · {c.messages.length} {c.messages.length === 1 ? 'entry' : 'entries'} in file</div>
                 </div>
-              ),
-            },
+              )},
             { key: 'openedOn', label: 'Opened', width: 130, render: c => <div><div className="u-small">{fmtDateShort(c.openedOn)}</div><div className="u-xs u-faint">{fmtRelative(c.openedOn)}</div></div> },
             { key: 'origin', label: 'Origin', width: 100, render: c => <Badge tone={ORIGIN_TONE[c.origin]}>{ORIGIN_LABEL[c.origin]}</Badge> },
             { key: 'owner', label: 'Owner', width: 140 },
@@ -199,10 +181,8 @@ export default function Cases() {
                     <div className="progress" style={{ height: 3, marginTop: 5, maxWidth: 130 }}><div style={{ width: `${s.pct}%`, background: s.tone === 'danger' ? 'var(--danger)' : s.tone === 'warning' ? 'var(--warning)' : 'var(--accent)' }} /></div>
                   </div>
                 );
-              },
-            },
-            { key: 'status', label: 'Status', width: 100, render: c => <Badge tone={STATUS_TONE[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> },
-          ]}
+              }},
+            { key: 'status', label: 'Status', width: 100, render: c => <Badge tone={STATUS_TONE[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> }]}
           rows={filtered}
           rowKey={c => c.id}
           onRowClick={c => navigate(`/cases/${c.id}`)}
@@ -227,13 +207,11 @@ export default function Cases() {
                   { label: 'Origin', detail: 'WhatsApp inbound · guardian thread · received 08:15 (inside allowed hours)', source: 'Communication log' },
                   { label: 'Language', detail: 'Detected: English · Hindi template attached for the reply', source: 'Reply classifier · Fast model' },
                   { label: 'Sentiment', detail: 'Frustrated — third contact about the same route this week', source: 'Sentiment scorer' },
-                  { label: 'Linked records', detail: 'Bus 14 · Route 7 · Attendance 8-B · incident inc_1', source: 'Record linker · verified IDs', refType: 'transport' },
-                ] : [
+                  { label: 'Linked records', detail: 'Bus 14 · Route 7 · Attendance 8-B · incident inc_1', source: 'Record linker · verified IDs', refType: 'transport' }] : [
                   { label: 'Origin', detail: 'Channel and timestamp checked against communication windows', source: 'Communication log' },
                   { label: 'Language', detail: 'Detected per message; the guardian\u2019s template language is attached to the reply', source: 'Reply classifier · Fast model' },
                   { label: 'Sentiment', detail: 'Scored to raise priority when a guardian contacts us repeatedly', source: 'Sentiment scorer' },
-                  { label: 'Linked records', detail: 'Ledger entries, routes and prior cases attach automatically', source: 'Record linker · verified IDs' },
-                ]}
+                  { label: 'Linked records', detail: 'Ledger entries, routes and prior cases attach automatically', source: 'Record linker · verified IDs' }]}
               />
             </div>
             <AiTraceCard trace={TRIAGE_TRACE} defaultOpen />

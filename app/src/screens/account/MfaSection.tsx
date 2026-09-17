@@ -17,7 +17,7 @@
      error inside a settings panel.
    ============================================================ */
 import { useEffect, useState } from 'react';
-import { LIVE_BASE } from '../../services/liveApi';
+import { LIVE_BASE, getToken } from '../../services/liveApi';
 import { Icon } from '../../components/Icon';
 import { Badge, Button, useToast } from '../../components/ui';
 import { friendly } from '../../lib/friendlyErrors';
@@ -42,7 +42,7 @@ function readCsrf(): string | null {
 }
 
 async function mfaPost(path: string, body: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
-  const t = localStorage.getItem('schoolos_token');
+  const t = getToken();
   const csrf = readCsrf();
   const res = await fetch(`${LIVE_BASE}${path}`, {
     method: 'POST',
@@ -84,7 +84,7 @@ export default function MfaSection() {
     let live = true;
     (async () => {
       try {
-        const token = localStorage.getItem('schoolos_token');
+        const token = getToken();
         const csrf = readCsrf();
         const res = await fetch(`${LIVE_BASE}/me`, {
           headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(csrf ? { 'x-csrf-token': csrf } : {}) },

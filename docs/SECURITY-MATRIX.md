@@ -79,7 +79,7 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 ## 7. Remaining open (prioritized)
 1. ~~A3 JWT revocation/rotation~~ — DONE (038 + jti mandatory + regression suite)
 2. ~~B9 counselor/clinic confidentiality matrix~~ — DONE (b9-confidentiality.test.js 6/6)
-3. ~~Permission-matrix generator~~ — DONE (scripts/permission-matrix.js, 177 routes, 0 unguarded)
+3. ~~Permission-matrix generator~~ — DONE (scripts/permission-matrix.js; route/guard counts are generated into `docs/PERMISSION-MATRIX.md`, 0 unguarded — the "177 routes" once written here was a stale snapshot)
 4. ~~E5 secret-scan cron~~ — DONE (scripts/secret-scan.mjs fail-closed, clean)
 5. Multi-tenant synthetic second school — cross-tenant door sweep (RT-7 cycle 7 disproved cross-tenant takeover at the RLS layer; full second-tenant E2E sweep still worthwhile)
 6. Blue-team in flight: #3 cross-class grade gate, #4 decide-door aliasing, #6 duty 409

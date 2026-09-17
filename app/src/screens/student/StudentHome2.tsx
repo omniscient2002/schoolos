@@ -64,7 +64,6 @@ const TILES: Tile[] = [
   { key: 'homework', label: 'Homework', icon: 'Clipboard', to: '/student/learning' },
   { key: 'study', label: 'Study', icon: 'Book', soon: true },
   { key: 'results', label: 'Results', icon: 'Insights', soon: true },
-  { key: 'tutor', label: 'Tutor', icon: 'Sparkle', to: '/student/ask' },
   /* T505: Timetable tile removed — it deep-linked the demo /student route
      (demo-blob surface, crash-prone outside the demo world) and no live
      student timetable route exists; today's classes render on this home. */

@@ -7,8 +7,6 @@
    success toast only appears after 2xx from the server, and it
    quotes the receipt the server issued. Roles without payment
    authority see the ledger read-only with a plain-language reason.
-   The demo build (VITE_DEMO_MODE) keeps the demo blob behaviour,
-   clearly separated below.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -16,17 +14,14 @@ import FeePlans from './finance/FeePlans';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { apiFeeObligations, apiGet, apiPost, apiVoidObligation } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import {
   PageHead, Section, Card, Stat, Badge, DataTable, Tabs, Button, useToast,
-  Drawer, Empty, ErrorState, Skeleton, SkeletonCard, KeyValue, Progress, Modal,
-} from '../components/ui';
-import { EvidenceChain, AiTraceCard } from '../components/Ai';
-import { LineChart, BarChart, SegmentedBar, Donut } from '../components/Chart';
+  Drawer, Empty, ErrorState, Skeleton, SkeletonCard, KeyValue, Progress, Modal} from '../components/ui';
+import { BarChart, Donut } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtMoney, fmtMoneyShort, fmtPct, fmtDate, fmtDateShort } from '../lib/format';
-import type { CampusId, FeeObligation, Payment, FeeStatus } from '../types/domain';
+import type { Payment, FeeStatus } from '../types/domain';
 
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -42,23 +37,6 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   }, [...deps, tick]);
   return { ...state, retry: () => setTick(t => t + 1) };
 }
-
-/* ---------- shared helpers (demo branch) ---------- */
-const TREND = [88, 87, 89, 90, 91, 88, 86, 85, 84, 83, 85, 84, 83, 82.3];
-
-const FEE_TRACE = {
-  trigger: 'Detected collection dip > 2pts vs 4-week average (weekly fee review)',
-  policy: 'Read-only analysis · Fees §4.3 retry posture · no automated collection actions',
-  dataUsed: ['fees records (14 days)', 'gateway settlement file', 'transport incident timeline', 'route roster'],
-  reasoningRole: 'Investigator (read-only)',
-  action: 'None — analysis only; retry actions below stay with Finance',
-  approvalStatus: 'Not required (read-only)',
-  verification: 'Trend and clusters recomputed from obligations and payments; figures match ledger diff',
-  model: 'Frontier (reasoning) · ap-south-1',
-  latencyMs: 860,
-  tokens: 1310,
-  cost: '₹0.11',
-};
 
 /* Real server statuses are open | partial | paid | void (001_init). */
 type RowStatus = FeeStatus | 'open' | 'partial' | 'void';
@@ -76,7 +54,7 @@ function statusBadge(s: RowStatus) {
   }
 }
 
-/* Unified row shape across the live and demo data planes */
+/* Unified row shape across the live data plane */
 interface FeeRow {
   id: string;
   studentId: string;
@@ -116,8 +94,7 @@ function RecordPaymentModal({ row, onClose, onDone }: {
       toast({
         title: `Payment recorded — receipt ${conf.payment.receipt_no ?? 'issued'}`,
         sub: `${fmtMoney(due)} against ${row.studentName} · ${row.term} ${row.category} · obligation now ${conf.obligation.status}.`,
-        tone: 'success',
-      });
+        tone: 'success'});
       onDone();
       onClose();
     } catch (e) {
@@ -210,71 +187,6 @@ function StudentFeeDrawerLive({ studentId, onClose, canPay, onRecord }: {
   );
 }
 
-/* ---------- demo drawer (demo build only) ---------- */
-function StudentFeeDrawer({ obligation, onClose, onRetry }: {
-  obligation: FeeObligation | null; onClose: () => void; onRetry: (id: string) => void;
-}) {
-  const { session } = useStore();
-  if (!obligation) return null;
-  const student = seed.findPerson(obligation.studentId);
-  const summary = seed.studentFeeSummary(obligation.studentId);
-  const section = student ? seed.sectionOfStudent(student) : undefined;
-  return (
-    <Drawer
-      open={!!obligation}
-      onClose={onClose}
-      title={student?.name ?? obligation.studentId}
-      sub={student ? `Grade ${student.grade}-${student.section} · ${section ? seed.campuses.find(c => c.id === section.campus)?.name : ''} · Admission ${student.admissionNo ?? '—'}` : undefined}
-      footer={
-        summary.hasFailed ? (
-          <Button variant="primary" icon={<Icon.Refresh size={14} />} onClick={() => onRetry(obligation.id)}>
-            Record retry — failed mandate
-          </Button>
-        ) : (
-          <span className="u-small u-muted">No failed mandates on this student's account. Retries apply to failed online payments only (Fees §4.3).</span>
-        )
-      }
-    >
-      <div className="u-col" style={{ gap: 18 }}>
-        <div className="grid grid-3">
-          <Stat label="Outstanding" value={fmtMoneyShort(summary.due)} sub="Due + overdue, this term" />
-          <Stat label="Overdue" value={fmtMoneyShort(summary.overdue)} sub={summary.overdue > 0 ? 'Late fee paused (retry window)' : 'Nothing overdue'} />
-          <Stat label="Paid this term" value={fmtMoneyShort(summary.paid)} sub="All successful payments" />
-        </div>
-
-        <div>
-          <div className="u-upper" style={{ marginBottom: 8 }}>What's owed</div>
-          <div className="u-col" style={{ gap: 8 }}>
-            {summary.items.map(it => (
-              <div key={it.id} className="u-between" style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: it.id === obligation.id ? 'var(--accent-weak)' : 'var(--surface)' }}>
-                <div>
-                  <div style={{ fontWeight: 580 }}>{it.term} · {it.category}</div>
-                  <div className="u-small u-muted" style={{ marginTop: 2 }}>
-                    Due {fmtDate(it.dueDate)}{it.method ? ` · ${it.method}` : ''}{it.failureReason ? ` · ${it.failureReason}` : ''}
-                  </div>
-                </div>
-                <div className="u-col" style={{ alignItems: 'flex-end', gap: 4 }}>
-                  <span className="tnum">{fmtMoney(it.amount)}</span>
-                  {statusBadge(it.status)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <KeyValue
-          items={[
-            { k: 'Bus route', v: student?.busRoute ?? 'Not on transport' },
-            { k: 'Guardians', v: `${seed.guardiansOfStudent(obligation.studentId).length} linked · ${seed.guardiansOfStudent(obligation.studentId).filter(g => g.link.verified).length} verified` },
-            { k: 'Attendance (30d)', v: `${seed.studentAttendanceRate(obligation.studentId).rate}%` },
-            { k: 'Viewing as', v: <span className="u-small">{session.roleId}</span> },
-          ]}
-        />
-      </div>
-    </Drawer>
-  );
-}
-
 /* ---------- live row mapper ---------- */
 const mapRealObligation = (o: Record<string, unknown>): FeeRow => ({
   id: String(o.id),
@@ -286,28 +198,24 @@ const mapRealObligation = (o: Record<string, unknown>): FeeRow => ({
   amount: Number(o.amount_cents ?? 0) / 100,
   paidAmount: Number(o.paid_cents ?? 0) / 100,
   dueDate: o.due_on ? new Date(String(o.due_on)) : null,
-  status: (o.status ?? 'open') as RowStatus,
-});
+  status: (o.status ?? 'open') as RowStatus});
 
 /* ============================================================ */
 
-type TabId = 'ledger' | 'payments' | 'failed' | 'byclass' | 'plans';
+type TabId = 'ledger' | 'payments' | 'byclass' | 'plans';
 
 export default function Fees() {
   const navigate = useNavigate();
-  const { session, dispatch, actorName } = useStore();
+  const { session } = useStore();
   const toast = useToast();
-  const campus = session.activeCampus as CampusId | 'all'; // demo plane filters 'all'; live plane is tenant-wide
 
   const [tab, setTab] = useState<TabId>('ledger');
   const [statusFilter, setStatusFilter] = useState<'all' | RowStatus>('all');
-  const [selected, setSelected] = useState<FeeObligation | null>(null);   /* demo drawer */
   const [selectedId, setSelectedId] = useState<string | null>(null);      /* live drawer */
   const [payRow, setPayRow] = useState<FeeRow | null>(null);              /* record-payment modal */
   const [voidRow, setVoidRow] = useState<FeeRow | null>(null);            /* void confirm (owner) */
   const [voidReason, setVoidReason] = useState('');
   const [voiding, setVoiding] = useState(false);
-  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   /* Payment authority mirrors the doors exactly:
      initiate → parent/finance/owner/principal; confirm → finance/owner. */
@@ -315,44 +223,15 @@ export default function Fees() {
   const canConfirm = ['finance', 'owner'].includes(session.roleId);
 
   const obligations = useAsync<FeeRow[]>(async () => {
-    if (DEMO_MODE) {
-      /* demo plane inline (parity gate L4-5.1): no services/index mock import —
-         the same seed-blob logic, local to this screen */
-      let demo = seed.feeObligations;
-      if (campus !== 'all') {
-        const ids = new Set(seed.students.filter(s => s.campus === campus).map(s => s.id));
-        demo = demo.filter(f => ids.has(f.studentId));
-      }
-      return demo.map(f => {
-        const st = seed.findPerson(f.studentId);
-        return {
-          id: f.id, studentId: f.studentId,
-          studentName: st?.name ?? f.studentId,
-          gradeSection: st ? `Grade ${st.grade}-${st.section}` : '',
-          term: f.term, category: f.category,
-          amount: f.amount, paidAmount: f.paidAmount,
-          dueDate: f.dueDate, status: f.status as RowStatus,
-          failureReason: f.failureReason, method: f.method,
-        } satisfies FeeRow;
-      });
-    }
     const res = await apiFeeObligations();
     return (res.obligations ?? []).map(mapRealObligation);
-  }, [campus]);
+  }, []);
 
   const payments = useAsync<Payment[] | null>(async () => {
-    if (DEMO_MODE) {
-      let items = seed.payments;
-      if (campus !== 'all') {
-        const ids = new Set(seed.students.filter(s => s.campus === campus).map(s => s.id));
-        items = items.filter(p => ids.has(p.studentId));
-      }
-      return items.slice(0, 400);
-    }
     /* The server has no payments-list door yet — the tab shows an honest
        empty state instead of pretending. */
     return null;
-  }, [campus]);
+  }, []);
 
   const refreshAll = () => { obligations.retry(); payments.retry(); };
 
@@ -393,99 +272,23 @@ export default function Fees() {
   }, [obligations.data, statusFilter]);
 
   const lastPayments = useMemo(() => (payments.data ?? []).slice().sort((a, b) => b.on.getTime() - a.on.getTime()).slice(0, 40), [payments.data]);
-  const failedPayments = useMemo(
-    () => (payments.data ?? []).filter(p => p.status === 'failed').sort((a, b) => b.on.getTime() - a.on.getTime()),
-    [payments.data],
-  );
 
   /* ---- by-class collection % — computed from the rows actually displayed ---- */
   const byClass = useMemo(() => {
-    if (!DEMO_MODE) {
-      const billed = new Map<number, number>();
-      const paid = new Map<number, number>();
-      (obligations.data ?? []).forEach(f => {
-        const m = /Grade (\d+)/.exec(f.gradeSection);
-        const g = m ? Number(m[1]) : 0;
-        billed.set(g, (billed.get(g) ?? 0) + f.amount);
-        paid.set(g, (paid.get(g) ?? 0) + f.paidAmount);
-      });
-      return [...billed.keys()].sort((a, b) => a - b)
-        .map(g => ({ grade: g, pct: billed.get(g) ? Math.round(((paid.get(g) ?? 0) / (billed.get(g) ?? 1)) * 1000) / 10 : 0 }))
-        .map(({ grade, pct }) => ({ label: grade ? `Grade ${grade}` : 'Ungraded', value: pct, color: pct < 80 ? 'var(--warning)' : 'var(--accent)' }));
-    }
-    const campusIds = new Set(seed.students.filter(s => s.campus === campus).map(s => s.id));
     const billed = new Map<number, number>();
     const paid = new Map<number, number>();
-    seed.feeObligations.forEach(f => {
-      if (!campusIds.has(f.studentId)) return;
-      const st = seed.findPerson(f.studentId);
-      const g = st?.grade ?? 0;
+    (obligations.data ?? []).forEach(f => {
+      const m = /Grade (\d+)/.exec(f.gradeSection);
+      const g = m ? Number(m[1]) : 0;
       billed.set(g, (billed.get(g) ?? 0) + f.amount);
       paid.set(g, (paid.get(g) ?? 0) + f.paidAmount);
     });
-    return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-      .map(g => ({ grade: g, pct: billed.get(g) ? Math.round(((paid.get(g) ?? 0) / billed.get(g)!) * 1000) / 10 : 0 }))
-      .map(({ grade, pct }) => ({
-        label: `Grade ${grade}`,
-        value: pct,
-        color: pct < 80 ? 'var(--warning)' : 'var(--accent)',
-      }));
-  }, [campus, obligations.data]);
+    return [...billed.keys()].sort((a, b) => a - b)
+      .map(g => ({ grade: g, pct: billed.get(g) ? Math.round(((paid.get(g) ?? 0) / (billed.get(g) ?? 1)) * 1000) / 10 : 0 }))
+      .map(({ grade, pct }) => ({ label: grade ? `Grade ${grade}` : 'Ungraded', value: pct, color: pct < 80 ? 'var(--warning)' : 'var(--accent)' }));
+  }, [obligations.data]);
 
   const belowAvgClasses = byClass.filter(c => c.value < 80);
-
-  /* ---- actions ---- */
-  /* Demo branch keeps the demo-blob retry; the live branch's only write is
-     the record-payment modal (initiate + confirm doors). */
-  const auditRetry = (id: string, label: string) => {
-    dispatch({
-      type: 'audit/add',
-      entry: {
-        actor: actorName, actorRole: session.roleId, action: `Recorded payment retry — ${label}`,
-        recordType: 'Fee obligation', recordRef: id, reason: 'Failed UPI mandate retried from Fee Intelligence',
-        policyRef: 'Fees §4.3 (retry window, no late fee)', aiInvolved: false, risk: 'low',
-        outcome: 'Demo session entry — the demo build does not write to the school ledger',
-      },
-    });
-  };
-
-  /* demo-only retry: mutates the demo blob exactly as the old mock plane did —
-      every path that reaches it is DEMO_MODE-gated and says so in the toast */
-  const demoRecordRetry = (obligationId: string) => {
-    const f = seed.feeObligations.find(x => x.id === obligationId);
-    if (f) { f.status = 'paid'; f.paidAmount = f.amount; f.paidOn = new Date(); f.method = 'UPI'; }
-    return { obligationId, status: 'paid' };
-  };
-
-  const retryOne = async (id: string) => {
-    setRetryingId(id);
-    try {
-      demoRecordRetry(id);
-      auditRetry(id, 'single mandate');
-      toast({ title: 'Retry recorded (demo)', sub: 'Demo world — this retry is not connected to school records.', tone: 'info' });
-      setSelected(null);
-      refreshAll();
-    } catch {
-      toast({ title: 'Retry failed', sub: 'Try again in a few minutes.', tone: 'error' });
-    } finally {
-      setRetryingId(null);
-    }
-  };
-
-  const retryAll = async () => {
-    const ids = (obligations.data ?? []).filter(f => f.status === 'failed').map(f => f.id);
-    setRetryingId('batch');
-    try {
-      for (const id of ids) demoRecordRetry(id);
-      auditRetry(`${ids.length} obligations`, `batch of ${ids.length} failed mandates`);
-      toast({ title: `${ids.length} retries queued (demo)`, sub: 'Demo world — batch retries are not connected to school records.', tone: 'info' });
-      refreshAll();
-    } catch {
-      toast({ title: 'Batch retry failed', sub: 'Try again in a few minutes.', tone: 'error' });
-    } finally {
-      setRetryingId(null);
-    }
-  };
 
   const payDisabledReason = canConfirm ? undefined
     : canInitiate ? 'Payments are recorded by finance or the owner — you can initiate, but settlement confirmation needs finance.'
@@ -498,12 +301,7 @@ export default function Fees() {
         sub="Money received and outstanding — computed from the school's own ledger."
         actions={
           <>
-            {!DEMO_MODE && <Badge tone="outline">Live ledger</Badge>}
-            {DEMO_MODE && stats.failedCount > 0 && (
-              <Button variant="secondary" icon={<Icon.Refresh size={14} />} loading={retryingId === 'batch'} onClick={retryAll}>
-                Retry all failed ({stats.failedCount})
-              </Button>
-            )}
+            <Badge tone="outline">Live ledger</Badge>
             <Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={refreshAll}>Refresh</Button>
           </>
         }
@@ -511,90 +309,20 @@ export default function Fees() {
 
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
-        {DEMO_MODE ? (
-          <>
-            <Stat label="Term 2 due" value={fmtMoneyShort(stats.term2Due)} sub="Fees due or overdue, Term 2" />
-            <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} sub="Share of billed amount collected" />
-            <Stat label="Overdue" value={fmtMoneyShort(stats.overdueAmt)} sub="Past due date, unpaid" />
-            <Stat label="Failed payments" value={stats.failedCount} sub={(obligations.data ?? []).length ? '41 of 47 on Route 7 households' : 'No fee records yet'} onClick={() => setTab('failed')} />
-          </>
-        ) : (
-          <>
-            <Stat label="Outstanding" value={fmtMoneyShort(stats.outstanding)} sub={`${stats.openCount} open obligations`} />
-            <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} sub="Share of billed amount collected" />
-            <Stat label="Past due date" value={fmtMoneyShort(stats.overdueAmt)} sub="Unpaid and past the due date" />
-            <Stat label="Ledger rows" value={(obligations.data ?? []).length} sub="Fee obligations on record" />
-          </>
-        )}
+        <Stat label="Outstanding" value={fmtMoneyShort(stats.outstanding)} sub={`${stats.openCount} open obligations`} />
+        <Stat label="Collected" value={fmtPct(stats.collectedPct, 1)} sub="Share of billed amount collected" />
+        <Stat label="Past due date" value={fmtMoneyShort(stats.overdueAmt)} sub="Unpaid and past the due date" />
+        <Stat label="Ledger rows" value={(obligations.data ?? []).length} sub="Fee obligations on record" />
       </div>
-
-      {/* ---- WHAT CHANGED? (demo narrative — live build computes from the ledger) ---- */}
-      {DEMO_MODE && (obligations.data ?? []).length > 0 && <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
-        <div className="u-col" style={{ gap: 14 }}>
-          <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="ai-chip"><Icon.Sparkle size={12} /> What changed?</span>
-            <Badge tone="warning" dot>collection {fmtPct(stats.collectedPct, 1)} · this ledger</Badge>
-            <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Fee review · recomputed from the ledger</span>
-          </div>
-
-          <div className="grid grid-2" style={{ alignItems: 'start' }}>
-            <div className="u-col" style={{ gap: 10 }}>
-              <div className="u-upper">14-day collection trend</div>
-              <LineChart
-                series={[{ name: 'Collection %', color: 'var(--accent)', points: TREND }]}
-                labels={TREND.map((_, i) => (i % 2 === 0 ? `d-${TREND.length - 1 - i}` : ''))}
-                yFormat={v => `${Math.round(v)}%`}
-                area
-                min={78}
-                max={93}
-                height={170}
-              />
-              <SegmentedBar
-                height={10}
-                parts={[
-                  { value: 41, color: 'var(--danger)', label: 'Route 7 households — 41' },
-                  { value: 23, color: 'var(--warning)', label: 'Gateway timeouts — 23' },
-                  { value: 6, color: 'var(--border-strong)', label: 'Other — 6' },
-                ]}
-              />
-              <div className="u-flex u-xs u-muted" style={{ gap: 14, flexWrap: 'wrap' }}>
-                <span className="u-flex" style={{ gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--danger)' }} /> Route 7 households · 41</span>
-                <span className="u-flex" style={{ gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--warning)' }} /> Gateway timeouts · 23</span>
-                <span className="u-flex" style={{ gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--border-strong)' }} /> Other · 6</span>
-              </div>
-            </div>
-
-            <div className="u-col" style={{ gap: 12 }}>
-              <EvidenceChain
-                title="Cluster breakdown"
-                steps={[
-                  { label: 'Route 7 households — 41 failures', detail: 'Avg ticket ₹57,457. Households whose week was disrupted by the Bus 14 breakdown (Route 7 — North).', source: 'Gateway + payments record', refType: 'fees' },
-                  { label: 'Gateway timeouts — 23', detail: 'UPI payments from 11:00–11:40 yesterday haven\'t shown up in the payments record yet — the bank file is still importing (case_3).', source: 'Payment matching', refType: 'case' },
-                  { label: 'Other — 6', detail: 'Bank declines and invalid VPAs; standard assistance workflow wf_4 already messaged these guardians.', source: 'Payment retry log', refType: 'fees' },
-                ]}
-              />
-              <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.65 }}>
-                <strong>Reading:</strong> disruption-linked, not affordability-linked. Route 7 families had an abnormal week after the
-                Bus 14 breakdown (Transport §3.1), and the 23 timeout transactions are administrative gaps, not payment failures.
-                No late fee applies to retries within 5 days (Fees §4.3) — the assistance message draft in the Action Center covers
-                41 households, and the settlement import recovers the remaining 23 receipts.
-              </p>
-              <AiTraceCard trace={FEE_TRACE} />
-            </div>
-          </div>
-        </div>
-      </Card>}
 
       {/* ---- Tabs ---- */}
       <Tabs
         tabs={[
           { id: 'ledger', label: 'Obligations ledger' },
           { id: 'payments', label: 'Payments', count: lastPayments.length },
-          ...(DEMO_MODE ? [{ id: 'failed', label: 'Failed payments', count: failedPayments.length }] : []),
           { id: 'byclass', label: 'By class' },
-          ...(!DEMO_MODE ? [{ id: 'plans', label: 'Fee plans' }] : []),
-        ]}
-        active={tab === 'failed' && !DEMO_MODE ? 'ledger' : tab}
+          { id: 'plans', label: 'Fee plans' }]}
+        active={tab}
         onChange={t => setTab(t as TabId)}
         panelId="fees-tab"
       />
@@ -603,9 +331,7 @@ export default function Fees() {
       {tab === 'ledger' && (
         <Section role="tabpanel" id="fees-tab-panel-ledger" aria-labelledby="fees-tab-tab-ledger"
           title="Obligations ledger"
-          sub={DEMO_MODE
-            ? `${filtered.length} obligations · ${seed.campuses.find(c => c.id === campus)?.name}. Row click opens the student fee summary.`
-            : `${filtered.length} obligations from the school ledger. Row click opens the student's fee summary.`}
+          sub={`${filtered.length} obligations from the school ledger. Row click opens the student's fee summary.`}
           actions={
             <div className="u-flex" style={{ gap: 8 }}>
               <label className="u-small u-muted" htmlFor="fee-status-filter">Status</label>
@@ -617,14 +343,10 @@ export default function Fees() {
                 style={{ maxWidth: 160 }}
               >
                 <option value="all">All statuses</option>
-                {!DEMO_MODE && <option value="open">Open</option>}
-                {!DEMO_MODE && <option value="partial">Part paid</option>}
+                <option value="open">Open</option>
+                <option value="partial">Part paid</option>
                 <option value="paid">Paid</option>
-                {DEMO_MODE && <option value="due">Due</option>}
-                {DEMO_MODE && <option value="overdue">Overdue</option>}
-                {DEMO_MODE && <option value="failed">Failed</option>}
-                {DEMO_MODE && <option value="waived">Waived</option>}
-                {!DEMO_MODE && <option value="void">Void</option>}
+                <option value="void">Void</option>
               </select>
             </div>
           }
@@ -639,10 +361,8 @@ export default function Fees() {
                 caption="Fee obligations ledger — amount, status and action per student"
                 rows={filtered.slice(0, 60)}
                 rowKey={f => f.id}
-                onRowClick={f => { if (DEMO_MODE) setSelected(f as unknown as FeeObligation); else setSelectedId(f.id); }}
-                empty={DEMO_MODE
-                  ? <Empty icon={<Icon.Money size={22} />} title="No obligations match this filter" sub="Clear the status filter to see the full ledger." />
-                  : <Empty icon={<Icon.Money size={22} />} title="No fee records yet" sub="Obligations appear here once the school records them. Fee plans are created during setup."
+                onRowClick={f => setSelectedId(f.id)}
+                empty={<Empty icon={<Icon.Money size={22} />} title="No fee records yet" sub="Obligations appear here once the school records them. Fee plans are created during setup."
                     action={['owner', 'itadmin'].includes(session.roleId)
                       ? <Button variant="secondary" onClick={() => navigate('/rails')}>Open the Rails console</Button>
                       : undefined} />}
@@ -656,15 +376,14 @@ export default function Fees() {
                           <div className="u-xs u-faint">{r.gradeSection}</div>
                         </div>
                       );
-                    },
-                  },
+                    }},
                   { key: 'term', label: 'Term', render: f => <span className="u-small">{(f as FeeRow).term.replace(' 2026-27', '')}</span> },
                   { key: 'category', label: 'Category', render: f => <span className="u-small u-muted">{(f as FeeRow).category}</span> },
                   { key: 'amount', label: 'Amount', align: 'right', sortable: true, sortValue: f => (f as FeeRow).amount, render: f => <span className="tnum">{fmtMoney((f as FeeRow).amount)}</span> },
                   { key: 'paid', label: 'Paid', align: 'right', render: f => <span className="tnum u-muted">{(f as FeeRow).paidAmount ? fmtMoney((f as FeeRow).paidAmount) : '—'}</span> },
                   { key: 'dueDate', label: 'Due date', sortable: true, sortValue: f => (f as FeeRow).dueDate?.getTime() ?? 0, render: f => <span className="u-small">{(f as FeeRow).dueDate ? fmtDateShort((f as FeeRow).dueDate as Date) : '—'}</span> },
                   { key: 'status', label: 'Status', align: 'right', render: f => statusBadge((f as FeeRow).status) },
-                  ...(!DEMO_MODE ? [{
+                  {
                     key: 'action', label: '', align: 'right' as const, render: (f: FeeRow) => {
                       const payable = f.status !== 'paid' && f.status !== 'void';
                       if (!payable) return null;
@@ -678,8 +397,7 @@ export default function Fees() {
                           )}
                         </span>
                       );
-                    },
-                  }] : []),
+                    }},
                 ]}
               />
             )}
@@ -689,13 +407,13 @@ export default function Fees() {
 
       {/* ---- Payments ---- */}
       {tab === 'payments' && (
-        <Section role="tabpanel" id="fees-tab-panel-payments" aria-labelledby="fees-tab-tab-payments" title="Payments" sub={DEMO_MODE ? 'Last 40 payments across the ledger — newest first.' : 'Individual payments, newest first.'}>
+        <Section role="tabpanel" id="fees-tab-panel-payments" aria-labelledby="fees-tab-tab-payments" title="Payments" sub="Individual payments, newest first.">
           <Card>
             {payments.loading ? (
               <div className="grid grid-3"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
             ) : payments.error ? (
               <div className="card-body"><ErrorState title="Could not load payments" sub={friendly(payments.error)} onRetry={payments.retry} /></div>
-            ) : !DEMO_MODE && payments.data === null ? (
+            ) : payments.data === null ? (
               <Empty
                 icon={<Icon.CreditCard size={22} />}
                 title="Payment history is not wired to this screen yet"
@@ -712,8 +430,7 @@ export default function Fees() {
                     key: 'student', label: 'Student', render: p => {
                       const st = seed.findPerson(p.studentId);
                       return st?.name ?? p.studentId;
-                    },
-                  },
+                    }},
                   { key: 'amount', label: 'Amount', align: 'right', render: p => <span className="tnum">{fmtMoney(p.amount)}</span> },
                   { key: 'method', label: 'Method', render: p => <Badge tone="outline">{p.method}</Badge> },
                   { key: 'reference', label: 'Reference', render: p => <span className="mono u-small">{p.reference}</span> },
@@ -722,72 +439,15 @@ export default function Fees() {
                       ? <Badge tone="success" dot>Success</Badge>
                       : p.status === 'pending'
                         ? <Badge tone="warning" dot>Pending</Badge>
-                        : <Badge tone="danger" dot>Failed</Badge>,
-                  },
-                ]}
+                        : <Badge tone="danger" dot>Failed</Badge>}]}
               />
             )}
           </Card>
         </Section>
       )}
 
-      {/* ---- Failed (demo build only) ---- */}
-      {tab === 'failed' && DEMO_MODE && (
-        <Section role="tabpanel" id="fees-tab-panel-failed" aria-labelledby="fees-tab-tab-failed"
-          title="Failed payments"
-          sub="Retries carry no late fee within 5 days of failure (Fees §4.3). Route 7 households are flagged in the cluster view above."
-          actions={
-            failedPayments.length > 0 ? (
-              <Button variant="primary" size="sm" icon={<Icon.Refresh size={13} />} loading={retryingId === 'batch'} onClick={retryAll}>
-                Retry all ({failedPayments.length})
-              </Button>
-            ) : undefined
-          }
-        >
-          <Card>
-            {payments.loading ? (
-              <div className="u-col" style={{ gap: 10, padding: 'var(--s-5)' }}><Skeleton h={12} /><Skeleton h={12} /><Skeleton h={12} /></div>
-            ) : payments.error ? (
-              <div className="card-body"><ErrorState title="Could not load failed payments" sub={friendly(payments.error)} onRetry={payments.retry} /></div>
-            ) : (
-              <DataTable
-                rows={failedPayments}
-                rowKey={(p: Payment) => p.id}
-                empty={<Empty icon={<Icon.Check size={22} />} title="No failed payments" sub="Every failed mandate has been retried or settled." />}
-                columns={[
-                  { key: 'on', label: 'Failed on', render: p => <span className="u-small">{fmtDate(p.on)}</span> },
-                  {
-                    key: 'student', label: 'Student', render: p => {
-                      const st = seed.findPerson(p.studentId);
-                      return (
-                        <div>
-                          <div style={{ fontWeight: 570 }}>{st?.name ?? p.studentId}</div>
-                          <div className="u-xs u-faint">{st?.busRoute ?? 'No bus route'}</div>
-                        </div>
-                      );
-                    },
-                  },
-                  { key: 'amount', label: 'Amount', align: 'right', render: p => <span className="tnum">{fmtMoney(p.amount)}</span> },
-                  { key: 'method', label: 'Method', render: p => <Badge tone="outline">{p.method}</Badge> },
-                  { key: 'reference', label: 'Reference', render: p => <span className="mono u-small">{p.reference}</span> },
-                  {
-                    key: 'action', label: '', align: 'right', render: p => {
-                      const obligation = (obligations.data ?? []).find(f => f.id === p.obligationId);
-                      const done = obligation?.status === 'paid';
-                      return done
-                        ? <Badge tone="success" dot>Settled</Badge>
-                        : <Button size="sm" variant="secondary" icon={<Icon.Refresh size={12} />} loading={retryingId === p.obligationId} onClick={() => obligation && retryOne(obligation.id)}>Retry</Button>;
-                    },
-                  },
-                ]}
-              />
-            )}
-          </Card>
-        </Section>
-      )}
-
-      {/* ---- By class ---- */}
-      {tab === 'plans' && !DEMO_MODE && (
+      {/* ---- Fee plans ---- */}
+      {tab === 'plans' && (
         <Section role="tabpanel" id="fees-tab-panel-plans" aria-labelledby="fees-tab-tab-plans">
           <FeePlans />
         </Section>
@@ -835,9 +495,7 @@ export default function Fees() {
                   </div>
                 )}
                 <div className="u-small u-muted">
-                  {DEMO_MODE
-                    ? 'Classes under 80% usually track transport disruption or pending concessions. The fee-review meeting (meet_2) agreed: no late fee for retries by Friday, and a single assistance message per household.'
-                    : 'Classes under 80% usually track transport disruption or pending concessions — follow up before adding late fees.'}
+                  Classes under 80% usually track transport disruption or pending concessions — follow up before adding late fees.
                 </div>
                 <Donut
                   size={116}
@@ -846,8 +504,7 @@ export default function Fees() {
                   centerSub="collected"
                   segments={[
                     { label: 'Collected', value: stats.collectedPct, color: 'var(--accent)' },
-                    { label: 'Outstanding', value: Math.max(0, 100 - stats.collectedPct), color: 'var(--warning-weak-2)' },
-                  ]}
+                    { label: 'Outstanding', value: Math.max(0, 100 - stats.collectedPct), color: 'var(--warning-weak-2)' }]}
                 />
               </div>
             </Card>
@@ -855,17 +512,13 @@ export default function Fees() {
         </Section>
       )}
 
-      {DEMO_MODE
-        ? <StudentFeeDrawer obligation={selected} onClose={() => setSelected(null)} onRetry={retryOne} />
-        : <StudentFeeDrawerLive studentId={selectedId} onClose={() => setSelectedId(null)} canPay={canConfirm} onRecord={setPayRow} />}
+      <StudentFeeDrawerLive studentId={selectedId} onClose={() => setSelectedId(null)} canPay={canConfirm} onRecord={setPayRow} />
 
-      {!DEMO_MODE && (
-        <RecordPaymentModal
-          row={payRow}
-          onClose={() => setPayRow(null)}
-          onDone={refreshAll}
-        />
-      )}
+      <RecordPaymentModal
+        row={payRow}
+        onClose={() => setPayRow(null)}
+        onDone={refreshAll}
+      />
 
       {/* void confirm — owner only */}
       <Modal

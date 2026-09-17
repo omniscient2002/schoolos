@@ -5,8 +5,11 @@
 //     (`mine=1` list + every door). The inbox and review desk belong to the assigning
 //     teacher alone; another teacher's homework id is 404 with no data in the error.
 //   · STUDENTS CAN ONLY SUBMIT — no student door reads anything but their own
-//     submissions; student_id is ALWAYS the signed-in student (no picker, no body
-//     override — the privacy pin). UNIQUE(homework_id, student_id) is the structural
+//     submissions; the row is always filed against the SIGNED-IN student's own roster
+//     row (no picker, no body override — the privacy pin). `student_id` therefore holds
+//     an `app.students` id, not the `app.users` id it used to hold: 082 constrained the
+//     column to `app.students(tenant_id, id)`, and the pre-082 write made every submit a
+//     23503 → HTTP 500. UNIQUE(homework_id, student_id) is the structural
 //     one-shot guarantee: the SAVEPOINT rethrow pattern turns the 23505 into a plain
 //     409 ("resubmission is requested by your teacher, not allowed here").
 //   · LATE IS DECIDED AT INSERT — submitted_at > due_at ⇒ status 'late', stamped once;
@@ -18,6 +21,7 @@
 //     teacher.leave_request so the teacher sees the outcome.
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
+import { requestAudit } from '../../audit.js';
 
 const ID = 'teacher.classroom';
 export { default as manifest } from './manifest.js';
@@ -33,6 +37,53 @@ const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 // "a file name or link" — so accept plain names and http(s) URLs ONLY, and refuse
 // every other scheme (javascript:/data:/vbscript: stored-XSS vehicles), protocol-
 // relative "//host" links and control-character payloads. Invalid ⇒ 400, not silent.
+// ── user → roster student resolution ───────────────────────────────────────────
+// `teacher.submission.student_id` holds an `app.students` id (082_reference_integrity.sql:
+// submission_student_id_ref_fkey → app.students(tenant_id, id) ON DELETE RESTRICT), so the
+// write path must RESOLVE the signed-in user to a roster row instead of storing the user id.
+//
+// HOW, AND WHY IT IS DONE THIS WAY. There is no structural link from `app.users` to
+// `app.students`: no FK, no shared column, no students.user_id. The only correspondence that
+// exists in this database is the NAME (verified against the live dev DB and the test seed: the
+// user `student@meridian.edu` is named `Aarav Sharma` and the roster carries exactly one
+// `Aarav Sharma`; `student2@meridian.edu` is `Diya Nair`). The class gate below already resolved
+// the student that way — it is the 034 `child_link` name-match convention this module inherited —
+// so resolving the id the same way is the one choice that keeps the WRITE and the READS
+// consistent instead of inventing a third rule.
+//
+// THE WEAKNESS, STATED PLAINLY (do not paper over it): a name is not an identity. This resolution
+// cannot distinguish two students who share a name, and the seed shows that is not hypothetical —
+// `Diya Nair` has three grade-8 rows (sections A, B and C) and the roster carries 125 such
+// (name, grade) groups. Scoping to the homework's `class_grade` narrows it but does not make it
+// unique, so when several same-name students sit in the homework's grade we take the LOWEST
+// `admission_no` — the school's own registration order, i.e. the first-enrolled child. That is a
+// deterministic, auditable tiebreak, not a correct identification: for a duplicate name the
+// submission may be attributed to the wrong section-sibling. Nobody can do better from these two
+// tables; the structural repair is a `students.user_id` column backfilled at provisioning, or an
+// explicit link row, and the teacher roster is the authority meanwhile. Every query is scoped by
+// `tenant_id` so the weakness can never cross a school boundary.
+const STUDENT_BY_NAME_SQL =
+  `SELECT id, name, grade, section, admission_no FROM app.students
+   WHERE tenant_id = $1 AND lower(name) = lower($2)`;
+
+// Resolve the signed-in student user to a roster row. `grade` (the homework's class_grade) is the
+// deciding scope, exactly as the class gate has always been. Returns the row, or null.
+async function resolveStudent(c, tenantId, userName, grade) {
+  const rows = (await c.query(
+    `${STUDENT_BY_NAME_SQL} AND grade = $3
+     ORDER BY admission_no ASC, id ASC LIMIT 1`,
+    [tenantId, userName, grade])).rows;
+  return rows[0] ?? null;
+}
+
+// Does a roster row exist for this name in ANY grade? Distinguishes the two data faults the submit
+// door must report honestly: "your login is linked to no student at this school" (nothing matches
+// the name anywhere ⇒ provisioning problem) versus "this homework is for another class" (the name
+// exists, but not in this homework's grade ⇒ the class gate's existing business rule).
+const STUDENT_IN_CLASS_SQL =
+  `SELECT count(*)::int AS n FROM app.students
+   WHERE tenant_id = $1 AND lower(name) = lower($2) AND grade = $3`;
+
 const safeAttachmentRef = (raw) => {
   if (raw == null) return { ok: true, value: null };
   const s = String(raw).trim();
@@ -49,8 +100,8 @@ const safeAttachmentRef = (raw) => {
 };
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
 
   // ── teacher posts homework (audited) ───────────────────────────────────────
   app.post('/plugins/teacher.classroom/homework', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req, reply) => {
@@ -100,12 +151,15 @@ export function register(app, kernel) {
          FROM teacher.homework WHERE id=$1 AND created_by=$2`,
         [req.params.id, req.user.id])).rows[0];
       if (!hw) return bad(reply, 'We couldn\'t find that homework', 404);
-      // submissions key student_id to the signed-in student USER; the name rides the
-      // users row (roster ids and user ids are different animals)
+      // submissions key an `app.students` row (the 082 FK), so the name rides THAT row — the join
+      // this used to make against `app.users su ON su.id = s.student_id` could only ever resolve
+      // while the write was storing a user id, and it returned NULL the moment the column held
+      // what it is named for. Both sides are tenant-scoped through the composite FK columns.
       const subs = (await c.query(
         `SELECT s.id, s.student_id, s.content_type, s.status, s.grade, s.feedback, s.submitted_at, s.reviewed_at,
-           su.name AS student_name
-         FROM teacher.submission s LEFT JOIN app.users su ON su.id = s.student_id
+           st.name AS student_name
+         FROM teacher.submission s
+         LEFT JOIN app.students st ON st.id = s.student_id AND st.tenant_id = s.tenant_id
          WHERE s.homework_id=$1 ORDER BY s.submitted_at DESC`, [req.params.id])).rows;
       return { homework: hw, submissions: subs };
     });
@@ -121,19 +175,40 @@ export function register(app, kernel) {
         `SELECT id, title, subject, class_grade, due_at, status FROM teacher.homework WHERE id=$1 AND status='open'`,
         [req.params.id])).rows[0];
       if (!hw) return bad(reply, 'We couldn\'t find that homework', 404);
-      // RT-7 #3: class gate — homework belongs to one class. Resolve the submitting
-      // student's roster grade via the 034 name-match bridge (submissions key the USER
-      // id; the roster has no user link yet). Fail CLOSED when the name has no roster
-      // row in the homework's grade — including the zero-match and wrong-grade-only
-      // cases — so a wrong-class submission is never accepted by default. When the
-      // seed's rotated names repeat across grades (grade-8 AND grade-10 Diya Nairs),
-      // the homework's own class is the deciding scope; no data leaks in any branch.
-      const inClass = (await c.query(
-        `SELECT count(*)::int AS n FROM app.students
-         WHERE tenant_id=$1 AND lower(name) = lower($2) AND grade = $3`,
+      // RT-7 #3: class gate — homework belongs to one class, and the submission must be stored
+      // against the SUBMITTING STUDENT'S ROSTER ROW, not the submitting USER's row.
+      //
+      // This gate used to prove only that *a* roster student carried the submitter's name in the
+      // homework's grade, and the INSERT then wrote `req.user.id` — a user id — into a column
+      // 082 had already constrained to `app.students(tenant_id, id)`. Every student submission
+      // raised 23503, the door caught only 23505, and the caller got a 500 "internal error" with
+      // the audit row unreachable. The gate and the write now share ONE resolution
+      // (`resolveStudent`) so they cannot disagree again: the class the gate approves is the
+      // class the row is filed under.
+      //
+      // Fail CLOSED and CLEANLY. A student whose name matches no roster row is a data problem the
+      // school must see — an account that can sign in but belongs to no child — not an "internal
+      // error" and not a silently missing submission. It is a 409 with plain language, never a 500.
+      // The two branches are kept distinct on purpose: "not in this class" is the homework's own
+      // rule (existing behaviour, existing copy), while "not linked to any student" is about the
+      // ACCOUNT and is the case that must not be mistaken for a wrong-class refusal.
+      const inClass = (await c.query(STUDENT_IN_CLASS_SQL,
         [req.user.tenant_id, req.user.name, hw.class_grade])).rows[0].n;
       if (inClass === 0) {
+        const anywhere = (await c.query(
+          `SELECT count(*)::int AS n FROM app.students WHERE tenant_id=$1 AND lower(name)=lower($2)`,
+          [req.user.tenant_id, req.user.name])).rows[0].n;
+        if (anywhere === 0) {
+          return bad(reply, 'Your login isn\'t linked to a student at this school, so this homework can\'t be filed against you — please ask the school office to link your account', 409);
+        }
         return bad(reply, 'This homework is for a different class');
+      }
+      const student = await resolveStudent(c, req.user.tenant_id, req.user.name, hw.class_grade);
+      if (!student) {
+        // Unreachable while the two queries above agree, and that is the point: if they ever
+        // diverge we refuse loudly rather than fall back to the user id (which is how this
+        // regression happened) or to a 500 (which hides it).
+        return bad(reply, 'We couldn\'t match your login to a student record for this class — please ask the school office to check your account', 409);
       }
       const late = new Date() > new Date(hw.due_at);
       await c.query('SAVEPOINT submit_once');
@@ -141,7 +216,7 @@ export function register(app, kernel) {
         await c.query(
           `INSERT INTO teacher.submission (tenant_id, homework_id, student_id, content_type, content, status, submitted_at)
            VALUES ($1,$2,$3,$4,$5,$6, now())`,
-          [req.user.tenant_id, hw.id, req.user.id, b.content_type, String(b.content).slice(0, 8000), late ? 'late' : 'submitted']);
+          [req.user.tenant_id, hw.id, student.id, b.content_type, String(b.content).slice(0, 8000), late ? 'late' : 'submitted']);
       } catch (e) {
         await c.query('ROLLBACK TO SAVEPOINT submit_once');
         if (e.code === '23505') return bad(reply, 'Already submitted — resubmission is requested by your teacher, not allowed here', 409);
@@ -150,9 +225,9 @@ export function register(app, kernel) {
       await c.query('RELEASE SAVEPOINT submit_once');
       const sub = (await c.query(
         `SELECT id, status, submitted_at FROM teacher.submission WHERE homework_id=$1 AND student_id=$2`,
-        [hw.id, req.user.id])).rows[0];
+        [hw.id, student.id])).rows[0];
       await emitEvent(c, req.user.tenant_id, { type: 'classroom', label: `Homework submitted: ${hw.subject} — ${hw.title.slice(0, 60)}${late ? ' (late)' : ''}`, ref: sub.id },
-        'submission.v1', { submissionId: sub.id, homeworkId: hw.id, studentId: req.user.id, status: sub.status });
+        'submission.v1', { submissionId: sub.id, homeworkId: hw.id, studentId: student.id, status: sub.status });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Homework submitted', recordType: 'Submission', recordRef: sub.id,
         reason: hw.title.slice(0, 80), policyRef: 'TEACHEROS-PLAN · one-shot submissions', risk: 'low',
@@ -204,19 +279,32 @@ export function register(app, kernel) {
       let rows;
       if (state === 'missing') {
         // roster students of the class whose due date passed with no submission on file.
-        // Submissions key the student USER id — bridge roster↔user by the 034 name-match
-        // convention so a student who DID submit never appears missing.
+        //
+        // PRESENCE vs ATTRIBUTION — two different questions, answered differently on purpose.
+        // The write now stores a ROSTER id, so the primary test here is a plain id comparison and is
+        // exact. But the roster cannot distinguish same-named children — this seed has 25 name groups
+        // with one child in each of sections A, B and C of a grade — while the submitter's login can
+        // only resolve to ONE of them (`resolveStudent`, lowest admission_no). An id-only anti-join
+        // then lists the OTHER namesakes as missing although the class's work is in, which is a false
+        // alarm that sends a teacher chasing work that already exists. The previous code was
+        // name-aware here for exactly that reason, so the name clause is KEPT, scoped to the same
+        // grade. The trade a school actually sees: a namesake who truly did not submit is not flagged
+        // individually. That is a false NEGATIVE — the safe direction for an absence check, and the
+        // one this inbox already promised ("the student who submitted is never missing"). The
+        // structural fix for both directions is a real `students.user_id` link (see resolveStudent),
+        // not a cleverer query: no amount of SQL recovers which section-sibling signed in.
         rows = (await c.query(
           `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
              st.id AS student_id, st.name AS student_name
            FROM teacher.homework h
-           JOIN app.students st ON st.grade = h.class_grade
+           JOIN app.students st ON st.grade = h.class_grade AND st.tenant_id = h.tenant_id
            WHERE h.created_by = $1 AND h.status='open' AND h.due_at < now()
              AND NOT EXISTS (
                SELECT 1 FROM teacher.submission s
-               LEFT JOIN app.users su ON su.id = s.student_id
+               LEFT JOIN app.students ss ON ss.id = s.student_id AND ss.tenant_id = s.tenant_id
                WHERE s.homework_id = h.id
-                 AND (s.student_id = st.id OR lower(su.name) = lower(st.name)))
+                 AND (s.student_id = st.id
+                      OR (ss.grade = st.grade AND lower(ss.name) = lower(st.name))))
            ORDER BY h.due_at ASC, st.name ASC LIMIT 200`, [req.user.id])).rows;
       } else {
         const where = state === 'pending' ? `s.status IN ('submitted','late')`
@@ -224,10 +312,10 @@ export function register(app, kernel) {
           : `s.status = 'late'`;
         rows = (await c.query(
           `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
-             s.id AS submission_id, s.student_id, s.status, s.submitted_at, su.name AS student_name
+             s.id AS submission_id, s.student_id, s.status, s.submitted_at, st.name AS student_name
            FROM teacher.homework h
            JOIN teacher.submission s ON s.homework_id = h.id
-           LEFT JOIN app.users su ON su.id = s.student_id
+           LEFT JOIN app.students st ON st.id = s.student_id AND st.tenant_id = s.tenant_id
            WHERE h.created_by = $1 AND ${where}
            ORDER BY h.due_at ASC, s.submitted_at DESC LIMIT 200`, [req.user.id])).rows;
       }
@@ -277,13 +365,41 @@ export function register(app, kernel) {
          LEFT JOIN app.actions a ON a.code = 'teacher.leave.' || r.id::text
          WHERE r.teacher_id=$1 ORDER BY r.created_at DESC LIMIT 50`, [req.user.id])).rows;
       // mirror the kernel decision into the row (idempotent; the action row is the truth)
+      //
+      // DAT-6 — this projection CHANGED a teacher's leave record (pending → approved/rejected) and it
+      // did so inside a GET, writing no ledger row. Two things were wrong; both are addressed, and the
+      // second is documented rather than silently tolerated:
+      //   · The state change was invisible. "Who changed this leave request, when, and on what
+      //     authority" is a question the ledger exists to answer, and it could not.
+      //   · A GET with side effects sits OUTSIDE the CSRF model — mutating doors are token-checked,
+      //     while a GET is reachable from any page. That is tolerable HERE for a specific reason: the
+      //     write is a DERIVED PROJECTION of an app.actions row that an authorised human already
+      //     decided, so an attacker forcing this request can only apply a decision that already
+      //     exists, and every UPDATE is guarded by `AND status='pending'` (idempotent). The reasoning
+      //     is recorded so the next reader does not have to re-derive it — and so this pattern is not
+      //     copied into a door where a caller-supplied payload decides the outcome.
+      const mirrored = [];
       for (const r of rows) {
-        if (r.status === 'pending' && r.action_status === 'approved')
-          await c.query(`UPDATE teacher.leave_request SET status='approved', decided_by=$2, decided_at=COALESCE($3, now())
-            WHERE id=$1 AND status='pending'`, [r.id, r.action_decided_by, r.action_decided_at]);
-        else if (r.status === 'pending' && r.action_status === 'dismissed')
-          await c.query(`UPDATE teacher.leave_request SET status='rejected', decided_by=$2, decided_at=COALESCE($3, now())
-            WHERE id=$1 AND status='pending'`, [r.id, r.action_decided_by, r.action_decided_at]);
+        const to = r.status === 'pending' && r.action_status === 'approved' ? 'approved'
+          : r.status === 'pending' && r.action_status === 'dismissed' ? 'rejected' : null;
+        if (!to) continue;
+        const u = await c.query(
+          `UPDATE teacher.leave_request SET status=$2, decided_by=$3, decided_at=COALESCE($4, now())
+            WHERE id=$1 AND status='pending'`,
+          [r.id, to, r.action_decided_by, r.action_decided_at]);
+        if (u.rowCount === 1) mirrored.push({ id: r.id, to });
+      }
+      // Audited only for transitions that ACTUALLY happened (rowCount 1). This handler runs on every
+      // poll of the teacher's leave screen, so an unconditional row would bury the ledger in noise and
+      // make exactly the evidence it is meant to preserve harder to find. One row per real state change
+      // is the correct granularity — and it is why the update is checked rather than assumed.
+      for (const m of mirrored) {
+        await requestAudit(c, req.user.tenant_id, ID, {
+          actor: 'system', action: 'Leave decision projected onto request', recordType: 'LeaveRequest',
+          recordRef: m.id, reason: `kernel action teacher.leave.${m.id} had been decided`,
+          policyRef: 'Platform §2.4 (identity & access) · approvals', risk: 'medium',
+          outcome: `teacher.leave_request.status set to "${m.to}" from the kernel decision; the app.actions row remains the authority`,
+        });
       }
       const fresh = (await c.query(
         `SELECT id, kind, from_date, to_date, reason, status, decided_at, note FROM teacher.leave_request

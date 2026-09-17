@@ -7,14 +7,20 @@ const KEY = 'schoolos.theme';
 
 export function storedTheme(): ThemeChoice {
   const v = localStorage.getItem(KEY);
-  return v === 'light' || v === 'dark' ? v : 'system';
+  /* D17: light is the product default. `system` remains an explicit choice a
+     user can pick, but an unset preference must not inherit a dark OS — the
+     first paint is always the warm-paper light theme. */
+  return v === 'light' || v === 'dark' || v === 'system' ? v : 'light';
 }
 
 export function applyTheme(t: ThemeChoice): void {
   const root = document.documentElement;
   if (t === 'system') {
+    /* Remove the attribute so the media query decides, but REMEMBER the choice —
+       otherwise a reload cannot tell "chose system" from "never chose" and falls
+       back to the light default. */
     root.removeAttribute('data-theme');
-    localStorage.removeItem(KEY);
+    localStorage.setItem(KEY, 'system');
   } else {
     root.setAttribute('data-theme', t);
     localStorage.setItem(KEY, t);

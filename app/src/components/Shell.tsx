@@ -3,27 +3,24 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
 import { LIVE_API, redirectToLoginWithReturn } from '../services/liveApi';
 import { Avatar, Dropdown, Empty } from './ui';
-import { useStore, demoAccounts } from '../state/store';
+import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { fmtRelative } from '../lib/format';
 import { t, useLang } from '../i18n';
 import { listTenants, switchTenant, readTenantId, type TenantMembership } from '../screens/account/tenantSwitch';
+import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
 import { useKernelNav } from '../plugins/useKernel';
 import { useSession, sessionSchoolName } from '../App';
-import { DEMO_MODE } from '../lib/demoMode';
+import { canSurface, type EffectiveAccess } from '../lib/effective';
+import { mapAccountRole, isLightRole } from '../lib/roles';
 
 /* P0 fix 2c: chrome identity comes from the authenticated session
-   (useSession — the live /me user); demoAccounts personas render only
-   under VITE_DEMO_MODE=1. */
+   (useSession — the live /me user). */
 const roleTitle = (r: string): string => r.charAt(0).toUpperCase() + r.slice(1);
 
 function useChromeIdentity(): { name: string; title: string; email: string } {
-  const { session } = useStore();
   const live = useSession();
-  const demoPersona = DEMO_MODE ? demoAccounts.find(a => a.id === session.roleId) : null;
-  return demoPersona
-    ? { name: demoPersona.name, title: demoPersona.title, email: demoPersona.email }
-    : { name: live.name, title: roleTitle(live.role), email: live.email };
+  return { name: live.name, title: roleTitle(live.role), email: live.email };
 }
 
 /* ================= Role-aware navigation ================= */
@@ -31,7 +28,13 @@ export interface NavItem { to: string; label: string; icon: keyof typeof Icon; b
 
 export function useNavItems(): NavItem[] {
   const { session, domain } = useStore();
+  const live = useSession();
   const role = session.roleId;
+  /* PERFECT-100 §6.2 item 14: nav is filtered by the SERVER's effective-access answer, not by the role
+     switch alone. The filter is applied only when the store's role matches the authenticated identity,
+     so the demo preview switcher (which changes session.roleId without a server session) still shows the
+     previewed role's nav. A missing payload means "no opinion" and changes nothing. */
+  const effective: EffectiveAccess | undefined = role === mapAccountRole(live.role) ? live.effective : undefined;
   useLang(); // L5-3.3: nav labels re-render when the language changes
   /* L5-3.3: labels pass through t() — translated keys render in the active
      language, everything else falls back to the English label (honest
@@ -51,10 +54,8 @@ export function useNavItems(): NavItem[] {
   const items: NavItem[] = (() => { switch (role) {
     case 'principal':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/learning', label: 'Learning', icon: 'Learning' },
@@ -71,10 +72,8 @@ export function useNavItems(): NavItem[] {
       ];
     case 'teacher':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/learning', label: 'Learning', icon: 'Learning' },
@@ -90,10 +89,8 @@ export function useNavItems(): NavItem[] {
         { to: '/coord/curriculum', label: 'Curriculum monitor', icon: 'Learning' },
         { to: '/coord/escalations', label: 'Escalations', icon: 'Flag' },
         { to: '/coord/approvals', label: 'Approvals', icon: 'Clipboard' },
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
@@ -104,10 +101,8 @@ export function useNavItems(): NavItem[] {
       ];
     case 'finance':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' }, /* T509: finance's core surface was routed but never in the nav */
         { to: '/fees/plans', label: L('Fee plans', 'nav.feePlans'), icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface (blocks.md request) */
@@ -121,24 +116,20 @@ export function useNavItems(): NavItem[] {
     case 'admissions':
     case 'transport':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
       ];
     case 'owner':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/group', label: 'Group', icon: 'Building' },
         library,
         peopleAdmin,
         kernel,
         rails,
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/people', label: 'People', icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
@@ -152,10 +143,8 @@ export function useNavItems(): NavItem[] {
       ];
     case 'itadmin':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/it', label: 'Platform', icon: 'Shield' },
@@ -166,9 +155,22 @@ export function useNavItems(): NavItem[] {
         kernel,
         rails,
       ];
+    case 'counselor':
+      /* RBAC-2: the 13th role. Before this existed a counsellor signed in as `coordinator` or `itadmin`
+         (the server could not issue `counselor` at all) and inherited the fee ledger and the audit ledger to
+         read a child's wellbeing note. This nav is the counsellor's actual remit and nothing else: the
+         wellbeing plane, the student roll for context, and the calm day surfaces. No fees, no audit, no
+         infrastructure. (RBAC-6 tracks replacing this switch with permission-driven nav generally.) */
+      return [
+        { to: '/today', label: 'Today', icon: 'Today' },
+        { to: '/wellbeing-queue', label: 'Wellbeing queue', icon: 'Heart' },
+        /* NOT linked: the student-concerns board and the safety box are server doors with no client screen
+           yet (`/safety/box` is read by the designated queue only). Inventing a menu entry that opens the
+           wrong screen would be worse than the honest gap — recorded in the register against RBAC-6. */
+        { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
+      ];
     case 'facilities':
       return [
-        { to: '/demo', label: 'Demo', icon: 'Play' },
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openWOs },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
@@ -176,14 +178,12 @@ export function useNavItems(): NavItem[] {
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
       ];
     case 'technician':
       return [
         { to: '/maintenance/technician', label: 'My Jobs', icon: 'Wrench' },
         { to: '/maintenance/assets', label: 'Assets', icon: 'Grid' },
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
-        { to: '/ask', label: 'Ask', icon: 'Ask' },
       ];
     case 'parent':
       return [
@@ -195,7 +195,6 @@ export function useNavItems(): NavItem[] {
         { to: '/parent/complaints', label: 'My complaints', icon: 'Flag' },
         { to: '/parent/chat', label: L('Messages', 'nav.messages'), icon: 'Message' },
         { to: '/parent/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' },
-        { to: '/parent/ask', label: L('Ask', 'nav.ask'), icon: 'Ask' },
       ];
     case 'student':
       return [
@@ -204,13 +203,10 @@ export function useNavItems(): NavItem[] {
         { to: '/student/learning', label: 'Learning', icon: 'Learning' },
         { to: '/student/portfolio', label: 'Portfolio', icon: 'Award' },
         library,
-        { to: '/student/ask', label: 'Ask', icon: 'Ask' },
       ];
   }
   })();
-  /* P0 fix 2a: the Demo nav entry is a demo affordance — outside
-     VITE_DEMO_MODE=1 the /demo routes don't exist, so never offer the link. */
-  return useKernelNav(items.filter(i => DEMO_MODE || i.to !== '/demo'));
+  return useKernelNav(items.filter(i => canSurface(effective, i.to)));
 }
 
 /* ================= Sidebar ================= */
@@ -228,7 +224,7 @@ export function Sidebar() {
      English label — translated items must keep their group in every
      language instead of collapsing into 'More'. */
   const groups: { label: string; items: NavItem[] }[] = [
-    { label: 'Daily operations', items: items.filter(i => ['/today', '/attention', '/next', '/ask', '/group', '/visitors', '/demo'].includes(i.to)) },
+    { label: 'Daily operations', items: items.filter(i => ['/today', '/attention', '/next', '/group', '/visitors'].includes(i.to)) },
     /* CU-1: coordinator desk surfaces (nav items pointing at /coord/*) */
     { label: 'Coordination', items: items.filter(i => i.to.startsWith('/coord')) },
     { label: 'Records', items: items.filter(i => ['/people', '/learning', '/operations', '/fees', '/fees/plans', '/people-admin'].includes(i.to)) },
@@ -443,8 +439,38 @@ function SwitchSchoolSection() {
   );
 }
 
+/* D17: theme is per browser and every role may set it, so it lives in the
+   account menu (always reachable) as well as in Settings → Appearance, which
+   is owner/itadmin-only. Light is the default; System follows the OS. */
+function AppearanceMenu() {
+  const [theme, setThemeState] = useState<ThemeChoice>(storedTheme());
+  useEffect(() => {
+    const onTheme = (e: Event) => setThemeState((e as CustomEvent<ThemeChoice>).detail ?? storedTheme());
+    window.addEventListener('schoolos:theme', onTheme);
+    return () => window.removeEventListener('schoolos:theme', onTheme);
+  }, []);
+  const opts: { id: ThemeChoice; label: string; icon: keyof typeof Icon }[] = [
+    { id: 'light', label: 'Light', icon: 'Sun' },
+    { id: 'dark', label: 'Dark', icon: 'Moon' },
+    { id: 'system', label: 'System', icon: 'Monitor' },
+  ];
+  return (
+    <>
+      <div role="none" className="dropdown-label">Appearance</div>
+      {opts.map(o => {
+        const Ico = Icon[o.icon];
+        return (
+          <button key={o.id} role="menuitemradio" aria-checked={theme === o.id} className="dropdown-item" onClick={() => setTheme(o.id)}>
+            <Ico size={14} /> {o.label}
+            {theme === o.id && <Icon.Check size={14} style={{ marginLeft: 'auto', color: 'var(--accent-text)' }} />}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
 export function ProfileMenu() {
-  const { session, setRole } = useStore();
   const navigate = useNavigate();
   const identity = useChromeIdentity();
   return (
@@ -463,6 +489,9 @@ export function ProfileMenu() {
           </div>
           <div role="none" className="dropdown-sep" />
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/settings'); close(); }}><Icon.Settings size={14} /> Settings</button>
+          <div role="none" className="dropdown-sep" />
+          <AppearanceMenu />
+          <div role="none" className="dropdown-sep" />
           {/* L5-4.1: multi-school switch — lists this email's memberships and
               re-issues the session against the chosen school (audited server
               door). A full reload is the honest reset: every store, cache and
@@ -479,24 +508,6 @@ export function ProfileMenu() {
             redirectToLoginWithReturn();
           }}><Icon.Shield size={14} /> Sign out</button>
           <button role="menuitem" className="dropdown-item" onClick={() => { navigate('/audit'); close(); }}><Icon.Clipboard size={14} /> Audit trail</button>
-          {/* P0 fix 2d: the "Switch demo role" persona switcher exists only
-              under VITE_DEMO_MODE=1 — an authenticated production session
-              has nothing to switch to. */}
-          {DEMO_MODE && (
-            <>
-              <div role="none" className="dropdown-sep" />
-              <div role="none" className="dropdown-label">Switch demo role</div>
-              <div className="scroll-thin" style={{ maxHeight: 260, overflowY: 'auto' }}>
-                {demoAccounts.map(a => (
-                  <button key={a.id} role="menuitem" className="dropdown-item" style={a.id === session.roleId ? { background: 'var(--accent-weak)' } : undefined} onClick={() => { setRole(a.id); close(); }}>
-                    <Avatar name={a.name} size="sm" />
-                    <span className="u-truncate" style={{ flex: 1 }}>{a.title}</span>
-                    {a.id === session.roleId && <Icon.Check size={13} />}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
         </>
       )}
     </Dropdown>
@@ -504,10 +515,11 @@ export function ProfileMenu() {
 }
 
 /* ================= Command palette ================= */
-interface PaletteItem { id: string; label: string; hint?: string; group: string; icon: keyof typeof Icon; action: () => void; }
+interface PaletteItem { id: string; label: string; hint?: string; group: string; icon: keyof typeof Icon; action: () => void; path?: string; }
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
+  const live = useSession();
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -516,29 +528,39 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   const items: PaletteItem[] = useMemo(() => {
     const go = (to: string) => () => { navigate(to); onClose(); };
+    const isLight = live.role === 'parent' || live.role === 'student';
+    /* PERFECT-100 §6.2 item 14 / FE-2: every palette destination is gated by the SERVER's
+       effective-access answer, and parent/student accounts only ever see their own destinations. */
     const list: PaletteItem[] = [
-      { id: 'a1', label: 'Ask SchoolOS…', hint: 'Open the AI panel', group: 'AI', icon: 'Sparkle', action: go('/ask') },
-      { id: 'n1', label: 'Go to Today', group: 'Navigate', icon: 'Today', action: go('/today') },
-      { id: 'n2', label: 'Go to Needs your attention', group: 'Navigate', icon: 'Attention', action: go('/attention') },
-      { id: 'n3', label: 'Go to Action Center', group: 'Navigate', icon: 'Zap', action: go('/action-center') },
-      { id: 'n4', label: 'Go to People', group: 'Navigate', icon: 'People', action: go('/people') },
-      { id: 'n5', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/learning') },
-      { id: 'n6', label: 'Go to Attendance', group: 'Navigate', icon: 'Clipboard', action: go('/attendance') },
-      { id: 'n7', label: 'Go to Operations', group: 'Navigate', icon: 'Operations', action: go('/operations') },
-      { id: 'n8', label: 'Go to Fees', group: 'Navigate', icon: 'Money', action: go('/fees') },
-      { id: 'n9', label: 'Go to Admissions funnel', group: 'Navigate', icon: 'Graduation', action: go('/admissions') },
-      { id: 'n10', label: 'Go to Transport', group: 'Navigate', icon: 'Bus', action: go('/transport') },
-      { id: 'n11', label: 'Go to Calendar', group: 'Navigate', icon: 'Calendar', action: go('/calendar') },
-      { id: 'n12', label: 'Go to Insights', group: 'Navigate', icon: 'Insights', action: go('/insights') },
-      { id: 'n13', label: 'Go to Automation builder', group: 'Navigate', icon: 'Workflow', action: go('/automation') },
-      { id: 'n14', label: 'Go to AI memory', group: 'Navigate', icon: 'Memory', action: go('/memory') },
-      { id: 'n15', label: 'Go to School policies', group: 'Navigate', icon: 'Scale', action: go('/constitution') },
-      { id: 'n16', label: 'Go to Cases', group: 'Navigate', icon: 'Wrench', action: go('/cases') },
-      { id: 'n17', label: 'Go to Incidents', group: 'Navigate', icon: 'Alert', action: go('/incidents') },
-      { id: 'n18', label: 'Go to Data quality', group: 'Navigate', icon: 'Database', action: go('/data-health') },
-      { id: 'n19', label: 'Go to Audit trail', group: 'Navigate', icon: 'Clipboard', action: go('/audit') },
-      { id: 'n20', label: 'Go to AI rules & control', group: 'Navigate', icon: 'Shield', action: go('/ai-governance') },
-      { id: 'n21', label: 'Go to Settings', group: 'Navigate', icon: 'Settings', action: go('/settings') },
+      { id: 'n1', label: 'Go to Today', group: 'Navigate', icon: 'Today', action: go('/today'), path: '/today' },
+      { id: 'n2', label: 'Go to Needs your attention', group: 'Navigate', icon: 'Attention', action: go('/attention'), path: '/attention' },
+      { id: 'n3', label: 'Go to Action Center', group: 'Navigate', icon: 'Zap', action: go('/action-center'), path: '/action-center' },
+      { id: 'n4', label: 'Go to People', group: 'Navigate', icon: 'People', action: go('/people'), path: '/people' },
+      { id: 'n5', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/learning'), path: '/learning' },
+      { id: 'n6', label: 'Go to Attendance', group: 'Navigate', icon: 'Clipboard', action: go('/attendance'), path: '/attendance' },
+      { id: 'n7', label: 'Go to Operations', group: 'Navigate', icon: 'Operations', action: go('/operations'), path: '/operations' },
+      { id: 'n8', label: 'Go to Fees', group: 'Navigate', icon: 'Money', action: go('/fees'), path: '/fees' },
+      { id: 'n9', label: 'Go to Admissions funnel', group: 'Navigate', icon: 'Graduation', action: go('/admissions'), path: '/admissions' },
+      { id: 'n10', label: 'Go to Transport', group: 'Navigate', icon: 'Bus', action: go('/transport'), path: '/transport' },
+      { id: 'n11', label: 'Go to Calendar', group: 'Navigate', icon: 'Calendar', action: go('/calendar'), path: '/calendar' },
+      { id: 'n12', label: 'Go to Insights', group: 'Navigate', icon: 'Insights', action: go('/insights'), path: '/insights' },
+      { id: 'n13', label: 'Go to Automation builder', group: 'Navigate', icon: 'Workflow', action: go('/automation'), path: '/automation' },
+      { id: 'n14', label: 'Go to AI memory', group: 'Navigate', icon: 'Memory', action: go('/memory'), path: '/memory' },
+      { id: 'n15', label: 'Go to School policies', group: 'Navigate', icon: 'Scale', action: go('/constitution'), path: '/constitution' },
+      { id: 'n16', label: 'Go to Cases', group: 'Navigate', icon: 'Wrench', action: go('/cases'), path: '/cases' },
+      { id: 'n17', label: 'Go to Incidents', group: 'Navigate', icon: 'Alert', action: go('/incidents'), path: '/incidents' },
+      { id: 'n18', label: 'Go to Data quality', group: 'Navigate', icon: 'Database', action: go('/data-health'), path: '/data-health' },
+      { id: 'n19', label: 'Go to Audit trail', group: 'Navigate', icon: 'Clipboard', action: go('/audit'), path: '/audit' },
+      { id: 'n20', label: 'Go to AI rules & control', group: 'Navigate', icon: 'Shield', action: go('/ai-governance'), path: '/ai-governance' },
+      { id: 'n21', label: 'Go to Settings', group: 'Navigate', icon: 'Settings', action: go('/settings'), path: '/settings' },
+      /* light-role destinations (parent/student) — filtered to their own paths below */
+      { id: 'lp1', label: 'Go to Family', group: 'Navigate', icon: 'Home', action: go('/parent/family'), path: '/parent/family' },
+      { id: 'lp2', label: 'Go to Messages', group: 'Navigate', icon: 'Message', action: go('/parent/chat'), path: '/parent/chat' },
+      { id: 'lp3', label: 'Go to Fees', group: 'Navigate', icon: 'Wallet', action: go('/parent/fees'), path: '/parent/fees' },
+      { id: 'lp4', label: 'Go to AI Assistant', group: 'Navigate', icon: 'Sparkle', action: go('/parent/copilot'), path: '/parent/copilot' },
+      { id: 'ls1', label: 'Go to My Day', group: 'Navigate', icon: 'Today', action: go('/student/home2'), path: '/student/home2' },
+      { id: 'ls2', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/student/learning'), path: '/student/learning' },
+      { id: 'ls3', label: 'Go to Portfolio', group: 'Navigate', icon: 'Award', action: go('/student/portfolio'), path: '/student/portfolio' },
     ];
     const qw = q.trim().toLowerCase();
     if (qw.length >= 2) {
@@ -552,8 +574,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       seed.decisions.filter(d => d.title.toLowerCase().includes(qw)).slice(0, 2).forEach((d, i) =>
         list.unshift({ id: `dc${i}`, label: d.title, hint: 'Decision record', group: 'Memory', icon: 'Scale', action: go('/memory') }));
     }
-    return list;
-  }, [q, navigate, onClose]);
+    /* item 14: a parent/student sees only their own destinations; every staff destination the server
+       says the caller may not reach is dropped. No payload → the light guard still applies. */
+    return list.filter((it) => {
+      if (isLight && !(it.path?.startsWith('/parent') || it.path?.startsWith('/student'))) return false;
+      return it.path ? canSurface(live.effective, it.path) : true;
+    });
+  }, [q, navigate, onClose, live]);
 
   const filtered = q.trim() ? items.filter(i => `${i.label} ${i.hint ?? ''} ${i.group}`.toLowerCase().includes(q.toLowerCase())) : items;
   const groups = [...new Set(filtered.map(i => i.group))];
@@ -608,16 +635,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
 /* ================= Topbar ================= */
 export function Topbar({ onOpenPalette }: { onOpenPalette: () => void }) {
-  const { session } = useStore();
-  const light = ['parent', 'student'].includes(session.roleId);
-  const [askOpen, setAskOpen] = useState(() => localStorage.getItem('schoolos.askOpen') === '1');
-  useEffect(() => {
-    const onToggle = () => setAskOpen(localStorage.getItem('schoolos.askOpen') === '1');
-    window.addEventListener('schoolos:ask-toggle', onToggle);
-    window.addEventListener('storage', onToggle);
-    return () => { window.removeEventListener('schoolos:ask-toggle', onToggle); window.removeEventListener('storage', onToggle); };
-  }, []);
-  const navigate = useNavigate();
+  const live = useSession();
+  /* FEX-7 one role notion: the authenticated server role, not the demo-preview store role. */
+  const light = isLightRole(live.role);
   return (
     <header className="topbar">
       <button className="btn btn-secondary btn-sm topbar-search" style={{ gap: 8, color: 'var(--text-3)', justifyContent: 'flex-start' }} onClick={onOpenPalette} aria-label="Open search and command menu">
@@ -626,11 +646,6 @@ export function Topbar({ onOpenPalette }: { onOpenPalette: () => void }) {
         <kbd className="u-hide-mobile">⌘K</kbd>
       </button>
       {!light && <CampusSwitcher />}
-      {light
-        ? <button className="btn btn-ai btn-sm" onClick={() => navigate(session.roleId === 'parent' ? '/parent/ask' : '/student/ask')}><Icon.Sparkle size={14} /> Ask</button>
-        : <button className={`btn btn-ai btn-sm ${askOpen ? 'btn-ai-active' : ''}`} aria-pressed={askOpen} aria-label={askOpen ? 'Close Ask panel' : 'Open Ask panel'} title="Ask SchoolOS (opens the assistant drawer)" onClick={() => { window.dispatchEvent(new Event('schoolos:ask-toggle')); }}>
-            <Icon.Sparkle size={14} /> Ask
-          </button>}
       <NotificationsBell />
       <ProfileMenu />
     </header>

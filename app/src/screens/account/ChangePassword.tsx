@@ -27,7 +27,7 @@
    ============================================================ */
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { LIVE_BASE, setToken } from '../../services/liveApi';
+import { LIVE_BASE, setToken, getToken } from '../../services/liveApi';
 import { friendly } from '../../lib/friendlyErrors';
 import { t } from '../../i18n';
 import { Card, useToast } from '../../components/ui';
@@ -48,7 +48,7 @@ interface PasswordResponse {
    instead of meeting 403s on every other door. */
 export function sessionMustChange(): boolean {
   try {
-    const t = localStorage.getItem('schoolos_token');
+    const t = getToken();
     if (!t) return false;
     const part = t.split('.')[1];
     if (!part) return false;
@@ -106,7 +106,7 @@ export default function ChangePassword({ mode = 'page', onAuthed, onCancel }: {
      The shared call() sweeps every non-/auth 401 (wipes token + redirects),
      which would log the user out for a typo. */
   const changePassword = async (): Promise<{ status: number; body: Partial<PasswordResponse> & { error?: string } }> => {
-    const token = localStorage.getItem('schoolos_token');
+    const token = getToken();
     const res = await fetch(`${LIVE_BASE}/me/password`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },

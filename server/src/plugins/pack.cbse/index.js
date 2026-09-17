@@ -16,6 +16,7 @@
 //     fabricates board data and never surfaces anything pre-approval.
 import { createHash } from 'node:crypto';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { uuidParams } from '../_shared/uuid-param.js'; // L2 repair: S0's H5 routes use it; the import was missed
 
 const ID = 'pack.cbse';
 const CBSE_TIER = ['owner', 'principal', 'itadmin', 'coordinator'];
@@ -42,8 +43,8 @@ const RULES = [
 ];
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   const loadSettings = async (c, tenantId) => {
@@ -63,7 +64,7 @@ export function register(app, kernel) {
   });
 
   // ── validate an exam (cross-plugin read over plugin_exams; no writes) ────────
-  app.get(`/plugins/${ID}/validate/exam/:examId`, { preHandler: [require(...CBSE_TIER), lifecycleGate] }, async (req, reply) => {
+  app.get(`/plugins/${ID}/validate/exam/:examId`, { preHandler: [require(...CBSE_TIER), uuidParams('examId'), lifecycleGate] }, async (req, reply) => { // S0 fix H5 (L2 repair: the trailing comment had swallowed the handler signature)
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const e = (await c.query(`SELECT id, name, term, class_grade, status, weightage, eligibility_min_pct, digest, published_snapshot
                                 FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2`,
@@ -84,18 +85,19 @@ export function register(app, kernel) {
         detail: `weightage sums to ${total} across ${Object.keys(w).length} component(s)`,
       });
       // R2 — grade_scale
-      const gs = (await q(`SELECT settings->>'gradeScale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, 'exams.assessment'])).rows[0]?.gs ?? 'cbse_10_point';
+      const gs = (await sysq(`SELECT settings->>'gradeScale' AS gs FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, 'exams.assessment'])).rows[0]?.gs ?? 'cbse_10_point';
       decisions.push({
         id: 'R2', title: 'grade_scale',
         decision: ['cbse_10_point', 'percent', 'gpa_4'].includes(gs) ? 'pass' : 'warn',
         detail: `assembly scale: ${gs}`,
       });
-      // R3 — marks_bounds
-      const bad = marks.filter((m) => Number(m.marks) < 0 || Number(m.marks) > Number(m.max_marks));
+      // R3 — marks_bounds (local named boundsFail — a `const bad` here would
+      // shadow the reply helper for the whole block → TDZ ReferenceError at the 404)
+      const boundsFail = marks.filter((m) => Number(m.marks) < 0 || Number(m.marks) > Number(m.max_marks));
       decisions.push({
         id: 'R3', title: 'marks_bounds',
-        decision: bad.length === 0 ? 'pass' : 'fail',
-        detail: bad.length === 0 ? `${marks.length} mark row(s) within bounds` : `${bad.length} out-of-bounds row(s)`,
+        decision: boundsFail.length === 0 ? 'pass' : 'fail',
+        detail: boundsFail.length === 0 ? `${marks.length} mark row(s) within bounds` : `${boundsFail.length} out-of-bounds row(s)`,
       });
       // R4 — eligibility_floor (adds obligations: the pack FLOORS the board norm)
       const floor = Number(e.eligibility_min_pct ?? 75);
@@ -126,11 +128,11 @@ export function register(app, kernel) {
       let obligation = null;
       if (decisions.find((d) => d.id === 'R1')?.decision === 'fail') {
         const code = `cbse.weightage.${e.id}`;
-        const existing = (await q(`SELECT id, status FROM app.actions WHERE tenant_id=$1 AND code=$2`, [req.user.tenant_id, code])).rows[0];
+        const existing = (await sysq(`SELECT id, status FROM app.actions WHERE tenant_id=$1 AND code=$2`, [req.user.tenant_id, code])).rows[0];
         if (existing && existing.status === 'open') {
           obligation = { actionId: existing.id, reused: true };
         } else if (!existing) {
-          const act = await q(
+          const act = await sysq(
             `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
              VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','CBSE pack obligations',false,'cbse.obligation.due.v1',$6::jsonb) RETURNING id`,
             [req.user.tenant_id, code, `CBSE obligation: assessment weightage invalid (${e.name})`,
@@ -155,7 +157,7 @@ export function register(app, kernel) {
   });
 
   // ── OASIS-ready export (published exams only; stateless, digest-audited) ─────
-  app.get(`/plugins/${ID}/export/oasis/:examId`, { preHandler: [require(...CBSE_TIER), lifecycleGate] }, async (req, reply) => {
+  app.get(`/plugins/${ID}/export/oasis/:examId`, { preHandler: [require(...CBSE_TIER), uuidParams('examId'), lifecycleGate] }, async (req, reply) => { // S0 fix H5 (L2 repair: the trailing comment had swallowed the handler signature)
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const settings = await loadSettings(c, req.user.tenant_id);
       if (!settings.affiliation || !settings.academicYear) {
@@ -175,7 +177,10 @@ export function register(app, kernel) {
         class: r.grade, pct: r.snapshot?.pct, grade: r.snapshot?.grade, points: r.snapshot?.points,
         reportDigest: r.digest,
       }));
-      const header = [
+      /* S0 fix H6: JSON.stringify is not CSV escaping; quote-on-need with "" and a
+     ' prefix on formula-leading cells (=,+,-,@,tab) keeps Excel honest. */
+  const cell = (v) => { const s = String(v ?? ''); const q = /[",\n]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s; return /^[=+\-@\t\r]/.test(s) ? `'${q}` : q; };
+  const header = [
         `BOARD,${settings.board}`,
         `AFFILIATION_NO,${settings.affiliation}`,
         `ACADEMIC_YEAR,${settings.academicYear}`,
@@ -187,7 +192,7 @@ export function register(app, kernel) {
         `CANDIDATES,${candidates.length}`,
       ].join('\n');
       const body = ['ENROLLMENT,STUDENT_NAME,CLASS,PCT,GRADE,POINTS,REPORT_DIGEST',
-        ...candidates.map((k) => [k.enrollment, JSON.stringify(k.studentName), k.class, k.pct, k.grade, k.points ?? '', k.reportDigest].join(','))].join('\n');
+        ...candidates.map((k) => [k.enrollment, cell(k.studentName), cell(k.class), k.pct, cell(k.grade), k.points ?? '', k.reportDigest].join(','))].join('\n'); // S0 fix H6: proper CSV cell escaping + formula neutralization
       const csv = `${header}\n${body}\n`;
       const contentHash = createHash('sha256').update(csv).digest('hex');
       await requestAudit(c, req.user.tenant_id, ID, {

@@ -5,6 +5,13 @@
 // lattice (front-desk only), registry/contract mirror. Events: visitor.logged.v1 ·
 // visitor.checked_in.v1 · visitor.pickup.requested.v1 · visitor.pickup.verified.v1 ·
 // visitor.completed.v1.
+/* The file models a DEVELOPER MACHINE, and must say so before the app is imported (app/config are imported
+   dynamically in before(), so these assignments win). NODE_ENV is set alongside the flag because `config.js`
+   arms the OTP dev echo only when env === 'development' — deliberately, and T101 in l1-security-sprint pins
+   that staging/test never arm it. CI runs the suite with NODE_ENV=test, where a code must come from a
+   configured channel; without this line the pickup tests below assert against an undefined code and CI is red.
+   This is the file declaring the posture it is testing, not a change to the posture. */
+process.env.NODE_ENV = 'development';
 process.env.OTP_DEV_ECHO = '1'; // before app import — kernel devEcho parity (dev-only)
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,13 +32,14 @@ before(async () => {
   sql = async (text, params = []) => {
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await c.connect();
-    const r = await c.query(text, params);
-    await c.end();
-    return r;
+    try { return await c.query(text, params); } finally { await c.end().catch(() => {}); }
   };
   student = (await sql(`SELECT s.id, s.name, g.phone FROM app.students s
     JOIN app.guardians g ON g.student_id=s.id AND g.is_primary AND g.phone IS NOT NULL LIMIT 1`)).rows[0];
   assert.ok(student, 'seed must contain a student with a primary guardian phone');
+  // PLG-15 seed parity: the seed now applies the catalog's DEFAULT_ON set (which includes ops.visitors), so
+  // the module arrives ENABLED. Test 1 pins the registered-not-enabled lifecycle gate, so reset it here.
+  await sql(`UPDATE app.plugins SET status='registered' WHERE plugin_id='ops.visitors'`);
 });
 
 describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)', () => {
@@ -97,8 +105,22 @@ describe('ops.visitors (gate pass · guardian-verified pickup · migration 024)'
     const wrong = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${pickupVisit}/pickup/verify`,
       payload: { code: '000000' }, headers: H(co.token) });
     assert.equal(wrong.statusCode, 422, 'invalid code is an OTP-state failure, NOT auth (UI lane #1: 401 collides with session-expiry)');
-    const a = await sql(`SELECT otp_attempts FROM plugin_visitors.visit WHERE id=$1`, [pickupVisit]);
+    const a = await sql(`SELECT otp_attempts, tenant_id FROM plugin_visitors.visit WHERE id=$1`, [pickupVisit]);
     assert.equal(a.rows[0].otp_attempts, 1, 'failed attempts tracked on the visit');
+    // DAT-6: the REJECTION must reach the ledger, not just move a counter. A wrong pickup code is an attempted
+    // release of a child to someone who could not prove they were authorised; the counter records THAT attempts
+    // happened, but nothing recorded who was at the gate, when, or against which visit — and the visit row
+    // carries no history, so the attempt was unreconstructable. Scoped to THIS visit's record_ref and tenant, so
+    // the assertion cannot be satisfied by an audit row belonging to another test in this file.
+    const rej = await sql(
+      `SELECT actor, actor_role, risk, outcome FROM app.audit_log
+        WHERE tenant_id=$1 AND record_type='VisitorPass' AND record_ref=$2
+          AND action='guardian pickup code rejected'`, [a.rows[0].tenant_id, pickupVisit]);
+    assert.equal(rej.rows.length, 1, 'a rejected pickup code writes exactly one audit row for this visit');
+    assert.ok(rej.rows[0].actor, 'the audit row must name who tried — an anonymous rejection is not evidence');
+    assert.equal(rej.rows[0].risk, 'high', 'an attempted unauthorised release is high risk');
+    assert.match(rej.rows[0].outcome, /student NOT released/i,
+      `the ledger must state the outcome plainly (got: ${rej.rows[0].outcome})`);
     // re-request from pickup_pending is REFUSED by design (anti-spam: one active code per visit)
     const re = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${pickupVisit}/pickup`, payload: {}, headers: H(co.token) });
     assert.equal(re.statusCode, 409, 'no second active code while one is pending');

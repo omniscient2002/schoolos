@@ -1,37 +1,55 @@
 // Shared helpers: audit ledger writer (hash-chained), event emitter, outbox.
-import { createHash } from 'node:crypto';
 
 /** Append to the audit ledger inside an existing transaction. Hash-chained.
- * Serialization via advisory lock (row lock would need UPDATE privilege,
- * which the app role deliberately lacks on the immutable ledger). */
+ *
+ * SEC-20: the hash is computed by the DATABASE (trigger `audit_pin_hash_bi` on app.audit_log, added
+ * in migration 075) and the chain link is taken from the table inside the same statement. This
+ * function used to compute both in JS and pass them in — and `app.audit_append` stored the supplied
+ * hash VERBATIM while validating only `prev_hash`, so any app-role caller could write a row whose
+ * hash it had chosen. The row still linked correctly, which is why ordinary chain checking saw
+ * nothing (measured on the dev ledger: 26 of 53 rows do not reproduce from their own columns).
+ *
+ * Consequences a reader must know:
+ *  - `p_hash` (13th argument) is now IGNORED by app.audit_append. It is passed as NULL, deliberately.
+ *  - `p_prev_hash` is now only a CONFLICT DETECTOR: the call still fails if the caller's view of the
+ *    chain is stale, which is useful, but it no longer decides the stored link.
+ *  - the advisory lock below is belt-and-braces: PostgreSQL takes the same lock inside
+ *    app.audit_append, which is what actually protects the 33 migration replays, scripts/seed.js
+ *    and any future direct caller. Keeping it here preserves the lock-before-read ordering for
+ *    multi-statement callers in one transaction, at no correctness cost.
+ *  - verification is `SELECT * FROM app.audit_verify($tenant)` — see GET /audit/verify.
+ */
 export async function auditLog(client, tenantId, entry) {
   await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 42))`, [tenantId]);
   const prev = await client.query(
-    `SELECT hash, created_at FROM app.audit_log WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, [tenantId]);
+    `SELECT hash FROM app.audit_log WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, [tenantId]);
   const prevHash = prev.rows[0]?.hash ?? 'GENESIS';
-  // RTR-001 Track E: hash exactly what the row stores (created_at comes from the DB)
   const at = new Date().toISOString();
-  const material = JSON.stringify({
-    tenant: tenantId, actor: entry.actor, actorRole: entry.actorRole, action: entry.action,
-    recordType: entry.recordType, recordRef: entry.recordRef ?? null, outcome: entry.outcome ?? null,
-    at,
-  });
-  const hash = createHash('sha256').update(prevHash + material).digest('hex');
   const r = await client.query(
     `SELECT * FROM app.audit_append($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [tenantId, entry.actor, entry.actorRole, entry.action, entry.recordType, entry.recordRef ?? null,
      entry.reason ?? null, entry.policyRef ?? null, entry.aiInvolved ?? false, entry.risk ?? 'low',
-     entry.outcome ?? null, prevHash, hash, at]);
+     entry.outcome ?? null, prevHash, null /* p_hash ignored: the DB pins the hash (migration 075) */, at]);
   return r.rows[0];
 }
 
 /** Emit an event with the v2 envelope (docs/12 §10) + outbox linkage. */
 export async function emitEvent(client, tenantId, { type, label, severity = 'info', ref = null }, topic = null, payload = null, opts = {}) {
   const { emittedBy = 'kernel', subject = null, correlationId = null, causationId = null, schemaVersion = 1 } = opts;
+  // Event rows fan out to workers and dashboards; bound the envelope before it
+  // reaches PostgreSQL so one malformed plugin payload cannot exhaust a queue.
+  if (!/^[a-z][a-z0-9_.-]{0,63}$/i.test(String(type ?? ''))) throw new Error('event type is invalid');
+  if (String(label ?? '').length > 500) throw new Error('event label exceeds 500 characters');
+  if (topic != null && !/^[a-z][a-z0-9_.-]{0,127}$/i.test(String(topic))) throw new Error('event topic is invalid');
+  let encodedPayload = null;
+  if (payload != null) {
+    try { encodedPayload = JSON.stringify(payload); } catch { throw new Error('event payload must be JSON-serializable'); }
+    if (Buffer.byteLength(encodedPayload, 'utf8') > 64 * 1024) throw new Error('event payload exceeds 64KiB');
+  }
   const e = await client.query(
     `INSERT INTO app.events (tenant_id, type, label, severity, ref, emitted_by, subject, correlation_id, causation_id, schema_version, payload)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, created_at`,
-    [tenantId, type, label, severity, ref, emittedBy, subject, correlationId, causationId, schemaVersion, payload ? JSON.stringify(payload) : null]);
+    [tenantId, type, label, severity, ref, emittedBy, subject, correlationId, causationId, schemaVersion, encodedPayload]);
   await client.query(
     `INSERT INTO app.outbox (tenant_id, topic, payload, event_id, schema_version, emitted_by, subject, correlation_id, causation_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,

@@ -31,8 +31,8 @@ export function invalidateBiCache(tenantId) {
 
 export function register(app, kernel) {
   registerSettingsFormDoors(app, kernel, ID, manifestDef);
-  const { withUser, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const STAFF = ['owner', 'principal', 'coordinator', 'finance', 'itadmin'];
   const windowDays = (v) => {
     const n = Number(v);

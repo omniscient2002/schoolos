@@ -3,17 +3,13 @@
    T401: the submit path hits the real door (POST /attendance/mark)
    via apiMarkAttendance — success toasts only on 2xx and carry the
    SERVER's counts; failures surface friendly errors (never a
-   "kept on this device" lie). The register prefers server rows
-   (GET /attendance) so submitted marks survive a reload; the demo
-   build falls back to the demo blob and says so.
-   Demo fixture ids (st_north_*) are not database rows — in the
-   demo world the register is session-local and labelled as such.
+   "kept on this device" lie). The register reads server rows
+   (GET /attendance) so submitted marks survive a reload.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { apiAttendance, apiMarkAttendance } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
@@ -87,63 +83,41 @@ export default function Attendance() {
   const toast = useToast();
 
   const isTeacher = session.roleId === 'teacher';
-  const today = DEMO_MODE ? (seed.TERM_DAYS[seed.TERM_DAYS.length - 1] ?? istToday()) : istToday();
+  const today = istToday();
   const todayISO = isoDay(today);
 
   const [sectionId, setSectionId] = useState('');
   const [tab, setTab] = useState<'mark' | 'history'>('mark');
 
-  /* ---- register load: server rows first; demo blob only as fallback ---- */
+  /* ---- register load: the register IS the server response ---- */
   const register = useAsync<RegisterData>(async () => {
-    if (!DEMO_MODE) {
-      /* ---- live world: the register IS the server response ---- */
-      let server: ServerRow[] = [];
-      try {
-        const res = await apiAttendance(todayISO);
-        server = Array.isArray(res.rows) ? res.rows as ServerRow[] : [];
-      } catch { /* surfaced by the error shell below */ }
+    let server: ServerRow[] = [];
+    try {
+      const res = await apiAttendance(todayISO);
+      server = Array.isArray(res.rows) ? res.rows as ServerRow[] : [];
+    } catch { /* surfaced by the error shell below */ }
 
-      const byKey = new Map<string, ServerRow[]>();
-      for (const r of server) {
-        const key = `${r.grade}|${r.section}`;
-        if (!byKey.has(key)) byKey.set(key, []);
-        byKey.get(key)!.push(r);
-      }
-      const sections: SectionOpt[] = [...byKey.entries()].map(([key, list]) => ({
-        id: key, grade: Number(list[0].grade), name: String(list[0].section ?? ''), campus: session.activeCampus, count: list.length,
-      })).sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name));
-      const allRows: RosterRow[] = server.map(r => ({
-        person: {
-          id: r.id, name: r.name, type: 'student', campus: session.activeCampus, email: '', phone: '',
-          grade: Number(r.grade), section: String(r.section ?? ''), rollNo: r.admission_no ?? undefined,
-        } as Person,
-        prefill: markFromStatus(r.status),
-        note: r.note ?? undefined,
-      }));
-      const marked = allRows.filter(r => r.prefill);
-      return {
-        allRows, serverMode: true, sections,
-        markedToday: marked.length > 0, lastMarkAt: marked.length ? today : null, markedBy: null,
-      };
+    const byKey = new Map<string, ServerRow[]>();
+    for (const r of server) {
+      const key = `${r.grade}|${r.section}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key)!.push(r);
     }
-
-    /* ---- demo world: blob roster (ids are fixtures, labelled as demo) ---- */
-    const sections: SectionOpt[] = [...seed.sections]
-      .sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name) || a.campus.localeCompare(b.campus))
-      .map(s => ({ id: s.id, grade: s.grade, name: s.name, campus: s.campus, count: seed.studentsOfSection(s.id).length }));
-    const todayRecs = seed.attendance.filter(a => a.date.getTime() === today.getTime());
-    const allRows: RosterRow[] = seed.students.map(st => {
-      const rec = todayRecs.find(r => r.studentId === st.id);
-      return {
-        person: st,
-        prefill: rec ? (rec.status as Mark) : null,
-        note: rec?.note,
-      };
-    });
+    const sections: SectionOpt[] = [...byKey.entries()].map(([key, list]) => ({
+      id: key, grade: Number(list[0].grade), name: String(list[0].section ?? ''), campus: session.activeCampus, count: list.length,
+    })).sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name));
+    const allRows: RosterRow[] = server.map(r => ({
+      person: {
+        id: r.id, name: r.name, type: 'student', campus: session.activeCampus, email: '', phone: '',
+        grade: Number(r.grade), section: String(r.section ?? ''), rollNo: r.admission_no ?? undefined,
+      } as Person,
+      prefill: markFromStatus(r.status),
+      note: r.note ?? undefined,
+    }));
+    const marked = allRows.filter(r => r.prefill);
     return {
-      allRows, serverMode: false, sections,
-      markedToday: todayRecs.length > 0, lastMarkAt: todayRecs[0]?.date ?? null,
-      markedBy: todayRecs[0] ? seed.findPerson(todayRecs[0].markedBy)?.name ?? 'Class teacher' : 'Class teacher',
+      allRows, serverMode: true, sections,
+      markedToday: marked.length > 0, lastMarkAt: marked.length ? today : null, markedBy: null,
     };
   }, [todayISO]);
 
@@ -162,8 +136,8 @@ export default function Attendance() {
   const serverMode = register.data?.serverMode ?? false;
   const demoSection = !serverMode ? seed.sections.find(s => s.id === sectionId) : undefined;
   const classTeacher = demoSection ? seed.findPerson(demoSection.classTeacherId) : undefined;
-  /* Empty-world law: the Bus-14 anomaly banner narrates the demo world's
-     incident; only render when that section actually exists in the tenant. */
+  /* Empty-world law: the Bus-14 anomaly banner narrates a seeded incident;
+     only render when that section actually exists in the tenant. */
   const isAnomaly = sectionId === 'north-g8-b' && seed.sections.some(sec => sec.id === 'north-g8-b');
 
   const rows = useMemo(

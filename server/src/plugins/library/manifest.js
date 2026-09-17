@@ -8,6 +8,11 @@ export default {
   id: 'library',
   version: '1.0.0',
   class: 'C',
+  /* PLG-1: this manifest declared nothing while its code called emitEvent/requestAudit and read (or wrote)
+     the tables below — so the stored grant was whatever a client asked for. Declared now from a static scan of
+     this plugin's own index.js: the facilities it actually calls, and nothing it does not (the catalog's
+     `memory.write` for pack.cbse/pack.dpdp was a copy-paste: no code path touches app.memory_entries). */
+  permissions: ['students.read', 'events.emit', 'audit.request'],
   description: 'The school library desk: catalog with per-title copy counts, issue/return against active students, availability derived from open loans (never stored), overdue fines computed at return (days_overdue × fine_per_day_cents, default ₹5/day) and an overdue chase list. Staffed per school-office norms (owner/principal/coordinator/facilities — no teacher door); students see only their own loans. Catalog lifecycle: retire keeps history, removes future issues.',
   policyRefs: ['Library desk norms', 'Platform §2.4'],
   settingsSchema: {

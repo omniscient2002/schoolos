@@ -46,7 +46,7 @@ export function fmtRelative(d: Date | string): string {
 export const initials = (name: string) =>
   name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join('');
 
-const AVATAR_HUES = ['#0E7568', '#5D53B8', '#B87A2E', '#2E5E9E', '#8A4A6B', '#4A7A3C', '#9A4526', '#476C8A'];
+const AVATAR_HUES = ['#0F766E', '#5D53B8', '#B87A2E', '#2563EB', '#8A4A6B', '#15803D', '#B45309', '#476C8A'];
 export function avatarHue(name: string) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;

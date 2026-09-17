@@ -4,7 +4,7 @@
    attention widget, event emission, audit-requested writes.
    ============================================================ */
 import { useMemo, useState } from 'react';
-import { PageHead, Card, Badge, Button, Stat, Empty, useToast } from '../components/ui';
+import { PageHead, Card, Badge, Button, Stat, Empty, SampleNote, useToast } from '../components/ui';
 import { EventTimeline } from '../components/Flow';
 import { useStore } from '../state/store';
 
@@ -39,6 +39,7 @@ export default function Library() {
 
   return (
     <div style={{ maxWidth: 1080, margin: '0 auto' }}>
+      <SampleNote>Sample library catalogue — titles, copies and loans are illustrative in this build; no library door is connected.</SampleNote>
       <PageHead
         title="Library"
         sub="A plugin, not a feature — this whole module (nav, route, widget, audit) exists because the school switched it on"

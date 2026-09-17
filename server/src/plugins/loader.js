@@ -16,6 +16,7 @@
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { scopedKernel } from '../plugin-permissions.js';
 
 // registry namespace: comms.whatsapp · pack.cbse · ops.timetable · com.vendor.thing
 // cycle-3 pattern: letter-first (digit-run ids like '9lives' are out), underscore excluded.
@@ -42,7 +43,10 @@ export async function loadPlugins(app, kernel, { dir = dirname(fileURLToPath(imp
       if (manifest.id !== id) throw new Error(`manifest.id "${manifest.id}" ≠ directory "${id}"`);
       const mod = await import(pathToFileURL(join(dir, id, 'index.js')).href);
       if (typeof mod.register !== 'function') throw new Error('index.js must export register(app, kernel)');
-      mod.register(app, kernel);
+      // The manifest's declaration is the plugin's kernel-facility ceiling.
+      // The wrapper leaves non-seamed helpers available as explicit raw-sql
+      // debt, but enforces the three facilities with real call-site seams.
+      mod.register(app, scopedKernel(kernel, id, manifest.permissions));
       loaded.push({ id, manifest });
     } catch (e) {
       failed.push({ id, error: e.message });

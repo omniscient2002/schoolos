@@ -279,7 +279,7 @@ var MOCK_SEED = (() => {
     const campus = campuses[i % 3];
     const name = personName("adult", i + 7);
     const id = `stf_${stid++}`;
-    staff.push({ id, name, type: "staff", campus: campus.id, email: `${name.toLowerCase().replace(" ", ".")}@meridian.edu`, phone: `+91 96${rng.int(1e8, 999999999)}`, role: STAFF_ROLES[i % STAFF_ROLES.length], joinedOn: fmt(rng.int(1, 10)) });
+    staff.push({ id, name, type: "staff", campus: campus.id, email: `${name.toLowerCase().replace(" ", ".")}@meridian.edu`, phone: `+91 96${rng.int(1e8, 999999999)}`, designation: STAFF_ROLES[i % STAFF_ROLES.length], joinedOn: fmt(rng.int(1, 10)) });
   }
   function fmt(years) {
     const d = daysAgo(rng.int(200, 360 * years));

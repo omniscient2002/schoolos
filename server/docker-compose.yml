@@ -16,12 +16,55 @@ services:
       retries: 10
     ports: ["127.0.0.1:5432:5432"]
 
+  # ── OPS-1/OPS-2: schema + roles are created ONCE, in the ONE order that works ────────────────
+  # The register: "Compose runs bootstrap.js && migrate.js && src/index.js, but bootstrap grants on
+  # schema `app` before migrations create it — so on an empty volume bootstrap fails, `&&`
+  # short-circuits, migrate never runs, and restart: unless-stopped crash-loops forever."
+  # That was literally true: bootstrap.js:24 `GRANT USAGE ON SCHEMA app` is the first statement that
+  # needs the schema, and schema `app` is created by migrate.js / 001_init.sql. The ordering the
+  # project's own test harness has always used is migrate → bootstrap (tests/helpers.js:25, with the
+  # comment "grants AFTER tables exist"), and README.md says the same — compose was the only place
+  # that got it backwards.
+  #
+  # Fixed STRUCTURALLY rather than by swapping the two words in a `&&` chain: schema setup is its own
+  # one-shot service, and every long-running service waits for it to COMPLETE. A future edit cannot
+  # re-invert the order by reordering a command string, because there is no longer one string that
+  # does both jobs. This also stops the long-lived API container from being the thing that runs
+  # migrations (a rolling deploy no longer races itself).
+  #
+  # OPS-2: bootstrap needs a role-admin connection. In the official Postgres image POSTGRES_USER IS
+  # the superuser, so ADMIN_DATABASE_URL pointing at it is the credential bootstrap.js:11-12 looks for
+  # — and `postgres` as a username does NOT exist in this stack (POSTGRES_USER=schoolos), which is why
+  # the old default URL could never authenticate. The admin credential lives ONLY here, so the API
+  # container never holds superuser rights.
+  db-init:
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      ADMIN_DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      # No public default: bootstrap.js:17 used to fall back to 'schoolos_app_pw' for a LOGIN role that
+      # every policy depends on. Required now, so a stack cannot come up with a published password.
+      APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?set APP_ROLE_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in production}
+    depends_on:
+      db:
+        condition: service_healthy
+    # migrate FIRST (it creates schemas/tables), then bootstrap (it grants on them).
+    command: sh -c "node scripts/migrate.js && node scripts/bootstrap.js"
+    restart: "no"
+
   api:
     build: .
     # T206 (ops audit §15 deploy row): the API is a long-running service and must
     # survive host reboots/crashes like the workers below. (retention + demo-init
     # stay restart:"no" — they are one-shots by design.)
     restart: unless-stopped
+    # OPS-13: the API's graceful shutdown drains in-flight requests over a 15s window, but Docker sends
+    # SIGKILL after its default 10s stop grace — so the last 5s of the drain never happen and in-flight
+    # requests were severed anyway. Give the container longer than the drain window it declares.
+    stop_grace_period: 30s
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
@@ -35,21 +78,31 @@ services:
       # allowlist through (comma-separated); see server/.env.example.
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in production}
       PORT: "8080"
+      # OPSX-2: the private document store must survive a container recreate. Without this, `storage`
+      # lived only in the container's writable layer — every `up --force-recreate` destroyed uploaded
+      # documents, while the host backup silently archived an empty directory.
+      FILES_DIR: /data/files
+    volumes:
+      # A NAMED volume (not a bind mount) so the container's non-root `node` user owns what it writes.
+      - files:/data/files
     depends_on:
       db:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     ports: ["8080:8080"]
-    # prod semantics: migrate (idempotent) + serve. NEVER seed in production —
-    # seed.js TRUNCATEs tenant data and installs demo credentials. For a local demo
-    # stack use `docker compose --profile demo up` which runs the demo-init service.
-    command: sh -c "node scripts/bootstrap.js && node scripts/migrate.js && node src/index.js"
+    # prod semantics: serve only. Schema + grants belong to db-init, which must have COMPLETED — the
+    # register's OPS-1 chain is why this is a dependency rather than a command prefix.
+    # NEVER seed in production — seed.js TRUNCATEs tenant data and installs demo credentials. For a
+    # local demo stack use `docker compose --profile demo up` which runs the demo-init service.
+    command: node src/index.js
 
   # Wave C: one-shot data-retention pass (Wave B's worker, added here because it
   # did not exist). Non-secret owner cleanup only — GPS positions past their 30-day
   # retention (020), expired/consumed login OTPs from the kernel vault
   # (app.auth_otps, RLS-denied to the app role by 008, hence owner path), expired
   # revoked-token denylist rows (038) and expired pre-auth OAuth states (040).
-  # Runs after api healthy so the schema always exists. Plugin-schedule retention
+  # Runs after db-init completes so the schema always exists. Plugin-schedule retention
   # (manifest retention.on_uninstall: export_then_purge_30d) is NOT covered —
   # per-plugin purge rules are unimplemented. Re-run manually with:
   #   docker compose run --rm retention
@@ -63,10 +116,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      api:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     command: node scripts/retention-worker.js
     restart: "no"
+    # OPS-3 recon: this one-shot declared no healthcheck while Dockerfile:17 probes :8080/ready — a
+    # port no worker listens on — so `docker compose ps` showed it FAILING on every successful run.
+    # outbox/comms-dispatcher already kill this noise with the same comment; retention was missed.
+    healthcheck:
+      disable: true
 
   outbox:
     build: .
@@ -77,38 +135,92 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      # Waits for the api container (which runs bootstrap+migrate) to be healthy,
-      # so on a fresh stack the schema always exists before the first tick.
-      api:
-        condition: service_healthy
+      # Waits for db-init (schema + grants) to have COMPLETED, so on a fresh stack the schema always
+      # exists before the first tick. Was `api: service_healthy`, which only worked because the API
+      # container used to run migrations itself — an ordering the register proved fragile (OPS-1).
+      db-init:
+        condition: service_completed_successfully
     # The event spine's delivery worker — REQUIRED in every environment, not a
     # demo extra: without it outbox rows are written but never relayed. Poll
     # cadence/backoff are tunable via OUTBOX_* envs (see scripts/outbox-worker.js).
     command: node scripts/outbox-worker.js
     restart: unless-stopped
+    stop_grace_period: 30s # OPS-13: let a poll tick finish and the row lock release before SIGKILL
     # image-level HEALTHCHECK probes :8080/ready, which no worker listens on —
     # silence the permanent "unhealthy" noise (worker liveness = restart policy).
+    healthcheck:
+      disable: true
+
+  # ── OPS-8: the webhook fan-out and the workflow runner were SHIPPED BUT NEVER SCHEDULED ────────
+  # The register: "Five shipped workers are never scheduled (day-worker, webhook-worker,
+  # workflow-worker, dunning-reminders, reconcile-payments): outbound webhooks, workflow rules, fee
+  # dunning and payment reconciliation silently never run in a real deployment." That is literally
+  # what the old file showed — this stack defined db/api/retention/outbox/comms-dispatcher/demo-init
+  # and named neither of these two.
+  #
+  # These two belong here rather than in cron because both are long-lived pollers (WEBHOOK_POLL_MS /
+  # WORKFLOW_POLL_MS, default 5000), exactly like the outbox relay above. The three one-shots
+  # (day-worker, dunning-reminders, reconcile-payments) are cron lines in ops/cron/schoolos.cron.
+  # server/tests/ops-deploy.test.js fails if a CLI worker exists that is scheduled in NEITHER place —
+  # which is how this gap is prevented from reopening.
+  webhook-worker:
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      WORKER_ROLE: "1"
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      # Signing needs the same secret the API signs with, or receivers reject every delivery.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    command: node scripts/webhook-worker.js
+    restart: unless-stopped
+    stop_grace_period: 30s # OPS-13: a delivery in flight must complete or park, never be killed mid-send
+    healthcheck:
+      disable: true
+
+  workflow-worker:
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      WORKER_ROLE: "1"
+      DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    # Evaluates app.workflow_rules against new events. Without it, a rule a school configured simply
+    # never fires — and because the rule is stored and listed, the absence looks like "nothing to do".
+    command: node scripts/workflow-worker.js
+    restart: unless-stopped
+    stop_grace_period: 30s # OPS-13: a rule evaluation holding a FOR UPDATE row must finish
     healthcheck:
       disable: true
 
   comms-dispatcher:
     build: .
     environment:
-      # NODE_ENV=development on purpose (demo-init parity): this worker reads
-      # config.js ONLY for DATABASE_URL; staying out of production mode skips the
-      # CORS/JWT prod guards that would crash-loop a non-HTTP process — the same
-      # reasoning WORKER_ROLE implements for the outbox relay. Retention (Wave B)
-      # owns worker prod-hardening; revisit then.
-      NODE_ENV: development
+      # OPSX-1: this was `NODE_ENV: development`, which made `sandboxAllowed(env)` true and let the
+      # dispatcher record a `logger` carrier as `status='sent'` — the exact PRD-13 inversion this
+      # module exists to prevent — in the ONLY shipped stack. The prod guards that motivated the dev
+      # posture are the HTTP surface guards, and WORKER_ROLE is the supported way to skip those for a
+      # non-HTTP process (it is what the outbox/retention/webhook/workflow workers already use), so
+      # this is production + WORKER_ROLE rather than development.
+      NODE_ENV: ${NODE_ENV:-production}
+      WORKER_ROLE: "1" # non-HTTP process: no JWT/CORS surface, skips those guards
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
     depends_on:
       db:
         condition: service_healthy
-      # Same ordering contract as the outbox relay: bootstrap+migrate run in the
-      # api container, so the 043 dispatch columns must exist before the first
-      # poll (the dispatcher also self-ensures them at startup as a guard).
-      api:
-        condition: service_healthy
+      # Same ordering contract as the outbox relay: db-init creates the schema and grants (in that
+      # order), so the 043 dispatch columns must exist before the first poll (the dispatcher also
+      # self-ensures them at startup as a guard).
+      db-init:
+        condition: service_completed_successfully
     # The Communication Orchestrator's queue drain (Wave A): drains
     # app.communications status='queued' through the rails (rails.sms /
     # rails.whatsapp; log-only for unrail'd channels). REQUIRED wherever comms
@@ -117,6 +229,7 @@ services:
     # (see scripts/comms-dispatcher.js).
     command: node scripts/comms-dispatcher.js
     restart: unless-stopped
+    stop_grace_period: 30s # OPS-13/OPS-15: the dispatcher holds row locks across sequential network calls
     healthcheck:
       disable: true
 
@@ -126,22 +239,48 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      # seed.js runs bootstrap's grant matrix and expects an admin connection; demo parity with db-init.
+      ADMIN_DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
+      APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?set APP_ROLE_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
-    command: sh -c "node scripts/bootstrap.js && node scripts/seed.js"
+      # OPS-1 recon: this service ran `bootstrap.js && seed.js` with NO dependency on migrations and no
+      # dependency on db-init — while seed.js is destructive (it TRUNCATEs tenant data). It now waits for
+      # schema + grants to be complete, and re-runs them itself so `--profile demo up` works standalone.
+      db-init:
+        condition: service_completed_successfully
+    command: sh -c "node scripts/migrate.js && node scripts/bootstrap.js && node scripts/seed.js"
+    restart: "no"
+
+  # ── OPSX-2: the host backup must archive the SAME bytes the API writes ─────────────────────────
+  # The API stores document bytes in the named `files` volume, which a host cron cannot read directly.
+  # This one-shot mounts that volume read-only and writes a verified archive into ./backups, which is the
+  # directory the host backup script owns. `user: 0:0` so it can read the volume regardless of writer uid.
+  # Run it before/within the nightly backup:
+  #   docker compose run --rm files-backup
+  # No secret is involved — the only content is the tenant file tree.
+  files-backup:
+    profiles: [ops]
+    build: .
+    user: "0:0"
+    volumes:
+      - files:/data/files:ro
+      - ./backups:/backups
+    command: sh -c "mkdir -p /backups/files && tar -czf /backups/files/files-$$(date +%F).tar.gz -C /data files && tar -tzf /backups/files/files-$$(date +%F).tar.gz >/dev/null && echo files-archive-ok"
     restart: "no"
 
 volumes:
   pgdata:
+  # OPSX-2: the private document store. Declared here so compose does not namespace it per project.
+  files:
 
-# T205 — nightly backups (ops audit §15). Scheduler wiring: host cron is the
-# sanctioned path for this sprint (a `backup` one-shot service + in-container cron
-# is deferred). The db image ships pg_dump/pg_dumpall, so the docker-only variant
-# needs no host postgres-client — cron lines (02:17 IST nightly):
-#   17 2 * * * cd /srv/schoolos/server && docker compose exec -T db pg_dump -U schoolos --format=custom schoolos | gzip > /var/backups/schoolos/schoolos-$$(date -u +\%F).dump.gz
-#   23 2 * * * cd /srv/schoolos/server && docker compose exec -T db pg_dumpall --globals-only -U schoolos > /var/backups/schoolos/globals-$$(date -u +\%F).sql
-# Retention + verification + the full restore procedure: server/README.md §Backup &
-# restore and scripts/backup.sh (host-cron variant with pg_restore --list checks).
-# NOTE: compose `exec` skips one-shots when the stack is down — prefer the host
-# cron against the published 127.0.0.1:5432 with a local client if that can happen.
+# T205 — nightly backups (ops audit §15) and the one-shot workers (OPS-6 / OPS-8).
+# The schedule is now a COMMITTED artifact rather than a comment: `ops/cron/schoolos.cron` at the repo
+# root. The two commented variants that used to sit here were not equivalent — the docker-only one wrote
+# a flat dump with NO globals, NO verification and NO retention, which is precisely the artifact shape
+# the register complained about ("the dumps that do exist carry no CREATE ROLE ... so restoring them
+# yields policies with no role to enforce them"). Install the committed file instead:
+#   crontab ops/cron/schoolos.cron
+# `server/tests/ops-deploy.test.js` asserts that every CLI worker is scheduled either by this file or by
+# a compose service above, so a new worker cannot ship unscheduled again.

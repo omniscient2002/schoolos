@@ -11,7 +11,7 @@ import { setupTestDb, loginAs } from './helpers.js';
 
 let app;
 let pool;
-let owner, principal, teacher;
+let owner, principal, teacher, itadmin;
 let present = false; // schema present? (L1's migration may or may not be merged yet)
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 const HD = (t) => ({ authorization: `Bearer ${t}` }); // DELETE: no body, no content-type
@@ -24,18 +24,35 @@ before(async () => {
   owner = await loginAs(app, 'owner@meridian.edu');
   principal = await loginAs(app, 'principal@meridian.edu');
   teacher = await loginAs(app, 'teacher@meridian.edu');
+  // RBAC-1: itadmin is a /roles author too, so the amplification ceiling must hold for it
+  itadmin = await loginAs(app, 'itadmin@meridian.edu');
   const probe = await pool.query(`SELECT to_regclass('app.roles') IS NOT NULL AS ok,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='app' AND table_name='users' AND column_name='role_key') AS col`);
   present = !!(probe.rows[0]?.ok && probe.rows[0]?.col);
-  if (present) {
-    // door needs the plugin-style enable? /roles is a KERNEL door — no plugin gate.
-    // sanity: register at least the fixture routes exist (matrix registry is source-side).
-  }
+  /* TST-5: this flag used to gate SIX test bodies behind `if (!present) t.skip(...)`, and it was TRUE
+     on every run — migrate.js applies every *.sql in migrations/ in sorted order with no opt-out, and
+     scripts/seed.js re-applies a list that is only about ordering, so 063_custom_roles.sql is present
+     in any database setupTestDb builds. A flag that is never false is not a conditional; it is a
+     discount on the whole file. The sibling lane reached the same conclusion in rbac-plugin-edge.test.js
+     ("a conditional skip here would hide the whole feature (TST-5)") — this is that repair, applied to
+     the file that owned the original defect. It is asserted here once, at fixture time, so the failure
+     names the real cause instead of surfacing as a 404 in an unrelated assertion. */
+  assert.ok(present, 'fixture: app.roles + app.users.role_key must exist (migration 063) — the roles surface is not optional in this suite (TST-5)');
+  // door needs the plugin-style enable? /roles is a KERNEL door — no plugin gate.
+  // sanity: register at least the fixture routes exist (matrix registry is source-side).
 });
 
 after(async () => { await app?.close(); });
 
 describe('custom roles kernel (L3-4.2)', () => {
+  /* TST-5 note on the name: this test was written when migration 063 was still staged in a sibling
+     lane, so it branch-asserted the 503 refusal "without the roles store" and the 200 surface "with"
+     it. The store landed, both branches are still here, and the ONLY change is that the choice is no
+     longer a silent runtime fork on a flag that is always true: `present` is asserted as a fixture
+     (above), so the live branch is the one that runs and the staged branch is dead but preserved. No
+     assertion was deleted, loosened, or renumbered — the 503 contract it pins is simply unreachable in
+     a database that migration 063 applies to, and asserting a 503 against a present store would be a
+     worse lie than a stale test name. */
   test('without the roles store: /roles answers 503 with the migration reason (never silent)', async () => {
     const r = await app.inject({ method: 'GET', url: '/roles', headers: H(owner.token) });
     if (present) {
@@ -57,8 +74,7 @@ describe('custom roles kernel (L3-4.2)', () => {
     }
   });
 
-  test('create: validates key/label/base_role/mask — dead patterns refused against the live route registry', async (t) => {
-    if (!present) return t.skip('roles store not migrated yet (063) — 503 path covered above');
+  test('create: validates key/label/base_role/mask — dead patterns refused against the live route registry', async () => {
     const dead = await app.inject({ method: 'POST', url: '/roles', headers: H(owner.token),
       payload: { key: 'frontdesk', label: 'Front desk', base_role: 'coordinator',
         permissions: { allow: ['POST /fees/payments'], deny: ['GET /definitely-not-a-route'] } } });
@@ -79,8 +95,7 @@ describe('custom roles kernel (L3-4.2)', () => {
     assert.equal(dup.statusCode, 409);
   });
 
-  test('assignment rules: no self-assign, no owner overlay, unknown user list guarded', async (t) => {
-    if (!present) return t.skip('roles store not migrated yet (063)');
+  test('assignment rules: no self-assign, no owner overlay, unknown user list guarded', async () => {
     const ownerId = (await pool.query(`SELECT id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].id;
     const self = await app.inject({ method: 'POST', url: '/roles/frontdesk/assign', headers: H(owner.token),
       payload: { userIds: [ownerId] } });
@@ -94,8 +109,7 @@ describe('custom roles kernel (L3-4.2)', () => {
     assert.equal(ghost.json().assigned, 0);
   });
 
-  test('resolution order: deny blocks a base-role door; allow grants a door the base role lacks; no role_key → untouched', async (t) => {
-    if (!present) return t.skip('roles store not migrated yet (063)');
+  test('resolution order: deny blocks a base-role door; allow grants a door the base role lacks; no role_key → untouched', async () => {
     // frontdesk = coordinator base + allow GET /fees + deny GET /students
     const tid = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
     const uid = (await pool.query(`SELECT id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].id;
@@ -127,8 +141,7 @@ describe('custom roles kernel (L3-4.2)', () => {
     void tid;
   });
 
-  test('delete: members block removal; empty role deletes; audit rows exist for the lifecycle', async (t) => {
-    if (!present) return t.skip('roles store not migrated yet (063)');
+  test('delete: members block removal; empty role deletes; audit rows exist for the lifecycle', async () => {
     const uid = (await pool.query(`SELECT id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].id;
     await app.inject({ method: 'POST', url: '/roles/frontdesk/assign', headers: H(owner.token), payload: { userIds: [uid] } });
     const blocked = await app.inject({ method: 'DELETE', url: '/roles/frontdesk', headers: HD(owner.token) });
@@ -141,5 +154,59 @@ describe('custom roles kernel (L3-4.2)', () => {
     assert.ok(!list.json().roles.some((r) => r.key === 'frontdesk'), 'retired role left the live list');
     const audit = (await pool.query(`SELECT action FROM app.audit_log WHERE record_type='Role' AND action='Custom role retired' ORDER BY created_at DESC LIMIT 1`)).rows[0];
     assert.ok(audit, 'role retirement is audited');
+  });
+});
+
+// ── PERFECT-100 §5.1 RBAC-1: the custom-role privilege ceiling ────────────────
+// Before this fix an `itadmin` — NOT an owner — could mint a grant-all role and assign
+// it to itself, becoming owner-equivalent without breaking any cryptography. Two
+// mechanisms allowed it: (1) `* /*` validated, because `*` matched every door's method
+// and `/*` every door's path, and an `allow` mask LIFTS base-role refusals; (2) even
+// without a wildcard, an author could enumerate any door explicitly. Both are closed.
+describe('PERFECT-100 RBAC-1: a custom role cannot exceed its author', () => {
+  const mk = (tok, body) => app.inject({ method: 'POST', url: '/roles', headers: H(tok), payload: body });
+  const uid = () => Math.random().toString(36).slice(2, 8);
+
+  test('the grant-all wildcard is refused', async () => {
+    for (const allow of [['* /*'], ['GET /*'], ['GET /']]) {
+      const r = await mk(owner.token, { key: `wild${uid()}`, label: 'Wild', base_role: 'teacher', permissions: { allow } });
+      assert.equal(r.statusCode, 400, `"${allow[0]}" must be refused (got ${r.statusCode}: ${r.body})`);
+    }
+    // and a method that is not a real HTTP verb
+    const r2 = await mk(owner.token, { key: `wild${uid()}`, label: 'Wild', base_role: 'teacher', permissions: { allow: ['ALL /fees'] } });
+    assert.equal(r2.statusCode, 400, r2.body);
+  });
+
+  test('itadmin cannot grant a door it cannot reach; the owner can', async () => {
+    // POST /plugins/library/books is gated to owner/principal/coordinator/facilities
+    // (library/index.js:31) — itadmin is NOT among them, so granting it would be pure
+    // amplification: itadmin seizing library authority it does not hold.
+    const key = `libhelper${uid()}`;
+    const payload = { key, label: 'Library helper', base_role: 'teacher',
+      permissions: { allow: ['POST /plugins/library/books'] } };
+
+    const asIt = await mk(itadmin.token, payload);
+    assert.equal(asIt.statusCode, 403, `itadmin must not amplify (got ${asIt.statusCode}: ${asIt.body})`);
+    assert.match(asIt.json().error, /can only grant doors your own role/);
+    const none = await pool.query(`SELECT 1 FROM app.roles WHERE key=$1`, [key]);
+    assert.equal(none.rowCount, 0, 'the amplified role was NOT created');
+
+    // the identical payload from the OWNER succeeds — the owner is the authority-granting
+    // principal and is genuinely inside that door's role gate, so capacity is preserved.
+    const asOwner = await mk(owner.token, payload);
+    assert.equal(asOwner.statusCode, 200, `owner keeps full authority (got ${asOwner.statusCode}: ${asOwner.body})`);
+  });
+
+  test('a DENY outside the author reach is still allowed — restricting is not amplification', async () => {
+    const key = `denyer${uid()}`;
+    const r = await mk(itadmin.token, { key, label: 'Restricted helper', base_role: 'teacher',
+      permissions: { allow: ['POST /plugins/library/books'], deny: [] } });
+    // the ALLOW above is amplification, so this must still refuse...
+    assert.equal(r.statusCode, 403, r.body);
+    // ...but a role whose ONLY mask content is a deny must succeed: a deny can only
+    // ever REMOVE access, so it cannot escalate anyone.
+    const r2 = await mk(itadmin.token, { key: `denyonly${uid()}`, label: 'Deny only', base_role: 'teacher',
+      permissions: { deny: ['POST /plugins/library/books'] } });
+    assert.equal(r2.statusCode, 200, `deny-only must be permitted for any author (got ${r2.statusCode}: ${r2.body})`);
   });
 });

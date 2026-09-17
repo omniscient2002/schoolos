@@ -70,18 +70,34 @@ describe('plugin registry', () => {
     const pg2 = (await import('pg')).default;
     const c2 = new pg2.Client({ connectionString: TEST_URL });
     await c2.connect();
-    const leaked = (await c2.query(
+    /* TST-4: this block used to assert `leaked >= 0` — a count is never negative, so the assertion could not
+       fail — and it set the tenant GUC on the OWNER connection, which bypasses RLS, so the query it measured
+       was not the query that matters. What matters is what the APP role sees when it names a tenant.
+       Discriminating pair: as `schoolos_app` under the rival's GUC, another tenant's rows must be invisible;
+       as the same role under the same GUC, the rival's OWN rows must be visible — otherwise the zero is just
+       an empty table and proves nothing. The owner path supplies the non-vacuity check: there really is a
+       Meridian `library` row to leak. */
+    const asApp = async (tenantId, text, params) => {
+      const c = new pg2.Client({ connectionString: TEST_URL });
+      await c.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL ROLE schoolos_app');
+        await c.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [tenantId]);
+        const r = await c.query(text, params);
+        await c.query('COMMIT');
+        return r;
+      } finally { await c.end(); }
+    };
+    const toLeak = (await c2.query(
       `SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id <> $1 AND plugin_id = 'library'`, [tb.id])).rows[0].n;
+    assert.ok(toLeak >= 1, 'NON-VACUITY: another tenant really does hold a library row, so the zero below is RLS');
+    const leaked = (await asApp(tb.id,
+      `SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id <> $1 AND plugin_id = 'library'`, [tb.id])).rows[0].n;
+    assert.equal(leaked, 0, 'the app role with the rival GUC sees NO other tenant\'s plugin rows');
+    const own = (await asApp(tb.id,
+      `SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id = $1 AND plugin_id = 'library'`, [tb.id])).rows[0].n;
+    assert.equal(own, 1, 'and DOES see its own — so the same query works and the isolation is the policy, not the data');
     await c2.end();
-    const viaGuc = await (async () => {
-      const c3 = new pg2.Client({ connectionString: TEST_URL });
-      await c3.connect();
-      await c3.query(`SELECT set_config('schoolos.tenant_id', $1, true)`, [tb.id]);
-      const r = (await c3.query(`SELECT count(*)::int AS n FROM app.plugins WHERE tenant_id = $1`, [tb.id])).rows[0].n;
-      await c3.end();
-      return r;
-    })();
-    assert.ok(leaked >= 0, 'sanity');
-    assert.ok(viaGuc > 0, 'rival catalog readable under its own GUC only');
   });
 });

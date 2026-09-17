@@ -11,8 +11,9 @@
 //      previous day (the accounting.tally door does the full voucher export on
 //      demand; this is the daily book-side sanity line).
 //   3. retention — scripts/retention-worker.js pass() (purges + audit archival).
-//   4. fee dunning — L1's hook (L1-3.2): money.invoicing/dunning.js is imported
-//      defensively; until L1's module lands the step logs `skipped`, never crashes.
+//   4. fee dunning — scripts/dunning-reminders.js export (L1-3.2): sweep of overdue
+//      fees across tenants, queueing FEE_REMINDER comms rows for the dispatcher.
+//      A failing sweep logs `skipped` and never crashes the day (containment).
 //
 // Compose cron entry (host cron, one line — the compose service mirrors the
 // retention one-shot; S0 wires the service at the next gate):
@@ -50,16 +51,26 @@ export async function runRetention() {
   return counts;
 }
 
-// ── 4. fee dunning — L1's hook (L1-3.2), defensive import ────────────────────
-export async function runDunningHook() {
+// ── 4. fee dunning — scripts/dunning-reminders.js (L1-3.2) ───────────────────
+// PRD-13 residual. This used to import `../src/plugins/money.invoicing/dunning.js`, a path that does not
+// exist, and call `runDunning()` on it. The import threw MODULE_NOT_FOUND on EVERY run, the catch below
+// logged `day.dunning { status: 'skipped' }`, and the day reported clean — a money-collecting step that
+// could never have worked, waiting for a module that was never going to be written there, because the
+// sweep already existed as a self-executing script with no exports. That script now exports `runDunning`,
+// so the daily worker and the cron entry run the SAME sweep instead of two divergent ideas of one.
+//
+// The containment posture is deliberately unchanged, and is what the old test was really protecting: a
+// failing sweep is reported and never crashes the day. It is now exercised by making the sweep fail
+// (tests/day-worker-dunning.test.js) instead of by asserting that its module is missing.
+export async function runDunningHook({ runDunning = null, quiet = null } = {}) {
   try {
-    const mod = await import('../src/plugins/money.invoicing/dunning.js');
-    if (typeof mod.runDunning !== 'function') throw new Error('runDunning export missing');
-    const out = await mod.runDunning({ q: (text, params) => pool.query(text, params) });
+    const sweep = runDunning ?? (await import('./dunning-reminders.js')).runDunning;
+    const out = await sweep({ q: (text, params) => pool.query(text, params), quiet });
     line('day.dunning', { status: 'ok', ...(out && typeof out === 'object' ? out : { result: String(out) }) });
     return { status: 'ok', ...out };
   } catch (e) {
-    // L1's module not landed (or failed) — contained skip, never a crashed cron
+    // Contained skip, never a crashed cron. This now means "the sweep FAILED", which is a real
+    // operational signal; before it meant "the sweep does not exist", which was not a signal at all.
     line('day.dunning', { status: 'skipped', reason: e.message });
     return { status: 'skipped', reason: e.message };
   }

@@ -2,6 +2,7 @@ import { cloneElement, createContext, useContext, useEffect, useRef, useState, t
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 import { avatarHue, initials } from '../lib/format';
+import { PulseDot, Ticker } from './motion';
 
 /* ============ Button ============ */
 export function Button({ variant = 'secondary', size, icon, iconRight, loading, children, className = '', ...rest }: {
@@ -9,8 +10,10 @@ export function Button({ variant = 'secondary', size, icon, iconRight, loading, 
   size?: 'sm' | 'lg'; icon?: ReactNode; iconRight?: ReactNode; loading?: boolean;
   children?: ReactNode; className?: string;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  /* character: a trailing arrow leans forward on hover (character.css) */
+  const arrow = iconRight ? ' has-arrow' : '';
   return (
-    <button className={`btn btn-${variant} ${size ? `btn-${size}` : ''} ${className}`} disabled={loading || rest.disabled} {...rest}>
+    <button className={`btn btn-${variant} ${size ? `btn-${size}` : ''}${arrow} ${className}`} disabled={loading || rest.disabled} {...rest}>
       {loading ? <span className="spinner" style={{ width: 13, height: 13, borderWidth: 2 }} /> : icon}
       {children}
       {iconRight}
@@ -19,12 +22,12 @@ export function Button({ variant = 'secondary', size, icon, iconRight, loading, 
 }
 
 /* ============ Badge ============ */
-export function Badge({ tone = 'neutral', dot, children, className = '' }: {
+export function Badge({ tone = 'neutral', dot, live, children, className = '' }: {
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'ai' | 'accent' | 'outline';
-  dot?: boolean; children: ReactNode; className?: string;
+  dot?: boolean; live?: boolean; children: ReactNode; className?: string;
 }) {
   const cls = { neutral: '', success: 'badge-success', warning: 'badge-warning', danger: 'badge-danger', info: 'badge-info', ai: 'badge-ai', accent: 'badge-accent', outline: 'badge-outline' }[tone];
-  return <span className={`badge ${cls} ${className}`}>{dot && <span className="dot" />}{children}</span>;
+  return <span className={`badge ${cls} ${className}`}>{live ? <PulseDot tone={tone === 'outline' || tone === 'neutral' ? 'info' : tone} size={7} label="live" /> : dot ? <span className="dot" /> : null}{children}</span>;
 }
 
 /* ============ Avatar ============ */
@@ -44,22 +47,28 @@ export function Card({ children, className = '', pad, head, sub, actions, onClic
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
       tabIndex={onClick ? 0 : undefined}>
       {head && <div className="card-head"><div><HeadTag>{head}</HeadTag>{sub && <div className="u-small u-muted" style={{ marginTop: 2 }}>{sub}</div>}</div>{actions}</div>}
-      <div className={pad ? 'card-body' : ''}>{children}</div>
+      {/* Padding is the DEFAULT: a card body that hugs its border reads as a bug, and it was one for the
+          ~130 cards that passed `head`/content without `pad`. Opt out with `pad={false}` for intentional
+          full-bleed content (tables/maps that should meet the edge). */}
+      <div className={pad === false ? '' : 'card-body'}>{children}</div>
     </div>
   );
 }
 
 /* ============ Stat ============ */
-export function Stat({ label, value, delta, sub, spark, onClick, style }: {
+export function Stat({ label, value, delta, sub, spark, onClick, style, count, countFormat }: {
   label: string; value: ReactNode; delta?: { value: string; dir: 'up' | 'down' | 'flat' };
   sub?: ReactNode; spark?: ReactNode; onClick?: () => void; style?: CSSProperties;
+  /* character: pass `count` (a number) and the value stamps in, then counts
+     up — Indian digit grouping by default, or supply countFormat. */
+  count?: number; countFormat?: (n: number) => string;
 }) {
   return (
     <div className={`card stat ${onClick ? 'card-click' : ''}`} style={style} role={onClick ? 'button' : undefined} onClick={onClick} tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}>
       <div className="label">{label}</div>
       <div className="stat-value-row">
-        <div className="value">{value}</div>
+        <div className="value">{count != null ? <Ticker value={count} format={countFormat} /> : value}</div>
         {delta && <span className={`delta ${delta.dir}`}>{delta.dir === 'up' ? '▲' : delta.dir === 'down' ? '▼' : ''} {delta.value}</span>}
         {spark && !delta && <span className="stat-spark">{spark}</span>}
       </div>
@@ -78,6 +87,18 @@ export function Empty({ icon, title, sub, action, titleAs = 'h3', style }: { ico
       <Tag>{title}</Tag>
       {sub && <p>{sub}</p>}
       {action}
+    </div>
+  );
+}
+
+/* Honesty notice for sections that render illustrative/sample data in this build. The product's law is
+   that a fabricated number must never read as the school's own record; when a real door does not exist
+   yet, the section says so instead of dressing fixtures as measured truth. */
+export function SampleNote({ children, style }: { children?: ReactNode; style?: CSSProperties }) {
+  return (
+    <div className="sample-note" role="note" style={style}>
+      <Icon.Info size={14} style={{ flexShrink: 0, marginTop: 1, color: 'var(--text-3)' }} />
+      <span>{children ?? 'Sample data — this section is illustrative in this build and is not read from your school\u2019s records.'}</span>
     </div>
   );
 }

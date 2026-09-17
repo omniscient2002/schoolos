@@ -38,12 +38,16 @@ export function totpAt(secretB32, timeStep) {
 }
 
 export function verifyTotp(secretB32, code, { window = 1, stepSeconds = 30, now = Date.now() } = {}) {
-  if (!/^\d{6}$/.test(String(code ?? ''))) return false;
+  return verifyTotpStep(secretB32, code, { window, stepSeconds, now }) !== null;
+}
+
+export function verifyTotpStep(secretB32, code, { window = 1, stepSeconds = 30, now = Date.now() } = {}) {
+  if (!/^\d{6}$/.test(String(code ?? ''))) return null;
   const step = Math.floor(now / 1000 / stepSeconds);
   for (let d = -window; d <= window; d++) {
-    if (totpAt(secretB32, step + d) === String(code)) return true;
+    if (totpAt(secretB32, step + d) === String(code)) return step + d;
   }
-  return false;
+  return null;
 }
 
 export function otpauthUri({ secret, account, issuer = 'SchoolOS' }) {

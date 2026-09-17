@@ -10,35 +10,12 @@
    plausibly emits (strings OR objects) and return strict UI
    types. WRITE wrappers post the frozen bodies verbatim.
    ============================================================ */
-import { setToken, LIVE_BASE, redirectToLoginWithReturn } from './liveApi';
+import { apiRequest } from './liveApi';
 
 /* ---------- transport ----------
-   Same contract as liveApi.call() — Bearer from localStorage, JSON
-   error bodies, 401 resets the session — implemented here add-only
-   because call() is not exported from liveApi.ts (same precedent as
-   apiVisitorVerify in liveApi). If call() is ever exported, this
-   helper should collapse onto it. */
-async function studentCall<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem('schoolos_token');
-  const res = await fetch(`${LIVE_BASE}${path}`, {
-    ...opts,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(opts.headers ?? {}),
-    },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 401 && !path.startsWith('/auth/')) {
-    // session expired or revoked — clear and let the AuthGate take over
-    localStorage.removeItem('schoolos.session');
-    setToken(null);
-    redirectToLoginWithReturn();
-    throw new Error('session expired');
-  }
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-  return body as T;
-}
+   FEX-3/6: ride the ONE transport (services/liveApi.ts) — memory-only bearer, same-origin, the same 401
+   session-reset and CSRF echo. This helper collapsed onto it when `call` was finally exported. */
+const studentCall = apiRequest;
 
 /* ---------- strict UI shapes ---------- */
 export type StudentPrintKind =
@@ -317,13 +294,13 @@ export async function addTask(input: { title: string; dueDate?: string }): Promi
   });
   return { ok: true };
 }
-/* Toggle sub-path is NOT in the frozen v0 list (the freeze covers
-   GET/POST /student/tasks only) — assumed here as
-   POST /student/tasks/:id/toggle; adjust with SS-1 when it lands. */
+/* The done-toggle rides the same POST /student/tasks door with an `id`
+   (server: student.world/index.js — "done toggle on an own task"). The old
+   `/student/tasks/:id/toggle` sub-path never existed server-side. */
 export async function toggleTask(id: string, done: boolean): Promise<{ ok: boolean }> {
-  await studentCall<unknown>(`/student/tasks/${encodeURIComponent(id)}/toggle`, {
+  await studentCall<unknown>('/student/tasks', {
     method: 'POST',
-    body: JSON.stringify({ done }),
+    body: JSON.stringify({ id, done }),
   });
   return { ok: true };
 }

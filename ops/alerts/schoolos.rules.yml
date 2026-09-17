@@ -1,0 +1,147 @@
+# schoolOS alert rules — OPS-3.
+#
+# The register: "No alerting exists anywhere — no rules, no notification transport, no SLO. The relay's
+# healthcheck is deliberately disabled and the only outputs are stdout lines, so the event spine can die
+# silently. /metrics moreover requires a human owner JWT and is unreachable by a machine identity."
+#
+# This file is the RULES half. It is deliberately DATA, not documentation: `server/scripts/health-probe.js`
+# reads it, evaluates each rule against the database, and exits non-zero when any rule FIRES — following
+# the exit-code contract this repo already uses everywhere else (backup.sh "mail on failure, silence on
+# success"; retention-worker.js "1 = a purge query failed (cron alert)"; dunning-reminders.js "1 when
+# reminders were queued so an alert can fire").
+#
+# TWO RULES THAT KEEP THIS FILE HONEST, both enforced by server/tests/ops-deploy.test.js:
+#   1. Every `metric:`/`check:` named here must be a check the probe actually implements. A rule that
+#      watches a signal nobody reads is the same fabricated-telemetry defect class as an invented
+#      infrastructure panel, and it is a build failure here rather than a discovery during an outage.
+#   2. Every `metric:` named here must also be a series the /metrics endpoint actually emits, so a
+#      dashboard built from these rules cannot point at a series that does not exist.
+#
+# WHY THRESHOLDS ARE CONSERVATIVE: an alert that fires during normal operation trains the operator to
+# ignore alerts, which is worse than having none. `outbox_sandbox_sent` in particular is 0-by-design in a
+# development sandbox, so it is scoped to production below rather than firing locally forever.
+
+version: 1
+
+# Runtime context in which each rule is evaluated. A rule whose `unless_env` matches the running
+# NODE_ENV is REPORTED AS SKIPPED, not silently passed — an operator must be able to see the difference
+# between "checked and healthy" and "not checked here".
+rules:
+
+  # ── the event spine ────────────────────────────────────────────────────────────────────────────────
+  - name: outbox_not_draining
+    check: outbox_stuck
+    metric: schoolos_fleet_outbox_pending
+    severity: critical
+    threshold_gte: 1
+    description: >-
+      Events older than 15 minutes are still PENDING (not processed, not parked). The relay is not
+      draining — the whole event spine is stalled. This is the alert whose absence let a dead relay look
+      exactly like an idle system (the register's OPS-4/H5 class).
+
+  - name: outbox_parked
+    check: outbox_parked
+    metric: schoolos_fleet_outbox_parked
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      The relay gave up on at least one event after exhausting its retry budget. Terminal: a PARKED row
+      is never retried, so a human must look. Also emitted as the positive gauge schoolos_outbox_parked —
+      this rule adds the exit-code transport that the gauge alone cannot provide.
+
+  - name: webhook_fanout_stalled
+    check: webhook_undiscovered
+    metric: schoolos_fleet_webhook_undiscovered
+    severity: critical
+    threshold_gte: 1
+    description: >-
+      Events older than 15 minutes have discovered_at IS NULL, i.e. the webhook fan-out (OPS-8's
+      webhook-worker) has not scanned them. Outbound webhooks — a paying school's integrations — are
+      silently not being delivered. Migration 076 added the state column precisely so this is detectable;
+      until this rule existed, nothing read it.
+
+  - name: webhook_undelivered
+    check: webhook_undelivered
+    metric: schoolos_fleet_webhook_deliveries_failed
+    severity: critical
+    threshold_gte: 1
+    description: >-
+      The webhook fan-out CONSIDERED these events and still could not deliver them — a subscriber delivery
+      that gave up (status='failed'), or one that is queued and has not been retried for over ten minutes.
+      This is the stage webhook_undiscovered cannot see: it lives in app.webhook_deliveries, not app.outbox.
+      DAT-3: with only the outbox gauges, a school whose webhooks never arrived read all zeros, because the
+      outbox row is settled as soon as the relay emits the event. Non-zero here means an integration the
+      school is paying for is receiving nothing.
+
+  - name: workflow_runner_stalled
+    check: workflow_unscanned
+    metric: schoolos_fleet_workflow_unscanned
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      Events older than 15 minutes have workflow_scanned_at IS NULL, so app.workflow_rules are not being
+      evaluated. A rule a school configured never fires, and because the rule is stored and listed, the
+      absence reads as "nothing to do" rather than as a dead worker.
+
+  # ── outbound communication ─────────────────────────────────────────────────────────────────────────
+  - name: comms_queue_stalled
+    check: comms_stuck
+    metric: schoolos_fleet_comms_queued
+    severity: critical
+    threshold_gte: 1
+    description: >-
+      Notices approved more than 15 minutes ago are still status='queued'. The dispatcher is down, so
+      parent notices, absence alerts and fee reminders are sitting undelivered. Distinct from
+      comms_failed: a stalled queue is recoverable, a failed row is terminal.
+
+  - name: comms_failed
+    check: comms_failed
+    metric: schoolos_fleet_comms_failed
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      Messages the dispatcher gave up on (retry cap, or undeliverable because the carrier was a sandbox
+      in production). Terminal. Mirrors the schoolos_comms_failed gauge.
+
+  - name: comms_delivered_to_nobody
+    check: comms_sandbox_sent
+    metric: schoolos_fleet_comms_sandbox_sent
+    severity: critical
+    threshold_gte: 1
+    unless_env: development
+    description: >-
+      Messages recorded 'sent' whose carrier only wrote a log line — they reached nobody. This is 0 by
+      design in a development sandbox (the logger provider IS the carrier there), so the rule is scoped
+      away from development. In production a non-zero reading means the install is missing a real
+      provider for that channel, which is the exact lie SEC-0 and PRD-13 were about.
+
+  # ── process liveness ───────────────────────────────────────────────────────────────────────────────
+  - name: api_heartbeat_stale
+    check: api_heartbeat_age_seconds
+    metric: schoolos_fleet_api_heartbeat_age_seconds
+    severity: critical
+    threshold_gte: 180
+    description: >-
+      app.ops_counters.updated_at is older than 3 minutes. The API writes it every 60s, and it is the
+      ONLY process-liveness timestamp the schema has. A stale row means the API process is dead (or every
+      replica is), which is invisible from the outside when the container is still "running".
+
+  - name: backup_missing
+    check: backup_age_seconds
+    metric: schoolos_fleet_backup_age_seconds
+    severity: critical
+    threshold_gte: 93600
+    description: >-
+      No successful backup recorded in 26 hours (24h RPO plus slack). OPS-6: backups were a script
+      NOTHING ran, while the README claimed an RPO the project could not meet. This rule is what makes
+      that claim checkable rather than aspirational.
+
+  # ── schema ─────────────────────────────────────────────────────────────────────────────────────────
+  - name: migrations_drift
+    check: migrations_pending
+    metric: schoolos_fleet_migrations_pending
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      Migration files exist on disk that are not recorded as applied. The API is running against a schema
+      older than the code shipping to it.

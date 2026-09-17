@@ -14,33 +14,11 @@
    - POST /coord/copilot-lite         deterministic v0 (never invents, 200/month)
    ============================================================ */
 
-const BASE = (import.meta.env.VITE_API_BASE as string) ?? 'http://127.0.0.1:8080';
+/* FEX-3/6: ride the ONE transport (services/liveApi.ts) — memory-only bearer, same-origin, the same 401
+   session-reset and CSRF echo. */
+import { apiRequest } from './liveApi';
 
-/* Same wire convention as services/liveApi.ts (bearer token, JSON, verbatim
-   server error strings — friendlyErrors rewrites only at display time).
-   Kept local so this file adds nothing to other lanes' surfaces. */
-import { redirectToLoginWithReturn } from './liveApi';
-
-async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem('schoolos_token');
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(opts.headers ?? {}),
-    },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 401 && !path.startsWith('/auth/')) {
-    localStorage.removeItem('schoolos.session');
-    localStorage.removeItem('schoolos_token');
-    redirectToLoginWithReturn();
-    throw new Error('session expired');
-  }
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-  return body as T;
-}
+const call = apiRequest;
 
 /* ---------------- home ---------------- */
 

@@ -1,0 +1,84 @@
+# schoolOS schedule — OPS-6 (backups that nothing ran) and OPS-8 (five workers never scheduled).
+#
+# Install with:   crontab ops/cron/schoolos.cron
+# Verify with:    node server/scripts/health-probe.js
+#
+# The register, verbatim:
+#   OPS-6  "Backups are a script nothing runs: no cron/systemd/compose service ships, while the README
+#           claims 'RPO <= 24h' — true only if an operator wires it by hand."
+#   OPS-8  "Five shipped workers are never scheduled (day-worker, webhook-worker, workflow-worker,
+#           dunning-reminders, reconcile-payments): outbound webhooks, workflow rules, fee dunning and
+#           payment reconciliation silently never run in a real deployment."
+#
+# This file is that missing schedule, as a COMMITTED artifact rather than a comment in a README. It
+# replaces the two commented cron variants that used to live in docker-compose.yml and README.md — those
+# were not equivalent (the docker-only one wrote a flat dump with no globals, no verification and no
+# retention), which is exactly how the unusable dumps in backups/manual/ came to exist.
+#
+# ── Why each job lives where it does ────────────────────────────────────────────────────────────────
+# Long-lived POLLERS are compose services, not cron lines, because a cron line that starts a poller
+# every minute would start a new process every minute: outbox-worker, comms-dispatcher, webhook-worker
+# and workflow-worker are all in server/docker-compose.yml.
+# The THREE ONE-SHOTS below are genuinely periodic work, so they belong here.
+#
+# ── Exit-code contract (this is the alert transport; there is no pager integration to pretend about) ──
+# Several of these scripts exit 1 to mean "I did my job and you should look":
+#   dunning-reminders.js  exit 1 when reminders were queued (so an alert can fire)
+#   reconcile-payments.js exit 1 when it found a discrepancy
+#   retention-worker.js   exit 1 when a purge query failed
+#   health-probe.js       exit 1 when a rule FIRES, 2 when the monitor itself could not run
+# A bare `cron` mails any non-empty output to the operator's MTA, which is what makes these useful: the
+# mail IS the alert. Do not add `|| true` to any line below — that silences the only transport there is.
+# For dunning/reconcile the non-zero exit is a SUCCESS signal, so they log to a file instead of relying
+# on cron mail for a "look at this" that arrives every single day.
+
+# Adjust to the real checkout. Everything below is relative to it.
+SCHOOLOS_HOME=/srv/schoolos
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# Postgres client tools for backup.sh; the owner DSN for the scripts that need one.
+PGHOST=127.0.0.1
+PGPORT=5432
+PGUSER=schoolos
+PGDATABASE=schoolos
+# OPSX-15: libpq needs a credential. Do NOT put a password in this file (cron files are typically
+# world-readable) — use a root-0600 `~/.pgpass` for the operator, or an EnvironmentFile the operator
+# sources. `PGPASSWORD` is deliberately not hard-coded here.
+#
+# OPSX-15: the redirected workers below write to /var/log/schoolos; if that directory does not exist every
+# line fails at the shell. The dir is created inline in each redirected line (idempotent) rather than by a
+# separate cron line, because `ops-deploy.test.js` requires every scheduled line to invoke a real worker.
+
+# ── 02:17 IST nightly backup (OPS-6) ────────────────────────────────────────────────────────────────
+# Certifies: globals.sql (CREATE ROLE for schoolos_app) + a custom-format db dump + `pg_restore --list`
+# verification, retained 7 nights, and a `backup_last_success_epoch` row so health-probe.js can alert on
+# a backup that did not happen. Without the row, "no backup in 26 hours" is unanswerable.
+17 2 * * * cd $SCHOOLOS_HOME/server && ./scripts/backup.sh
+
+# ── 02:45 IST nightly: schema + health probe (OPS-3) ───────────────────────────────────────────────
+# Runs AFTER the backup so the probe's own failure cannot prevent the night's dump, and early enough
+# that a stale API heartbeat or a stalled relay is on the operator's screen before the school day.
+# NODE_ENV=production (OPSX-6): the probe defaults to 'development', which makes every production-scoped
+# rule (notably comms_delivered_to_nobody) SKIP — so on the one host where the check matters, it was
+# always skipped. This line is the production alert path, so it declares the production posture.
+45 2 * * * cd $SCHOOLOS_HOME/server && NODE_ENV=production node scripts/health-probe.js
+
+# ── 03:05 IST weekdays: the umbrella day-worker ─────────────────────────────────────────────────────
+# scripts/day-worker.js already sequences the tally export, the retention pass and the dunning sweep.
+# Weekdays only: there is no school business to act on over the weekend, and running it daily would
+# double-queue dunning reminders against the same dedup keys as the 03:30 job below.
+5 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js >> /var/log/schoolos/day-worker.log 2>&1
+
+# ── 03:30 IST weekdays: payment reconciliation ──────────────────────────────────────────────────────
+# Exit 1 when it finds a discrepancy between the local ledger and the gateway. Redirected to a log ON
+# PURPOSE: the exit code is a finding, and every finding mailed daily is how an operator learns to
+# ignore this address. `node` is invoked explicitly because the file has no shebang.
+30 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/reconcile-payments.js >> /var/log/schoolos/reconcile.log 2>&1
+
+# 1. (the two pollers -- webhook-worker, workflow-worker -- are compose services, see docker-compose.yml)
+# 2. dunning-reminders.js is DELIBERATELY NOT scheduled here.
+#    day-worker.js already runs the dunning sweep (day-worker.js calls the same sweep, with the same
+#    `dunning:<obligationId>` dedup keys). Scheduling both would present two independent-looking sources
+#    of the same queue: the dedup key protects the DATA, but a duplicate cron line makes the SCHEDULE
+#    unreadable, and "which of these two actually runs dunning?" is not a question an operator should
+#    have to answer at 03:00. Run it by hand when you need it:
+#        cd $SCHOOLOS_HOME/server && node scripts/dunning-reminders.js

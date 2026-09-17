@@ -7,7 +7,7 @@ const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, 'ops.timetable');
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, 'ops.timetable');
 
   app.get(`/plugins/${ID}/grid`, { preHandler: [require('owner','principal','coordinator','teacher','itadmin','finance','admissions','transport','facilities','technician'), lifecycleGate] }, async (req) => {
     const { dayOfWeek } = req.query ?? {};
@@ -107,7 +107,23 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/attendance/autofill`, { preHandler: [require('teacher','coordinator','principal'), lifecycleGate] }, async (req, reply) => {
     const { date, grade, section, periodSeq } = req.body ?? {};
     if (!date || !grade || !section) return reply.code(400).send({ error: 'Date, class and section are required' });
+    // PLGX-2: this door used to write attendance for ANY body-supplied class and date. The kernel
+    // /attendance/mark door binds a teacher to their `app.class_assignments` rows (PRD-2/083); this
+    // plugin door is the sibling surface and must apply the same ownership rule, or it re-opens the
+    // very bypass the kernel closed. It also validates the date so a malformed value cannot 500.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return reply.code(400).send({ error: 'Date must be YYYY-MM-DD' });
+    if (String(grade).length > 20 || String(section).length > 8) return reply.code(400).send({ error: 'Invalid class or section' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const isOffice = ['principal', 'coordinator'].includes(req.user.role);
+      if (!isOffice) {
+        const owns = await c.query(
+          `SELECT 1 FROM app.class_assignments
+            WHERE tenant_id=$1 AND teacher_id=$2 AND grade=$3 AND section=$4 AND active LIMIT 1`,
+          [req.user.tenant_id, req.user.id, String(grade), String(section)]);
+        if (!owns.rows[0]) {
+          return reply.code(403).send({ error: 'You can only autofill a class assigned to you. Ask an administrator to assign this class (or the principal\'s office).' });
+        }
+      }
       // Deterministic, idempotent, safe: insert ONLY for students with no attendance row
       // today (absent/present/human-marked rows are never touched — Attendance §1.1).
       // Single statement, unique-index-safe on concurrent replays.

@@ -26,7 +26,7 @@ const FRIENDLY: Record<string, { name?: string; description?: string }> = {
 };
 
 export default function Plugins() {
-  const { all, enabled, enable, disable, configured } = useKernel();
+  const { all, enabled, enable, disable, configured, available, requiredPlan } = useKernel();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<string | null>(null);
@@ -74,6 +74,7 @@ export default function Plugins() {
       <div className="u-col" style={{ gap: 12 }}>
         {all.map(p => {
           const on = enabled.has(p.id);
+          const entitled = available[p.id] !== false;
           const I = Icon[p.icon as keyof typeof Icon] ?? Icon.Database;
           return (
             <Card key={p.id} style={{ borderTop: `3px solid ${on ? 'var(--success)' : 'var(--border-subtle)'}` }}>
@@ -95,10 +96,14 @@ export default function Plugins() {
                       <span className="u-small u-muted" style={{ lineHeight: 1.55 }}>{(FRIENDLY[p.id]?.description ?? p.description)}</span>
                     </div>
                   </div>
-                  <Button size="sm" variant={on ? 'secondary' : 'primary'} loading={busy === p.id} onClick={() => toggle(p.id, !on)}>
-                    {on ? 'Disable' : 'Enable'}
+                  <Button size="sm" variant={on ? 'secondary' : 'primary'} loading={busy === p.id} disabled={!entitled && !on} onClick={() => toggle(p.id, !on)}>
+                    {on ? 'Disable' : entitled ? 'Enable' : 'Upgrade to enable'}
                   </Button>
                 </div>
+
+                {!entitled && !on && <div className="u-xs" style={{ color: 'var(--text-3)' }}>
+                  Included in the {requiredPlan[p.id] ?? 'appropriate'} plan. Ask the school owner about upgrading.
+                </div>}
 
                 <div className="u-inline" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {p.permissions.map(per => (

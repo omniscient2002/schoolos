@@ -214,10 +214,16 @@ test('noticeboard: weekly print-ready blocks (plain text lines)', async () => {
     for (const line of b.lines) assert.equal(typeof line, 'string', 'lines are printable text');
   }
   assert.ok(!JSON.stringify(body).includes('guardian_phone'), 'printable board carries no guardian PII');
-  // staff door shares the shape
+  // PLGX-1: the announcements block used to read app.events.label for the whole tenant and serve it to a
+  // student — labels can name other families' children or amounts. A student must not receive it.
+  assert.ok(!body.blocks.some((b) => b.title === 'Announcements & events this week'),
+    'a student must not receive the tenant-wide event feed');
+  // staff door shares the shape and DOES receive the tenant feed
   const t = await login('coordinator@meridian.edu');
   const staff = await app.inject({ method: 'GET', url: '/student/noticeboard', headers: H(t.token) });
   assert.equal(staff.statusCode, 200, 'noticeboard is also a staff door');
+  assert.ok(staff.json().blocks.some((b) => b.title === 'Announcements & events this week'),
+    'staff roles still get the tenant-wide announcements block');
 });
 
 test('wellbeing: student files (anonymous stores no identity) → staff read; teacher refused; event emitted', async () => {

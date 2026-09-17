@@ -63,8 +63,8 @@ export function weeksBehind(coveredPct, expectedPct, termWeeks) {
 }
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
 
   const tableExists = async (c, schema, name) =>
     !!(await c.query(`SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2`, [schema, name])).rows.length;
@@ -369,7 +369,8 @@ export function register(app, kernel) {
     if (!DUTY_KINDS.includes(b.kind)) return bad(reply, `Kind must be one of: ${DUTY_KINDS.join(', ')}`);
     if (!DATE.test(String(b.date ?? ''))) return bad(reply, 'Duty date must be YYYY-MM-DD');
     const candidates = Array.isArray(b.candidates) ? [...new Set(b.candidates.map(String))] : [];
-    if (!candidates.length || candidates.some((x) => !UUID.test(x))) return bad(reply, 'Send at least one valid candidate teacher ID');
+    // PLGX: unbounded candidate arrays were accepted; cap like every other batch door.
+    if (!candidates.length || candidates.length > 200 || candidates.some((x) => !UUID.test(x))) return bad(reply, 'Send 1-200 valid candidate teacher IDs');
     if (b.period != null && String(b.period).length > 40) return bad(reply, 'Period is too long');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RT-7 #6: honesty ordering — report a missing duty data plane (409, designed

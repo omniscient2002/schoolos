@@ -58,7 +58,18 @@ test('role gates: teacher refused on every /coord door', async () => {
   }
 });
 
-test('coord home: staffing/gaps/approvals/delays/issues sections present; absence graded; gap surfaced', async () => {
+test('coord home: staffing/gaps/approvals/delays/issues sections present; absence graded; gap surfaced', async (t) => {
+  // PERFECT-100 §5.7 — CALENDAR BOMB, second one in this suite (the first is the
+  // fees-dunning 2026-10-06 expiry). The fixture below seeds a timetable slot for
+  // "today" via istDow(), but app.timetable_slots constrains day_of_week to
+  // Monday–Saturday, so on a Sunday the INSERT raised 23514 check_violation and the
+  // test failed DETERMINISTICALLY once a week — not flakily, and not because of a
+  // product bug. The scenario itself (a teacher on approved leave who also has a class
+  // today) is genuinely not constructible on a non-school day, so it is SKIPPED here,
+  // explicitly and visibly, instead of being silently impossible to pass.
+  if (istDow() === 'Sunday') {
+    return t.skip('no timetable grid exists on Sunday (CHECK constrains day_of_week to Mon–Sat) — the absence-gap scenario requires a school day');
+  }
   const c = await login('coordinator@meridian.edu');
   const { pool } = await import('../src/db.js');
   const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
@@ -105,7 +116,11 @@ test('curriculum monitor: weeks_behind computed from seeded progress rows', asyn
   const c = await login('coordinator@meridian.edu');
   const { pool } = await import('../src/db.js');
   const hasCurriculum = (await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='curriculum' AND table_name='node'`)).rows.length > 0;
-  if (!hasCurriculum) return; // env without 033 — graceful degradation covered separately
+  // TST-5: this was `if (!hasCurriculum) return;` — a bare return that retired the weeks_behind assertion
+  // silently. Migration 033 creates `curriculum.node` unconditionally (migrate.js applies every *.sql with no
+  // opt-out), so the guard was dead code whose only reachable effect was to hide the assertion if 033 ever
+  // stopped applying. A fixture that must ALWAYS exist gets an assertion, not a guard.
+  assert.ok(hasCurriculum, 'curriculum.node must exist — migration 033 applies unconditionally, so its absence is a real defect, not a degraded environment');
   // seed a private subject×grade tree: 4 topics, one covered at 10% → avg covered 10
   const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
   const unit = (await pool.query(
@@ -168,7 +183,11 @@ test('duty allocate: picks the least-loaded candidate deterministically', async 
   const { pool } = await import('../src/db.js');
   const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
   const tids = await ensureSecondTeacher(pool, tenant);
-  if (tids.length < 2) return; // need two candidates for the fairness pin
+  // TST-5: was `if (tids.length < 2) return;` — a bare return that retired the fairness pin below. `tids` is
+  // the return of the local ensureSecondTeacher(), which INSERTS a second active teacher when fewer than two
+  // exist and then re-selects, so it cannot return fewer than 2 rows. The guard was dead code, and its only
+  // reachable effect was to make the duty-fairness invariant vanish without a signal.
+  assert.ok(tids.length >= 2, 'ensureSecondTeacher must yield two candidates — it inserts one when short, so fewer than 2 is a fixture defect');
   const [tA, tB] = tids;
   const dutyDate = new Date(Date.now() + 5.5 * 3600 * 1000 + 7 * 864e5).toISOString().slice(0, 10); // next week IST
   // the duty roster plane ships with a sibling lane (never this migration) — build the

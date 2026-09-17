@@ -211,8 +211,8 @@ export async function shadowReport(c, tenantId, kind, mapping, rows, caps = {}) 
 
 export function register(app, kernel) {
   registerSettingsFormDoors(app, kernel, ID, manifestDef);
-  const { withUser, requestAudit, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(q, ID);
+  const { withUser, requestAudit, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
   // canonical mapping schema per kind (drives the mapping UI)

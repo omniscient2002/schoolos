@@ -14,7 +14,7 @@ export default {
   class: 'C',
   trust: 'T1',
   description: 'The parent read-plane: per-child home aggregation (attendance, assignments, exams, timeline), the unified request center with append-only ticket statuses, immutable event consents, child leave requests via per-instance kernel actions, and the report-discrepancy flow. Guardian scoping via family.child_link; cross-guardian access refused; teachers refused on every door.',
-  permissions: ['students.read', 'events.emit', 'audit.request'],
+  permissions: ['students.read', 'events.emit', 'audit.request', 'actions.raise'],
   events: {
     subscribe: [],
     publish: [

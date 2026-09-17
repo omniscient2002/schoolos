@@ -16,11 +16,11 @@
      lane editing its own list cannot break another's).
    ============================================================ */
 import type { ReactNode } from 'react';
-import { Badge, Button, Card, Drawer, Empty, SkeletonCard } from '../../components/ui';
+import { Badge, Card, Drawer, Empty, SkeletonCard } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
 import { useStore } from '../../state/store';
-import { DeniedState, FixtureTag } from './teacherKit';
+import { DeniedState } from './teacherKit';
 import {
   MASTERY_LABEL, MASTERY_STYLE, TREND_INFO, evidenceLinkTarget,
   staleness, liveEvidence, type MasteryEvidence, type MasteryTopic,
@@ -190,6 +190,7 @@ export function FilterRow({ children }: { children: ReactNode }) {
   return <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>{children}</div>;
 }
 
+
 export function ClassPicker({ value, options, onChange, label }: {
   value: string; options: string[]; onChange: (v: string) => void; label: string;
 }) {
@@ -214,14 +215,4 @@ export function MiniStat({ label, value, sub, tone }: { label: string; value: Re
   );
 }
 
-/* ---------- refresh-with-source tag (fixture honesty) ---------- */
-export function InsightsFixtureTag({ source, onRetry }: { source: 'live' | 'fixture'; onRetry?: () => void }) {
-  return (
-    <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
-      <FixtureTag source={source} />
-      {onRetry && (
-        <Button variant="ghost" size="sm" icon={<Icon.Refresh size={13} />} onClick={onRetry}>Refresh</Button>
-      )}
-    </div>
-  );
-}
+

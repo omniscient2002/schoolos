@@ -6,12 +6,10 @@
      one because every flow screen needs the same 12-state spine)
    - AsyncGate: loading → skeleton, error → friendly ErrorState,
      empty → teaching Empty, otherwise content
-   - FixtureTag: the visible "Demo data" badge — fixture mode is
-     never silent (services/teacherFixtures.ts law)
    - staffGate: soft role mirror; the server still decides
    ============================================================ */
 import { useEffect, useState, type ReactNode } from 'react';
-import { Badge, Empty, ErrorState, SkeletonCard } from '../../components/ui';
+import { Empty, ErrorState, SkeletonCard } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
 
@@ -41,16 +39,6 @@ export function AsyncGate<T>({ state, skeleton, empty, children }: {
   if (state.error) return <ErrorState title="This did not load" sub={state.error} onRetry={state.retry} />;
   if (!state.data) return <>{empty ?? <Empty icon={<Icon.Info size={20} />} title="Nothing to show" />}</>;
   return <>{children(state.data)}</>;
-}
-
-/* ---------- fixture-mode tag: sample data is never silent ---------- */
-export function FixtureTag({ source }: { source: 'live' | 'fixture' }) {
-  if (source === 'live') return null;
-  return (
-    <span title="Sample data while the server door is being built. Switches to the real server automatically when the door is live.">
-      <Badge tone="outline" dot>Demo data</Badge>
-    </span>
-  );
 }
 
 /* ---------- role mirror (server decides; UI degrades kindly) ---------- */

@@ -106,6 +106,25 @@ test('RF · gateway refusal leaves the ledger byte-identical (network leg before
   assert.equal(o.status, 'paid');
 });
 
+test('RTE-2 · the ledger guard runs BEFORE the gateway, so an inconsistent ledger never sends money', async () => {
+  const { obligationId, paymentId } = await confirmedPayment('Refund inconsistent case', 400000, 'razorpay');
+  await sql(`INSERT INTO plugin_razorpay.order_log (tenant_id, payment_id, razorpay_order_id, razorpay_payment_id, status)
+             VALUES ($1,$2,'order_TESTINCONSISTENT','pay_TESTINCONSISTENT','captured')`, [tenantA, paymentId]);
+  // Simulate a prior partial/duplicate settlement: the obligation no longer represents this payment.
+  await sql(`UPDATE app.fee_obligations SET paid_cents=100000, status='partial' WHERE id=$1`, [obligationId]);
+  let called = false;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { called = true; return { ok: true, status: 200, json: async () => ({ id: 'rfnd_SHOULDNOTHAPPEN' }) }; };
+  try {
+    const r = await app.inject({ method: 'POST', url: `/payments/${paymentId}/refund`, payload: { reason: 'race' }, headers: H(ownerToken) });
+    assert.equal(r.statusCode, 409, r.body);
+    assert.match(r.json().error, /inconsistent/);
+    assert.equal(called, false, 'the gateway must not be called before the ledger is proven consistent');
+  } finally { globalThis.fetch = realFetch; }
+  const p = (await sql(`SELECT status FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
+  assert.equal(p.status, 'confirmed', 'payment untouched');
+});
+
 test('RF · partial-refund recompute: refunding the newest payment leaves earlier payments (partial)', async () => {
   // pre-existing partial history: 2000 of 3000 already paid (legacy/manual), so
   // the door's due is 1000; refunding that one payment must restore 2000/partial.
@@ -142,6 +161,54 @@ test('RF · guards: initiated 409, unknown 404, already-refunded 409, teacher 40
   assert.equal(r4.statusCode, 200);
   const r5 = await app.inject({ method: 'POST', url: `/payments/${done.paymentId}/refund`, payload: {}, headers: H(ownerToken) });
   assert.equal(r5.statusCode, 409, 'already refunded');
+});
+
+test('FEX-15 · concurrent confirms settle the obligation exactly once', async () => {
+  const o = (await sql(`INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, amount_cents)
+                        SELECT $1, id, 'Term 2', 'FEX15 concurrent confirm', 120000
+                        FROM app.students WHERE tenant_id=$1 AND status='active' LIMIT 1 RETURNING id, amount_cents`,
+  [tenantA])).rows[0];
+  const pay = await app.inject({ method: 'POST', url: '/fees/payments', payload: { obligationId: o.id }, headers: H(ownerToken) });
+  assert.equal(pay.statusCode, 200, pay.body);
+  const id = pay.json().payment.id;
+  // Two confirms race. The door locks the payment FOR UPDATE and is idempotent on an already-confirmed
+  // row, so both may answer 200 — but the obligation must be credited exactly once.
+  const [a, b] = await Promise.all([
+    app.inject({ method: 'POST', url: `/fees/payments/${id}/confirm`, payload: {}, headers: H(ownerToken) }),
+    app.inject({ method: 'POST', url: `/fees/payments/${id}/confirm`, payload: {}, headers: H(ownerToken) }),
+  ]);
+  assert.equal(a.statusCode, 200, a.body);
+  assert.equal(b.statusCode, 200, b.body);
+  const ob = (await sql(`SELECT paid_cents FROM app.fee_obligations WHERE id=$1`, [o.id])).rows[0];
+  assert.equal(Number(ob.paid_cents), Number(o.amount_cents),
+    'the ledger must move once, not once per racing request (FEX-15 money race)');
+  const receipts = (await sql(`SELECT count(*)::int n FROM app.communications
+                               WHERE tenant_id=$1 AND template='FEE_RECEIPT' AND body LIKE '%' || $2 || '%'`,
+  [tenantA, '₹' + (Number(o.amount_cents) / 100)])).rows[0].n;
+  assert.equal(receipts, 1, 'exactly one receipt row is written, not one per racing confirm');
+});
+
+test('FEX-15 · concurrent refunds on one payment reverse the ledger exactly once', async () => {
+  const { obligationId, paymentId } = await confirmedPayment('FEX15 concurrent refund', 90000);
+  const [a, b] = await Promise.all([
+    app.inject({ method: 'POST', url: `/payments/${paymentId}/refund`, payload: {}, headers: H(ownerToken) }),
+    app.inject({ method: 'POST', url: `/payments/${paymentId}/refund`, payload: {}, headers: H(financeToken) }),
+  ]);
+  const codes = [a.statusCode, b.statusCode].sort();
+  assert.deepEqual(codes, [200, 409], `one refund must win and the other be refused as already-refunded: ${a.body} | ${b.body}`);
+  const ob = (await sql(`SELECT paid_cents FROM app.fee_obligations WHERE id=$1`, [obligationId])).rows[0];
+  assert.equal(Number(ob.paid_cents), 0, 'the reversal happens once, not twice (FEX-15 money race)');
+});
+
+test('FEX-15 · the schema forbids refunding more than the payment amount', async () => {
+  const { paymentId, amount } = await confirmedPayment('FEX15 refunded-cents check', 70000);
+  await app.inject({ method: 'POST', url: `/payments/${paymentId}/refund`, payload: {}, headers: H(ownerToken) });
+  const row = (await sql(`SELECT amount_cents, refunded_cents FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
+  assert.equal(Number(row.refunded_cents), Number(row.amount_cents), 'a full refund records the full amount');
+  await assert.rejects(
+    () => sql(`UPDATE app.payments SET refunded_cents = amount_cents + 1 WHERE id=$1`, [paymentId]),
+    (e) => e.code === '23514',
+    'payments_refunded_cents_check must refuse a refund larger than the payment');
 });
 
 test('RC · reconciliation sweep: ghost / missing / orphan classes all surface + events emitted', async () => {

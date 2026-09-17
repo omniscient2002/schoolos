@@ -23,7 +23,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
-import { LIVE_BASE } from '../../services/liveApi';
+import { apiRequest } from '../../services/liveApi';
 import { useStore } from '../../state/store';
 import { useSession } from '../../App';
 
@@ -55,19 +55,9 @@ interface PrintJob {
   requestedAt: string | null;
 }
 
-/* staff doors live beside the student ones (studentApi.ts precedent): the same
-   Bearer transport, implemented add-only here because liveApi.call() is not
-   exported. Errors throw raw; the screen surfaces them verbatim via friendly(). */
-async function staffCall<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem('schoolos_token');
-  const res = await fetch(`${LIVE_BASE}${path}`, {
-    ...opts,
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.headers ?? {}) },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-  return body as T;
-}
+/* FEX-6: staff doors ride the ONE transport (`liveApi.apiRequest`) — same bearer, same 401 session-reset,
+   same CSRF echo. The hand-rolled copy this replaces missed the session-reset path entirely. */
+const staffCall = apiRequest;
 
 const str = (v: unknown): string | null => {
   if (typeof v === 'string' && v.trim()) return v.trim();

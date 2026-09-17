@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Section, Card, Badge, Button, Empty, Skeleton, } from '../components/ui';
+import { PageHead, Section, Card, Badge, Button, Empty, Skeleton} from '../components/ui';
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtDuration } from '../lib/format';
@@ -39,8 +39,7 @@ const ROLE_OWNER_HINT: Partial<Record<RoleId, RegExp>> = {
   finance: /finance|accounts/i,
   transport: /transport/i,
   coordinator: /coordinator|admin officer/i,
-  admissions: /admissions/i,
-};
+  admissions: /admissions/i};
 
 function dueParts(d: Date): { label: string; overdue: boolean } {
   const ms = d.getTime() - Date.now();
@@ -59,8 +58,7 @@ const BAND_SUB: Record<Band, string> = {
   'NOW': 'Overdue or inside the hour — close these first',
   'TODAY': 'Committed before midnight tonight',
   'THIS WEEK': 'Next seven days',
-  'LATER': 'Beyond this week — scheduled, not forgotten',
-};
+  'LATER': 'Beyond this week — scheduled, not forgotten'};
 
 /* ---------- item row ---------- */
 function PlanRow({ item }: { item: PlanItem }) {
@@ -70,8 +68,7 @@ function PlanRow({ item }: { item: PlanItem }) {
       <div className="u-flex" style={{ gap: 12, alignItems: 'flex-start' }}>
         <span style={{
           width: 8, height: 8, borderRadius: 4, flexShrink: 0, marginTop: 7,
-          background: item.overdue ? 'var(--danger)' : item.band === 'TODAY' ? 'var(--warning)' : 'var(--accent)',
-        }} aria-hidden="true" />
+          background: item.overdue ? 'var(--danger)' : item.band === 'TODAY' ? 'var(--warning)' : 'var(--accent)'}} aria-hidden="true" />
         <div style={{ flex: 1, minWidth: 0 }} className="u-col">
           <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
             <Badge tone={item.kindTone}>{item.kind}</Badge>
@@ -124,8 +121,7 @@ export default function Next() {
         owner: a.owner,
         mine: !!(mineHint && mineHint.test(a.owner)),
         to: '/action-center',
-        source: 'Action Center',
-      });
+        source: 'Action Center'});
     });
 
     /* obligations */
@@ -144,8 +140,7 @@ export default function Next() {
         owner: o.owner,
         mine: !!(mineHint && mineHint.test(o.owner)),
         to: '/calendar',
-        source: 'Obligation register',
-      });
+        source: 'Obligation register'});
     });
 
     /* calendar events */
@@ -163,8 +158,7 @@ export default function Next() {
         owner: e.owner,
         mine: !!mineHint && mineHint.test(e.owner),
         to: '/calendar',
-        source: 'Calendar',
-      });
+        source: 'Calendar'});
     });
 
     /* active cases with SLA countdown */
@@ -184,8 +178,7 @@ export default function Next() {
         owner: c.owner,
         mine: !!mineHint && mineHint.test(c.owner),
         to: `/cases/${c.id}`,
-        source: `Case ${c.id}`,
-      });
+        source: `Case ${c.id}`});
     });
 
     return out.sort((a, b) => a.due.getTime() - b.due.getTime());
@@ -202,8 +195,7 @@ export default function Next() {
     setTimeout(() => {
       setPlanMeta({
         counts: { 'NOW': grouped['NOW'].length, 'TODAY': grouped['TODAY'].length, 'THIS WEEK': grouped['THIS WEEK'].length, 'LATER': grouped['LATER'].length },
-        sources: ['Action Center (open items)', 'Obligation register', 'Academic calendar', 'Case queue + SLA clocks'],
-      });
+        sources: ['Action Center (open items)', 'Obligation register', 'Academic calendar', 'Case queue + SLA clocks']});
       setGenState('done');
     }, 900);
   };
@@ -275,19 +267,15 @@ export default function Next() {
                     {
                       label: `Collect commitments — ${items.length} found`,
                       detail: `${domain.actions.filter(a => a.status === 'open').length} open actions · ${seed.obligations.filter(o => o.status !== 'done').length} obligations · ${seed.calendarEvents.filter(e => e.on.getTime() >= dayStart.getTime()).length} upcoming events · ${domain.cases.filter(c => c.status !== 'resolved' && c.status !== 'closed').length} active cases`,
-                      source: planMeta.sources.join(' · '),
-                    },
+                      source: planMeta.sources.join(' · ')},
                     {
                       label: 'Score urgency per item',
                       detail: 'Deadline proximity × SLA remaining × priority; overdue items surface in NOW with a red marker',
-                      source: 'Constitution v2026.1 — scheduling posture',
-                    },
+                      source: 'Constitution v2026.1 — scheduling posture'},
                     {
                       label: `Compose bands — NOW ${planMeta.counts['NOW']} · TODAY ${planMeta.counts['TODAY']} · THIS WEEK ${planMeta.counts['THIS WEEK']} · LATER ${planMeta.counts['LATER']}`,
                       detail: 'Items marked “Yours” match your role\'s ownership; everything else stays visible with its owner',
-                      source: 'Plan compiler · read-only',
-                    },
-                  ]}
+                      source: 'Plan compiler · read-only'}]}
                 />
                 <AiTraceCard trace={{
                   trigger: '“What’s next” plan generation',
@@ -296,12 +284,7 @@ export default function Next() {
                   reasoningRole: 'Planner (read-only)',
                   action: 'Ordered existing commitments into time bands',
                   approvalStatus: 'Not required (read-only)',
-                  verification: 'Band counts recomputed from the live store on every render',
-                  model: 'Frontier (reasoning) · ap-south-1',
-                  latencyMs: 640,
-                  tokens: 860,
-                  cost: '₹0.07',
-                }} />
+                  verification: 'Band counts recomputed from the live store on every render'}} />
               </div>
             )}
           </Card>

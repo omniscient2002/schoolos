@@ -9,7 +9,6 @@
    ============================================================ */
 import { useEffect, useState } from 'react';
 import { apiBiAttendance, apiBiAging, apiBiFunnel } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, Empty, Stat, SkeletonCard, ErrorState, DataTable, Tabs } from '../components/ui';
 import { BarChart, Donut } from '../components/Chart';
@@ -224,21 +223,6 @@ function FunnelConversion() {
 
 export default function Reports() {
   const [tab, setTab] = useState('attendance');
-
-  if (DEMO_MODE) {
-    return (
-      <div className="u-col" style={{ gap: 14 }}>
-        <PageHead title="Reports" sub="Attendance, fee ageing and admissions funnel — computed from real doors." />
-        <Card pad>
-          <Empty
-            icon={<Icon.Scale size={24} />}
-            title="Demo world — reports are a live-school surface"
-            sub="In a live school these charts are computed from the attendance, fees and admissions doors. The demo data is not connected to those doors, so the reports stay empty rather than showing demo numbers as insight."
-          />
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="u-col" style={{ gap: 14 }}>

@@ -1,6 +1,7 @@
 // accounting.tally — plugin manifest (drop-in factory, docs/11 §2.2; mirrors 009 row)
 export default {
   id: 'accounting.tally',
+  capabilities: ['fees.accounting.export'],
   name: 'Tally Reconciliation',
   version: '1.0.0',
   class: 'B',

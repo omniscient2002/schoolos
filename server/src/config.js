@@ -19,6 +19,8 @@ if (isProd && !isWorker) {
     throw new Error('NODE_ENV=production with a localhost DATABASE_URL — point DATABASE_URL at the real cluster');
   if ((process.env.CORS_ORIGINS ?? '*') === '*')
     throw new Error('NODE_ENV=production requires an explicit CORS_ORIGINS allowlist (got "*")');
+  if (!process.env.PLUGIN_SETTINGS_KEY || process.env.PLUGIN_SETTINGS_KEY.length < 32)
+    throw new Error('NODE_ENV=production requires PLUGIN_SETTINGS_KEY (32+ characters) for encrypted plugin secrets');
   if ((process.env.SEED_GUARD ?? '') !== 'strict' && process.env.SEED_GUARD !== undefined)
     throw new Error('SEED_GUARD must be "strict" in production');
 }
@@ -65,6 +67,11 @@ const devFlagExplicitlyOn = (name) =>
 const devSso = config.env === 'development' && devFlagExplicitlyOn('AUTH_DEV_SSO');
 // Dev echo additionally requires that no real SMS provider is configured —
 // arming an echo beside a live rail would leak codes into HTTP responses.
+/* Deliberately NOT relaxed to `env !== 'production'` — tried and rejected in the same round.
+   `tests/l1-security-sprint.test.js` T101 pins this guard ("dev doors fail closed") and is right to: the echo
+   puts a live credential in an HTTP response, so "we are in a test environment" is not a reason to arm it —
+   only an explicit flag on a developer machine is. A test that needs a code must configure a channel, or read
+   it the way the app does. Loosening a security posture so a test passes is how postures erode. */
 const devEcho = config.env === 'development'
   && devFlagExplicitlyOn('OTP_DEV_ECHO')
   && !process.env.SMS_PROVIDER;
@@ -77,6 +84,23 @@ if (devEcho) {
 
 config.otp.devEcho = devEcho;
 config.devSsoEnabled = devSso;
+
+// ── SEC-0 (PERFECT-100 §5.1): a live reset token must never be PERSISTED ─────
+// The reset mail body used to be written verbatim into app.communications
+// whenever the send ran in "sandbox" mode — which is the permanent default for
+// any tenant without SMTP credentials. That table is readable by six tenant
+// roles, so a coordinator could mint the owner's reset token and read it back:
+// account takeover with no cryptography broken.
+//
+// The ledger now records delivery evidence only (the code is always redacted),
+// and the local-development affordance moves to stdout, gated exactly like the
+// other dev doors (T101: development + explicit opt-in). No production config
+// can arm it, and nothing tenant-readable is involved either way.
+const devResetTokenLog = config.env === 'development' && devFlagExplicitlyOn('RESET_TOKEN_DEV_LOG');
+if (devResetTokenLog) {
+  console.warn('⚠️  RESET_TOKEN_DEV_LOG IS ACTIVE — password-reset codes are written to this process\'s stdout so a local developer can complete the flow. NEVER set this outside a local developer machine.');
+}
+config.devResetTokenLog = devResetTokenLog;
 
 // RTR-001 RT-001: refuse to boot production on a default/known secret.
 // (Workers hold no signing key — they only read the database.)

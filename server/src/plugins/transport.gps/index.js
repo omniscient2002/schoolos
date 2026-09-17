@@ -12,7 +12,7 @@ const STREETS = ['80 Feet Rd', '5th Block', 'Jyoti Nivas', 'W Catalyst', 'Sector
 
 export function register(app, kernel) {
   const { withUser, auditLog, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, 'transport.gps');
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, 'transport.gps');
 
   app.post(`/plugins/${ID}/positions`, { preHandler: [require('transport','coordinator','principal','owner'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
@@ -56,7 +56,7 @@ export function register(app, kernel) {
            `GPS ingestion raised this notice (template TRANSPORT_DELAY). Audience resolved from ${route.code} roster.`,
            'Transport §3.1 — delay ≥ 10 min triggers guardian notice; approval before send.',
            ev.id,
-           JSON.stringify({ kind: 'message', audience: `Route ${route.code} guardians`, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${route.code} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk` })]);
+           JSON.stringify({ kind: 'message', audience: `${/^route\b/i.test(String(route.code)) ? route.code : `Route ${route.code}`} guardians`, routeCode: route.code, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${route.code} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk` })]);
         action = a.rows[0];
         await c.query(
           `INSERT INTO app.event_action_link (tenant_id, event_id, action_id, relation, policy_ref)

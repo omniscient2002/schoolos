@@ -28,13 +28,13 @@
   --text-3: #686C71; /* 5.0:1 on surface, >=4.6 on all surface tints (unit 7 batch 1; was 3.36:1) */
   --text-inverse: #FAFAF8;
 
-  /* Accent — deep teal: trustworthy, not default-SaaS-blue */
-  --accent: #0E7568;
-  --accent-hover: #0B6155;
-  --accent-active: #094F46;
-  --accent-weak: #E3F0ED;
-  --accent-weak-2: #CBE3DE;
-  --accent-text: #0A5A50;
+  /* Accent — deep teal (#0F766E): trustworthy, Indian-modern, not default-SaaS-blue */
+  --accent: #0F766E;
+  --accent-hover: #0C625B;
+  --accent-active: #0A5049;
+  --accent-weak: #E4F1EF;
+  --accent-weak-2: #CDE4E0;
+  --accent-text: #0B5A54;
 
   /* AI — restrained iris; used ONLY for AI-identified surfaces */
   --ai: #5D53B8;
@@ -42,22 +42,25 @@
   --ai-weak-2: #DDD9F4;
   --ai-text: #4A419B;
 
-  /* Semantic */
-  --success: #217A46;
-  --success-weak: #E2F2E7;
-  --success-weak-2: #C6E5D1;
-  --warning: #8F6100;
-  --warning-weak: #FBF0DA;
-  --warning-weak-2: #F3DFB3;
-  --danger: #B3372E;
-  --danger-weak: #FBEAE8;
-  --danger-weak-2: #F3CFCB;
-  --info: #2E5E9E;
-  --info-weak: #E7EEF8;
-  /* Compat aliases (unit 2): inline styles referenced *-text variants. */
-  --success-text: var(--success);
-  --warning-text: var(--warning);
-  --danger-text: var(--danger);
+  /* Semantic — conventional, accessible on warm paper */
+  --success: #15803D;
+  --success-weak: #E6F3EA;
+  --success-weak-2: #CBE6D4;
+  --warning: #D97706;
+  --warning-weak: #FCEFDC;
+  --warning-weak-2: #F6DFB5;
+  --danger: #B91C1C;
+  --danger-weak: #FBE9E8;
+  --danger-weak-2: #F4CDCB;
+  --info: #2563EB;
+  --info-weak: #E8EEFC;
+  --info-weak-2: #CFDCF9;
+  /* Text variants: #D97706 fails AA as text on paper, so the text token is a deeper
+     step of the same amber; the fill/icon colour stays the specified #D97706. */
+  --success-text: #15803D;
+  --warning-text: #92400E;
+  --danger-text: #B91C1C;
+  --info-text: #1D4ED8;
 
   /* unit 12: chart/status family — data-vis colors, one dark override point */
   --chart-amber: #DC6803;   /* due-soon / watch / in-progress */
@@ -77,7 +80,7 @@
   --danger-hover-text: #92400E;
 
   /* Campus hues (avatars, charts) */
-  --campus-a: #0E7568;
+  --campus-a: #0F766E;
   --campus-b: #7A5AB8;
   --campus-c: #B87A2E;
 
@@ -89,9 +92,9 @@
   --text-sm: 12.5px;
   --text-md: 13.5px;
   --text-lg: 15px;
-  --text-xl: 18px;
-  --text-2xl: 22px;
-  --text-3xl: 27px;
+  --text-xl: 19px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
 
   --leading-tight: 1.25;
   --leading-normal: 1.5;
@@ -153,17 +156,17 @@
      Map: critical/danger→--status-critical, warning→--status-warning,
      success→--status-success, info/accent→--status-info, ai→--status-ai,
      neutral/outline→--status-neutral. */
-  --status-critical: #dc2626;
-  --status-critical-bg: color-mix(in srgb, #dc2626 9%, transparent);
-  --status-high: #ea580c;
-  --status-warning: #d97706;
-  --status-warning-bg: color-mix(in srgb, #d97706 10%, transparent);
-  --status-success: #16a34a;
-  --status-success-bg: color-mix(in srgb, #16a34a 10%, transparent);
-  --status-info: #0284c7;
-  --status-info-bg: color-mix(in srgb, #0284c7 9%, transparent);
-  --status-ai: #7c3aed;
-  --status-ai-bg: color-mix(in srgb, #7c3aed 9%, transparent);
+  --status-critical: #B91C1C;
+  --status-critical-bg: color-mix(in srgb, #B91C1C 9%, transparent);
+  --status-high: #C2410C;
+  --status-warning: #D97706;
+  --status-warning-bg: color-mix(in srgb, #D97706 10%, transparent);
+  --status-success: #15803D;
+  --status-success-bg: color-mix(in srgb, #15803D 10%, transparent);
+  --status-info: #2563EB;
+  --status-info-bg: color-mix(in srgb, #2563EB 9%, transparent);
+  --status-ai: #6D28D9;
+  --status-ai-bg: color-mix(in srgb, #6D28D9 9%, transparent);
   --status-neutral: var(--text-2);
   --status-neutral-bg: var(--surface-3);
 

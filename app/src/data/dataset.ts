@@ -9,7 +9,7 @@
    Every former `data/dataset` / `data/dataset` / `data/dataset`
    / `data/dataset` import maps to this module.
    ============================================================ */
-import { apiDataset } from '../services/liveApi';
+import { apiDataset, getToken } from '../services/liveApi';
 import type {
   Person, GuardianLink, FeeObligation, Payment, AttendanceRecord, Section, TimeSlot, Lead,
   BusRoute, SchoolCase, ActionRecord, DecisionRecord, MeetingNote, MemoryDoc, PolicyRule,
@@ -60,8 +60,9 @@ export async function ensureDataset(): Promise<void> {
   if (hydrated) return;
   if (loading) return loading;
   loading = (async () => {
-    // The endpoint requires auth; wait until the session token exists.
-    for (let i = 0; i < 200 && !localStorage.getItem('schoolos_token'); i++) {
+    // The endpoint requires auth. FEX-3: the bearer is in memory, so wait for THIS session's token (set by
+    // login or by the /auth/renew exchange) rather than for a persisted localStorage value.
+    for (let i = 0; i < 200 && !getToken(); i++) {
       await new Promise(r => setTimeout(r, 250));
     }
     const raw = (await apiDataset()) as AnyRec;

@@ -1,6 +1,7 @@
 // rails.sms — plugin manifest (drop-in factory, docs/11 §2.2)
 export default {
   id: 'rails.sms',
+  capabilities: ['auth.otp', 'comms.sms.delivery'],
   name: 'SMS Rail',
   version: '1.0.0',
   class: 'B',

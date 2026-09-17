@@ -11,7 +11,7 @@
    L4-owned this run (D-29). Same-origin requests carry cookies +
    the CSRF header, mirroring call()'s L5-3.2 behavior.
    ============================================================ */
-import { LIVE_BASE } from '../../services/liveApi';
+import { LIVE_BASE, getToken } from '../../services/liveApi';
 
 const SAME_ORIGIN = (() => {
   try { return new URL(LIVE_BASE, window.location.origin).origin === window.location.origin; } catch { return false; }
@@ -42,7 +42,7 @@ export interface SwitchResult {
 }
 
 function authHeaders(method: 'GET' | 'POST'): HeadersInit {
-  const t = localStorage.getItem('schoolos_token');
+  const t = getToken();
   const csrf = method === 'POST' ? csrfToken() : null;
   return {
     'content-type': 'application/json',
@@ -67,7 +67,7 @@ export async function listTenants(): Promise<TenantMembership[]> {
  *  token — read, never verified client-side). Null when unreadable. */
 export function readTenantId(): string | null {
   try {
-    const t = localStorage.getItem('schoolos_token');
+    const t = getToken();
     if (!t) return null;
     const part = t.split('.')[1];
     if (!part) return null;

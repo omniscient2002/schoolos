@@ -13,6 +13,9 @@ logs/
 # uploaded file bytes (files.store) — metadata lives in Postgres, bytes never in git
 server/storage/
 
+# database/file backups contain tenant PII and credentials; keep them off git
+backups/
+
 # QA artifacts & local tooling
 shots/
 *.png
@@ -30,3 +33,12 @@ uk*.xml
 
 research/
 .ui-audit/
+
+# internal audit/probe scratch (not product)
+.audit/
+.bombprobe/
+.coop/tst5/
+.coop/endpoint-xref.out
+.coop/endpoint-xref.resolved
+app/scripts/probe.mjs
+app/scripts/shoot.mjs

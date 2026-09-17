@@ -21,7 +21,6 @@ Three design bets follow (each stress-tested in Rounds C–G of the iteration lo
 
 North-star outcome (measured by the product itself, not claimed in sales decks): **admin minutes eliminated per school per week**, and **time-to-live in days** from contract to a fully operating first day.
 
----
 
 ## 2. Problem definition — what actually happens in a school today
 

@@ -5,9 +5,9 @@
    ============================================================ */
 import type { ReactNode } from 'react';
 import { useKernel } from './useKernel';
+import { WIDGETS } from './widgetRegistry';
 
 type Widget = () => ReactNode;
-const WIDGETS = new Map<string, Widget>();
 
 /** docs/10 §6: a slot admits at most 2 plugin widgets — the kernel stays the
  * loudest voice; plugins earn rank, not space. Enforced here so the documented

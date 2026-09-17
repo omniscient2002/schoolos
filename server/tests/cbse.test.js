@@ -32,8 +32,14 @@ describe('pack.cbse (wave-3 · 009 contract + 026 · rules not code)', () => {
     const pre = await app.inject({ method: 'GET', url: '/plugins/pack.cbse/rules', headers: H((await loginAs(app, 'coordinator@meridian.edu')).token) });
     assert.equal(pre.statusCode, 409);
     assert.match(pre.json().error, /switched off/); // plain-language copy pass (gate)
-    await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable',
-      headers: H((await loginAs(app, 'owner@meridian.edu')).token), payload: { version: '1.0.0', class: 'C' } });
+    // PLG-2b: pack.cbse declares `exams.assessment@1.0.1` as a machine-readable dependency, and the
+    // enable door refuses (409) before its dependency is enabled. Enable the dependency first — the
+    // enable body is ignored entirely (PLG-4), so the payload only has to be present.
+    const owner = await loginAs(app, 'owner@meridian.edu');
+    const dep = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/enable', headers: H(owner.token), payload: {} });
+    assert.equal(dep.statusCode, 200, `dependency enable failed: ${dep.body}`);
+    const on = await app.inject({ method: 'POST', url: '/plugins/pack.cbse/enable', headers: H(owner.token), payload: {} });
+    assert.equal(on.statusCode, 200, `pack.cbse enable failed: ${on.body}`);
     for (const role of ['teacher@meridian.edu', 'finance@meridian.edu', 'parent@meridian.edu']) {
       const r = await app.inject({ method: 'GET', url: '/plugins/pack.cbse/rules', headers: H((await loginAs(app, role)).token) });
       assert.equal(r.statusCode, 403, `${role} is outside the CBSE tier`);
@@ -127,5 +133,12 @@ describe('pack.cbse (wave-3 · 009 contract + 026 · rules not code)', () => {
     assert.ok(b.contentHash, 'sha256 content hash stamped');
     const aud = await sql(`SELECT outcome FROM app.audit_log WHERE action='OASIS export generated' ORDER BY created_at DESC LIMIT 1`);
     assert.match(aud.rows[0].outcome, /content_hash=/, 'digest-level export audit (tally precedent)');
+  });
+
+  test('6 · unknown exam (valid uuid) answers 404, never 500 (TDZ regression: R3 `const bad` shadowed the reply helper for the whole handler block)', async () => {
+    const co = await loginAs(app, 'coordinator@meridian.edu');
+    const g = await app.inject({ method: 'GET', url: `/plugins/pack.cbse/validate/exam/${crypto.randomUUID()}`, headers: H(co.token) });
+    assert.equal(g.statusCode, 404, `expected a clean 404, got ${g.statusCode}: ${g.body}`);
+    assert.match(g.json().error, /exam not found/);
   });
 });

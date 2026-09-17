@@ -1,5 +1,11 @@
 // cycle-6 P2/P3 hardening regression pins (migration 030 + module fixes) — final
 // numbered unit of the lane.
+// S0 repair (D-44, cross-zone — full-gate run): the visitors pickup pin reads
+// devCode, which the fail-closed dev-echo contract only echoes when OTP_DEV_ECHO is
+// armed BEFORE the app import (same as l2-auth-session). Arming it here restores the
+// pin's original purpose: OTP must be a 6-digit CSPRNG draw, echoed in dev only.
+process.env.OTP_DEV_ECHO = '1';
+process.env.NODE_ENV = 'development';
 // P2-1: moderation adjustedSnapshot is bounded (finite pct in [0,100] via
 //   Number.isFinite — pct:0 is legitimate) and grade/points are RE-DERIVED via the
 //   module's gradeOf on the exam's scale; the read path re-derives again before
@@ -14,6 +20,10 @@ import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 
@@ -188,7 +198,15 @@ describe('P3 hygiene pins', () => {
     const vid = v.json().visitId;
     await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/checkin`, payload: {}, headers: H(co.token) });
     const p = await app.inject({ method: 'POST', url: `/plugins/ops.visitors/visitors/${vid}/pickup`, payload: {}, headers: H(co.token) });
-    assert.match(p.json().devCode, /^\d{6}$/, '6-digit code (randomInt(100000, 1000000))');
+    assert.match(p.json().devCode, /^\d{6}$/, '6-digit code');
+    /* TST-4: the old comment claimed this pinned `randomInt(100000, 1000000)`, but `Math.random()` produces
+       six digits too — the assertion was satisfied by the defect it named. Randomness is not observable from
+       one draw, so the honest pin is a source check (the same form the library/frontend tests use): the pickup
+       code must come from the CSPRNG, and a fallback to Math.random must not exist in the file at all. */
+    const pickupSrc = readFileSync(join(HERE, '../src/plugins/ops.visitors/index.js'), 'utf8');
+    assert.match(pickupSrc, /randomInt\(/, 'the pickup code must be drawn from node:crypto randomInt');
+    assert.ok(!/Math\.random\(/.test(pickupSrc), 'no Math.random anywhere in the visitor plugin — it is not a CSPRNG');
+    assert.match(pickupSrc, /scryptSync\(/, 'and the code is stored as a salted scrypt hash, not plaintext');
     // L1 sprint T102: pickup OTPs live in plugin_visitors.pickup_otp (P0-1 vault split)
     const vault = await sql(`SELECT code_hash, consumed_at FROM plugin_visitors.pickup_otp WHERE id=(SELECT otp_request_id FROM plugin_visitors.visit WHERE id=$1)`, [vid]);
     assert.match(vault.rows[0].code_hash, /^[^:]+:[0-9a-f]{128}$/, 'scrypt+salt hash in the vault');

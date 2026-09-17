@@ -7,6 +7,11 @@ export default {
   id: 'ops.visitors',
   version: '1.0.2',
   class: 'C',
+  /* PLG-1: this manifest declared nothing while its code called emitEvent/requestAudit and read (or wrote)
+     the tables below — so the stored grant was whatever a client asked for. Declared now from a static scan of
+     this plugin's own index.js: the facilities it actually calls, and nothing it does not (the catalog's
+     `memory.write` for pack.cbse/pack.dpdp was a copy-paste: no code path touches app.memory_entries). */
+  permissions: ['students.read', 'events.emit', 'audit.request', 'comms.send'],
   description: 'Campus gate pass with guardian-verified student pickup. Front desk logs visitors, issues badges; student pickup raises an OTP to the primary guardian (kernel OTP-vault pattern, scrypt-hashed, TTL + attempt-bounded); release is fail-closed without verification.',
   policyRefs: ['Student safety · guardian pickup verification', 'Platform §2.4'],
   settingsSchema: {

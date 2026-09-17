@@ -9,9 +9,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { transportService } from '../services';
 import { apiGet } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { PageHead, Section, Card, Stat, Badge, Empty, ErrorState, Skeleton, SkeletonCard } from '../components/ui';
 import { EvidenceChain, EventLine } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
@@ -214,21 +212,14 @@ export default function Today() {
   useEffect(() => {
     let live = true;
     setLoading(true); setError(null);
-    if (DEMO_MODE) {
-      transportService.routes(session.campusScope)
-        .then(r => { if (live) { setRoutesData(r); setLoading(false); } })
-        .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
-    } else {
-      // Live: the routes door carries roster + capacity only — no GPS/status.
-      apiTransportRoutes()
-        .then(r => { if (live) { setLiveRoutes(r.routes as LiveRouteRow[]); setRoutesData([]); setLoading(false); } })
-        .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
-    }
+    // Live: the routes door carries roster + capacity only — no GPS/status.
+    apiTransportRoutes()
+      .then(r => { if (live) { setLiveRoutes(r.routes as LiveRouteRow[]); setRoutesData([]); setLoading(false); } })
+      .catch(e => { if (live) { setError(friendly(e)); setLoading(false); } });
     return () => { live = false; };
   }, [session.campusScope, session.roleId, tick]);
 
   useEffect(() => {
-    if (DEMO_MODE) return;
     apiGet<{ rails: { sms?: { configured: boolean; provider: string | null }, whatsapp?: { configured: boolean; provider: string | null }, razorpay?: { configured: boolean } } }>('/capabilities')
       .then(r => setCaps(r))
       .catch(() => setCaps(null));
@@ -483,7 +474,7 @@ export default function Today() {
       const overdueSum = feeObligationsAll.filter(f => f.status === 'overdue').reduce((a, f) => a + (f.amount - f.paidAmount), 0);
       headSub = `${weekday(now)} · ${fmtDate(now)} · Finance · ${campusLabel}`;
       stats = [
-        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'vs 88% four-week average' : 'No fee records yet', to: '/fees' },
+        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'From the fee obligations on record' : 'No fee records yet', to: '/fees' },
         { label: 'Failed payments', value: String(failed.length), sub: failed.length ? `${failed.length} awaiting retry or settlement` : 'Nothing awaiting retry', to: '/fees' },
         { label: 'Overdue outstanding', value: fmtMoneyShortLocal(overdueSum), sub: 'Across all campuses · Term 1 + 2', to: '/fees' },
         { label: 'Open items', value: String(openCount), sub: `${highCount} high priority`, to: '/action-center' },
@@ -498,49 +489,27 @@ export default function Today() {
             chips: [demo('Fees records · live')],
             badge: { label: 'Dip', tone: 'warning' as BadgeTone }, to: '/fees',
           }] : []),
-          ...(DEMO_MODE ? [{
-            id: 'fee-gw', icon: 'CreditCard' as const, title: '23 gateway successes missing ledger entries',
-            detail: 'UPI timeouts 11:00–11:40 yesterday. Case case_3 — SLA 12h. Settlement import suggested.',
-            chips: [demo('Reconciliation worker · yesterday 11:25 · high'), demo('Case case_3 · SLA 12h')],
-            badge: { label: 'Reconciliation', tone: 'info' as BadgeTone }, to: '/cases',
-          }] : []),
         ],
       });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today });
       bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
     } else if (role === 'transport') {
-      const delayed = routesData.filter(r => r.status === 'delayed');
       const totalRiders = (liveRoutes ?? []).reduce((a, r) => a + Number(r.riders ?? 0), 0);
       headSub = `${weekday(now)} · ${fmtDate(now)} · Transport · ${campusLabel}`;
-      stats = DEMO_MODE ? [
-        { label: 'Routes on time', value: `${onTimePct}%`, sub: `${routesData.filter(r => r.status === 'on-time').length} of ${routesData.length} routes`, to: '/transport' },
-        { label: 'Delayed now', value: String(delayed.length), sub: delayed.map(r => `${r.name.split('—')[0].trim()} +${r.delayMins ?? 0}m`).join(' · ') || 'None', to: '/transport' },
-        { label: 'Students affected', value: String(delayed.reduce((a, r) => a + r.students, 0)), sub: 'Guardian notices queued per Transport §3.1 (delivery depends on the message rail)', to: '/transport' },
-        { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
-      ] : [
+      stats = [
         { label: 'Routes', value: String(liveRoutes?.length ?? 0), sub: 'From GET /transport/routes — GPS status is not connected yet, so no on-time figure is shown', to: '/transport' },
         { label: 'Riders on routes', value: String(totalRiders), sub: 'Live count of students holding a bus_route', to: '/transport' },
         { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'transport-critical maintenance and follow-ups', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
-      if (!DEMO_MODE) {
-        bands.push({
-          id: 'fleet', label: 'Fleet', sub: `${(liveRoutes ?? []).length} routes — from the routes door (roster and capacity only; GPS status is not connected yet)`,
-          items: (liveRoutes ?? []).slice(0, 4).map(r => ({
-            id: String(r.id), icon: 'Bus' as const,
-            title: `${r.name ?? r.code}`,
-            detail: `${r.riders ?? 0} riders · vehicle ${r.vehicle ?? '—'} · capacity ${r.capacity ?? '—'}`,
-            chips: [],
-            badge: undefined, to: '/transport',
-          })),
-        });
-      } else bands.push({
-        id: 'fleet', label: 'Fleet', sub: `${routesData.length} routes · live GPS`,
-        items: routesData.filter(r => r.status !== 'on-time').slice(0, 4).map(r => ({
-          id: r.id, icon: 'Bus' as const, title: `${r.name} — ${r.status === 'delayed' ? `delayed +${r.delayMins ?? 0} min` : 'in maintenance'}`,
-          detail: `${r.students} students · driver ${r.driver} · vehicle ${r.vehicle}`,
-          chips: [demo('GPS monitor · 07:42 · high'), r.status === 'delayed' ? demo('Guardians notified 07:57 · high') : 'Workshop scheduled · medium'],
-          badge: { label: r.status === 'delayed' ? 'Delayed' : 'Maintenance', tone: 'warning' as BadgeTone }, to: '/transport',
+      bands.push({
+        id: 'fleet', label: 'Fleet', sub: `${(liveRoutes ?? []).length} routes — from the routes door (roster and capacity only; GPS status is not connected yet)`,
+        items: (liveRoutes ?? []).slice(0, 4).map(r => ({
+          id: String(r.id), icon: 'Bus' as const,
+          title: `${r.name ?? r.code}`,
+          detail: `${r.riders ?? 0} riders · vehicle ${r.vehicle ?? '—'} · capacity ${r.capacity ?? '—'}`,
+          chips: [],
+          badge: undefined, to: '/transport',
         })),
       });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today.slice(0, 3) });
@@ -557,10 +526,7 @@ export default function Today() {
       bands.push({ id: 'needs', label: 'Needs you', sub: 'across roles — priority-ranked', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions).slice(0, 3)] });
       /* Systems band — REAL integration status from /capabilities (replaces the
          hardcoded "Tally gateway connected — healthy" fiction). */
-      const sysItems: BriefItem[] = DEMO_MODE ? [
-        { id: 'sys-tally', icon: 'Database', title: 'Tally gateway connected — healthy', detail: 'Last sync 06:00 · 0 failed exports · settlement import pending (23 rows).', chips: [demo('Integration monitor · 06:00 · high')], badge: { label: 'Healthy', tone: 'success' }, to: '/data-health' },
-        { id: 'sys-ai', icon: 'Shield', title: 'Constitution v2026.1 active — 14 rules', detail: '2 HUMAN-ONLY rules guarded 0 override attempts this week. Every AI read logged.', chips: [demo('Policy engine · live · high')], badge: { label: 'Governance', tone: 'ai' }, to: '/constitution' },
-      ] : [
+      const sysItems: BriefItem[] = [
         {
           id: 'sys-sms', icon: 'Message', title: `SMS rail ${caps?.rails.sms?.configured ? 'configured' : 'not connected yet'}`,
           detail: caps?.rails.sms?.configured
@@ -583,7 +549,7 @@ export default function Today() {
           chips: ['From GET /capabilities · live'], badge: { label: caps?.rails.razorpay?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.razorpay?.configured ? 'success' : 'warning' }, to: '/rails',
         },
       ];
-      bands.push({ id: 'systems', label: 'Systems', sub: DEMO_MODE ? 'Integrations and governance' : 'What is actually connected — live from /capabilities', items: sysItems });
+      bands.push({ id: 'systems', label: 'Systems', sub: 'What is actually connected — live from /capabilities', items: sysItems });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today.slice(0, 3) });
       bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 3), ...decisionReviews] });
     } else {
@@ -629,7 +595,7 @@ export default function Today() {
       <PageHead
         title={<span>{greeting}, {actorName.split(' ').slice(0, 2).join(' ')}</span>}
         sub={loading ? 'Assembling the briefing from attendance, fees and transport…' : brief?.headSub}
-        actions={<Badge tone="ai" dot>{DEMO_MODE ? 'Morning Briefing · assembled 07:55 · demo' : 'Morning Briefing'}</Badge>}
+        actions={<Badge tone="ai" dot>Morning Briefing</Badge>}
       />
 
       {/* day ribbon — the temporal anchor (unit 9; deterministic from the timetable) */}
@@ -712,7 +678,7 @@ export default function Today() {
             <EvidenceChain
               title="How this briefing was assembled"
               steps={[
-                { label: 'Diff overnight deltas', detail: 'Attendance, fees records and transport events compared against recent baselines', source: DEMO_MODE ? 'Data plane · 07:55 · demo' : 'School records · just now' },
+                { label: 'Diff overnight deltas', detail: 'Attendance, fees records and transport events compared against recent baselines', source: 'School records · just now' },
                 { label: 'Rank by impact × deadline', detail: 'Priority = affected students × policy exposure × SLA remaining', source: 'Constitution v2026.1' },
                 { label: 'Draft with citations', detail: 'Every claim above carries its source, timestamp and confidence', source: 'Deterministic assembly · no language model' },
               ]}

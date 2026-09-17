@@ -31,7 +31,15 @@ const STUDENT = ['student'];
 // staff surfaces: print queue + noticeboard. Wellbeing is narrower (counselor/principal
 // designees — never the classroom teacher, safety-box rule).
 const STAFF = ['teacher', 'coordinator', 'principal', 'owner', 'itadmin'];
-const WELLBEING_READERS = ['principal', 'coordinator', 'owner', 'itadmin'];
+// RBAC-2: the module's own comment says the wellbeing plane is the "counselor/principal plane", and the
+// client screen already lists a counselor — but the role could not be issued, so the person doing this work
+// had to borrow `coordinator` and with it inherited finance reads and /audit. The counselor is now real.
+const WELLBEING_READERS = ['principal', 'coordinator', 'owner', 'itadmin', 'counselor'];
+// PLGX-1: mirrors the kernel /events role set. The noticeboard's announcements block used to read
+// app.events.label for the WHOLE tenant and serve it to a `student` — the same leak API-1 closed on
+// /events, since labels can embed other families' children or amounts. Only these roles get the
+// tenant-wide feed; a student's noticeboard is built from their own class instead.
+const EVENT_FEED_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordinator', 'teacher', 'admissions', 'transport', 'facilities', 'technician'];
 const PRINT_KINDS = ['timetable', 'study_plan', 'checklist', 'portfolio', 'mistake_sheet', 'flashcards', 'noticeboard'];
 const WELLBEING_CATEGORIES = ['academic_pressure', 'friendship', 'bullying', 'family', 'health', 'other'];
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -45,7 +53,7 @@ const istTime = () => istNow().toISOString().slice(11, 16); // 'HH:MM'
 
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
   const settingsFor = (c, tenantId) =>
     c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID])
       .then((r) => r.rows[0]?.settings ?? {});
@@ -103,12 +111,20 @@ export function register(app, kernel) {
   };
 
   // ── IDENTITY PIN: student role → own app.students row (demo name-match, see header)
-  const ownStudent = async (c, user) =>
-    (await c.query(
-      `SELECT id, name, grade, section, admission_no
+  /* S0 fix E1 (HIGH): the name match is the ONLY barrier between a student login and
+     another child's report cards (plugin_exams.report RLS is tenant-only) — and names
+     are NOT unique. A second same-named student used to silently pin to the first row
+     (ORDER BY created_at LIMIT 1), serving the wrong child's results/identity. The pin
+     now refuses ambiguity: exactly one active match, else the honest "not set up" path. */
+  const ownStudent = async (c, user) => {
+    const r = await c.query(
+      `SELECT id, name, grade, section, admission_no, count(*) OVER () AS name_matches
        FROM app.students
        WHERE tenant_id=$1 AND status='active' AND lower(name)=lower($2)
-       ORDER BY created_at LIMIT 1`, [user.tenant_id, user.name])).rows[0] ?? null;
+       ORDER BY created_at LIMIT 1`, [user.tenant_id, user.name]);
+    const row = r.rows[0];
+    return row && Number(row.name_matches) === 1 ? row : null;
+  };
 
   // timetable grid read (app.timetable_slots has no class/section column — 021 — the
   // demo grid is uniform per section; the student's own day is the tenant day grid)
@@ -288,6 +304,11 @@ export function register(app, kernel) {
       const del = await c.query(
         `DELETE FROM student.mistake_note WHERE id=$1 AND creator_user_id=$2 RETURNING id`, [req.params.id, req.user.id]);
       if (!del.rows[0]) return bad(reply, 'We couldn\'t find that note in your notebook', 404);
+      // S0 fix E2: a hard DELETE is still a write — it rides the hash-chained ledger.
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Mistake note deleted', recordType: 'MistakeNote', recordRef: del.rows[0].id,
+        reason: 'student removed their own note', policyRef: 'student.world manifest (own-note ownership)', risk: 'low',
+        outcome: `note ${del.rows[0].id} deleted by its creator (grant-sanctioned hard delete)` });
       return { ok: true };
     });
   });
@@ -351,11 +372,19 @@ export function register(app, kernel) {
   app.post('/student/tasks', { preHandler: [require(...STUDENT), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     if (b.id) { // done toggle on an own task
+      // S0 fix E3: body ids get the uuid-param law's 400, not a Postgres cast 500
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(b.id))) {
+        return bad(reply, 'That task reference is not a valid id');
+      }
       return withStudentUser(req.user.tenant_id, req.user.id, async (c) => {
         const upd = await c.query(
           `UPDATE student.study_task SET done=$2, done_at=$3, updated_at=now()
            WHERE id=$1 AND creator_user_id=$4 RETURNING id, done`, [b.id, !!b.done, b.done ? new Date().toISOString() : null, req.user.id]);
         if (!upd.rows[0]) return bad(reply, 'We couldn\'t find that task in your list', 404);
+        await requestAudit(c, req.user.tenant_id, ID, {
+          actor: req.user.name, action: `Task marked ${upd.rows[0].done ? 'done' : 'pending'}`, recordType: 'StudyTask', recordRef: upd.rows[0].id,
+          policyRef: 'student.world manifest (own-task ownership)', risk: 'low',
+          outcome: `task ${upd.rows[0].id} done=${!!b.done}` });
         return { ok: true, id: upd.rows[0].id, done: upd.rows[0].done };
       });
     }
@@ -450,10 +479,14 @@ export function register(app, kernel) {
            ORDER BY created_at DESC LIMIT 5`, [req.user.tenant_id, me.grade]).catch(() => ({ rows: [] }))).rows;
         blocks.push({ title: 'Results published', lines: exams.length ? exams.map((e) => `${e.name} (${e.term}) — see your results page`) : ['No results published this week.'] });
       }
-      const events = (await c.query(
-        `SELECT label, created_at FROM app.events WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
-         ORDER BY created_at DESC LIMIT 10`, [req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
-      blocks.push({ title: 'Announcements & events this week', lines: events.length ? events.map((e) => e.label) : ['No new announcements.'] });
+      // PLGX-1: tenant-wide event labels are served only to roles that hold the kernel event feed.
+      // A student never receives them (no cross-family labels in a print plane).
+      if (EVENT_FEED_ROLES.includes(req.user.role)) {
+        const events = (await c.query(
+          `SELECT label, created_at FROM app.events WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
+           ORDER BY created_at DESC LIMIT 10`, [req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
+        blocks.push({ title: 'Announcements & events this week', lines: events.length ? events.map((e) => e.label) : ['No new announcements.'] });
+      }
       blocks.push({ title: 'Printed by', lines: [`Generated ${istDate()} (IST) — student.world noticeboard`] });
       return { student: me ? { name: me.name, class: `${me.grade}-${me.section}` } : null, blocks };
     });
@@ -509,7 +542,7 @@ export function register(app, kernel) {
 
   // ── session — kiosk idle-countdown contract (STUDENT_IDLE_TIMEOUT_MINUTES, default 10) ──
   app.get('/student/session', { preHandler: [require(...STUDENT), lifecycleGate] }, async (req) => {
-    const s = (await kernel.q(
+    const s = (await kernel.sysq(
       `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID]).catch(() => ({ rows: [] }))).rows[0];
     const idle = Math.max(1, parseInt(process.env.STUDENT_IDLE_TIMEOUT_MINUTES ?? s?.settings?.student_idle_timeout_minutes ?? '10', 10) || 10);
     return { idle_minutes: idle, logout_url: '/auth/logout',

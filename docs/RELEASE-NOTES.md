@@ -12,14 +12,14 @@ SchoolOS reaches the enterprise-candidate bar: every role plane runs on the shar
 
 ### Security
 - **A3 logout revocation**: jti denylist (038) — a logged-out session is dead immediately; sibling tokens unaffected; legacy tokens compatible; denylist self-cleans.
-- **§43 permission matrix**: 177 routes inventoried, 0 unguarded; new public endpoints fail CI unless consciously allowlisted.
+- **§43 permission matrix**: every route inventoried, 0 unguarded; new public endpoints fail CI unless consciously allowlisted. The route/guard counts are generated, not typed — see `docs/PERMISSION-MATRIX.md` (the "177 routes" formerly here was the count at the 0.9.0 tree and is stale).
 - **RT-7…RT-11** fixed and pinned: schema-QUALIFIED table probes, tenant-correlated registry guards, RESTRICTIVE dual-policy RLS, duty-schema USAGE grant, coord decide SoD.
 - Attack matrix expanded to 40+ classified vectors with repro + fix ledger.
 
 ### Reliability & delivery
 - Seed self-provisioning: migrations 031–037 replay on fresh databases (curriculum tree, demo fixtures, registry rows).
 - Factory check (`npm run check`): permission matrix + DB + RLS baseline, fails closed.
-- Full serial suite **183/183**; web build green; handoff logs per lane in `handoff/`.
+- Full serial suite: **counts are generated, not typed — see `docs/VERIFICATION.md`** (the "183/183" once written here was stale; the real suite is far larger). Web build green; handoff logs per lane in `handoff/`.
 
 ### Upgrades & operators
 - One migration path: `node scripts/migrate.js` (031–038 all idempotent, replay-proven ×2).

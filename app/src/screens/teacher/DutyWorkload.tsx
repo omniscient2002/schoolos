@@ -17,10 +17,10 @@ import { Icon } from '../../components/Icon';
 import { fmtDate, fmtRelative, weekday } from '../../lib/format';
 import { useStore } from '../../state/store';
 import {
-  isFlowDoorLive, listDutyRoster, myWorkload,
+  listDutyRoster, myWorkload,
   type DutyAssignment,
 } from '../../services/teacherFixtures';
-import { AsyncGate, DeniedState, FixtureTag, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+import { AsyncGate, DeniedState, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
 
 const WINDOWS = [
   { id: 'today', label: 'Today' },
@@ -66,7 +66,6 @@ export default function DutyWorkload() {
       <PageHead
         title="Duties & my workload"
         sub={`${weekday(new Date())} · what the roster asks of ${actorName.split(' ')[0]} this ${win === 'today' ? 'day' : win}, and how the total sits against the fair band.`}
-        actions={<FixtureTag source={isFlowDoorLive('duty_week') ? 'live' : 'fixture'} />}
       />
 
       {/* ---- MY WORKLOAD — fairness card (P8: never a ranking) ---- */}

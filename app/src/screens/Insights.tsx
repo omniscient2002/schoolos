@@ -1,9 +1,9 @@
 /* ============================================================
    Insights — question-driven analytics home.
-   A search box that hands off to Ask, three seed-computed stats
-   (collection, attendance health, workload), and a grid of
-   question cards from seed.insights. "Open full analysis"
-   expands the full chart, clusters and actions in a drawer.
+   Three seed-computed stats (collection, attendance health,
+   workload) and a grid of question cards from seed.insights.
+   "Open full analysis" expands the full chart, clusters and
+   actions in a drawer.
    Role-aware: the viewer's own domain sorts and highlights first.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
@@ -150,7 +150,6 @@ function AnalysisDrawer({ ins, onClose }: { ins: Insight | null; onClose: () => 
 export default function Insights() {
   const { session } = useStore();
   const navigate = useNavigate();
-  const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
 
   const { data, loading, error, retry } = useAsync(async () => {
@@ -158,25 +157,35 @@ export default function Insights() {
     return seed.insights;
   }, [session.roleId]);
 
-  /* seed-computed stats */
-  const term2Exists = seed.feeObligations.length > 0 || seed.attendance.length > 0;
+  /* P0 empty-world: TERM_DAYS / attendance / students are all empty for a
+     tenant with no records yet, so each stat reports what the dataset can
+     actually support — `null` (rendered as "not yet") instead of a 0 that
+     would read as a measurement. */
   const stats = useMemo(() => {
     const term2 = seed.feeObligations.filter(f => f.term === 'Term 2 2026-27');
     const billed = term2.reduce((a, f) => a + f.amount, 0);
     const collected = term2.reduce((a, f) => a + f.paidAmount, 0);
-    const rate = billed ? Math.round((collected / billed) * 1000) / 10 : 0;
+    /* null = nothing billed, so there is no collection rate to report. */
+    const rate = billed ? Math.round((collected / billed) * 1000) / 10 : null;
     const failed = term2.filter(f => f.status === 'failed').length;
 
     const totalActive = seed.students.filter(s => s.status !== 'inactive').length;
+    /* Crash site (P0): `TERM_DAYS[len - 1].getTime()` threw on the blanked
+       empty world — "today" has to exist before absence can be counted. */
     const lastDay = seed.TERM_DAYS[seed.TERM_DAYS.length - 1];
-    const absentToday = seed.attendance.filter(a => a.date.getTime() === lastDay.getTime() && a.status === 'absent').length;
+    const absentToday = lastDay
+      ? seed.attendance.filter(a => a.date.getTime() === lastDay.getTime() && a.status === 'absent').length
+      : 0;
     const presence = totalActive ? Math.round(((totalActive - absentToday) / totalActive) * 1000) / 10 : 0;
+    /* No register on the last school day means no attendance health to report —
+       an unmarked register is not a 100% present school. */
+    const hasAttendanceToday = !!lastDay && seed.attendance.some(a => a.date.getTime() === lastDay.getTime());
     const flagged = seed.sections.filter(s => { const a = seed.sectionAttendanceToday(s.id); return a.total > 0 && a.pct < 85; }).length;
 
     /* Empty-world law: the demo's workload insight may not exist in a real
        school's data yet — render the card's absence, never crash. */
     const wl = seed.insights.find(i => i.id === 'ins_4') ?? null;
-    return { rate, failed, presence, flagged, wl };
+    return { rate, failed, presence, hasAttendanceToday, totalActive, flagged, wl };
   }, []);
 
   const insights = useMemo(() => data ?? [], [data]);
@@ -188,48 +197,32 @@ export default function Insights() {
 
   const openIns = insights.find(i => i.id === openId) ?? null;
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    navigate('/ask');
-  };
-
   return (
     <>
       <PageHead
         title="Insights"
-        sub="Questions the data answers today — each with its metric, movement, and the records behind it. Deeper investigation lives in Ask."
+        sub="Questions the data answers today — each with its metric, movement, and the records behind it."
         actions={<Badge tone="ai" dot>Recomputed nightly · verified</Badge>}
       />
-
-      {/* ask-style search box */}
-      <form onSubmit={submit} className="u-flex" style={{ gap: 8, marginBottom: 18, maxWidth: 640 }}>
-        <div className="searchbox" style={{ flex: 1 }}>
-          <Icon.Sparkle size={15} style={{ color: 'var(--ai-text)' }} />
-          <input
-            className="input"
-            placeholder="Ask a question about your school…"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            aria-label="Ask a question about your school"
-          />
-        </div>
-        <Button type="submit" variant="ai" iconRight={<Icon.ArrowRight size={14} />}>Ask</Button>
-      </form>
 
       {/* stats row */}
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
         <Stat
           label="Collection rate — Term 2"
-          value={`${stats.rate}%`}
-          delta={term2Exists ? { value: `${stats.failed} failed payment${stats.failed === 1 ? '' : 's'}`, dir: stats.failed > 0 ? 'down' : 'up' } : undefined}
-          sub={term2Exists ? 'From live fee obligations' : 'No fee records yet'}
+          /* No obligations to divide by → "—", not a 0% that would read as a
+             collection failure the school never had. */
+          value={stats.rate === null ? '—' : `${stats.rate}%`}
+          delta={stats.rate === null ? undefined : { value: `${stats.failed} failed payment${stats.failed === 1 ? '' : 's'}`, dir: stats.failed > 0 ? 'down' : 'up' }}
+          sub={stats.rate === null ? 'No fee obligations recorded for this term yet' : 'From live fee obligations'}
           onClick={() => navigate('/fees')}
         />
         <Stat
           label="Attendance health today"
-          value={`${stats.presence}%`}
-          delta={{ value: stats.flagged ? `${stats.flagged} section${stats.flagged > 1 ? 's' : ''} flagged` : 'all sections nominal', dir: stats.flagged ? 'down' : 'up' }}
-          sub={term2Exists ? 'From live attendance records' : 'No attendance records yet'}
+          value={stats.hasAttendanceToday ? `${stats.presence}%` : '—'}
+          delta={!stats.hasAttendanceToday
+            ? { value: stats.totalActive ? 'register not marked yet' : 'no students on record yet', dir: 'flat' as const }
+            : { value: stats.flagged ? `${stats.flagged} section${stats.flagged > 1 ? 's' : ''} flagged` : 'all sections nominal', dir: stats.flagged ? 'down' as const : 'up' as const }}
+          sub={stats.hasAttendanceToday ? 'From live attendance records' : 'No attendance records yet'}
           onClick={() => navigate('/attendance')}
         />
         {stats.wl && (
@@ -237,7 +230,7 @@ export default function Insights() {
             label="Teacher workload"
             value={stats.wl.delta}
             delta={{ value: 'avg periods/week', dir: 'up' }}
-            sub="Two long-leave substitutes · Mathematics peaks at 31"
+            sub="Sample — no timetable-workload door is connected in this build"
             onClick={() => navigate('/operations/hr')}
           />
         )}

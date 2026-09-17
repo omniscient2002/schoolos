@@ -37,16 +37,22 @@ function scryptEqual(password, salt, hashHex, params) {
   }
 }
 
-export function verifyPassword(password, stored) {
-  if (typeof stored !== 'string') return false;
+export function verifyPasswordDetailed(password, stored) {
+  if (typeof stored !== 'string') return { valid: false, needsRehash: false };
   const parts = stored.split(':');
-  if (parts.length < 2) return false;
+  if (parts.length < 2) return { valid: false, needsRehash: false };
   const [salt, hash] = parts;
-  if (!salt || !hash) return false;
+  if (!salt || !hash) return { valid: false, needsRehash: false };
   // P1-6: hashes store no params — new cost first, then the legacy cost so every
   // pre-hardening account keeps logging in (and is rehashed to STRONG on next
   // password set via hashPassword).
-  return scryptEqual(password, salt, hash, STRONG) || scryptEqual(password, salt, hash, LEGACY);
+  if (scryptEqual(password, salt, hash, STRONG)) return { valid: true, needsRehash: false };
+  if (scryptEqual(password, salt, hash, LEGACY)) return { valid: true, needsRehash: true };
+  return { valid: false, needsRehash: false };
+}
+
+export function verifyPassword(password, stored) {
+  return verifyPasswordDetailed(password, stored).valid;
 }
 
 // Constant-work fixture for the user-miss path: the caller verifies the throwaway
@@ -57,7 +63,13 @@ export function dummyVerify(password) {
   return verifyPassword(password, DUMMY_HASH);
 }
 
-export const ROLES = ['owner','principal','coordinator','finance','admissions','transport','facilities','technician','teacher','itadmin','parent','student'];
+/* RBAC-2: `counselor` is the 13th role and it was MISSING here while five gate lists named it — so the
+   safeguarding surfaces (the product's most sensitive) could never have a dedicated role, and the two
+   shipped screens that authorise a counselor (`app/src/screens/student/WellbeingQueue.tsx` STAFF_ROLES,
+   `teacher.support`'s box readers) described a role the server refused to issue. The docs already publish
+   13 roles; the code now agrees with them (RBAC-8). Adding it here is what makes those lists satisfiable and
+   lets a custom role use `counselor` as its base. */
+export const ROLES = ['owner','principal','coordinator','counselor','finance','admissions','transport','facilities','technician','teacher','itadmin','parent','student'];
 
 /** Surface a role's data scope: what tenant rows it may read. */
 export function roleScope(role) {

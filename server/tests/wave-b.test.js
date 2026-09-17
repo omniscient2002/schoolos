@@ -232,9 +232,11 @@ test('files.store: base64 upload whitelists types, stores sha256, guardian-of-ch
     [fileId])).rows[0];
   assert.ok(refusal, 'refused download is audited');
 
-  // the student themself (name-match identity pin) downloads their own file
+  // PLGX-4: the student's name-match fallback is gone — a display name is not an identity (375 students /
+  // 76 distinct names in a seeded school). A student may still download a file THEY uploaded, but a
+  // teacher-published worksheet for their class needs the Phase-2 user↔student link, so this refuses.
   const selfDl = await app.inject({ method: 'GET', url: `/plugins/files.store/${fileId}/download`, headers: { authorization: `Bearer ${student.token}` } });
-  assert.equal(selfDl.statusCode, 200, selfDl.body);
+  assert.equal(selfDl.statusCode, 403, 'name equality must not authorize a download');
 
   // metadata list carries no bytes; download audit row exists (risk low)
   const list = await app.inject({ method: 'GET', url: `/plugins/files.store?scope=student&refId=${aaravId}`, headers: H(teacher.token) });

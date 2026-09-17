@@ -2,9 +2,10 @@
 // Pins: lifecycle gate, immutable consent ledger (withdrawal = appended superseding
 // artifact), expiry computed at read, SAR export/erasure through the KERNEL approval
 // spine (raise → /actions/:id/decide → execute; execute-before-approval refused,
-// self-approval refused), decision trail preserved through erasure, core students
-// never written, DPDP-not-a-finance-surface role tier. Events: consent.recorded.v1 ·
-// sar.opened.v1 · sar.fulfilled.v1.
+// self-approval refused), decision trail preserved through erasure, no core student ROWS
+// ever created by this pack (erasure DOES redact the denormalised guardian PII on a matching
+// student row, in place, through the kernel-executed core-lane action), DPDP-not-a-finance-
+// surface role tier. Events: consent.recorded.v1 · sar.opened.v1 · sar.fulfilled.v1.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
@@ -129,7 +130,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
     assert.equal(dl.statusCode, 200, 'bundle deliverable post-fulfilment');
   });
 
-  test('7 · SAR erasure: kernel-approved → identity redacted, decision TRAIL preserved, core students untouched', async () => {
+  test('7 · SAR erasure: kernel-approved → identity redacted, decision TRAIL preserved, no core student ROWS created', async () => {
     await sql(`INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, notes)
       SELECT id, 'Dsar Kid', 'G. Parent', '+919822200222', '5', 'walk-in', NULL, jsonb_build_object('admission_year','2026-27') FROM app.tenants LIMIT 1`); // P2-1: fixture stored E.164
     const co = await loginAs(app, 'coordinator@meridian.edu');
@@ -157,7 +158,12 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
     assert.equal(lead.rows[0].guardian_name, null, 'admissions PII redacted');
     assert.match(lead.rows[0].guardian_phone, /^\[erased:/, 'guardian phone redacted');
     const coreKids = await sql(`SELECT count(*)::int n FROM app.students WHERE name='Aarav Mehta'`);
-    assert.equal(coreKids.rows[0].n, coreBaseline, 'pack never writes app.students (delta 0 vs pre-test baseline)');
+    // STRUCTURAL pin, not a "pack touches nothing" pin: erasure DOES now modify app.students content
+    // (owner decision 2026-09-14 — the denormalised guardian PII on the student row is erased via the
+    // kernel-executed core-lane action students.redactGuardianPii, requested by this pack). What must
+    // never change is the ROW COUNT: the pack creates no student rows, so the seeded roster is the same
+    // size as the pre-test baseline. Asserted here as a delta against that baseline, exactly as before.
+    assert.equal(coreKids.rows[0].n, coreBaseline, 'pack creates no app.students rows (row count delta 0 vs pre-test baseline; erasure DOES update the denormalised guardian PII in place)');
     const st = await app.inject({ method: 'GET', url: '/plugins/pack.dpdp/consent/state?subjectRef=9822200222', headers: H(co.token) });
     assert.equal(st.json().states.length, 0, 'state lookup finds nothing under the erased identity');
   });

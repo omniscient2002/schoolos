@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, Dropdown, Drawer, Empty, ErrorState, PageHead, Section, SkeletonCard, Stat, Timeline, useToast } from '../components/ui';
+import { Badge, Button, Card, Dropdown, Drawer, Empty, ErrorState, PageHead, Section, SkeletonCard, Stat, Timeline, useToast , SampleNote} from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -130,6 +130,7 @@ export default function Incidents() {
 
   return (
     <>
+      <SampleNote>Sample incident metrics — the averages and trend shown here are illustrative in this build, not computed from your incident board.</SampleNote>
       <PageHead
         title="Incidents"
         sub={session.roleId === 'transport'

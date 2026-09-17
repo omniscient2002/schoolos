@@ -24,9 +24,10 @@ before(async () => {
   sql = async (text, params = []) => {
     const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await c.connect();
-    const r = await c.query(text, params);
-    await c.end();
-    return r;
+    // try/finally: a failing query must not leak the client. A leaked pg.Client keeps the process
+    // alive after the tests finish, so the runner reports a ~670s "file" failure and marks every
+    // later file as failed without running it — one bad fixture wedged the whole suite.
+    try { return await c.query(text, params); } finally { await c.end().catch(() => {}); }
   };
   students = (await sql(`SELECT id FROM app.students ORDER BY admission_no LIMIT 3`)).rows;
   assert.ok(students.length >= 2, 'seed must contain students');
@@ -53,7 +54,15 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     const bad = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
       payload: { name: 'Unit Test 1', classGrade: '8', weightage: { written: 60, oral: 30 } }, headers: H(co.token) });
     assert.equal(bad.statusCode, 409);
-    assert.match(bad.json().error, /add up to 100%/); // plain-language copy pass (was weightage_total_enforced)
+    // PERFECT-100 §5.7: this regex was stale, and it made SEVEN tests red for one stale
+    // string. The door's copy was improved to "…non-negative numbers that add up to
+    // exactly 100%" (a clearer message, and it now also mentions non-negativity) but the
+    // assertion still demanded the literal "add up to 100%", so it failed against BETTER
+    // copy — and because this test creates the exam that tests 3-7 and 9 then use, its
+    // failure cascaded into six more failures that looked like real damage.
+    // The code is right and the test was wrong, so the test moves: the assertion still
+    // requires the copy to explain the 100% rule, and now tolerates the improved wording.
+    assert.match(bad.json().error, /add up to (exactly )?100%/); // plain-language copy pass (was weightage_total_enforced)
     const r = await app.inject({ method: 'POST', url: '/plugins/exams.assessment/exams',
       payload: { name: 'Unit Test 1', classGrade: '8', weightage: { written: 70, oral: 30 } }, headers: H(co.token) });
     assert.equal(r.statusCode, 200);
@@ -169,8 +178,11 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
   test('8 · eligibility consumes attendance (kernel primitive): sub-floor student 409, above-floor passes', async () => {
     // drive students[2] below the 75% floor with synthetic attendance rows
     const low = students[2];
+    // Migration 092 enforces marked_by on new rows (NOT VALID still constrains INSERT/UPDATE), so the
+    // fixture names a real marker — the eligibility gate under test is attendance, not the marker check.
     await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
-               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'absent', NULL
+               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'absent',
+                      (SELECT id FROM app.users u WHERE u.tenant_id = s.tenant_id LIMIT 1)
                FROM app.students s, generate_series(1, 12) g(i) WHERE s.id = $1
                ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='absent'`, [low.id]);
     const co = await loginAs(app, 'coordinator@meridian.edu');
@@ -184,7 +196,8 @@ describe('exams.assessment (wave-3 · migrations 014+025 · deterministic public
     // a student with guaranteed-above-floor attendance (30 present days) passes
     const high = students[1];
     await sql(`INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
-               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'present', NULL
+               SELECT s.tenant_id, s.id, (current_date - (g.i || ' days')::interval)::date, 'present',
+                      (SELECT id FROM app.users u WHERE u.tenant_id = s.tenant_id LIMIT 1)
                FROM app.students s, generate_series(1, 30) g(i) WHERE s.id = $1
                ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='present'`, [high.id]);
     const ok = await app.inject({ method: 'POST', url: `/plugins/exams.assessment/exams/${examId}/marks`,

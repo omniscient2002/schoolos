@@ -139,8 +139,21 @@ describe('health.clinic v1.0', () => {
     const decide = await app.inject({ method: 'POST', url: `/actions/${actionId}/decide`,
       payload: { decision: 'approved', note: 'guardian informed' }, headers: H(pr.token) });
     assert.equal(decide.statusCode, 200);
-    const comm = await sql(`SELECT channel, status FROM app.communications ORDER BY created_at DESC LIMIT 1`);
-    assert.equal(comm.rows[0].status, 'delivered', 'comms rail executed the notice');
+    // PRD-17 — CORRECTED ASSERTION, not a weakened one. This used to read
+    //   assert.equal(comm.rows[0].status, 'delivered', 'comms rail executed the notice');
+    // which pinned the DEFECT: the decide executor wrote `status='delivered'` with `sent_at` AND
+    // `delivered_at` = now(), with no rail call, no queue entry and no resolvable audience — the audience
+    // it inserted was the label 'guardians'. `delivered` is the strongest value the schema allows (the
+    // dispatcher only ever sets `sent_at`), so the row claimed a carrier receipt for a notice nobody was
+    // handed. The executor now QUEUES to this child's guardians and the dispatcher owns delivery, so the
+    // honest end-to-end assertion is the queued row itself.
+    const comm = await sql(`SELECT channel, status, audience_json, sent_at, delivered_at FROM app.communications ORDER BY created_at DESC LIMIT 1`);
+    assert.equal(comm.rows[0].status, 'queued', "approving queues; delivery is the dispatcher's claim to make");
+    assert.equal(comm.rows[0].sent_at, null);
+    assert.equal(comm.rows[0].delivered_at, null, 'nothing has reached a carrier yet');
+    assert.ok(Array.isArray(comm.rows[0].audience_json) && comm.rows[0].audience_json.length >= 1,
+      "and the audience is a real address resolved from the visit's student, not the word \"guardians\"");
+    for (const addr of comm.rows[0].audience_json) assert.match(addr, /^\+[1-9]\d{7,14}$/, `not E.164: ${addr}`);
     // second sent-home visit → ANOTHER action, distinct code (no UNIQUE collision)
     const r2 = await app.inject({ method: 'POST', url: '/plugins/health.clinic/visits',
       payload: { studentId, complaint: 'recurred', action: 'sent_home' }, headers: H(co.token) });

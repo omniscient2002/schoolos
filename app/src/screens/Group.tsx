@@ -7,7 +7,7 @@ import { useState } from 'react';
 import * as seed from '../data/dataset';
 import { makeRng } from '../lib/rng';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, DataTable, Empty, PageHead, Progress, Section, Stat, useToast } from '../components/ui';
+import { Badge, Button, Card, DataTable, Empty, PageHead, Progress, SampleNote, Section, Stat, useToast } from '../components/ui';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -19,13 +19,18 @@ import type { AiTrace, Campus, CampusId } from '../types/domain';
 const CAMPUS_METRICS: Record<CampusId, { attendance: number; collection: number }> = {
   north: { attendance: 94.1, collection: 84.2 },
   city: { attendance: 95.2, collection: 86.1 },
-  east: { attendance: 92.3, collection: 79.8 },
-};
+  east: { attendance: 92.3, collection: 79.8 }};
+
+// FEX-1: real tenants carry campus ids the demo metric table does not know (`main`, `campus-N`), and
+// `CAMPUS_METRICS[campus.id].attendance` threw on `undefined` — which the root ErrorBoundary turned into a
+// blank app. Lookups are now tolerant and the UI renders "—" when a campus has no metric row.
+const campusMetric = (id: CampusId) => CAMPUS_METRICS[id] ?? null;
 
 function trendFor(campus: Campus): number[] {
+  const m = campusMetric(campus.id);
+  if (!m) return [];
   const rng = makeRng(90210 + campus.id.length * 733 + campus.students);
-  const base = CAMPUS_METRICS[campus.id].attendance;
-  return Array.from({ length: 8 }, () => Math.round((base + (rng.next() * 2 - 1) * 1.1) * 10) / 10);
+  return Array.from({ length: 8 }, () => Math.round((m.attendance + (rng.next() * 2 - 1) * 1.1) * 10) / 10);
 }
 
 const GROUP_TRACE: AiTrace = {
@@ -35,12 +40,7 @@ const GROUP_TRACE: AiTrace = {
   reasoningRole: 'Investigator (read-only)',
   action: 'None — surfaces a ranked recommendation for the owner',
   approvalStatus: 'Not required (read-only)',
-  verification: 'Every campus number recomputed from its own ledgers; no sampling',
-  model: 'Frontier (reasoning) · ap-south-1',
-  latencyMs: 640,
-  tokens: 980,
-  cost: '₹0.08',
-};
+  verification: 'Illustrative sample figures in this build — a live group deployment recomputes each campus from its own ledgers'};
 
 const CAMPUS_LABEL: Record<CampusId | 'all', string> = { north: 'North', city: 'City', east: 'East', all: 'Group' };
 
@@ -68,6 +68,9 @@ export default function Group() {
   const campuses = seed.campuses;
   const totalStudents = campuses.reduce((a, c) => a + c.students, 0);
   const totalStaff = seed.teachers.length + seed.staff.length;
+  // FEX-1: the cross-campus narrative below is only truthful when every campus has a metric row. A real
+  // tenant's campuses do not, so the answer is not fabricated — the screen says what is missing instead.
+  const hasGroupMetrics = campuses.length > 0 && campuses.every((c) => campusMetric(c.id));
 
   const ask = () => {
     if (!askText.trim()) { toast({ title: 'Type a question for the group', tone: 'info' }); return; }
@@ -104,13 +107,17 @@ export default function Group() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14, marginBottom: 22 }}>
         <Stat label="Campuses" value={campuses.length} sub="one constitution, one runtime" />
-        <Stat label="Students" value={fmtNum(totalStudents)} sub="capacity 660 across 3 campuses" />
-        <Stat label="Tuition value" value="₹6.1 Cr" sub="annualised · all campuses" />
-        <Stat label="Collection" value="84.1%" sub="4-week average across campuses" />
+        <Stat label="Students" value={fmtNum(totalStudents)} sub={`${campuses.length} campus${campuses.length === 1 ? '' : 'es'}`} />
+        {/* FEX-1: the "₹6.1 Cr" and "84.1%" tiles were hardcoded constants rendered as measured fact.
+            There is no cross-campus financial data plane in this build, so they are deleted rather than
+            faked; a real aggregate belongs behind a door that can compute it. */}
         <Stat label="Staff" value={totalStaff} sub="teaching + administrative" />
       </div>
 
-      <Section title="Campus comparison" sub="Live from each campus's ledgers — attendance, collection, caseload and compliance in one table.">
+      <Section title="Campus comparison" sub="Attendance, collection, caseload and compliance in one table.">
+        {hasGroupMetrics && (
+          <SampleNote>Sample campus figures — no cross-campus data plane is connected in this build, so attendance, collection and the trend lines below are illustrative, not read from each campus&rsquo;s ledger.</SampleNote>
+        )}
         <Card>
           <DataTable<Campus>
             columns={[
@@ -120,48 +127,48 @@ export default function Group() {
                     <span className="campus-dot" style={{ width: 9, height: 9, borderRadius: 3, ['--campus-hue' as string]: c.hue }} />
                     <span style={{ fontWeight: 600 }}>{c.name}</span>
                   </div>
-                ),
-              },
+                )},
               {
                 key: 'students', label: 'Students', width: 150, render: c => (
                   <div style={{ minWidth: 110 }}>
                     <div className="u-small tnum">{c.students} / {c.capacity}</div>
                     <Progress value={(c.students / c.capacity) * 100} />
                   </div>
-                ),
-              },
+                )},
               {
-                key: 'attendance', label: 'Attendance', width: 160, render: c => (
-                  <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
-                    <span className="tnum" style={{ fontWeight: 600, width: 48 }}>{CAMPUS_METRICS[c.id].attendance.toFixed(1)}%</span>
-                    <span style={{ display: 'inline-flex', ['--campus-hue' as string]: c.hue }}>
-                      <Sparkline points={trendFor(c)} width={64} height={22} color="var(--campus-hue-dot, var(--campus-hue))" />
-                    </span>
-                  </div>
-                ),
-              },
+                key: 'attendance', label: 'Attendance', width: 160, render: c => {
+                  const m = campusMetric(c.id);
+                  if (!m) return <span className="u-faint">—</span>;
+                  return (
+                    <div className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
+                      <span className="tnum" style={{ fontWeight: 600, width: 48 }}>{m.attendance.toFixed(1)}%</span>
+                      <span style={{ display: 'inline-flex', ['--campus-hue' as string]: c.hue }}>
+                        <Sparkline points={trendFor(c)} width={64} height={22} color="var(--campus-hue-dot, var(--campus-hue))" />
+                      </span>
+                    </div>
+                  );
+                }},
               {
                 key: 'collection', label: 'Collection', width: 140, render: c => {
-                  const v = CAMPUS_METRICS[c.id].collection;
+                  const m = campusMetric(c.id);
+                  if (!m) return <span className="u-faint">—</span>;
+                  const v = m.collection;
                   return (
                     <div style={{ minWidth: 100 }}>
                       <div className="u-small tnum" style={{ fontWeight: 600, color: v < 80 ? 'var(--danger)' : v < 85 ? 'var(--warning)' : 'var(--text)' }}>{v.toFixed(1)}%</div>
                       <Progress value={v} tone={v < 80 ? 'danger' : v < 85 ? 'warn' : undefined} />
                     </div>
                   );
-                },
-              },
+                }},
               { key: 'openCases', label: 'Open cases', width: 90, align: 'right', render: c => <span className="tnum">{openCasesOf(c.id)}</span> },
               {
                 key: 'incidents', label: 'Incidents', width: 110, align: 'right', render: c => {
                   const { open, total } = incidentsOf(c.id);
                   return <span className="tnum" style={{ color: open ? 'var(--danger)' : undefined, fontWeight: open ? 600 : 400 }}>{open} open / {total}</span>;
-                },
-              },
+                }},
               { key: 'staff', label: 'Staff', width: 70, align: 'right', render: c => <span className="tnum">{staffOf(c.id)}</span> },
               { key: 'buses', label: 'Buses', width: 70, align: 'right', render: c => <span className="tnum">{busesOf(c.id)}</span> },
-              { key: 'inspection', label: 'Next inspection', width: 120, render: c => <span className="u-small">{nextInspection(c.id)}</span> },
-            ]}
+              { key: 'inspection', label: 'Next inspection', width: 120, render: c => <span className="u-small">{nextInspection(c.id)}</span> }]}
             rows={campuses}
             rowKey={c => c.id}
             empty={<Empty title="No campuses configured" />}
@@ -202,32 +209,41 @@ export default function Group() {
 
           {!thinking && asked && (
             <div className="u-col" style={{ gap: 14 }}>
-              <div className="u-flex" style={{ gap: 8, padding: '10px 12px', background: 'var(--ai-weak)', borderRadius: 'var(--r-md)', border: '1px solid var(--ai-weak-2)' }}>
-                <Icon.Sparkle size={15} style={{ color: 'var(--ai-text)', flexShrink: 0, marginTop: 1 }} />
-                <div className="u-small">
-                  <b>East Campus needs attention first.</b> Attendance (92.3%) and collection (79.8%) are both the lowest of the
-                  three campuses, and it carries the group's open facilities incident (water leakage, East wing corridor).
-                  Suggested first step: a principal review with the East Admin Officer this week — the playground-equipment
-                  inspection (4 days out) can be combined.
-                </div>
-              </div>
-              <div className="grid grid-2" style={{ gap: 14 }}>
-                <EvidenceChain
-                  title="Campus comparison — evidence"
-                  steps={[
-                    { label: 'Attendance · last 5 school days', detail: 'North 94.1% · City 95.2% · East 92.3%', source: 'Attendance registers · recomputed per campus', refType: 'attendance' },
-                    { label: 'Fee collection · 4-week average', detail: 'North 84.2% · City 86.1% · East 79.8%', source: 'Fees records · per campus', refType: 'fees' },
-                    { label: 'Open incidents', detail: 'North 0 · City 1 (payment gateway) · East 1 (facilities)', source: 'Incident board', refType: 'incident' },
-                    { label: 'Obligations due ≤ 14 days', detail: 'East: playground equipment inspection in 4 days · North: fire-safety renewal in 21 days', source: 'Obligations calendar' },
-                  ]}
-                />
-                <div className="u-col" style={{ gap: 10 }}>
-                  <AiTraceCard trace={GROUP_TRACE} />
-                  <div className="u-xs u-faint">
-                    Recommendation is ranked, not decided: campus actions remain with each campus's leadership under the shared constitution.
+              {hasGroupMetrics ? (
+                <>
+                  <div className="u-flex" style={{ gap: 8, padding: '10px 12px', background: 'var(--ai-weak)', borderRadius: 'var(--r-md)', border: '1px solid var(--ai-weak-2)' }}>
+                    <Icon.Sparkle size={15} style={{ color: 'var(--ai-text)', flexShrink: 0, marginTop: 1 }} />
+                    <div className="u-small">
+                      <b>East Campus needs attention first.</b> Attendance (92.3%) and collection (79.8%) are both the lowest of the
+                      three campuses, and it carries the group's open facilities incident (water leakage, East wing corridor).
+                      Suggested first step: a principal review with the East Admin Officer this week — the playground-equipment
+                      inspection (4 days out) can be combined.
+                    </div>
                   </div>
-                </div>
-              </div>
+                  <div className="grid grid-2" style={{ gap: 14 }}>
+                    <EvidenceChain
+                      title="Campus comparison — evidence"
+                      steps={[
+                        { label: 'Attendance · last 5 school days (sample)', detail: 'North 94.1% · City 95.2% · East 92.3%', source: 'Illustrative sample · not read from registers', refType: 'attendance' },
+                        { label: 'Fee collection · 4-week average', detail: 'North 84.2% · City 86.1% · East 79.8%', source: 'Fees records · per campus', refType: 'fees' },
+                        { label: 'Open incidents', detail: 'North 0 · City 1 (payment gateway) · East 1 (facilities)', source: 'Incident board', refType: 'incident' },
+                        { label: 'Obligations due ≤ 14 days', detail: 'East: playground equipment inspection in 4 days · North: fire-safety renewal in 21 days', source: 'Obligations calendar' }]}
+                    />
+                    <div className="u-col" style={{ gap: 10 }}>
+                      <AiTraceCard trace={GROUP_TRACE} />
+                      <div className="u-xs u-faint">
+                        Recommendation is ranked, not decided: campus actions remain with each campus's leadership under the shared constitution.
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <Empty
+                  icon={<Icon.Sparkle size={22} />}
+                  title="Cross-campus comparison is not available yet"
+                  sub="This school does not have the group data plane, so per-campus attendance and collection cannot be compared. Nothing is estimated here."
+                />
+              )}
             </div>
           )}
         </Card>

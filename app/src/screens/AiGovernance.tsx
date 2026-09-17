@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, DataTable, PageHead, Section, Stat, useToast } from '../components/ui';
+import { Badge, Button, Card, DataTable, PageHead, Section, Stat, useToast , SampleNote} from '../components/ui';
 import { AiTraceCard } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -17,8 +17,7 @@ import type { AiTrace, AuditEntry, PolicyRule } from '../types/domain';
 /* ---------- posture helpers ---------- */
 type Posture = PolicyRule['posture'];
 const POSTURE_TONE: Record<Posture, 'success' | 'warning' | 'danger'> = {
-  AUTO: 'success', 'APPROVAL REQUIRED': 'warning', 'HUMAN-ONLY': 'danger',
-};
+  AUTO: 'success', 'APPROVAL REQUIRED': 'warning', 'HUMAN-ONLY': 'danger'};
 const POSTURE_SHORT: Record<Posture, string> = { AUTO: 'Runs automatically', 'APPROVAL REQUIRED': 'Needs approval', 'HUMAN-ONLY': 'Never without a human' };
 
 /* ---------- screen ---------- */
@@ -55,12 +54,7 @@ export default function AiGovernance() {
         : posture === 'APPROVAL REQUIRED'
           ? 'Awaiting named human approver'
           : 'Auto-executed within policy whitelist',
-      verification: 'Every number recomputed from source records; the entry links to them',
-      model: 'Fast (classification) · ap-south-1',
-      latencyMs: 380,
-      tokens: 620,
-      cost: '₹0.04',
-    };
+      verification: 'Every number recomputed from source records; the entry links to them'};
   };
 
   const shield = [
@@ -71,11 +65,11 @@ export default function AiGovernance() {
     { what: 'After-hours bulk message during quiet hours', policy: 'Communication §1.2', when: '1w ago' },
     { what: 'Cross-campus data access outside role scope', policy: 'Privacy §1.3', when: '2w ago' },
     { what: 'Grading submission without the class teacher', policy: 'AI Governance §1.1', when: '2w ago' },
-    { what: 'Decision proposal on a safeguarding note', policy: 'Safeguarding §2.1 (HUMAN-ONLY)', when: '3w ago' },
-  ];
+    { what: 'Decision proposal on a safeguarding note', policy: 'Safeguarding §2.1 (HUMAN-ONLY)', when: '3w ago' }];
 
   return (
     <>
+      <SampleNote>Sample governance data — shield events and AI action counts are illustrative in this build; no AI decision log is connected.</SampleNote>
       <PageHead
         title="AI rules & control"
         sub="Where the AI may act on its own, where it must wait for a human, and where it never goes."
@@ -112,8 +106,7 @@ export default function AiGovernance() {
               </span>
             ) },
             { key: 'posture', label: 'AI acts', width: 150, render: r => <Badge tone={POSTURE_TONE[r.posture]} dot>{POSTURE_SHORT[r.posture]}</Badge> },
-            { key: 'statement', label: 'Statement', render: r => <span className="u-muted u-clamp2" style={{ maxWidth: 520 }}>{r.statement}</span> },
-          ]}
+            { key: 'statement', label: 'Statement', render: r => <span className="u-muted u-clamp2" style={{ maxWidth: 520 }}>{r.statement}</span> }]}
           rows={boundaryRows}
           rowKey={r => r.id}
         />

@@ -29,7 +29,10 @@ describe('L2-3.1 · cookie sessions + CSRF', () => {
     const setCookie = l.headers['set-cookie'] ?? [];
     const sessionLine = setCookie.find((c) => c.startsWith('schoolos_session='));
     assert.match(sessionLine, /HttpOnly/i, 'session cookie is HttpOnly');
-    assert.match(sessionLine, /SameSite=Lax/i, 'session cookie is SameSite=Lax');
+    // SameSite=Strict, not Lax: the cookie session is same-origin only, so Strict is the safer default and
+    // also removes any cross-site navigation as a CSRF vector. The double-submit token below is still the
+    // belt-and-braces control for same-site mutations.
+    assert.match(sessionLine, /SameSite=Strict/i, 'session cookie is SameSite=Strict');
     const me = await app.inject({ method: 'GET', url: '/me', headers: { cookie: cookieHeader(j) } });
     assert.equal(me.statusCode, 200, me.body);
     assert.equal(me.json().email, 'principal@meridian.edu');

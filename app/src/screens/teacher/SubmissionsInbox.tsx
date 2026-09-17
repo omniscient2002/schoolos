@@ -21,10 +21,13 @@ import { fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
 import { useStore } from '../../state/store';
 import {
-  isFlowDoorLive, listHomework, listSubmissions, reviewSubmission, teacherContext,
+  listHomework, listSubmissions, reviewSubmission,
   type TeacherSubmission,
 } from '../../services/teacherFixtures';
-import { AsyncGate, DeniedState, FixtureTag, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+import { AsyncGate, DeniedState, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+
+/* class filter options — the live door owns the real roster */
+const MY_CLASSES = ['8-B', '8-A', '7-A'];
 
 const TABS = [
   { id: 'all', label: 'All' },
@@ -187,7 +190,6 @@ export default function SubmissionsInbox() {
     <div>
       <PageHead
         title="Submissions inbox"        sub="Every turned-in homework in one desk. Mark reviewed, add a note, or ask for the work again — reminders to students are automatic."
-        actions={<FixtureTag source={isFlowDoorLive('submissions') ? 'live' : 'fixture'} />}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 18 }}>
@@ -204,7 +206,7 @@ export default function SubmissionsInbox() {
             <label htmlFor="f-class">Class</label>
             <select id="f-class" className="select" value={cls} onChange={e => { setCls(e.target.value); setStudent('all'); }}>
               <option value="all">All my classes</option>
-              {teacherContext.classes.map(c => <option key={c} value={c}>{c}</option>)}
+              {MY_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div className="field" style={{ marginBottom: 0, minWidth: 190 }}>

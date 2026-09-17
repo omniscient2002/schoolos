@@ -4,25 +4,17 @@
 const ID = 'payments.upi';
 export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
-import { installRawJsonParser } from '../_shared/raw-body-parser.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
-
-  // ── Raw-bytes capture (redteam P0-1): real Razorpay HMACs are computed over the
-  // wire bytes — re-serialized JSON will never verify. Now the SHARED parser
-  // (_shared/raw-body-parser.js): Wave A adds payments.razorpay, and Fastify
-  // refuses a second application/json parser — install-once keeps both rails'
-  // webhooks byte-exact regardless of loader mount order.
-  installRawJsonParser(app);
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
 
   // ── Boot guard (redteam P0-1): a money rail must not serve forged facts. If any
   // tenant has payments.upi enabled, the HMAC secret is mandatory at boot — the
   // JWT_SECRET pattern (config.js fail-fast), applied at plugin scope.
   app.addHook('onReady', async () => {
-    const enabled = (await q(`SELECT count(*)::int n FROM app.plugins WHERE plugin_id='payments.upi' AND status IN ('enabled','active','degraded')`)).rows[0].n;
+    const enabled = (await sysq(`SELECT count(*)::int n FROM app.plugins WHERE plugin_id='payments.upi' AND status IN ('enabled','active','degraded')`)).rows[0].n;
     if (enabled > 0 && !process.env.UPI_WEBHOOK_SECRET) {
       throw new Error('boot refused: UPI_WEBHOOK_SECRET must be set while payments.upi is enabled (Fees §4.2 — no unsigned webhook acceptance)');
     }
@@ -60,7 +52,7 @@ export function register(app, kernel) {
     });
   });
 
-  app.post(`/plugins/${ID}/webhook`, async (req, reply) => {
+  app.post(`/plugins/${ID}/webhook`, { config: { rateLimit: { max: 2000, timeWindow: '1 minute' } } }, async (req, reply) => {
     // ── Gate 1: fail-closed, always (redteam cycle-3 P0-1). No dev-acceptance mode:
     // money-adjacent facts don't get dev doors. Secret unset → the route is OFF.
     const secret = process.env.UPI_WEBHOOK_SECRET;
@@ -89,8 +81,8 @@ export function register(app, kernel) {
     // Service-path read via the owner pool: withUser cannot be opened before the tenant is
     // known (RLS would hide the row). The fact-writes below run as the constrained app role.
     const paymentId = body?.payload?.payment?.entity?.notes?.paymentId ?? body?.paymentId;
-    if (!paymentId || !/^[0-9a-f-]{36}$/i.test(paymentId)) return reply.code(400).send({ error: 'Payment event is missing a valid payment reference' });
-    const p = (await q(`SELECT tenant_id FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
+    if (!paymentId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId)) return reply.code(400).send({ error: 'Payment event is missing a valid payment reference' });
+    const p = (await sysq(`SELECT tenant_id FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
     if (!p) return reply.code(404).send({ error: 'We couldn\'t find that payment' });
     // webhook facts are tenant-resolved from the payment row, then written on that tenant's path
     return withUser(p.tenant_id, 'system', async (c) => {
@@ -106,8 +98,15 @@ export function register(app, kernel) {
       // events are accepted ONLY within ±fresh_mins of now — strictly-older is
       // rejected AND future-dated beyond the same window is rejected (negative age
       // is not an acceptance path). Timestamps are compared in seconds.
+      // SEC-21: a MISSING timestamp is rejected rather than skipping the check. The old
+      // `if (ts != null)` made replay defence opt-in by the sender — a signed body with the
+      // timestamp field removed bypassed freshness completely, which is precisely the replay
+      // the window exists to stop.
       const ts = body?.payload?.payment?.entity?.created_at ?? body?.timestamp;
-      if (ts != null) {
+      if (ts == null) {
+        return reply.code(400).send({ error: 'Payment event has no timestamp — freshness cannot be established' });
+      }
+      {
         const ageMins = (Date.now() / 1000 - Number(ts)) / 60;
         if (!Number.isFinite(ageMins) || Math.abs(ageMins) > Number(pl.fresh_mins)) {
           return reply.code(400).send({ error: `Payment event is too old (older than ${pl.fresh_mins} minutes)` });

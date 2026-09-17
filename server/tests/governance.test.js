@@ -23,13 +23,17 @@ const sql = (text, params = []) => {
 
 describe('event spine & governance (docs/12)', () => {
   test('envelope v2: emitted_by, subject, payload, lineage link', async () => {
+    // PLG-10: `/transport/events` refuses (409) until an enabled transport.gps provider exists, so the
+    // envelope assertions only describe a live deployment once the module is switched on.
+    const owner = await loginAs(app, 'owner@meridian.edu');
+    await app.inject({ method: 'POST', url: '/plugins/transport.gps/enable', payload: {}, headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' } });
     const p = await loginAs(app);
     const res = await app.inject({ method: 'POST', url: '/transport/events', payload: { routeCode: 'Route 7', kind: 'gps_delay', delayMins: 12 }, headers: { authorization: `Bearer ${p.token}` } });
     assert.equal(res.statusCode, 200);
     const action = res.json().action;
     assert.ok(action, 'policy raised approval action');
     const ev = await sql(`SELECT emitted_by, subject, schema_version, payload FROM app.events WHERE type='transport' ORDER BY created_at DESC LIMIT 1`);
-    assert.equal(ev.rows[0].emitted_by, 'plugin:transport');
+    assert.equal(ev.rows[0].emitted_by, 'plugin:transport.gps');
     assert.equal(ev.rows[0].subject, 'route:Route 7');
     assert.equal(ev.rows[0].schema_version, 1);
     assert.equal(ev.rows[0].payload.riders, 75);
@@ -40,16 +44,19 @@ describe('event spine & governance (docs/12)', () => {
     const lin = await app.inject({ method: 'GET', url: '/events/lineage?limit=5', headers: { authorization: `Bearer ${p.token}` } });
     const entry = lin.json().lineage.find(e => e.links && e.links.some(l => l.action_id === action.id));
     assert.ok(entry, 'lineage view links the event to its action');
-    assert.equal(entry.emitted_by, 'plugin:transport');
+    assert.equal(entry.emitted_by, 'plugin:transport.gps');
   });
 
   test('event budgets trip the circuit breaker (docs/12 §10)', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
     const H = { authorization: `Bearer ${o.token}`, 'content-type': 'application/json' };
-    await app.inject({ method: 'POST', url: '/plugins/transport/enable', payload: { version: '1.4.0', class: 'B' }, headers: H });
+    // PLG-10: the door now emits/quota-checks under the REAL module id `transport.gps`. The old fixture enabled
+    // a non-existent module `transport` through the enable door (which, before PLG-4, fabricated its row); now
+    // that the door requires a module, the fixture uses the id the runtime and catalog actually share.
+    await app.inject({ method: 'POST', url: '/plugins/transport.gps/enable', payload: {}, headers: H });
     // age out earlier test events so the per-minute window starts clean
-    await sql(`UPDATE app.events SET created_at = now() - interval '5 minutes' WHERE emitted_by='plugin:transport'`);
-    await sql(`UPDATE app.plugins SET event_budget='{"events_per_min":2}'::jsonb WHERE plugin_id='transport'`);
+    await sql(`UPDATE app.events SET created_at = now() - interval '5 minutes' WHERE emitted_by='plugin:transport.gps'`);
+    await sql(`UPDATE app.plugins SET event_budget='{"events_per_min":2}'::jsonb WHERE plugin_id='transport.gps'`);
     const mk = () => app.inject({ method: 'POST', url: '/transport/events', payload: { routeCode: 'Route 4', kind: 'gps_delay', delayMins: 3 }, headers: { authorization: `Bearer ${o.token}` } });
     assert.equal((await mk()).statusCode, 200);
     assert.equal((await mk()).statusCode, 200);
@@ -59,10 +66,10 @@ describe('event spine & governance (docs/12)', () => {
     const fourth = await mk();
     assert.equal(fourth.statusCode, 429);
     assert.equal(fourth.json().code, 'BREAKER_OPEN', 'breaker stays open below limit once tripped');
-    const st = await sql(`SELECT breaker_state FROM app.plugins WHERE plugin_id='transport'`);
+    const st = await sql(`SELECT breaker_state FROM app.plugins WHERE plugin_id='transport.gps'`);
     assert.equal(st.rows[0].breaker_state.open, true);
     // reset so later suites/files see defaults
-    await sql(`UPDATE app.plugins SET breaker_state='{"open":false}'::jsonb, event_budget='{}'::jsonb WHERE plugin_id='transport'`);
+    await sql(`UPDATE app.plugins SET breaker_state='{"open":false}'::jsonb, event_budget='{}'::jsonb WHERE plugin_id='transport.gps'`);
   });
 
   test('capability contracts: kernel primitives registered and enforced (docs/12 §4)', async () => {

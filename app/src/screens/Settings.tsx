@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PageHead, Section, Card, Badge, Tabs, Button, useToast, KeyValue, Avatar } from '../components/ui';
+import { PageHead, Section, Card, Badge, Tabs, Button, Empty, SkeletonCard, useToast, KeyValue } from '../components/ui';
 import { Icon } from '../components/Icon';
-import { useStore, demoAccounts } from '../state/store';
+import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { apiPost } from '../services/liveApi';
+import { apiGet, apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { KNOWN_ROLES } from '../lib/roles';
 import MfaSection from './account/MfaSection';
 import { t, useLang, setLang, LANGS, isPartial } from '../i18n';
 import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
@@ -15,6 +16,34 @@ const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
   { id: 'light', label: 'Light' },
   { id: 'dark', label: 'Dark' },
 ];
+
+/* The roles the product ships (mirrors lib/roles KNOWN_ROLES) with a plain-language
+   purpose. Reference only — the server is the authority on what a role may reach. */
+const ROLE_LABELS: Record<string, string> = {
+  owner: 'Owner', principal: 'Principal', teacher: 'Teacher', coordinator: 'Coordinator',
+  counselor: 'Counsellor (wellbeing)', finance: 'Accounts (Finance)', admissions: 'Admissions desk',
+  transport: 'Transport in-charge', itadmin: 'IT admin', facilities: 'Facilities',
+  technician: 'Technician', parent: 'Parent', student: 'Student',
+};
+const ROLE_PURPOSE: Record<string, string> = {
+  owner: 'Runs the school and its modules; full configuration.',
+  principal: 'Day-to-day leadership — briefings, approvals and people.',
+  coordinator: 'Timetable, substitutions and workload fairness.',
+  counselor: 'The wellbeing queue and safeguarding notes only.',
+  finance: 'Fee plans, collection and reconciliation.',
+  admissions: 'Enquiries, follow-ups and the admissions funnel.',
+  transport: 'Routes, fleet and transport incidents.',
+  itadmin: 'Accounts, roles, modules and platform settings.',
+  facilities: 'Maintenance board, work orders and reports.',
+  technician: 'Assigned jobs and the asset workspace.',
+  teacher: 'Own classes, homework, submissions and leave.',
+};
+/* Staff roles a school appoints through the console (parents and students are not appointed). */
+const STAFF_ROLES = KNOWN_ROLES.filter(r => r !== 'parent' && r !== 'student');
+
+interface RoleMask { allow: string[]; deny: string[] }
+interface CustomRole { key: string; label: string; base_role: string; permissions: RoleMask; members: number }
+interface RolesResponse { roles: CustomRole[]; builtin: string[] }
 
 export default function Settings() {
   const { session, actorName } = useStore();
@@ -37,10 +66,12 @@ export default function Settings() {
   const [tab, setTab] = useState('school');
   const [theme, setThemeState] = useState<ThemeChoice>(storedTheme());
   const canManage = ['principal', 'itadmin', 'owner'].includes(session.roleId);
+  /* GET/POST /roles are owner/itadmin only (ROLES_ADMIN) — a principal may open Settings but not roles. */
+  const canManageRoles = ['itadmin', 'owner'].includes(session.roleId);
 
   return (
     <>
-      <PageHead title="Settings" sub={`Signed in as ${actorName} · ${demoAccounts.find(a => a.id === session.roleId)?.title}`}
+      <PageHead title="Settings" sub={`Signed in as ${actorName} · ${ROLE_LABELS[session.roleId] ?? session.roleId}`}
         actions={<Button variant="secondary" icon={<Icon.Download size={14} />} onClick={() => toast({ title: 'Not connected', sub: 'Configuration export requires server support — nothing was downloaded.', tone: 'info' })}>Export configuration</Button>} />
 
       <Tabs active={tab} onChange={setTab} tabs={[
@@ -184,44 +215,7 @@ export default function Settings() {
         </Section>
       )}
 
-      {tab === 'roles' && (
-        <Section title="Roles & access" sub="What each role can see and do. This demo ships 10 pre-configured roles.">
-          <Card>
-            <div style={{ padding: 'var(--s-3) var(--s-5) var(--s-4)' }}>
-              {demoAccounts.map(a => {
-                const scopeAll = ['principal', 'finance', 'owner', 'itadmin'].includes(a.id);
-                return (
-                  <div key={a.id} className="u-flex" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'center' }}>
-                    <Avatar name={a.name} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 590 }}>{a.title}</div>
-                      <div className="u-xs u-faint u-truncate">{a.email} · scope: {scopeAll ? 'all campuses' : 'home campus'}</div>
-                    </div>
-                    <div className="u-hide-mobile u-flex u-gap-1" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      {a.id === 'principal' && <><Badge tone="accent">Full loop</Badge><Badge tone="ai">AI proposals</Badge></>}
-                      {a.id === 'finance' && <><Badge tone="accent">Fees</Badge><Badge tone="outline">Reconciliation</Badge></>}
-                      {a.id === 'admissions' && <Badge tone="accent">Funnel</Badge>}
-                      {a.id === 'transport' && <Badge tone="accent">Fleet</Badge>}
-                      {a.id === 'teacher' && <><Badge tone="accent">Classes</Badge><Badge tone="ai">Drafts</Badge></>}
-                      {a.id === 'parent' && <Badge tone="info">Own child</Badge>}
-                      {a.id === 'student' && <Badge tone="info">Calm surface</Badge>}
-                      {a.id === 'owner' && <Badge tone="accent">Group</Badge>}
-                      {a.id === 'itadmin' && <><Badge tone="accent">Platform</Badge><Badge tone="warning">Governance</Badge></>}
-                      {a.id === 'coordinator' && <Badge tone="accent">Operations</Badge>}
-                    </div>
-                    {session.roleId === 'itadmin'
-                      ? <Button size="sm" variant="ghost" onClick={() => toast({ title: `Permission editor — ${a.title}`, sub: 'Granular overrides open in a governed editor; changes are audit-logged', tone: 'info' })}>Manage</Button>
-                      : <Icon.Lock size={13} style={{ color: 'var(--text-3)' }} />}
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-          <div className="u-small u-muted" style={{ marginTop: 10 }}>
-            Need a role that isn't here? Custom roles with field-level permissions ship in the enterprise pack.
-          </div>
-        </Section>
-      )}
+      {tab === 'roles' && <RoleAccessTab canManage={canManageRoles} onManage={() => navigate('/roles')} />}
 
       {tab === 'communication' && (
         <Section title="Communication" sub="Channels, templates and guardrails. Every parent-facing message originates here.">
@@ -338,6 +332,90 @@ export default function Settings() {
         </Section>
       )}
     </>
+  );
+}
+
+/* Roles & access — the product's built-in roles (reference) beside the school's real
+   custom roles from GET /roles (built-in base + allow/deny mask, with member counts). */
+function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: () => void }) {
+  const [roles, setRoles] = useState<CustomRole[] | null>(null);
+  const [state, setState] = useState<{ loading: boolean; error: string | null }>({ loading: true, error: null });
+
+  useEffect(() => {
+    let live = true;
+    apiGet<RolesResponse>('/roles')
+      .then(r => { if (live) { setRoles(r.roles ?? []); setState({ loading: false, error: null }); } })
+      .catch(e => { if (live) { setRoles(null); setState({ loading: false, error: friendly(e) }); } });
+    return () => { live = false; };
+  }, []);
+
+  return (
+    <Section title="Roles & access" sub="The roles this school can assign, and the custom roles it has created. The server decides every door; this is a read-only view.">
+      <div className="grid grid-2" style={{ alignItems: 'start' }}>
+        <Card head="Built-in roles">
+          <div style={{ padding: 'var(--s-3) var(--s-5) var(--s-4)' }}>
+            {STAFF_ROLES.map(r => (
+              <div key={r} className="u-flex" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'flex-start' }}>
+                <Icon.Key size={14} style={{ color: 'var(--text-3)', marginTop: 3, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 590 }}>{ROLE_LABELS[r] ?? r}</div>
+                  <div className="u-small u-muted">{ROLE_PURPOSE[r] ?? ''}</div>
+                </div>
+                <Badge tone="outline">Built-in</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card
+          head="Custom roles"
+          actions={canManage
+            ? <Button size="sm" variant="ghost" icon={<Icon.Key size={13} />} onClick={onManage}>Manage</Button>
+            : <Badge tone="outline">Owner / IT admin</Badge>}
+        >
+          <div style={{ padding: 'var(--s-3) var(--s-5) var(--s-4)' }}>
+            {state.loading && <SkeletonCard lines={3} />}
+            {!state.loading && state.error && (
+              <Empty icon={<Icon.Lock size={20} />} title="Custom roles could not be loaded" sub={state.error} />
+            )}
+            {!state.loading && !state.error && roles && roles.length === 0 && (
+              <Empty
+                icon={<Icon.Key size={20} />}
+                title="No custom roles yet"
+                sub={canManage
+                  ? 'Create one under Roles & access administration — a built-in base plus an allow/deny mask over real doors.'
+                  : 'The school owner or IT admin can create custom roles.'}
+              />
+            )}
+            {!state.loading && !state.error && roles && roles.map(role => (
+              <div key={role.key} className="u-flex" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'flex-start' }}>
+                <Icon.Key size={14} style={{ color: 'var(--text-3)', marginTop: 3, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 590 }}>
+                    {role.label}{' '}
+                    <span className="u-xs u-faint">· base {ROLE_LABELS[role.base_role] ?? role.base_role}</span>
+                  </div>
+                  <div className="u-xs u-faint">
+                    {role.permissions.allow.length} granted · {role.permissions.deny.length} refused ·{' '}
+                    {role.members} member{role.members === 1 ? '' : 's'}
+                  </div>
+                </div>
+                <Badge tone={role.members > 0 ? 'accent' : 'outline'}>{role.members}</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+      <div className="u-small u-muted" style={{ marginTop: 10 }}>
+        A custom role is a built-in base plus an allow/deny mask over real doors — it is not gated behind an
+        enterprise pack. {canManage ? 'Manage them under ' : 'Only the owner or IT admin can manage them under '}
+        <button
+          onClick={onManage}
+          disabled={!canManage}
+          style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', color: canManage ? 'var(--accent-text)' : 'inherit', cursor: canManage ? 'pointer' : 'not-allowed', textDecoration: canManage ? 'underline' : 'none' }}
+        >Roles &amp; access administration</button>.
+      </div>
+    </Section>
   );
 }
 

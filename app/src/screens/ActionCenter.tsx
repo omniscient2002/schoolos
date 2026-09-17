@@ -6,13 +6,11 @@
    the server response; a 403 (not the owning authority) or any
    other failure surfaces a friendly error and the item stays open.
    Success toasts only claim what the server's response says.
-   The demo build keeps the session-queue behaviour, labelled.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import { apiActions, apiDecideAction } from '../services/liveApi';
-import { DEMO_MODE } from '../lib/demoMode';
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, Progress, KeyValue, ClickThrough } from '../components/ui';
 import { EvidenceChain } from '../components/Ai';
@@ -202,7 +200,7 @@ function EvidenceDrawer({ a, busy, onClose, onApprove, onDismiss }: {
 
 /* ---------- main ---------- */
 export default function ActionCenter() {
-  const { session, domain, dispatch, actorName } = useStore();
+  const { session, actorName } = useStore();
   const toast = useToast();
   const navigate = useNavigate();
   const [tab, setTab] = useState('approvals');
@@ -211,26 +209,15 @@ export default function ActionCenter() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [override, setOverride] = useState<QueueItem[] | null>(null); /* optimistic reconcile layer */
 
-  /* server queue (live build) */
+  /* server queue */
   const queue = useAsync<QueueItem[]>(async () => {
-    if (DEMO_MODE) return []; /* demo build uses the session store below */
     const res = await apiActions();
     return (res.actions ?? []).map(mapServerAction);
   }, []);
 
-  /* demo build: session queue from the store (S3 re-syncs it after hydration) */
-  const demoItems: QueueItem[] = useMemo(() => (DEMO_MODE ? domain.actions.map(a => ({
-    id: a.id, code: a.id, kind: a.kind, priority: a.priority as QueueItem['priority'], title: a.title,
-    detail: a.detail, why: a.why ?? '', owner: a.owner, ownerRole: '', status: a.status as QueueItem['status'],
-    on: a.on, deadline: a.deadline ?? null, decidedAt: null, decisionNote: null,
-    policyRef: a.policyRef ?? null, aiInvolved: a.aiInvolved, payload: {},
-  })) : []), [domain.actions]);
+  const items: QueueItem[] = override ?? queue.data ?? [];
 
-  const items: QueueItem[] = override ?? (DEMO_MODE ? demoItems : queue.data ?? []);
-
-  const { loading, error, retry } = DEMO_MODE
-    ? { loading: false, error: null as string | null, retry: () => {} }
-    : queue;
+  const { loading, error, retry } = queue;
 
   const refresh = () => { setOverride(null); retry(); };
 
@@ -261,19 +248,6 @@ export default function ActionCenter() {
      server's answer (optimistic flip reconciled by the response). */
   const decide = async (a: QueueItem, decision: 'approved' | 'dismissed', note?: string) => {
     setBusyId(a.id);
-    if (DEMO_MODE) {
-      /* demo session queue — copy says exactly what happened */
-      dispatch({ type: 'action/decide', id: a.id, decision, actor: actorName, role: session.roleId, note });
-      setConfirmDismiss(null);
-      setOpenId(null);
-      setBusyId(null);
-      toast({
-        title: decision === 'approved' ? 'Approved (demo)' : 'Dismissed (demo)',
-        sub: 'Demo world — this decision is kept for this session and is not connected to school records.',
-        tone: 'info',
-      });
-      return;
-    }
     try {
       const res = await apiDecideAction(a.id, decision, note);
       /* reconcile with the server's truth */
@@ -309,7 +283,6 @@ export default function ActionCenter() {
         sub={`Everything awaiting a decision — approvals, recommendations, incidents, cases and exceptions in one queue. Signed in as ${actorName}.`}
         actions={
           <>
-            {DEMO_MODE && <Badge tone="outline">Demo data</Badge>}
             <Button variant="secondary" size="sm" icon={<Icon.Refresh size={13} />} onClick={refresh}>Refresh queue</Button>
           </>
         }

@@ -167,6 +167,42 @@ test('staff leave ×2 → two DISTINCT per-instance kernel actions; coordinator 
   const stillPending = mine1.json().leave.find((l) => l.id === leave2.requestId);
   assert.equal(approved.status, 'approved', 'kernel decision mirrored into the leave row');
   assert.equal(stillPending.status, 'pending', 'the other request is untouched');
+
+  // ── DAT-6: the projection above CHANGED the leave record (pending → approved) and it did so inside
+  // a GET, writing no ledger row — so "who changed this leave request, when, and on what authority" had
+  // no answer in the ledger. It is now recorded, ONCE PER REAL TRANSITION.
+  const projected = await pool.query(
+    `SELECT outcome, risk, actor, record_type FROM app.audit_log
+      WHERE action='Leave decision projected onto request' AND record_ref=$1
+      ORDER BY created_at DESC, ctid DESC`, [leave1.requestId]);
+  assert.equal(projected.rows.length, 1,
+    'THE REGRESSION GATE: the pending→approved transition must be recorded exactly once');
+  assert.match(projected.rows[0].outcome, /set to "approved"/, 'the row must name the state it moved to');
+  assert.equal(projected.rows[0].risk, 'medium');
+  assert.equal(projected.rows[0].record_type, 'LeaveRequest');
+
+  // The mirror runs on every poll of the leave screen. A repeated GET changes nothing, so it must
+  // record nothing — otherwise the ledger fills with one row per page load and the real transition
+  // becomes unfindable. This pins the rowCount guard, not just the presence of the audit call.
+  const mine2 = await app.inject({ method: 'GET', url: '/teacher/leave/mine', headers: H(teacher.token) });
+  assert.equal(mine2.statusCode, 200);
+  const again = await pool.query(
+    `SELECT count(*)::int AS n FROM app.audit_log
+      WHERE action='Leave decision projected onto request' AND record_ref=$1`, [leave1.requestId]);
+  assert.equal(again.rows[0].n, 1, 'a repeated GET is a no-op and must NOT inflate the ledger');
+
+  // the dismissal direction is a different branch and gets its own row, with its own wording
+  const dismiss = await app.inject({ method: 'POST', url: `/actions/${leave2.actionId}/decide`, headers: H(coordinator.token),
+    payload: { decision: 'dismissed', note: 'clashes with exam week' } });
+  assert.equal(dismiss.statusCode, 200, dismiss.body);
+  await app.inject({ method: 'GET', url: '/teacher/leave/mine', headers: H(teacher.token) });
+  const rejRow = await pool.query(
+    `SELECT outcome FROM app.audit_log
+      WHERE action='Leave decision projected onto request' AND record_ref=$1
+      ORDER BY created_at DESC, ctid DESC`, [leave2.requestId]);
+  assert.equal(rejRow.rows.length, 1);
+  assert.match(rejRow.rows[0].outcome, /set to "rejected"/,
+    'a DISMISSED kernel decision projects to a REJECTED leave row — the ledger must say so');
 });
 
 test('RLS tenant scope: a foreign tenant setting sees zero classroom rows', async () => {
@@ -232,4 +268,96 @@ test('RT-7 #3: cross-class submit refused — a grade-8 student cannot submit a 
   const view = await app.inject({ method: 'GET', url: `/plugins/teacher.classroom/homework/${hw6}`, headers: H(teacher.token) });
   assert.equal(view.statusCode, 200, view.body);
   assert.equal(view.json().submissions.length, 0, 'no submission row was created');
+});
+
+// ── the 082 FK regression: `student_id` must hold an app.students id, not the submitter's user id ──
+// These pin the WRITE side of the contract directly. The round-trip tests above prove the teacher can
+// read the row back; they cannot tell a roster id from a user id, because the pre-082 read path
+// joined `app.users` and would happily name a user-keyed row. The FK is the structural truth, so it
+// is asserted where it lives. Before the fix these fail with 500 (Postgres 23503 escaping the door,
+// which only catches the 23505 duplicate).
+
+test('FK pin: the stored student_id IS an app.students id of the signed-in student', async () => {
+  const { pool } = await import('../src/db.js');
+  const row = (await pool.query(
+    `SELECT s.student_id, st.id AS roster_id, st.name AS roster_name, su.id AS user_id, su.name AS user_name
+     FROM teacher.submission s
+     LEFT JOIN app.students st ON st.id = s.student_id AND st.tenant_id = s.tenant_id
+     LEFT JOIN app.users    su ON su.id = s.student_id AND su.tenant_id = s.tenant_id
+     WHERE s.id = $1`, [subId])).rows[0];
+  assert.ok(row, 'the submission from the earlier test is on file');
+  // the composite FK (tenant_id, student_id) → app.students(tenant_id, id) is what 082 added; this
+  // join resolving to a roster row is the same predicate Postgres enforces on insert.
+  assert.equal(row.roster_id, row.student_id, 'student_id joins app.students — it is a roster id');
+  assert.equal(row.roster_name, 'Diya Nair');
+  // and it is NOT the submitting user's id (the bug: `req.user.id` written here)
+  const who = (await pool.query(`SELECT id, name FROM app.users WHERE email='student2@meridian.edu'`)).rows[0];
+  assert.notEqual(row.student_id, who.id, 'student_id must never be the submitting USER id');
+  assert.equal(row.user_id, null, 'student_id does not resolve as a user id');
+  assert.equal(who.name, 'Diya Nair', 'the user and roster row share a name — which is why the name match works');
+});
+
+test('a submitter whose login matches NO roster student is a clean 4xx, never a 500', async () => {
+  const { pool } = await import('../src/db.js');
+  const { hashPassword } = await import('../src/auth.js');
+  // A distinctive name guarantees no roster match — the point of the case is that the SIGNED-IN user
+  // exists (so auth passes) while no app.students row can be resolved for them. Guarded so the test
+  // would fail loudly rather than silently stop testing anything if the seed ever contains it.
+  const NAME = 'Qq Unlinked Probe';
+  const existing = (await pool.query(
+    `SELECT count(*)::int AS n FROM app.students WHERE lower(name)=lower($1)`, [NAME])).rows[0].n;
+  assert.equal(existing, 0, 'probe name must not collide with the seeded roster');
+  const tenantId = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
+  const u = (await pool.query(
+    `INSERT INTO app.users (tenant_id, email, name, role, password_hash) VALUES ($1,$2,$3,'student',$4) RETURNING id`,
+    [tenantId, 'unlinked.student@meridian.edu', NAME, hashPassword('schoolos-demo')])).rows[0];
+
+  const hw = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '8', subject: 'Biology', title: 'Unlinked submitter probe', due_at: future(2) } });
+  assert.equal(hw.statusCode, 200, hw.body);
+  const hwUnlinked = hw.json().homeworkId;
+
+  const unlinked = await loginAs(app, 'unlinked.student@meridian.edu');
+  const before = (await pool.query(`SELECT count(*)::int AS n FROM teacher.submission WHERE homework_id=$1`, [hwUnlinked])).rows[0].n;
+
+  const r = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/homework/${hwUnlinked}/submit`, headers: H(unlinked.token),
+    payload: { content_type: 'text', content: 'work by an account with no roster row' } });
+
+  // ── THE REGRESSION GATE ── the old code wrote the user id straight into the FK column, so this
+  // came back 500 {"error":"internal error"} with the audit row unreachable. A data problem the
+  // school must see has to be reported as one.
+  assert.notEqual(r.statusCode, 500, `a resolvable-student failure must not be an internal error: ${r.body}`);
+  assert.ok(r.statusCode >= 400 && r.statusCode < 500, `clean 4xx expected, got ${r.statusCode}: ${r.body}`);
+  assert.equal(r.statusCode, 409);
+  assert.match(r.json().error, /isn't linked to a student/,
+    'the message must say the LOGIN is unlinked, not that the homework is missing');
+  assert.match(r.json().error, /school office/);
+  const after = (await pool.query(`SELECT count(*)::int AS n FROM teacher.submission WHERE homework_id=$1`, [hwUnlinked])).rows[0].n;
+  assert.equal(after, before, 'no submission row is written when no student can be resolved');
+  assert.equal(after, 0, 'and nothing was filed against the unlinked account');
+  // the account is real and the failure is about the ROSTER link, not about the homework
+  assert.ok(u.id, 'the unlinked user exists');
+});
+
+test('the door files work against the SUBMITTER\'S OWN roster row — no body override, no cross-student write', async () => {
+  const { pool } = await import('../src/db.js');
+  const other = (await pool.query(
+    `SELECT id, name FROM app.students
+      WHERE grade='8' AND lower(name) <> lower('Diya Nair')
+      ORDER BY admission_no ASC, id ASC LIMIT 1`)).rows[0];
+  assert.ok(other, 'a roster student other than the submitter exists in grade 8');
+  const hw = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '8', subject: 'History', title: 'Identity spoof probe', due_at: future(2) } });
+  const hwSpoof = hw.json().homeworkId;
+  // a student cannot choose whose submission this is: the body carries another student's id and name
+  const r = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/homework/${hwSpoof}/submit`, headers: H(student.token),
+    payload: { content_type: 'text', content: 'filed as me',
+               student_id: other.id, studentId: other.id, name: other.name } });
+  assert.equal(r.statusCode, 200, r.body);
+  const row = (await pool.query(
+    `SELECT s.student_id, st.name AS roster_name FROM teacher.submission s
+     LEFT JOIN app.students st ON st.id = s.student_id AND st.tenant_id = s.tenant_id
+     WHERE s.id=$1`, [r.json().submissionId])).rows[0];
+  assert.equal(row.roster_name, 'Diya Nair', 'the row is filed against the SIGNED-IN student');
+  assert.notEqual(row.student_id, other.id, 'the body cannot re-point the submission at another student');
 });

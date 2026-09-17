@@ -28,8 +28,8 @@ const REQUEST_CATEGORIES = ['leave','certificate','document','transport','activi
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, emitEvent, require, q, settingsFor } = kernel;
-  const lifecycleGate = makeLifecycleGate(kernel.q, ID);
+  const { withUser, requestAudit, emitEvent, require, sysq, settingsFor } = kernel;
+  const lifecycleGate = makeLifecycleGate(kernel.sysq, ID);
 
   const myChildren = async (c, userId) =>
     (await c.query(
@@ -155,7 +155,7 @@ export function register(app, kernel) {
          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
          ORDER BY r.published_at DESC NULLS LAST LIMIT 12`, [req.params.id, req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
       return { reports: rep.map(r => ({ exam: r.exam_name, term: r.term, pct: r.total_pct, grade: r.grade, publishedAt: r.published_at,
-        explain: r.pct == null ? 'Result details will appear here once the school publishes them.' :
+        explain: r.total_pct == null ? 'Result details will appear here once the school publishes them.' : // S0 fix E5: the column alias is total_pct — r.pct never existed
           `This result is from ${r.exam_name}. It shows what was understood at that point — growth across results matters more than any single score.` })) };
     });
   });
@@ -169,10 +169,13 @@ export function register(app, kernel) {
         `SELECT school_date AS date, status FROM app.attendance WHERE student_id=$1 AND tenant_id=$2 ORDER BY school_date DESC LIMIT 60`,
         [req.params.id, req.user.tenant_id])).rows;
       const month = rows.filter(r => new Date(r.date) >= new Date(Date.now() - 30 * 864e5));
-      const present = month.filter(r => r.status === 'present').length;
+      // S0 fix E6: late = showed up (kernel eligibility precedent); approved leave
+      // leaves the denominator — the note below was already promising this.
+      const held = month.filter(r => r.status !== 'leave');
+      const present = held.filter(r => r.status === 'present' || r.status === 'late').length;
       return {
         today: rows[0]?.status ?? null,
-        month_pct: month.length ? Math.round((present / month.length) * 100) : null,
+        month_pct: held.length ? Math.round((present / held.length) * 100) : null,
         history: rows,
         note: 'Approved leave never counts against attendance.',
       };
@@ -187,7 +190,7 @@ export function register(app, kernel) {
       const upcoming = (await c.query(
         `SELECT id, name, term, class_grade FROM plugin_exams.exam
          WHERE tenant_id=$1 AND class_grade=$2 AND status IN ('draft','published')
-         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, (await c.query(`SELECT grade FROM app.students WHERE id=$1`, [req.params.id])).rows[0]?.grade]).catch(() => ({ rows: [] }))).rows;
+         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, (await c.query(`SELECT grade FROM app.students WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0]?.grade]).catch(() => ({ rows: [] }))).rows;
       const published = (await c.query(
         `SELECT e.name AS exam, r.total_pct, r.grade FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published' ORDER BY r.published_at DESC NULLS LAST LIMIT 8`,
@@ -237,6 +240,10 @@ export function register(app, kernel) {
     const b = req.body ?? {};
     if (!REQUEST_CATEGORIES.includes(b.category)) return bad(reply, 'Choose what you need: leave, certificate, document, transport, activity, profile correction, re-evaluation or other');
     if (!b.title || !String(b.title).trim()) return bad(reply, 'Please add a short title');
+    // S0 fix E7: body child ids are format-guarded before the uuid cast (500 → 400)
+    if (b.childId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(b.childId))) {
+      return bad(reply, 'This record needs a valid child ID');
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (b.childId && !(await assertOwnChild(c, req.user.id, b.childId)))
         return bad(reply, 'This child is not linked to your family account', 403);
@@ -280,6 +287,10 @@ export function register(app, kernel) {
       await c.query(`INSERT INTO family.request_event (tenant_id, request_id, to_status, note, actor_id)
         VALUES ($1,$2,'submitted','discrepancy reported — office will verify and correct if needed', $3)`,
         [req.user.tenant_id, row.id, req.user.id]);
+      // S0 fix E8: this domain write now rides the event spine like its siblings.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'family', label: 'Discrepancy reported for verification', ref: row.id },
+        'family.request.v1', { requestId: row.id, category: 'profile_correction', source: 'report-discrepancy' });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Discrepancy reported', recordType: 'FamilyRequest', recordRef: row.id,
         reason: String(b.recordRef).slice(0, 80), policyRef: 'PARENTOS-PLAN §82 (parents never edit records)', risk: 'low',

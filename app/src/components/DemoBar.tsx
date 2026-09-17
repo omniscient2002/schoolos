@@ -19,8 +19,8 @@ export function MobileTabbar() {
   const items = isParent
     ? [{ to: '/parent/family', label: 'Family', icon: 'Home' }, { to: '/parent/requests', label: 'Requests', icon: 'File' }, { to: '/parent/copilot', label: 'Ask', icon: 'Sparkle' }, { to: '/parent/consents', label: 'Consents', icon: 'Check' }]
     : isStudent
-      ? [{ to: '/student/home2', label: 'My Day', icon: 'Today' }, { to: '/student/learning', label: 'Learn', icon: 'Learning' }, { to: '/student/portfolio', label: 'Work', icon: 'Award' }, { to: '/student/ask', label: 'Ask', icon: 'Sparkle' }]
-      : [{ to: '/today', label: 'Today', icon: 'Today' }, { to: '/attention', label: 'Attention', icon: 'Attention' }, { to: '/ask', label: 'Ask', icon: 'Sparkle' }, { to: '/operations', label: 'Ops', icon: 'Operations' }, { to: '/people', label: 'People', icon: 'People' }];
+      ? [{ to: '/student/home2', label: 'My Day', icon: 'Today' }, { to: '/student/learning', label: 'Learn', icon: 'Learning' }, { to: '/student/portfolio', label: 'Work', icon: 'Award' }]
+      : [{ to: '/today', label: 'Today', icon: 'Today' }, { to: '/attention', label: 'Attention', icon: 'Attention' }, { to: '/operations', label: 'Ops', icon: 'Operations' }, { to: '/people', label: 'People', icon: 'People' }];
   /* B3 (≤768px): Homework / Submissions / Maintenance / Fees are routed but had
      no mobile reach. Staff get a fifth "More" tab opening a small sheet with
      them; server gates stay the authority. */
