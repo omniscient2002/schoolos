@@ -35,7 +35,7 @@ jobs:
       JWT_SECRET: ci-secret-0123456789abcdef0123456789abcdef
       NODE_ENV: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         # TST-14: CI ran Node 22 while the image and every dev/test cluster run Node 26 (Dockerfile
         # `node:26-alpine`; local `node --version` = v26). A suite that passes on a different major than
@@ -90,7 +90,7 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with: { node-version: 26, cache: npm, cache-dependency-path: app/package-lock.json }
       - run: npm ci
@@ -116,7 +116,7 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with: { node-version: 26 }
       - name: Validate compose interpolation
@@ -152,7 +152,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 26 }
