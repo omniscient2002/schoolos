@@ -186,9 +186,10 @@ const StoreCtx = createContext<Ctx | null>(null);
 const ROLE_CAMPUS: Record<RoleId, CampusId | 'all'> = {
   /* a counsellor works with children across the school, so their scope is the whole tenant like the
      principal's office — never a single campus (RBAC-2). */
-  principal: 'all', counselor: 'all', teacher: 'north', coordinator: 'north', finance: 'all', admissions: 'all',
+  principal: 'all', counselor: 'all', teacher: 'north', coordinator: 'north', finance: 'all',
+  finance_head: 'all', finance_clerk: 'all', admissions: 'all',
   transport: 'north', parent: 'north', student: 'north', owner: 'all', itadmin: 'all',
-  facilities: 'north', technician: 'north',
+  facilities: 'north', technician: 'north', librarian: 'all',
 };
 
 /* P0 (PRD-12): the former `DEMO_STUDENT_ID` / `DEMO_GUARDIAN_ID` exports here

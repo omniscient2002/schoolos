@@ -176,7 +176,11 @@ export default function FamilyHome() {
       )}
 
       {/* ---------- TODAY ---------- */}
-      <Card headAs="h2" head={<>Today {multi && <span className="u-xs u-faint" style={{ marginLeft: 8 }}>{child.name} · {child.class}</span>}</>}>
+      <Card
+        headAs="h2"
+        head={<>Today {multi && <span className="u-xs u-faint" style={{ marginLeft: 8 }}>{child.name} · {child.class}</span>}</>}
+        actions={<Link to={`/parent/child/${child.child_id}`} className="btn btn-secondary btn-sm" style={{ minHeight: 34 }}>Full record</Link>}
+      >
         {detailErr ? (
           <div className="u-small u-muted">Today&apos;s class details could not load just now. {friendly((detailErr as Error).message)}</div>
         ) : !detail ? (

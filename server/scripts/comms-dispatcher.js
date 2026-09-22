@@ -39,9 +39,21 @@ const SANDBOX_PREFIX = 'undeliverable — sandbox carrier in production: ';
 export { isSandboxCarrier, isSandboxResult } from '../src/plugins/_shared/delivery-honesty.js';
 import { isSandboxResult, sandboxAllowed } from '../src/plugins/_shared/delivery-honesty.js';
 import { toE164 as sharedToE164 } from '../src/plugins/_shared/phone.js';
+import { meterPlugin } from '../src/plugin-usage.js'; // J7: rails declare messages_sent metered
 
 const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 4 });
 const WORKER_ID = randomUUID();
+
+/* H2 · quiet-hours guard. Producers gate their own queues, but a row queued just before the window —
+   or by the kernel decide path, which has no producer gate — could still be delivered at 22:00. In
+   production the dispatcher defers ALL sends during the quiet window (IST = UTC+5:30); rows stay
+   queued and are claimed after it. */
+export const QUIET_START_HOUR = 21;
+export const QUIET_END_HOUR = 8;
+export function inQuietHoursIST(d = new Date()) {
+  const istHour = new Date(d.getTime() + 5.5 * 3600 * 1000).getUTCHours();
+  return istHour >= QUIET_START_HOUR || istHour < QUIET_END_HOUR;
+}
 let stopping = false;
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { stopping = true; setTimeout(() => process.exit(0), 8000).unref(); });
 
@@ -259,6 +271,12 @@ export async function processClaimedRow(c, row, { maxAttempts = MAX_ATTEMPTS, al
       `UPDATE app.communications SET status='sent', sent_at=now(), attempts=$2, last_error=NULL,
               next_attempt_at=NULL, provider=$3, provider_ref=$4, claimed_at=NULL, claimed_by=NULL WHERE id=$1`,
       [row.id, attempts, String(r.provider ?? 'unknown'), r.ref != null ? String(r.ref) : null]);
+    // J7: the rails declare `messages_sent` metered and comms.whatsapp declares `messages_delivered`;
+    // count each real send. Best-effort (meterPlugin swallows its own failures).
+    if (['sms', 'whatsapp', 'email'].includes(String(row.channel).toLowerCase())) {
+      await meterPlugin(c, row.tenant_id, `rails.${String(row.channel).toLowerCase()}`, 'messages_sent');
+      if (String(row.channel).toLowerCase() === 'whatsapp') await meterPlugin(c, row.tenant_id, 'comms.whatsapp', 'messages_delivered');
+    }
     return { outcome: 'sent', attempts, provider: r.provider, ref: r.ref };
   }
   const errText = String(r?.error ?? 'unknown failure');
@@ -279,6 +297,10 @@ export async function processClaimedRow(c, row, { maxAttempts = MAX_ATTEMPTS, al
 }
 
 export async function tick() {
+  // H2: in production, never deliver during quiet hours. Rows remain queued for the next window.
+  if (process.env.NODE_ENV === 'production' && process.env.COMMS_DISPATCH_QUIET !== 'off' && inQuietHoursIST()) {
+    return { claimed: 0, delivered: 0, deferred: 'quiet_hours' };
+  }
   const c = await pool.connect();
   let claimReleased = false;
   let due = { rows: [] };

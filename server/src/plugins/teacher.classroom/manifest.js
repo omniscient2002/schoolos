@@ -22,6 +22,8 @@ export default {
     publish: [
       { type: 'homework.v1', schema: 'v1' },
       { type: 'submission.v1', schema: 'v1' },
+      { type: 'lesson.planned.v1', schema: 'v1' },
+      { type: 'lesson.reflected.v1', schema: 'v1' },
       { type: 'staff.leave.requested.v1', schema: 'v1' },
     ],
   },
@@ -30,7 +32,7 @@ export default {
   routes: [],
   widgets: [],
   settingsSchema: { type: 'object', properties: {} },
-  data: { schema: 'teacher.homework, teacher.submission, teacher.leave_request', core_refs: ['students.id', 'users.id'], retention: { on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },
+  data: { schema: 'teacher.homework, teacher.submission, teacher.submission_needs_linking, teacher.lesson, teacher.leave_request, teacher.handover_packet', core_refs: ['students.id', 'users.id'], retention: { on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },
   regions: ['IN'],
   residency: 'IN',
   billing: { model: 'pack', pack: 'teacher' },

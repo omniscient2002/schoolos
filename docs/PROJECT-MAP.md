@@ -20,7 +20,7 @@
 
 ## 1 · Backend request lifecycle & complete API map
 
-*Fastify 5.12 + Postgres 18. True door count: **272** (98 kernel + 168 plugin + 6 settings-form) — the generated `docs/PERMISSION-MATRIX.md` says 263 because it misses `onboarding.js` (3) and settings-form doors (6). Role split: 218 role-gated · 32 auth-only · 13 public · **0 unguarded**.*
+*Fastify 5.12 + Postgres 18. True door count: **370** — the generated `docs/PERMISSION-MATRIX.md` is authoritative and now scans every registered route (including `onboarding.js` and settings-form doors). Role split: 327 role-gated · 30 auth-only · 13 public · **0 unguarded**. (K3: the old hand-counted 272/263 split is superseded; re-derive from the generated matrix.)*
 
 ### 1.1 Boot (`src/index.js` → `buildApp()`)
 `WORKER_ROLE=1` on the HTTP entry refuses to boot (workers must not arm prod guards off). `config.js` fail-closed: required vars, prod refuses localhost DB / `CORS='*'` / loose SEED_GUARD / short JWT. Dev doors (`AUTH_DEV_SSO`, `OTP_DEV_ECHO`, `RESET_TOKEN_DEV_LOG`) need `development` AND explicit opt-in — **this box has `OTP_DEV_ECHO=1`** (codes echo in responses — never ship this `.env`). Decoration: CORS (credentials:false) → rate-limit 300/min → JWT. Mount order: kernel routes → onboarding (before plugins so signup works on a zero-plugin school) → **`loadPlugins`** → `/dataset` `/capabilities` `/ai/*` `/workflow-rules` `/metrics`. **Loader is registry-blind and boot-fatal:** every folder must mount or the process dies collecting all errors ("a plugin that cannot mount must never half-exist"); `degraded` status is read by three gates but written nowhere; `register()` is awaited-but-not-really (sync call at loader.js:45 — async escape hatch exists). Enablement is a *per-request* `lifecycleGate` (DB read, 409 unless enabled|active|degraded), never a mount-time decision. Catalog `ensurePluginCatalog` seeds 29 rows (5 DEFAULT_ON) at signup + `GET /plugins` self-heal.
@@ -232,7 +232,9 @@ Demo theatre: DemoDay ×3 do-nothing Approves · Demo "Start the switch" span ·
 
 ## 5 · Plugin domains & the AI subsystem
 
-*29 plugin directories (not 30+ — verified by set comparison), plus `loader.js` and `_shared/` (6 seam files). Every line below was read from source.*
+*29 plugin modules plus `_shared/` (6 seam files) = **30 directories** under `src/plugins/` (K5: the
+"29 vs 30" discrepancy was a counting-method difference — module count vs directory count; both are now
+stated). Every line below was read from source.*
 
 ### 5.1 The shared guard model (every plugin door uses these three)
 

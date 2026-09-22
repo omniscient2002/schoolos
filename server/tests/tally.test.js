@@ -66,6 +66,8 @@ describe('accounting.tally (wave-2 #1)', () => {
      UPI webhook FACT cannot settle money, and it can only be tested with the plugin on. */
   const upiEn = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable', headers: H(o.token), payload: { version: '1.0.0', class: 'C' } });
   assert.ok([200, 409].includes(upiEn.statusCode), `payments.upi must be enableable for this invariant to be testable: ${upiEn.statusCode} ${String(upiEn.body).slice(0, 160)}`);
+  // A4: the rail needs a configured school VPA (no fabricated `schoolos@<name>`).
+  await app.inject({ method: 'POST', url: '/plugins/payments.upi/settings', headers: H(o.token), payload: { gateway: 'razorpay', default_vpa: 'meridian@icici' } });
   const targetId = obs[1]?.id ?? obs[0].id;
   const link = (await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: targetId }, headers: H(o.token) })).json();
   /* TST-4: this read `link.payment?.id`, and the door returns `paymentId` at the top level — so `undefined`,

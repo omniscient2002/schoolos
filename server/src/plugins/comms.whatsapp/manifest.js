@@ -22,6 +22,10 @@ export default {
       dlt_template_ids: { type: 'object' },
       pay_button_template: { type: 'string' },
       quiet_hours: { type: 'object' },
+      // Fee-dunning policy (FEE-DEL-2/3): pre-due reminder offsets and escalation ages in days. Both are
+      // opt-in; empty means the overdue sweep only. Read by the kernel dunning door and the day-worker.
+      before_due_days: { type: 'array', items: { type: 'integer' } },
+      escalation_days: { type: 'array', items: { type: 'integer' } },
     },
     required: ['bsp_provider', 'sender_id'],
   },

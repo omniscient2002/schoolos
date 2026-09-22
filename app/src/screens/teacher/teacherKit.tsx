@@ -12,6 +12,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Empty, ErrorState, SkeletonCard } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
+import { useSession } from '../../App';
+import { canSurface } from '../../lib/effective';
 
 /* ---------- async hook (loading/error/data/retry) ---------- */
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -43,6 +45,17 @@ export function AsyncGate<T>({ state, skeleton, empty, children }: {
 
 /* ---------- role mirror (server decides; UI degrades kindly) ---------- */
 export const TEACHER_STAFF_ROLES = ['teacher', 'principal', 'owner', 'coordinator', 'itadmin'];
+
+/** RBAC-1: may the caller operate a teacher screen? The SERVER's capability answer wins, so a
+ *  mask-granted custom role (built-in role not in the list) can still work the screen; the
+ *  built-in list is the fallback only when the server has not spoken (demo preview / no payload).
+ *  This is a render gate, never authorization — every door re-decides on the server. */
+export function useTeacherAccess(surface = '/teacher/homework'): boolean {
+  const live = useSession();
+  const caps = live.effective?.capabilities;
+  if (caps) return canSurface(live.effective, surface);
+  return TEACHER_STAFF_ROLES.includes(live.role);
+}
 
 export function DeniedState({ role }: { role: string }) {
   return (

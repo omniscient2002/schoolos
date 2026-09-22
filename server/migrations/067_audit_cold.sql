@@ -1,4 +1,4 @@
--- 059 · audit cold archive (L2-3.4, Wave 3 — claimed by L2, blocks.md).
+-- 067 · audit cold archive (L2-3.4, Wave 3 — claimed by L2, blocks.md).
 -- Chain-preserving audit retention: rows older than the archival cutoff are
 -- MOVED (verbatim, hash columns untouched) into a cold table by the retention
 -- worker inside one transaction — INSERT-then-DELETE, never a bare DELETE.

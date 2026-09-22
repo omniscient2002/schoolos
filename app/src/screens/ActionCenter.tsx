@@ -95,9 +95,10 @@ function countdown(d?: Date | null): { label: string; tone: BadgeTone } | undefi
 }
 
 /* ---------- item card ---------- */
-function ActionCard({ a, busy, onOpen, onApprove, onDismiss }: {
+function ActionCard({ a, busy, decidable, onOpen, onApprove, onDismiss }: {
   a: QueueItem;
   busy: boolean;
+  decidable: boolean;
   onOpen: () => void;
   onApprove: () => void;
   onDismiss: () => void;
@@ -127,7 +128,7 @@ function ActionCard({ a, busy, onOpen, onApprove, onDismiss }: {
           </div>
         )}
         <ClickThrough className="u-flex" style={{ gap: 8, marginTop: 4 }}>
-          <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} loading={busy} onClick={onApprove}>Approve</Button>
+          <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole || a.owner}) can approve this — the server will refuse it`} onClick={onApprove}>Approve</Button>
           <Button size="sm" variant="ghost" icon={<Icon.X size={13} />} disabled={busy} onClick={onDismiss}>Dismiss</Button>
           <span className="u-xs u-faint" style={{ alignSelf: 'center' }}>Deciding writes to the school's audit trail</span>
         </ClickThrough>
@@ -137,9 +138,10 @@ function ActionCard({ a, busy, onOpen, onApprove, onDismiss }: {
 }
 
 /* ---------- evidence drawer ---------- */
-function EvidenceDrawer({ a, busy, onClose, onApprove, onDismiss }: {
+function EvidenceDrawer({ a, busy, decidable, onClose, onApprove, onDismiss }: {
   a: QueueItem | null;
   busy: boolean;
+  decidable: boolean;
   onClose: () => void;
   onApprove: () => void;
   onDismiss: () => void;
@@ -157,7 +159,7 @@ function EvidenceDrawer({ a, busy, onClose, onApprove, onDismiss }: {
       footer={
         <div className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
           <Button variant="ghost" icon={<Icon.X size={13} />} disabled={busy} onClick={onDismiss}>Dismiss</Button>
-          <Button variant="primary" icon={<Icon.Check size={13} />} loading={busy} onClick={onApprove}>Approve</Button>
+          <Button variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole || a.owner}) can approve this`} onClick={onApprove}>Approve</Button>
         </div>
       }
     >
@@ -276,6 +278,17 @@ export default function ActionCenter() {
   const approve = (a: QueueItem) => decide(a, 'approved');
   const doDismiss = (a: QueueItem) => decide(a, 'dismissed', 'Dismissed with confirmation from Action Center');
 
+  /* OPP-FE-15: mirror the server's decide authority (owner override; principal on non-finance,
+     non-coordinator, non-owner desks; the owning desk otherwise) so an item this caller cannot
+     decide shows a disabled control rather than a 403 on a normal-looking button. */
+  const canDecide = (a: QueueItem) => {
+    const role = session.roleId;
+    if (role === 'owner') return true;
+    if (a.ownerRole && a.ownerRole === role) return true;
+    if (role === 'principal' && !['finance', 'finance_head', 'finance_clerk', 'owner', 'coordinator'].includes(a.ownerRole)) return true;
+    return false;
+  };
+
   return (
     <>
       <PageHead
@@ -349,7 +362,7 @@ export default function ActionCenter() {
                       <span style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
                     </div>
                     {band.items.map(a => (
-                      <ActionCard key={a.id} a={a} busy={busyId === a.id} onOpen={() => setOpenId(a.id)} onApprove={() => approve(a)} onDismiss={() => setConfirmDismiss(a)} />
+                      <ActionCard key={a.id} a={a} busy={busyId === a.id} decidable={canDecide(a)} onOpen={() => setOpenId(a.id)} onApprove={() => approve(a)} onDismiss={() => setConfirmDismiss(a)} />
                     ))}
                   </div>
                 ));
@@ -377,7 +390,7 @@ export default function ActionCenter() {
         </>
       )}
 
-      <EvidenceDrawer a={openSig && openSig.status === 'open' ? openSig : null} busy={!!openSig && busyId === openSig.id} onClose={() => { setOpenId(null); }} onApprove={() => openSig && approve(openSig)} onDismiss={() => openSig && setConfirmDismiss(openSig)} />
+      <EvidenceDrawer a={openSig && openSig.status === 'open' ? openSig : null} busy={!!openSig && busyId === openSig.id} decidable={!!openSig && canDecide(openSig)} onClose={() => { setOpenId(null); }} onApprove={() => openSig && approve(openSig)} onDismiss={() => openSig && setConfirmDismiss(openSig)} />
 
       {/* dismiss confirmation */}
       <Drawer

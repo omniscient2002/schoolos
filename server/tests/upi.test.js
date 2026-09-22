@@ -15,7 +15,7 @@ import pg from 'pg';
 import { createHmac } from 'node:crypto';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const TEST_SECRET = 'upi-test-secret-unit-2-not-production';
 
 let app;
@@ -71,8 +71,12 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
 
     // owner enables the rail (audited) — now the links door serves
     const en = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
+      headers: { ...H(o.token), 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: { version: '1.0.0', class: 'B' } });
     assert.equal(en.statusCode, 200);
+    // A4: the school VPA is configured settings, not a fabricated `schoolos@<name>`.
+    const setVpa = await app.inject({ method: 'POST', url: '/plugins/payments.upi/settings',
+      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { gateway: 'razorpay', default_vpa: 'meridian@icici' } });
+    assert.equal(setVpa.statusCode, 200, setVpa.body);
 
     // link: for the DUE amount only, kernel payment row initiated
     const link = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: target.id }, headers: H(fin.token) });
@@ -83,7 +87,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     // WEBHOOK lifecycle gate: disable the row again → even a VALID HMAC is 409
     const fresh = payloadFor(paymentId, 'pay_U2_1', Math.floor(Date.now() / 1000));
     const dis = await app.inject({ method: 'POST', url: '/plugins/payments.upi/disable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: {} });
+      headers: { ...H(o.token), 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: {} });
     assert.equal(dis.statusCode, 200);
     const preEnable = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
       payload: fresh, headers: { 'x-razorpay-signature': sigOf(fresh) } });
@@ -93,7 +97,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
 
     // re-enable (audited) — now facts may flow
     const en2 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'B' } });
+      headers: { ...H(o.token), 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: { version: '1.0.0', class: 'B' } });
     assert.equal(en2.statusCode, 200);
 
     // HMAC gate: unsigned and bad-signature both 401, no facts
@@ -148,7 +152,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
   test('3 · JSON guard: malformed bodies are 4xx, never 5xx (even with a VALID signature)', async () => {
     process.env.UPI_WEBHOOK_SECRET = TEST_SECRET;
     const bad1 = await app.inject({ method: 'POST', url: '/plugins/payments.upi/webhook',
-      payload: '{"broken":', headers: { 'content-type': 'application/json' } });
+      payload: '{"broken":', headers: { 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' } });
     assert.equal(bad1.statusCode, 400, 'malformed application/json → 400');
     // the real red-team shape: garbage body WITH a valid HMAC over its raw bytes
     const garbage = 'not json at all';
@@ -163,7 +167,7 @@ describe('payments.upi (wave-1 #2 · migration 015 · cycle-3 hardening)', () =>
     const o = await loginAs(app, 'owner@meridian.edu');
     for (const id of ['9lives', '1abc.def']) {
       const r = await app.inject({ method: 'POST', url: `/plugins/${id}/enable`,
-        headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { class: 'A' } });
+        headers: { ...H(o.token), 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: { class: 'A' } });
       assert.equal(r.statusCode, 400, `digit-first id must be rejected: ${id}`);
     }
   });

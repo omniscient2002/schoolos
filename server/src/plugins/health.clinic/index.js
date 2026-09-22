@@ -43,7 +43,7 @@ export function register(app, kernel) {
         'clinic.visit.logged.v1',
         { visitId: v.id, studentId: student.id, action, visitedAt: v.visited_at });
       // guardian notice: APPROVED communication via per-instance kernel action (Comms §1.2)
-      const noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, v.id, student, action, String(b.complaint));
+      const noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, v.id, student, action, String(b.complaint), { id: req.user.id, role: req.user.role });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: `Clinic visit logged (${action})`, recordType: 'ClinicVisit', recordRef: v.id,
         reason: 'infirmary log', policyRef: 'Health · DPDP Act 2023 (health PII)', risk: isSensitive(action) ? 'high' : 'medium',
@@ -77,7 +77,7 @@ export function register(app, kernel) {
       const SEVERE = ['sent_home', 'hospital_referral'];
       let noticeActionId = null;
       if (action !== orig.action && SEVERE.includes(action)) {
-        noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, corr.id, { name: (await c.query(`SELECT name FROM app.students WHERE id=$1`, [orig.student_id])).rows[0]?.name ?? 'student' }, action, orig.complaint);
+        noticeActionId = await raiseGuardianNotice(c, req.user.tenant_id, corr.id, { name: (await c.query(`SELECT name FROM app.students WHERE id=$1`, [orig.student_id])).rows[0]?.name ?? 'student' }, action, orig.complaint, { id: req.user.id, role: req.user.role });
       }
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Clinic visit correction appended', recordType: 'ClinicVisit', recordRef: corr.id,
@@ -148,7 +148,7 @@ export function register(app, kernel) {
 
   // APPROVED communication via per-instance kernel action — shared by the visit log
   // door and the correction-escalation path (Comms §1.2; never a plugin-direct send)
-  async function raiseGuardianNotice(c, tenantId, visitRef, student, action, complaint) {
+  async function raiseGuardianNotice(c, tenantId, visitRef, student, action, complaint, actor = {}) {
     const s = (await c.query(
       `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='${ID}'`,
       [tenantId])).rows[0]?.settings ?? {};
@@ -159,8 +159,8 @@ export function register(app, kernel) {
     const isReferral = action === 'hospital_referral';
     const name = student?.name ?? 'the student';
     return (await c.query(
-      `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-       VALUES ($1, $2, 'approval', $3, $4, $5, $6, 'open', NULL, 'principal', 'Comms §1.2 · DPDP Act 2023 (health PII)', false, $7, $8)
+      `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+       VALUES ($1, $2, 'approval', $3, $4, $5, $6, 'open', NULL, 'principal', 'Comms §1.2 · DPDP Act 2023 (health PII)', false, $7, $8, 'health.clinic')
        RETURNING id`,
       [tenantId, `clinic.notify.${visitRef}`,
        isReferral ? `Guardian notice: hospital referral — ${name}` : `Guardian notice: sent home — ${name}`,
@@ -171,7 +171,8 @@ export function register(app, kernel) {
        JSON.stringify({ kind: 'message', visitId: visitRef, studentId: student?.id ?? null, action, audience: 'guardians', channel: 'WhatsApp',
          template: isReferral ? 'CLINIC_REFERRAL' : 'CLINIC_SENT_HOME',
          draft: isReferral ? `${name} was referred to a hospital from the infirmary today. Please arrange pickup at the earliest.` :
-           `${name} was sent home from the infirmary today. Rest advised; keep the child home for the day.`})])).rows[0].id;
+           `${name} was sent home from the infirmary today. Rest advised; keep the child home for the day.`,
+         proposed_by: actor.id ?? null, proposed_by_role: actor.role ?? null })])).rows[0].id;
   }
   function bad(reply, error, code = 400) { return reply.code(code).send({ error }); }
   function isSensitive(action) { return action === 'hospital_referral'; }

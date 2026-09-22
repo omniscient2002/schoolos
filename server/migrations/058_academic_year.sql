@@ -1,4 +1,4 @@
--- 055_academic_year.sql — Wave 2 · L1-2.1: the academic-year entity.
+-- 058 · academic year — Wave 2 · L1-2.1: the academic-year entity.
 -- The school calendar every money/academic row can finally hang off: fee plans,
 -- fee obligations and exam rows gain academic_year_id; exactly ONE year is
 -- current per tenant, enforced by a partial unique index (not just door logic —

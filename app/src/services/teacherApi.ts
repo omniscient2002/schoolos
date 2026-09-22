@@ -1,5 +1,5 @@
 /* ============================================================
-   teacherFixtures.ts — TU-1 contract layer (LIVE DOORS ONLY).
+   teacherApi.ts — TU-1 contract layer (LIVE DOORS ONLY).
 
    The Teacher Command Center is built against the FROZEN §4
    contracts (docs/TEACHEROS-PLAN.md):
@@ -536,6 +536,155 @@ export async function concernEvents(concernId: string): Promise<{ concernId: str
   return r.data;
 }
 
+/** POST /teacher/concern/:id/outcome — the designated owner closes a routed concern (PRD-8). */
+export async function recordConcernOutcome(concernId: string, outcome: string, note: string): Promise<{ ok: boolean; concernId: string; status: string; outcome: string }> {
+  const r = await flowWrite<{ ok: boolean; concernId: string; status: string; outcome: string }>(
+    'concern', `/teacher/concern/${encodeURIComponent(concernId)}/outcome`, { method: 'POST', body: JSON.stringify({ outcome, note }) });
+  return r.data;
+}
+
+/* ---------- mastery + curriculum (live server shapes) ---------- */
+
+export interface MasteryCell {
+  studentId: string; studentName: string; section: string | null; topicId: string; topic: string;
+  level: string | null; levelLabel: string | null; confidence: string | null; decayed: boolean;
+}
+export async function getMasteryClassLive(grade: string, subject = 'Mathematics'): Promise<{ grade: string; subject: string; students: number; cells: MasteryCell[]; note: string }> {
+  const r = await flowRead<{ grade: string; subject: string; students: number; cells: MasteryCell[]; note: string }>(
+    `mastery_class_live_${grade}_${subject}`, `/mastery/class/${encodeURIComponent(grade)}?subject=${encodeURIComponent(subject)}`);
+  return r.data;
+}
+export interface MasteryEvidenceRow { evidenceId: string; kind: string; ref: string | null; value: number; observedAt: string; expiresAt: string | null; expired: boolean }
+export interface MasteryMapRow {
+  nodeId: string; topic: string; unit: string | null; level: string | null; levelLabel: string | null;
+  confidence: string | null; decayed: boolean; freshEvidenceCount: number; expiredEvidenceCount: number; evidence: MasteryEvidenceRow[];
+}
+export async function getMasteryStudentLive(id: string, subject = 'Mathematics'): Promise<{ studentId: string; name: string; classGrade: string; section: string | null; subject: string; map: MasteryMapRow[]; note: string }> {
+  const r = await flowRead<{ studentId: string; name: string; classGrade: string; section: string | null; subject: string; map: MasteryMapRow[]; note: string }>(
+    `mastery_student_live_${id}_${subject}`, `/mastery/student/${encodeURIComponent(id)}?subject=${encodeURIComponent(subject)}`);
+  return r.data;
+}
+export interface CurriculumTopicLive { topicId: string; topic: string; orderNo: number; coveredPct: number; covered: boolean; coveredAt: string | null }
+export interface CurriculumUnitLive { unitId: string; unit: string; orderNo: number; topics: CurriculumTopicLive[] }
+export async function getCurriculumTreeLive(grade: string, subject = 'Mathematics'): Promise<{ subject: string; grade: string; units: CurriculumUnitLive[] }> {
+  const r = await flowRead<{ subject: string; grade: string; units: CurriculumUnitLive[] }>(
+    `curriculum_live_${grade}_${subject}`, `/curriculum/tree?subject=${encodeURIComponent(subject)}&grade=${encodeURIComponent(grade)}`);
+  return r.data;
+}
+export async function saveCoverage(nodeId: string, classGrade: string, pct: number): Promise<{ ok: boolean }> {
+  const r = await flowWrite<{ ok: boolean }>('curriculum_live', '/curriculum/progress', { method: 'POST', body: JSON.stringify({ node_id: nodeId, class_grade: classGrade, pct }) });
+  return r.data;
+}
+
+/* ---------- class analytics (P7/P11 composite; aggregates, never rankings) ---------- */
+
+export interface ClassAnalyticsLive {
+  grade: string; subject: string; students: number;
+  mastery: { strong: number; developing: number; needs_support: number; unlabelled: number };
+  homework: { assigned: number; turned_in: number; completion_pct: number | null };
+  attendance: { pct: number | null };
+  note: string;
+}
+export async function getClassAnalyticsLive(grade: string, subject = 'Mathematics'): Promise<ClassAnalyticsLive> {
+  const r = await flowRead<ClassAnalyticsLive>(`analytics_${grade}_${subject}`, `/analytics/class/${encodeURIComponent(grade)}?subject=${encodeURIComponent(subject)}`);
+  return r.data;
+}
+
+/* ---------- teacher roster (the class lists a teacher may act on) ---------- */
+
+export async function listMyStudents(cls?: string): Promise<{ scope: string; classes: string[]; students: RosterStudent[] }> {
+  const r = await flowRead<{ scope: string; classes: string[]; students: RosterStudent[] }>('roster', `/plugins/teacher.classroom/roster${cls ? `?class=${encodeURIComponent(cls)}` : ''}`);
+  return r.data;
+}
+
+/* ---------- safety box (designated authority; never the classroom teacher) ---------- */
+
+export interface SafetyReport {
+  reportId: string; anonymous: boolean; classGrade: string; category: string; detail: string;
+  severity: string; status: string; assignedTo: string | null; assignedName: string | null; createdAt: string;
+}
+export async function listSafetyBox(assignedOnly = false): Promise<{ scope: string; reports: SafetyReport[] }> {
+  const r = await flowRead<{ scope: string; reports: SafetyReport[] }>('safety_box', `/safety/box${assignedOnly ? '?assigned=1' : ''}`);
+  return r.data;
+}
+export async function assignSafetyReport(id: string, assignedTo: string): Promise<{ ok: boolean }> {
+  const r = await flowWrite<{ ok: boolean }>('safety_box', `/safety/box/${encodeURIComponent(id)}/assign`, { method: 'POST', body: JSON.stringify({ assignedTo }) });
+  return r.data;
+}
+export async function listBoxAssignees(): Promise<{ assignees: { id: string; name: string; role: string }[] }> {
+  const r = await flowRead<{ assignees: { id: string; name: string; role: string }[] }>('safety_box', '/safety/box/assignees');
+  return r.data;
+}
+export interface SafetySummaryBucket { classGrade: string; category: string; severity: string; count: number }
+export async function getSafetySummary(): Promise<{ windowDays: number; buckets: SafetySummaryBucket[]; note: string }> {
+  const r = await flowRead<{ windowDays: number; buckets: SafetySummaryBucket[]; note: string }>('safety_box', '/safety/box/summary');
+  return r.data;
+}
+export async function closeSafetyReport(id: string, note?: string): Promise<{ ok: boolean }> {
+  const r = await flowWrite<{ ok: boolean }>('safety_box', `/safety/box/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ note }) });
+  return r.data;
+}
+
+/* ---------- doubts (deterministic routing; teacher answers, promotes FAQ) ---------- */
+
+export interface SupportDoubt {
+  doubtId: string; subject: string; topic: string | null; question: string; status: string;
+  routedReason: string | null; answer: string | null; answeredAt: string | null; askedByName: string; createdAt: string;
+}
+export async function listDoubts(): Promise<{ scope: string; doubts: SupportDoubt[] }> {
+  const r = await flowRead<{ scope: string; doubts: SupportDoubt[] }>('doubts', '/teacher/support/doubts');
+  return r.data;
+}
+export async function answerDoubt(id: string, answer: string): Promise<{ ok: boolean }> {
+  const r = await flowWrite<{ ok: boolean }>('doubts', `/teacher/support/doubts/${encodeURIComponent(id)}/answer`, { method: 'POST', body: JSON.stringify({ answer }) });
+  return r.data;
+}
+export async function promoteDoubtFaq(id: string): Promise<{ ok: boolean; faqId?: string }> {
+  const r = await flowWrite<{ ok: boolean; faqId?: string }>('doubts', `/teacher/support/doubts/${encodeURIComponent(id)}/promote-faq`, { method: 'POST', body: '{}' });
+  return r.data;
+}
+
+/* ---------- intervention plans (server shape) ---------- */
+
+export interface ServerIntervention {
+  planId: string; studentId: string; studentName: string; ownerId: string; ownerName: string;
+  objective: string; activity: string; targetEnd: string | null; status: string; outcome: string | null;
+  createdAt: string; updatedAt: string;
+}
+export const INTERVENTION_FLOW: string[] = ['identified', 'planned', 'in_progress', 'reassessed', 'improved', 'continue', 'escalate'];
+export async function listInterventions(studentId?: string): Promise<{ scope: string; plans: ServerIntervention[] }> {
+  const r = await flowRead<{ scope: string; plans: ServerIntervention[] }>('interventions', `/interventions${studentId ? `?student=${encodeURIComponent(studentId)}` : ''}`);
+  return r.data;
+}
+export async function createPlan(body: { studentId: string; objective: string; activity: string; targetEnd?: string }): Promise<{ ok: boolean; planId: string }> {
+  const r = await flowWrite<{ ok: boolean; planId: string }>('interventions', '/interventions', { method: 'POST', body: JSON.stringify(body) });
+  return r.data;
+}
+export async function movePlan(id: string, to: string, note?: string): Promise<{ ok: boolean; status: string }> {
+  const r = await flowWrite<{ ok: boolean; status: string }>('interventions', `/interventions/${encodeURIComponent(id)}/transition`, { method: 'POST', body: JSON.stringify({ to, note }) });
+  return r.data;
+}
+
+/* ---------- lessons lifecycle (PRD-2 / DAT-4) ---------- */
+
+export interface TeacherLesson {
+  id: string; class_grade: string; subject: string; lesson_date: string; period: number | null;
+  topic: string; objectives: string[]; resources: string[]; reflection: { worked?: string | null; reinforce?: string | null; next?: string | null; at?: string } | null;
+  status: string; created_at: string;
+}
+export async function listLessons(date?: string): Promise<{ date: string | null; lessons: TeacherLesson[] }> {
+  const r = await flowRead<{ date: string | null; lessons: TeacherLesson[] }>('lessons', `/plugins/teacher.classroom/lessons${date ? `?date=${encodeURIComponent(date)}` : ''}`);
+  return r.data;
+}
+export async function createLesson(body: { class_grade: string; subject: string; lesson_date?: string; period?: number | null; topic: string; objectives?: string[]; resources?: string[] }): Promise<{ ok: boolean; lessonId: string; lesson: TeacherLesson }> {
+  const r = await flowWrite<{ ok: boolean; lessonId: string; lesson: TeacherLesson }>('lessons', '/plugins/teacher.classroom/lessons', { method: 'POST', body: JSON.stringify(body) });
+  return r.data;
+}
+export async function reflectLesson(id: string, body: { worked?: string; reinforce?: string; next?: string }): Promise<{ ok: boolean }> {
+  const r = await flowWrite<{ ok: boolean }>('lessons', `/plugins/teacher.classroom/lessons/${encodeURIComponent(id)}/reflect`, { method: 'POST', body: JSON.stringify(body) });
+  return r.data;
+}
+
 /* ============================================================
    TU-3 (ui-insights) SECTION — mastery maps · progress stories ·
    curriculum coverage · class analytics · interventions.
@@ -635,12 +784,35 @@ export const liveEvidence = (t: MasteryTopic) => t.evidence.filter(e => !stalene
 
 /* ---------- roster (identity only — the server owns the real roster) ---------- */
 
-export interface RosterStudent { id: string; name: string; classGrade: string }
+export interface RosterStudent { id: string; name: string; classGrade: string; grade?: string; section?: string | null; admission_no?: string | null }
 
 /** No client-side roster exists: a synchronous picker cannot fabricate students.
  *  Screens that need the roster read the live door instead. */
 export function rosterFor(_classGrade: string): RosterStudent[] {
   return [];
+}
+
+/* ---------- teaching copilot (P4 · deterministic v0, budgeted) ---------- */
+
+export interface CopilotAskResult {
+  answer: string;
+  sources: { kind: string }[];
+  suggested_action: { label: string; to: string } | null;
+  budget: { used: number; cap: number };
+}
+/** POST /copilot/ask {question} — deterministic keyword-routed answer with sources. */
+export async function askTeacherCopilot(question: string): Promise<CopilotAskResult> {
+  const r = await flowWrite<CopilotAskResult>('copilot_ask', '/copilot/ask', { method: 'POST', body: JSON.stringify({ question }) });
+  return r.data;
+}
+
+export interface CopilotDraftResult {
+  kind: string; title: string; draft: string; label: string; budget: { used: number; cap: number };
+}
+/** POST /copilot/draft {kind, params} — a labelled ai_draft template the teacher edits. */
+export async function draftTeacherCopilot(kind: string, params: Record<string, unknown>): Promise<CopilotDraftResult> {
+  const r = await flowWrite<CopilotDraftResult>('copilot_draft', '/copilot/draft', { method: 'POST', body: JSON.stringify({ kind, params }) });
+  return r.data;
 }
 
 /** GET /mastery/student/:id?subject= (§4, frozen) — evidence-linked, decayed. */

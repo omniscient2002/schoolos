@@ -145,6 +145,17 @@ export async function pass() {
     } finally { c.release(); }
   }
 
+  // ── 5b. Library borrower-write throttle rows past their window (110, LIB-E2) ─
+  {
+    const c = await pool.connect();
+    try {
+      if (await tableExists(c, 'library', 'request_throttles')) {
+        const r = await c.query(`DELETE FROM library.request_throttles WHERE last_attempt_at < now() - interval '7 days'`);
+        counts.libraryThrottlesDeleted = r.rowCount ?? 0;
+      } else { counts.libraryThrottlesDeleted = 0; }
+    } finally { c.release(); }
+  }
+
   // ── 6. OAuth pre-auth states older than their 10-minute TTL (040) ───────────
   {
     const c = await pool.connect();

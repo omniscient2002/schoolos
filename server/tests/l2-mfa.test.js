@@ -8,7 +8,7 @@ import pg from 'pg';
 import { setupTestDb } from './helpers.js';
 import { totpAt, generateSecret } from '../src/totp.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const nowCode = (secret) => totpAt(secret, Math.floor(Date.now() / 1000 / 30));
 // 095 made TOTP moving factors single-use (`auth.mfa_secrets.last_totp_step`), so a code consumed by the
 // enrollment confirm cannot be replayed for a login challenge in the same 30s window. A real authenticator
@@ -130,7 +130,7 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
   });
   test('D-37d: enroll refuses while the factor is live; disable needs password re-auth', async () => {
     const o = await login('owner@meridian.edu', 'schoolos-demo');
-    const H = { authorization: `Bearer ${o.json().token}`, 'content-type': 'application/json' };
+    const H = { authorization: `Bearer ${o.json().token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' };
     // confirm an enrollment so the factor is live (fresh secret, valid code)
     const enroll = await app.inject({ method: 'POST', url: '/me/mfa/enroll', payload: { password: 'schoolos-demo' }, headers: H });
     assert.equal(enroll.statusCode, 200, enroll.body);
@@ -167,7 +167,7 @@ describe('L2-3.2 · staff MFA (TOTP)', () => {
   test('D-37e: /auth/renew re-issues without re-login; absent session → 401', async () => {
     // owner's factor was disabled in the previous test — plain password login works
     const o = await login('owner@meridian.edu', 'schoolos-demo');
-    const H = { authorization: `Bearer ${o.json().token}`, 'content-type': 'application/json' };
+    const H = { authorization: `Bearer ${o.json().token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' };
     const r = await app.inject({ method: 'POST', url: '/auth/renew', payload: {}, headers: H });
     assert.equal(r.statusCode, 200, r.body);
     const fresh = app.jwt.decode(r.json().token);

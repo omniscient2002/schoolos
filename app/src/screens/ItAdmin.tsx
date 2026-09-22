@@ -64,26 +64,29 @@ const API_KEYS = [
 /* ---------- screen ---------- */
 export default function ItAdmin() {
   const { session, actorName } = useStore();
-  const isIt = session.roleId === 'itadmin';
+  /* FE-11: the owner reaches `/it` through the same owner/itadmin `GET /metrics` door, but the screen
+     only fetched when `roleId === 'itadmin'`, so an owner saw "Metrics unavailable" on a door that would
+     have answered. Fetch for any role the door admits. */
+  const canViewMetrics = session.roleId === 'itadmin' || session.roleId === 'owner';
   const [metrics, setMetrics] = useState<PlatformMetrics | null>(null);
   const [metricsUnavailable, setMetricsUnavailable] = useState(false);
 
   useEffect(() => {
-    if (!isIt) return;
+    if (!canViewMetrics) return;
     apiGet<string>('/metrics')
       .then(body => { setMetrics(parsePromMetrics(body)); setMetricsUnavailable(false); })
       .catch(() => { setMetrics(null); setMetricsUnavailable(true); });
-  }, [isIt]);
+  }, [canViewMetrics]);
 
 
   return (
     <>
       <PageHead
         title="IT Admin"
-        sub={isIt
-          ? 'Platform posture for all three campuses. Security operations (session revoke, key rotation, exports) require server support and are disabled in this build.'
+        sub={canViewMetrics
+          ? `Platform posture for this school. Security operations (session revoke, key rotation, exports) require server support and are disabled in this build.`
           : `Viewing as ${actorName}. Security operations require server support and are disabled in this build.`}
-        actions={<Badge tone={isIt ? 'accent' : 'outline'} dot>{isIt ? 'Full access' : 'Read-only'}</Badge>}
+        actions={<Badge tone={canViewMetrics ? 'accent' : 'outline'} dot>{canViewMetrics ? 'Full access' : 'Read-only'}</Badge>}
       />
 
       {/* FE-3: values in this row come from the owner/IT-admin-only Prometheus endpoint.

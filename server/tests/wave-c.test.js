@@ -53,8 +53,9 @@ before(async () => {
                VALUES ($1, 'export', '+919000000003', 'wavec@test', now() + interval '30 days')`, [t]);
     const lead = (await sql(`INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_phone, class_applied)
                VALUES ($1, 'Wave C Probe', '+919000000002', 'WaveC') RETURNING id`, [t])).rows[0].id;
+    // v1.3: stage_history.to_stage is CHECK-constrained to the real lattice.
     await sql(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
-               VALUES ($1, $2, NULL, 'wavec_stage', 'wavec@test')`, [t, lead]);
+               VALUES ($1, $2, NULL, 'enquiry', 'wavec@test')`, [t, lead]);
     await sql(`INSERT INTO plugin_visitors.visit (tenant_id, visitor_name, purpose, badge_code)
                VALUES ($1, 'Wave C Visitor', 'meeting', 'WC-PROBE')`, [t]);
   }
@@ -130,8 +131,8 @@ test('Wave C · visitors visit invisible cross-tenant', async () => {
 test('Wave C · sar + stage_history invisible cross-tenant', async () => {
   assert.equal(await count(tenantA, 'plugin_dpdp.sar', `subject_ref='+919000000003'`), 1);
   assert.equal(await count(tenantB, 'plugin_dpdp.sar', `subject_ref='+919000000003'`), 1);
-  assert.equal(await count(tenantA, 'plugin_admissions.stage_history', `to_stage='wavec_stage'`), 1);
-  assert.equal(await count(tenantB, 'plugin_admissions.stage_history', `to_stage='wavec_stage'`), 1);
+  assert.equal(await count(tenantA, 'plugin_admissions.stage_history', `actor='wavec@test'`), 1);
+  assert.equal(await count(tenantB, 'plugin_admissions.stage_history', `actor='wavec@test'`), 1);
 });
 
 test('Wave C · app.tenants: the app role sees only its own tenant row', async () => {

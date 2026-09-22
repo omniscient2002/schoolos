@@ -21,14 +21,14 @@ import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupTestDb, loginAs } from './helpers.js';
-import { SURFACE_DOOR } from '../src/effective-access.js';
+import { SURFACE_DOOR, SAMPLE_SURFACES } from '../src/effective-access.js';
 import { scanRoutes } from '../scripts/permission-matrix.js';
 
 const SERVER_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let app;
 let pool;
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const brief = (r) => `HTTP ${r.statusCode} ${String(r.body ?? '').slice(0, 200)}`;
 const eff = (token) => app.inject({ method: 'GET', url: '/me/effective', headers: H(token) });
 const SHELVER = 'shelver.effective@meridian.edu';
@@ -77,11 +77,16 @@ describe('GET /me/effective · drift + shape', () => {
     // public/redirect routes below are deliberately outside the guarded tree (`/onboard` renders before
     // AuthGate; the others redirect or catch-all).
     const appSrc = readFileSync(join(SERVER_ROOT, '..', 'app', 'src', 'App.tsx'), 'utf8');
-    const routes = [...appSrc.matchAll(/path="([^"]+)"/g)].map((m) => m[1]);
+    // Only ABSOLUTE top-level paths are checked. Relative child routes (e.g. the library
+    // desk's `path="issue"`) render inside their parent section and inherit its surface:
+    // `canSurface` resolves them by longest-prefix, so the parent's SURFACE_DOOR entry is
+    // the fail-closed decision. Treating a bare `issue` as a top-level route was a false
+    // positive introduced when the desk became a sectioned workspace.
+    const routes = [...appSrc.matchAll(/path="([^"]+)"/g)].map((m) => m[1]).filter((p) => p.startsWith('/'));
     const PUBLIC_OR_REDIRECT = new Set(['/', '/login', '*', '/onboard']);
-    const missing = [...new Set(routes)].filter((p) => !PUBLIC_OR_REDIRECT.has(p) && !(p in SURFACE_DOOR));
+    const missing = [...new Set(routes)].filter((p) => !PUBLIC_OR_REDIRECT.has(p) && !(p in SURFACE_DOOR) && !(p in SAMPLE_SURFACES));
     assert.deepEqual(missing, [],
-      `App.tsx renders ${missing.join(', ')} but SURFACE_DOOR has no entry — fail-closed would hide them`);
+      `App.tsx renders ${missing.join(', ')} but SURFACE_DOOR/SAMPLE_SURFACES has no entry — fail-closed would hide them`);
   });
 
   test('unauthenticated is refused', async () => {
@@ -103,10 +108,12 @@ describe('GET /me/effective · follows the registry per role', () => {
     assert.equal(capabilities['/it'], false, 'GET /metrics is owner/itadmin only');
     // FEX-5: these admin surfaces used to proxy the `me` door GET /plugins, so every role was told it
     // could render them. Each now maps to a door whose real gate is owner/itadmin.
-    assert.equal(capabilities['/group'], false, 'the group screen is not a teacher surface (was GET /plugins)');
-    assert.equal(capabilities['/settings'], false, 'school settings is not a teacher surface (was GET /plugins)');
+    assert.equal(capabilities['/group'], false, 'the group console is not a teacher surface (was GET /plugins)');
     assert.equal(capabilities['/rails'], false, 'rails configuration is not a teacher surface (was GET /plugins)');
     assert.equal(capabilities['/plugins/settings'], false, 'plugin settings is not a teacher surface (was GET /plugins)');
+    // OPP-FE-2: Settings is the personal + school-profile surface every signed-in user is linked to from
+    // the account menu, so it maps to the authenticated `GET /me` floor; its tabs gate their own content.
+    assert.equal(capabilities['/settings'], true, 'settings is a signed-in surface (was GET /metrics)');
     assert.ok(nav.includes('/people') && !nav.includes('/roles'), 'nav is the true subset of capabilities');
   });
 
@@ -122,6 +129,21 @@ describe('GET /me/effective · follows the registry per role', () => {
     assert.equal(capabilities['/rails'], true);
     assert.equal(capabilities['/plugins/settings'], true);
   });
+
+  /* OPP-RBAC: the principal is a school-running authority. These surfaces are within that remit; the
+     doors were widened with this campaign (app.js /ai/calls, /ai/eval, /workflow-rules). */
+  test('a principal reaches the school-running oversight surfaces but not owner-only admin', async () => {
+    const t = (await loginAs(app, 'principal@meridian.edu')).token;
+    const { capabilities } = (await eff(t)).json();
+    assert.equal(capabilities['/ai-usage'], true, 'principal oversees AI use (was owner/itadmin)');
+    assert.equal(capabilities['/ai-governance'], true, 'principal oversees AI governance');
+    assert.equal(capabilities['/automation'], true, 'principal runs workflow automation');
+    assert.equal(capabilities['/group'], true, 'principal reaches the group console');
+    assert.equal(capabilities['/settings'], true, 'principal reaches settings');
+    assert.equal(capabilities['/plugins/settings'], true, 'principal may configure modules');
+    assert.equal(capabilities['/roles'], false, 'custom-role administration stays owner/itadmin');
+    assert.equal(capabilities['/it'], false, 'platform metrics stay owner/itadmin');
+  });
 });
 
 describe('GET /me/effective · custom-role masks move surfaces', () => {
@@ -129,7 +151,7 @@ describe('GET /me/effective · custom-role masks move surfaces', () => {
     const owner = await loginAs(app, 'owner@meridian.edu');
     const made = await app.inject({ method: 'POST', url: '/roles', headers: H(owner.token), payload: {
       key: 'shelver', label: 'Shelver', base_role: 'teacher',
-      permissions: { allow: ['GET /plugins/library/books', 'POST /plugins/library/books'], deny: ['GET /students'] } } });
+      permissions: { allow: ['GET /plugins/library/catalog', 'POST /plugins/library/books'], deny: ['GET /students'] } } });
     assert.ok([200, 201].includes(made.statusCode), brief(made));
 
     const shelver = (await pool.query(`SELECT id FROM app.users WHERE email=$1`, [SHELVER])).rows[0].id;
@@ -147,7 +169,7 @@ describe('GET /me/effective · custom-role masks move surfaces', () => {
     const owner = await loginAs(app, 'owner@meridian.edu');
     const made = await app.inject({ method: 'POST', url: '/roles', headers: H(owner.token), payload: {
       key: 'nosh', label: 'No Shelf', base_role: 'teacher',
-      permissions: { allow: ['GET /plugins/library/books'], deny: ['GET /plugins/library/books'] } } });
+      permissions: { allow: ['GET /plugins/library/catalog'], deny: ['GET /plugins/library/catalog'] } } });
     assert.ok([200, 201].includes(made.statusCode), brief(made));
     const shelver = (await pool.query(`SELECT id FROM app.users WHERE email=$1`, [SHELVER])).rows[0].id;
     await app.inject({ method: 'POST', url: '/roles/nosh/assign', headers: H(owner.token), payload: { userIds: [shelver] } });

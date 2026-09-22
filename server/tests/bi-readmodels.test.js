@@ -123,12 +123,13 @@ describe('ops.bi read models (L3-4.3)', () => {
 
   test('funnel: stage counts + enrolled share; homework: completion aggregates + cache', async () => {
     const { tenantId } = globalThis.__bi;
-    for (const [stage, n] of [['inquiry', 3], ['school-visit', 2], ['enrolled', 2], ['dropped', 1]]) {
+    let seq = 0;
+    for (const [stage, n] of [['enquiry', 3], ['form', 2], ['enrolled', 2], ['rejected', 1]]) {
       for (let i = 0; i < n; i++) {
         await pool.query(
           `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, stage)
-           VALUES ($1,$2,$3,'+91 9000000000','6','walk-in',$4)`,
-          [tenantId, `Lead ${stage} ${i}`, `G ${stage} ${i}`, stage]);
+           VALUES ($1,$2,$3,$5,'6','walk-in',$4)`,
+          [tenantId, `Lead ${stage} ${i}`, `G ${stage} ${i}`, stage, `+9190000100${String(seq++).padStart(2, '0')}`]);
       }
     }
     const f = await app.inject({ method: 'GET', url: '/plugins/ops.bi/funnel', headers: H(owner.token) });
@@ -137,8 +138,8 @@ describe('ops.bi read models (L3-4.3)', () => {
     assert.equal(fb.totalLeads, 8, '8 leads counted');
     assert.equal(fb.enrolled, 2);
     assert.equal(fb.enrolledPct, 25, '2/8 = 25%');
-    assert.equal(fb.byStage[0].stage, 'inquiry', 'funnel order: inquiry first');
-    assert.equal(fb.dropped, 1);
+    assert.equal(fb.byStage[0].stage, 'enquiry', 'funnel order: enquiry first');
+    assert.equal(fb.rejected, 1);
     // homework fixtures
     const hw = (await pool.query(
       `INSERT INTO teacher.homework (tenant_id, class_grade, subject, title, due_at, created_by, status)

@@ -1,0 +1,27 @@
+# CODEOWNERS — the repository is the source of truth; these paths are the sensitive ones.
+# Everything defaults to the maintainer, with the security-sensitive surfaces called out
+# explicitly so a change there always requests the owner's review.
+
+*                       @omniscient2002
+
+# Security, auth, RBAC and the audit spine
+/server/src/app.js                     @omniscient2002
+/server/src/auth.js                    @omniscient2002
+/server/src/audit.js                   @omniscient2002
+/server/src/effective-access.js        @omniscient2002
+/server/src/role-catalog.js            @omniscient2002
+/server/src/custom-roles.js            @omniscient2002
+/server/src/grant-tightening.js        @omniscient2002
+
+# Money
+/server/src/routes.js                  @omniscient2002
+/server/src/fees/                      @omniscient2002
+
+# Schema, migrations and RLS
+/server/migrations/                    @omniscient2002
+/server/scripts/migrate.js             @omniscient2002
+
+# CI, ops and deployment
+/.github/                              @omniscient2002
+/ops/                                  @omniscient2002
+/server/docker-compose.yml             @omniscient2002

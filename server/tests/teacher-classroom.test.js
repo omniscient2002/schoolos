@@ -168,6 +168,13 @@ test('staff leave ×2 → two DISTINCT per-instance kernel actions; coordinator 
   assert.equal(approved.status, 'approved', 'kernel decision mirrored into the leave row');
   assert.equal(stillPending.status, 'pending', 'the other request is untouched');
 
+  // DEL-3: an approved leave carries a generated handover packet (substitute + periods).
+  const approvedReq = mine1.json().requests.find((l) => l.id === leave1.requestId);
+  assert.ok(approvedReq.handover, 'the approved request carries a handover packet');
+  assert.ok(Array.isArray(approvedReq.handover.classes), 'the packet lists the affected periods');
+  const pendingReq = mine1.json().requests.find((l) => l.id === leave2.requestId);
+  assert.equal(pendingReq.handover, null, 'an undecided request has no handover');
+
   // ── DAT-6: the projection above CHANGED the leave record (pending → approved) and it did so inside
   // a GET, writing no ledger row — so "who changed this leave request, when, and on what authority" had
   // no answer in the ledger. It is now recorded, ONCE PER REAL TRANSITION.
@@ -360,4 +367,100 @@ test('the door files work against the SUBMITTER\'S OWN roster row — no body ov
      WHERE s.id=$1`, [r.json().submissionId])).rows[0];
   assert.equal(row.roster_name, 'Diya Nair', 'the row is filed against the SIGNED-IN student');
   assert.notEqual(row.student_id, other.id, 'the body cannot re-point the submission at another student');
+});
+
+test('GET /teacher/home → command-center aggregate (now/next/needsAttention/glance/suggestions)', async () => {
+  const r = await app.inject({ method: 'GET', url: '/teacher/home', headers: H(teacher.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  const agg = r.json();
+  for (const k of ['now', 'next', 'needsAttention', 'glance', 'suggestions']) assert.ok(k in agg, `${k} present`);
+  assert.ok(Array.isArray(agg.next) && Array.isArray(agg.needsAttention) && Array.isArray(agg.suggestions));
+  assert.equal(typeof agg.glance.periods, 'number');
+  assert.ok(agg.needsAttention.some((n) => n.kind === 'submission'), 'pending submission surfaced as a need');
+  assert.ok(agg.suggestions.length >= 1, 'a suggestion is offered when work is waiting');
+});
+
+test('submissions inbox contract: rows carry id/homework_title/content_ref; state defaults to all', async () => {
+  const all = await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/submissions', headers: H(teacher.token) });
+  assert.equal(all.statusCode, 200, all.body);
+  const rows = all.json().submissions;
+  assert.ok(rows.length >= 1, 'default (all) view returns rows');
+  const row = rows.find((s) => s.id === subId);
+  assert.ok(row, 'the UI `id` field is present on submitted rows');
+  assert.equal(row.submission_id, subId, 'submission_id kept for the existing pins');
+  assert.ok(row.homework_title, 'homework_title present');
+  assert.ok('content_ref' in row && 'content_type' in row, 'work columns present');
+});
+
+test('missing view rows carry a stable id + status so the inbox does not crash', async () => {
+  const r = await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/submissions?state=missing', headers: H(teacher.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  for (const s of r.json().submissions) {
+    assert.equal(s.status, 'missing');
+    assert.ok(typeof s.id === 'string' && s.id.length > 0, 'stable id present');
+    assert.equal(s.content_type, 'text', 'renderable content_type');
+  }
+});
+
+/* ── PERFECT-100 hardening pins (TEST-1, API-8) ─────────────────────────────── */
+
+test('attachment hardening: javascript:/data:/protocol-relative refused, plain name accepted', async () => {
+  const post = (attachment) => app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '8', subject: 'Maths', title: `attach-${Math.random().toString(36).slice(2, 8)}`, due_at: future(2), attachment } });
+  assert.equal((await post('javascript:alert(1)')).statusCode, 400, 'javascript: scheme refused');
+  assert.equal((await post('data:text/html,<script>1</script>')).statusCode, 400, 'data: scheme refused');
+  assert.equal((await post('//evil.example/x')).statusCode, 400, 'protocol-relative refused');
+  assert.equal((await post('worksheet.pdf')).statusCode, 200, 'a plain file name is allowed');
+  assert.equal((await post('https://example.com/worksheet.pdf')).statusCode, 200, 'an https link is allowed');
+});
+
+test('review can request a resubmission (resubmit_requested) and it is reflected on the row', async () => {
+  const r = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/submissions/${subId}/review`,
+    headers: H(teacher.token), payload: { status: 'resubmit_requested', feedback: 'Please redo question 3' } });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().status, 'resubmit_requested');
+});
+
+test('homework list honours the ?class= filter (API-8)', async () => {
+  const r = await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/homework?class=8', headers: H(teacher.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  for (const h of r.json().homework) assert.equal(h.class_grade, '8', 'only the requested class is returned');
+});
+
+/* ── PRD-2/PRD-3 new-door pins (lessons, duty, workload, roster) ─────────────── */
+
+test('lessons: create → list → reflect (append-only reflection)', async () => {
+  const create = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/lessons', headers: H(teacher.token),
+    payload: { class_grade: '8', subject: 'Mathematics', lesson_date: '2026-09-20', topic: 'Equivalent fractions', objectives: ['Explain equivalence'] } });
+  assert.equal(create.statusCode, 200, create.body);
+  const id = create.json().lessonId;
+  const list = await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/lessons?date=2026-09-20', headers: H(teacher.token) });
+  assert.equal(list.statusCode, 200, list.body);
+  assert.ok(list.json().lessons.some((l) => l.id === id), 'the lesson is listed for its date');
+  const refl = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/lessons/${id}/reflect`, headers: H(teacher.token),
+    payload: { worked: 'Worked example landed', next: 'Word problems' } });
+  assert.equal(refl.statusCode, 200, refl.body);
+  assert.equal(refl.json().status, 'reflected');
+  assert.equal((await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/lessons/${id}/reflect`, headers: H(teacher.token), payload: {} })).statusCode, 400);
+});
+
+test('duty roster + my workload return the fairness shape (PRD-3)', async () => {
+  const duty = await app.inject({ method: 'GET', url: '/duty/roster?window=week', headers: H(teacher.token) });
+  assert.equal(duty.statusCode, 200, duty.body);
+  assert.equal(duty.json().window, 'week');
+  assert.ok(Array.isArray(duty.json().duties));
+  const wl = await app.inject({ method: 'GET', url: '/workload/mine', headers: H(teacher.token) });
+  assert.equal(wl.statusCode, 200, wl.body);
+  const w = wl.json().workload;
+  assert.equal(typeof w.periods, 'number');
+  assert.ok(w.fair_band && typeof w.fair_band.min === 'number' && typeof w.fair_band.max === 'number');
+  assert.equal(typeof w.overload, 'boolean');
+  assert.ok(!('rank' in w) && !('score' in w), 'workload is never a rank or a score');
+});
+
+test('teacher roster is scoped to assigned classes and refuses students/parents', async () => {
+  const r = await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/roster', headers: H(teacher.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.ok(Array.isArray(r.json().students));
+  assert.equal((await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/roster', headers: H(student.token) })).statusCode, 403);
 });

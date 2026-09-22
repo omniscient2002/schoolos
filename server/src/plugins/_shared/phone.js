@@ -39,3 +39,14 @@ export function toE164(v) {
 /** True when the stored value is already exactly what a rail would accept. Useful for reporting, not
  *  for deciding: doors should normalise, never merely validate. */
 export const isE164 = (v) => /^\+[1-9]\d{7,14}$/.test(String(v ?? ''));
+
+/** Privacy mask for a phone shown to a role without guardian-contact authority.
+ *  E.164-aware: it masks the 10-digit subscriber part, keeping the first two and last
+ *  two digits, never the country code — `+919876543210` → `98xxxx10`. Extracted here
+ *  from two identical private copies (the admissions list door and the kernel follow-up
+ *  queue) so a leak fix cannot land in only one of them. */
+export function maskPhone(p) {
+  if (!p) return null;
+  const d = String(p).replace(/\D/g, '').slice(-10); // last 10 digits of the E.164 number
+  return `${d.slice(0, 2)}xxxx${d.slice(-2)}`;
+}

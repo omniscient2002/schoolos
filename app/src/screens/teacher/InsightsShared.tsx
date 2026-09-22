@@ -24,7 +24,7 @@ import { DeniedState } from './teacherKit';
 import {
   MASTERY_LABEL, MASTERY_STYLE, TREND_INFO, evidenceLinkTarget,
   staleness, liveEvidence, type MasteryEvidence, type MasteryTopic,
-} from '../../services/teacherFixtures';
+} from '../../services/teacherApi';
 
 /* ---------- role mirror (server still decides; UI degrades kindly) ---------- */
 export const INSIGHTS_STAFF_ROLES = ['teacher', 'principal', 'owner', 'coordinator', 'itadmin'];

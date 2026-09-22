@@ -8,8 +8,20 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ADMIN as ADMISSIONS_ADMIN, FULL_PII as ADMISSIONS_FULL_PII } from '../src/plugins/_shared/admissions-access.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/* Shared role constants that doors spread (`require(...ADMIN)`). The scanner's local
+   `const [A-Z_]+ = [...]` extraction only sees a file's OWN literals, so a role list
+   hoisted into a shared module (admissions-access.js) would otherwise read as an empty
+   spread and demote a real role-gated door to UNGUARDED. These seed the resolver; a
+   file-local definition of the same name still overrides (built after the seed). */
+const SHARED_CONSTS = {
+  ADMIN: ADMISSIONS_ADMIN,
+  ADMISSIONS_ADMIN,
+  FULL_PII: ADMISSIONS_FULL_PII,
+};
 
 // Routes deliberately reachable WITHOUT a session. Every entry is a reviewed security
 // decision — do not extend this list without a threat-model note.
@@ -37,8 +49,8 @@ export function scanRoutes(files) {
   for (const f of files) {
     const src = readFileSync(f, 'utf8');
     const id = src.match(/const ID = '([^']+)'/)?.[1] ?? null;
-    // role-set consts: const GUARDIAN = ['parent','guardian'];
-    const consts = {};
+    // role-set consts: const GUARDIAN = ['parent','guardian']; file-local overrides shared.
+    const consts = { ...SHARED_CONSTS };
     for (const m of src.matchAll(/const ([A-Z_]+) = \[([^\]]*)\]/g))
       consts[m[1]] = [...m[2].matchAll(/'([^']+)'/g)].map((r) => r[1]);
 
@@ -68,7 +80,11 @@ export function scanRoutes(files) {
            unguarded (the gate stays strict). */
         const hasAuth = /app\.authenticate|requireRole|adminOnly|optionalAuth|\brequire\(|\bme\b/.test(body);
         const lifecycle = /lifecycleGate/.test(body);
-        const quoted = [...body.matchAll(/'([a-z]+)'/g)].map((r) => r[1]).filter((r) => r !== 'plugins');
+        /* Roles are lowercase with underscores (`finance_head`, `finance_clerk`); the old `[a-z]+`
+           silently dropped those two roles from every fee door they are actually gated on, which made
+           the generated matrix under-report them (and led a reviewer to think the maker/checker roles
+           were un-gated). Plugin ids contain dots and are excluded by the character class anyway. */
+        const quoted = [...body.matchAll(/'([a-z][a-z0-9_]*)'/g)].map((r) => r[1]).filter((r) => r !== 'plugins');
         const spread = [...body.matchAll(/\.\.\.([A-Z_]+)/g)].flatMap((r) => consts[r[1]] ?? []);
         const roles = [...new Set([...quoted, ...spread])];
         route.lifecycle = lifecycle;

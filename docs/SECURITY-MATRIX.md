@@ -9,8 +9,8 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 |---|---|---|---|---|
 | A1 | Credential brute force | POST /auth/login | rate limiter + uniform 401 | PINNED (security.test Track F: X-Forwarded-For rotation defeated) |
 | A2 | Account enumeration | OTP door | uniform response shape (registered vs not indistinguishable) | PINNED (app.js comment + api tests) |
-| A3 | Token lifetime abuse | stolen staff JWT | 12h staff TTL | OPEN (rotation/revocation not built — documented limitation) |
-| A4 | Abandoned student kiosk session | shared lab computer | 30m student TTL (studentSessionTtl) + Clear-Site-Data on logout + no-store | PINNED (auth smoke + student-world headers pin) |
+| A3 | Token lifetime abuse | stolen staff JWT | 12h staff TTL + mandatory `jti` revocation denylist + session_epoch | **DONE/PINNED** (038 + jti mandatory + auth-revocation regression) — reconciled with §7 (C6) |
+| A4 | Abandoned student kiosk session | shared lab computer | 30m student TTL (studentSessionTtl) + Clear-Site-Data on logout + no-store + **server-enforced idle** (per-jti, `STUDENT_IDLE_TIMEOUT_MINUTES`) | PINNED (auth smoke + student-world headers + `student-idle.test.js`) |
 | A5 | Password storage | DB dump | scram-hashed (seed), no plaintext | PINNED (migration seeds) |
 
 ## 2. Authorization / tenancy
@@ -24,8 +24,9 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 | B6 | Cross-tenant read | all doors | tenant GUC via withUser + RLS | PINNED (001 + suite) |
 | B7 | Cross-tenant REGISTRY row (plugin enable) | migration guards | tenant-correlated NOT EXISTS (031–037 patch) | PINNED (migration re-run) |
 | B8 | Coordinators decide own proposal | app.actions | SoD self-approve refused | PINNED (coord-view decide test) |
-| B9 | Counselor/medical confidentiality | teacher/parent/student eyes | clinic/counselor tables staff-tiered; AI never in retrieval path | PARTIAL — matrix rows below |
-| B10 | Teacher reads another teacher's submissions | review desk | assigning-teacher-only WHERE created_by | PINNED pending teacher-classroom.test.js (TS-1 in flight) |
+| B9 | Counselor/medical confidentiality | teacher/parent/student eyes | clinic/counselor tables staff-tiered; AI never in retrieval path | **DONE/PINNED** (b9-confidentiality 6/6) — reconciled with §7 (C6) |
+| B10 | Teacher reads another teacher's submissions | review desk | assigning-teacher-only WHERE created_by | PINNED (teacher-classroom.test.js) |
+| B11 | Privilege escalation via onboarding | account provisioning / custom roles | **Only the owner may create a `principal`/`owner` account or a custom role based on `principal`/`owner`.** itadmin is the onboarding authority for students and every non-owner/non-principal role, but the principal-refusal is audited (`risk:'high'`, commit-before-send). | PINNED (wave-b.test.js, custom-roles.test.js) |
 
 ## 3. Business logic
 | # | Attack | Vector | Control | Status |
@@ -57,7 +58,7 @@ FIXED-UNPINNED (fix applied, regression pending) · OPEN · N/A (documented risk
 | E2 | uuid-cast 500→error-leak | uuidParams guard before WHERE id::uuid | PINNED (family/student/coord doors) |
 | E3 | Bodyless JSON POST crash | FST_ERR_CTP_EMPTY_JSON_BODY | house note: no content-type on bodyless writes | PINNED (suite) |
 | E4 | Oversized/malformed payloads | Fastify bodyLimit + validators | PINNED (default) |
-| E5 | Log injection / secret leakage | structured logs, no secrets | OPEN — periodic grep scheduled |
+| E5 | Log injection / secret leakage | structured logs, no secrets | **DONE/PINNED** (scripts/secret-scan.mjs fail-closed, clean) — reconciled with §7 (C6) |
 | E6 | Response caching of personal data | no-store on /auth,/me,/parent,/student | PINNED (auth smoke) |
 
 ## 6. Red-team → blue-team ledger (this cycle)

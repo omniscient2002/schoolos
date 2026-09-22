@@ -6,7 +6,7 @@
 import { useMemo, useState } from 'react';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, Drawer, Empty, Modal, PageHead, useToast } from '../components/ui';
+import { Badge, Button, Card, Drawer, Empty, Modal, PageHead, useToast, SampleNote } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort, fmtTime } from '../lib/format';
 import type { CalendarEvent, CampusId } from '../types/domain';
@@ -137,6 +137,8 @@ export default function CalendarScreen() {
           </Button>
         }
       />
+
+      <SampleNote>Sample calendar — the seeded school year is illustrative in this build; events you add are kept on this device only and the school calendar is not connected.</SampleNote>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
         {/* ---------- month grid ---------- */}

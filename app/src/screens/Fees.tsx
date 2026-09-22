@@ -11,17 +11,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import FeePlans from './finance/FeePlans';
-import { useStore } from '../state/store';
-import * as seed from '../data/dataset';
-import { apiFeeObligations, apiGet, apiPost, apiVoidObligation } from '../services/liveApi';
+import {
+  apiFeeObligations, apiGet, apiVoidObligation,
+  apiPayments, apiRefundPayment, apiMarkMatched, apiReconcile, apiRunDunning, type LivePayment,
+  apiConcessions, apiCreateConcession, apiDecideConcession, type LiveConcession,
+  apiInstallments, type LiveInstallment, apiFeeDelivery, type LiveFeeMessage,
+  apiFeeSettings, apiSaveFeeSettings, apiRunLateFees, apiObligationInvoice,
+} from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { useLightRole, useRoleOrGrant } from '../lib/access';
+import { RecordPaymentModal } from '../components/RecordPaymentModal';
 import {
   PageHead, Section, Card, Stat, Badge, DataTable, Tabs, Button, useToast,
   Drawer, Empty, ErrorState, Skeleton, SkeletonCard, KeyValue, Progress, Modal} from '../components/ui';
 import { BarChart, Donut } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtMoney, fmtMoneyShort, fmtPct, fmtDate, fmtDateShort } from '../lib/format';
-import type { Payment, FeeStatus } from '../types/domain';
+import type { FeeStatus } from '../types/domain';
 
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -68,69 +74,6 @@ interface FeeRow {
   status: RowStatus;
   failureReason?: string;
   method?: string;
-}
-
-/* ---------- record-payment modal (live rails, two doors, one intent) ---------- */
-function RecordPaymentModal({ row, onClose, onDone }: {
-  row: FeeRow | null; onClose: () => void; onDone: () => void;
-}) {
-  const toast = useToast();
-  const { actorName, session } = useStore();
-  const [ref, setRef] = useState('');
-  const [busy, setBusy] = useState(false);
-  if (!row) return null;
-  const due = Math.max(0, row.amount - row.paidAmount);
-
-  const record = async () => {
-    setBusy(true);
-    try {
-      /* Door 1 — initiate (roles: parent/finance/owner/principal). */
-      const init = await apiPost<{ payment: { id: string } }>('/fees/payments', { obligationId: row.id, method: 'upi' });
-      /* Door 2 — manual settlement (roles: finance/owner). The gateway
-         reference is optional; the server audits a bare confirm as
-         "manual reconciliation" either way — nothing here is invented. */
-      const conf = await apiPost<{ payment: { receipt_no: string | null }, obligation: { status: string } }>(
-        `/fees/payments/${init.payment.id}/confirm`, ref.trim() ? { gatewayRef: ref.trim() } : {});
-      toast({
-        title: `Payment recorded — receipt ${conf.payment.receipt_no ?? 'issued'}`,
-        sub: `${fmtMoney(due)} against ${row.studentName} · ${row.term} ${row.category} · obligation now ${conf.obligation.status}.`,
-        tone: 'success'});
-      onDone();
-      onClose();
-    } catch (e) {
-      toast({ title: 'Could not record the payment', sub: friendly(e), tone: 'error' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title="Record a payment"
-      sub={`${row.studentName} · ${row.term} ${row.category} · outstanding ${fmtMoney(due)}`}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button variant="primary" loading={busy} onClick={record}>Record payment</Button>
-        </>
-      }
-    >
-      <div className="u-col" style={{ gap: 12 }}>
-        <p className="u-small u-muted" style={{ margin: 0 }}>
-          This initiates the payment and immediately records its settlement against the ledger
-          (manual reconciliation). Use it when the money has actually arrived — the UPI intent,
-          gateway webhook or bank statement is your proof. Every entry is audited with your name
-          ({actorName}, {session.roleId}).
-        </p>
-        <label className="u-col u-small" style={{ gap: 6 }}>
-          <span>Gateway / UPI reference <span className="u-faint">(optional — from your gateway dashboard or bank statement)</span></span>
-          <input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="e.g. UPI-4821… or RZP-…" />
-        </label>
-      </div>
-    </Modal>
-  );
 }
 
 /* ---------- student drawer (live: real per-student obligations) ---------- */
@@ -202,12 +145,15 @@ const mapRealObligation = (o: Record<string, unknown>): FeeRow => ({
 
 /* ============================================================ */
 
-type TabId = 'ledger' | 'payments' | 'byclass' | 'plans';
+type TabId = 'ledger' | 'payments' | 'installments' | 'delivery' | 'concessions' | 'byclass' | 'plans';
 
 export default function Fees() {
   const navigate = useNavigate();
-  const { session } = useStore();
   const toast = useToast();
+  const lightRole = useLightRole();
+  /* FEE-RBAC-4: a parent/student deep-linking /fees must not land on the staff desk. The surface maps to a
+     parent-allowed door, so the server Guard admits it; this screen redirects the light role to its own view. */
+  useEffect(() => { if (lightRole) navigate('/parent/fees', { replace: true }); }, [lightRole, navigate]);
 
   const [tab, setTab] = useState<TabId>('ledger');
   const [statusFilter, setStatusFilter] = useState<'all' | RowStatus>('all');
@@ -216,24 +162,111 @@ export default function Fees() {
   const [voidRow, setVoidRow] = useState<FeeRow | null>(null);            /* void confirm (owner) */
   const [voidReason, setVoidReason] = useState('');
   const [voiding, setVoiding] = useState(false);
+  const [refundRow, setRefundRow] = useState<LivePayment | null>(null);   /* refund (maker-checker) */
+  const [refundReason, setRefundReason] = useState('');
+  const [refunding, setRefunding] = useState(false);
+  const [opsBusy, setOpsBusy] = useState<string | null>(null);
+  const [opsNote, setOpsNote] = useState<string | null>(null);
+  const [conOpen, setConOpen] = useState(false);
+  const [conForm, setConForm] = useState({ studentId: '', kind: 'concession', amountRupees: '', reason: '' });
+  const [conBusy, setConBusy] = useState<string | null>(null);
 
-  /* Payment authority mirrors the doors exactly:
-     initiate → parent/finance/owner/principal; confirm → finance/owner. */
-  const canInitiate = ['finance', 'owner', 'principal'].includes(session.roleId);
-  const canConfirm = ['finance', 'owner'].includes(session.roleId);
+  /* FEE-RBAC-2: payment authority mirrors the DOORS — a built-in role in the door's set, OR the caller's
+     own custom-role mask explicitly ALLOWing that door. A teacher-based fee role now operates the desk
+     instead of seeing titles with disabled controls. */
+  const canInitiate = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner', 'principal'], ['POST /fees/payments']);
+  const canConfirm = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /fees/payments/:id/confirm']);
+  const canRefund = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /payments/:id/refund']);
+  const canOperate = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /payments/reconcile', 'POST /fees/dunning/run']);
+  /* OPP-PRD-4/PRD-18: the principal owns fee-health and the dunning ladder; reconciliation stays finance. */
+  const canReconcile = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /payments/reconcile']);
+  const canDun = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner', 'principal'], ['POST /fees/dunning/run']);
+  const canVoid = useRoleOrGrant(['owner'], ['POST /fees/obligations/:id/void']);
+  /* A6/D12: per-tenant fee policy is now writable (GET/PUT /fees/settings) — owner / finance head. */
+  const canManagePolicy = useRoleOrGrant(['owner', 'finance_head'], ['PUT /fees/settings']);
+  const [policy, setPolicy] = useState<{ refund: string; prefix: string } | null>(null);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  useEffect(() => {
+    if (!canManagePolicy) return;
+    apiFeeSettings().then(r => setPolicy({
+      refund: String(Math.round(Number(r.settings.refund_approval_threshold_cents ?? 500000) / 100)),
+      prefix: String(r.settings.receipt_prefix ?? 'RCP'),
+    })).catch(() => setPolicy(null));
+  }, [canManagePolicy]);
+  const savePolicy = () => {
+    if (!policy) return;
+    setPolicyBusy(true);
+    apiSaveFeeSettings({ refund_approval_threshold_cents: Math.round(Number(policy.refund) * 100), receipt_prefix: policy.prefix })
+      .then(() => toast({ title: 'Fee policy saved', tone: 'success' }))
+      .catch(e => toast({ title: 'Could not save fee policy', sub: friendly(e), tone: 'error' }))
+      .finally(() => setPolicyBusy(false));
+  };
+  const runLateFees = () => {
+    setPolicyBusy(true);
+    apiRunLateFees()
+      .then(r => toast({ title: 'Late fees applied', sub: `${r.updated} obligation(s) updated`, tone: 'success' }))
+      .catch(e => toast({ title: 'Could not run late fees', sub: friendly(e), tone: 'error' }))
+      .finally(() => setPolicyBusy(false));
+  };
+  const openInvoice = (id: string) => {
+    apiObligationInvoice(id)
+      .then(r => toast({ title: 'Invoice generated', sub: `${r.invoice.filename} · sha256 ${r.invoice.sha256.slice(0, 12)}…`, tone: 'success' }))
+      .catch(e => toast({ title: 'Could not generate the invoice', sub: friendly(e), tone: 'error' }));
+  };
 
   const obligations = useAsync<FeeRow[]>(async () => {
     const res = await apiFeeObligations();
     return (res.obligations ?? []).map(mapRealObligation);
   }, []);
 
-  const payments = useAsync<Payment[] | null>(async () => {
-    /* The server has no payments-list door yet — the tab shows an honest
-       empty state instead of pretending. */
-    return null;
+  const payments = useAsync<LivePayment[]>(async () => {
+    const res = await apiPayments();
+    return res.payments ?? [];
   }, []);
 
-  const refreshAll = () => { obligations.retry(); payments.retry(); };
+  const concessions = useAsync<LiveConcession[]>(async () => {
+    const res = await apiConcessions();
+    return res.concessions ?? [];
+  }, []);
+
+  const installments = useAsync<LiveInstallment[]>(async () => {
+    const res = await apiInstallments();
+    return res.installments ?? [];
+  }, []);
+
+  const delivery = useAsync<LiveFeeMessage[]>(async () => {
+    const res = await apiFeeDelivery();
+    return res.messages ?? [];
+  }, []);
+
+  const refreshAll = () => { obligations.retry(); payments.retry(); concessions.retry(); installments.retry(); delivery.retry(); };
+
+  const createConcession = async () => {
+    const cents = Math.round(Number(conForm.amountRupees.replace(/,/g, '')) * 100);
+    if (!/^[0-9a-f-]{36}$/i.test(conForm.studentId.trim()) || !Number.isFinite(cents) || cents <= 0) {
+      toast({ title: 'Check the form', sub: 'A student id (uuid) and a positive amount are required.', tone: 'error' });
+      return;
+    }
+    setConBusy('create');
+    try {
+      await apiCreateConcession({ studentId: conForm.studentId.trim(), kind: conForm.kind, amountCents: cents, reason: conForm.reason.trim() || undefined });
+      toast({ title: 'Concession requested', sub: 'A second authorized person must approve it before it applies.', tone: 'success' });
+      setConOpen(false);
+      setConForm({ studentId: '', kind: 'concession', amountRupees: '', reason: '' });
+      concessions.retry();
+    } catch (e) { toast({ title: 'Could not request the concession', sub: friendly(e), tone: 'error' }); }
+    finally { setConBusy(null); }
+  };
+
+  const decideConcession = async (c: LiveConcession, decision: 'approve' | 'reject') => {
+    setConBusy(c.id);
+    try {
+      await apiDecideConcession(c.id, decision);
+      toast({ title: decision === 'approve' ? 'Concession approved' : 'Concession rejected', sub: `${c.student_name ?? ''} · ${c.kind}`, tone: 'success' });
+      refreshAll();
+    } catch (e) { toast({ title: 'Could not record the decision', sub: friendly(e), tone: 'error' }); }
+    finally { setConBusy(null); }
+  };
 
   /* Void an obligation — owner authority, server-audited (L1-2.2 door). */
   const voidObligation = async () => {
@@ -250,6 +283,53 @@ export default function Fees() {
     } finally {
       setVoiding(false);
     }
+  };
+
+  /* Refund a confirmed payment — server enforces maker-checker above the threshold. */
+  const refundPayment = async () => {
+    if (!refundRow) return;
+    setRefunding(true);
+    try {
+      const r = await apiRefundPayment(refundRow.id, { reason: refundReason.trim() || undefined });
+      toast({ title: `Refunded ${fmtMoney(r.refundedCents / 100)}`, sub: `Payment is now ${r.payment.status}. The obligation and receipt were updated.`, tone: 'success' });
+      setRefundRow(null);
+      setRefundReason('');
+      refreshAll();
+    } catch (e) {
+      toast({ title: 'Could not refund the payment', sub: friendly(e), tone: 'error' });
+    } finally { setRefunding(false); }
+  };
+
+  /* FEE-SEC-5: clear a disputed reconciliation flag after a human review. Resolves the owned Action card. */
+  const markMatched = async (p: LivePayment) => {
+    setOpsBusy(`match:${p.id}`);
+    try {
+      await apiMarkMatched(p.id, 'reviewed at the desk — marked matched');
+      toast({ title: 'Payment marked matched', sub: 'The reconciliation discrepancy and its action card are cleared.', tone: 'success' });
+      refreshAll();
+    } catch (e) { toast({ title: 'Could not clear the discrepancy', sub: friendly(e), tone: 'error' }); }
+    finally { setOpsBusy(null); }
+  };
+
+  const runReconcile = async () => {
+    setOpsBusy('reconcile'); setOpsNote(null);
+    try {
+      const r = await apiReconcile();
+      setOpsNote(`Reconciliation: ${r.total} discrepancy(ies) — ghost ${r.discrepancies.ghostLocalConfirmed.length}, missing ${r.discrepancies.missingLocalConfirmation.length}, orphan ${r.discrepancies.orphanNoRailLog.length}, amount-mismatch ${r.discrepancies.amountMismatch.length}.`);
+      toast({ title: r.total === 0 ? 'Reconciliation clean' : `${r.total} discrepancy(ies) found`, sub: 'Findings are on the ledger and raise events for follow-up.', tone: r.total === 0 ? 'success' : 'info' });
+      refreshAll();
+    } catch (e) { toast({ title: 'Reconciliation failed', sub: friendly(e), tone: 'error' }); }
+    finally { setOpsBusy(null); }
+  };
+
+  const runDunning = async () => {
+    setOpsBusy('dunning'); setOpsNote(null);
+    try {
+      const r = await apiRunDunning();
+      setOpsNote(r.note ?? `Dunning: ${r.queued} queued (overdue ${r.overdueQueued}, before-due ${r.beforeDueQueued}), ${r.escalated} escalated, ${r.skippedNoContact} skipped without contact.`);
+      toast({ title: r.queued || r.escalated ? `Dunning: ${r.queued} queued` : 'Dunning: nothing to send', sub: r.note ?? `${r.escalated} escalation(s) raised.`, tone: 'success' });
+    } catch (e) { toast({ title: 'Dunning run failed', sub: friendly(e), tone: 'error' }); }
+    finally { setOpsBusy(null); }
   };
 
   const stats = useMemo(() => {
@@ -271,7 +351,9 @@ export default function Fees() {
     return statusFilter === 'all' ? items : items.filter(f => f.status === statusFilter);
   }, [obligations.data, statusFilter]);
 
-  const lastPayments = useMemo(() => (payments.data ?? []).slice().sort((a, b) => b.on.getTime() - a.on.getTime()).slice(0, 40), [payments.data]);
+  const lastPayments = useMemo(
+    () => (payments.data ?? []).slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 100),
+    [payments.data]);
 
   /* ---- by-class collection % — computed from the rows actually displayed ---- */
   const byClass = useMemo(() => {
@@ -320,6 +402,9 @@ export default function Fees() {
         tabs={[
           { id: 'ledger', label: 'Obligations ledger' },
           { id: 'payments', label: 'Payments', count: lastPayments.length },
+          { id: 'installments', label: 'Installments', count: (installments.data ?? []).length },
+          { id: 'delivery', label: 'Delivery', count: (delivery.data ?? []).length },
+          { id: 'concessions', label: 'Concessions', count: (concessions.data ?? []).filter(c => c.status === 'requested').length },
           { id: 'byclass', label: 'By class' },
           { id: 'plans', label: 'Fee plans' }]}
         active={tab}
@@ -363,7 +448,7 @@ export default function Fees() {
                 rowKey={f => f.id}
                 onRowClick={f => setSelectedId(f.id)}
                 empty={<Empty icon={<Icon.Money size={22} />} title="No fee records yet" sub="Obligations appear here once the school records them. Fee plans are created during setup."
-                    action={['owner', 'itadmin'].includes(session.roleId)
+                    action={canOperate
                       ? <Button variant="secondary" onClick={() => navigate('/rails')}>Open the Rails console</Button>
                       : undefined} />}
                 columns={[
@@ -392,8 +477,11 @@ export default function Fees() {
                           {canConfirm
                             ? <Button size="sm" variant="secondary" icon={<Icon.Money size={12} />} onClick={e => { e.stopPropagation(); setPayRow(f); }}>Record payment</Button>
                             : <Button size="sm" variant="secondary" disabled title={payDisabledReason} icon={<Icon.Money size={12} />} onClick={e => e.stopPropagation()}>Record payment</Button>}
-                          {session.roleId === 'owner' && (
+                          {canVoid && (
                             <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); setVoidRow(f); setVoidReason(''); }} title="Void this obligation (owner, audited)">Void</Button>
+                          )}
+                          {canConfirm && (
+                            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); openInvoice(f.id); }} title="Generate / open the invoice document">Invoice</Button>
                           )}
                         </span>
                       );
@@ -407,41 +495,172 @@ export default function Fees() {
 
       {/* ---- Payments ---- */}
       {tab === 'payments' && (
-        <Section role="tabpanel" id="fees-tab-panel-payments" aria-labelledby="fees-tab-tab-payments" title="Payments" sub="Individual payments, newest first.">
+        <Section role="tabpanel" id="fees-tab-panel-payments" aria-labelledby="fees-tab-tab-payments" title="Payments" sub="Every payment attempt, newest first — with its settlement provenance and refund action.">
           <Card>
             {payments.loading ? (
               <div className="grid grid-3"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
             ) : payments.error ? (
               <div className="card-body"><ErrorState title="Could not load payments" sub={friendly(payments.error)} onRetry={payments.retry} /></div>
-            ) : payments.data === null ? (
-              <Empty
-                icon={<Icon.CreditCard size={22} />}
-                title="Payment history is not wired to this screen yet"
-                sub="The school ledger above is live. The itemised payment list needs a server door that is on the backlog — receipts and settlement entries are audited as they happen."
-              />
             ) : (
               <DataTable
                 rows={lastPayments}
-                rowKey={(p: Payment) => p.id}
-                empty={<Empty icon={<Icon.CreditCard size={22} />} title="No payments recorded" />}
+                rowKey={(p: LivePayment) => p.id}
+                empty={<Empty icon={<Icon.CreditCard size={22} />} title="No payments recorded" sub="Payments appear here as soon as a parent or the desk starts one." />}
                 columns={[
-                  { key: 'on', label: 'Date', render: p => <span className="u-small">{fmtDate(p.on)}</span> },
+                  { key: 'date', label: 'Date', render: (p: LivePayment) => <span className="u-small">{fmtDate(p.created_at)}</span> },
+                  { key: 'student', label: 'Student', render: (p: LivePayment) => <div><div>{p.student_name ?? '—'}</div><div className="u-xs u-faint">{p.term} {p.obligation_label}</div></div> },
+                  { key: 'amount', label: 'Amount', align: 'right', render: (p: LivePayment) => <span className="tnum">{fmtMoney(p.amount_cents / 100)}</span> },
+                  { key: 'method', label: 'Method', render: (p: LivePayment) => <Badge tone="outline">{p.method}</Badge> },
+                  { key: 'ref', label: 'Reference', render: (p: LivePayment) => <span className="mono u-xs">{p.receipt_no ?? p.gateway_ref ?? '—'}</span> },
                   {
-                    key: 'student', label: 'Student', render: p => {
-                      const st = seed.findPerson(p.studentId);
-                      return st?.name ?? p.studentId;
+                    key: 'provenance', label: 'Provenance', render: (p: LivePayment) => p.status !== 'confirmed' && p.status !== 'refunded' ? <span className="u-faint">—</span>
+                      : p.settled_via === 'gateway' ? <Badge tone="success" dot>Gateway-verified</Badge>
+                        : <Badge tone="warning" dot>Manual</Badge>},
+                  {
+                    key: 'status', label: 'Status', align: 'right', render: (p: LivePayment) => {
+                      if (p.status === 'confirmed') return <Badge tone="success" dot>Confirmed</Badge>;
+                      if (p.status === 'initiated') return <Badge tone="warning" dot>In progress</Badge>;
+                      if (p.status === 'refunded') return <Badge tone="danger" dot>Refunded</Badge>;
+                      if (p.status === 'failed') return <Badge tone="danger" dot>Failed</Badge>;
+                      return <Badge tone="outline">{p.status}</Badge>;
                     }},
-                  { key: 'amount', label: 'Amount', align: 'right', render: p => <span className="tnum">{fmtMoney(p.amount)}</span> },
-                  { key: 'method', label: 'Method', render: p => <Badge tone="outline">{p.method}</Badge> },
-                  { key: 'reference', label: 'Reference', render: p => <span className="mono u-small">{p.reference}</span> },
                   {
-                    key: 'status', label: 'Status', align: 'right', render: p => p.status === 'success'
-                      ? <Badge tone="success" dot>Success</Badge>
-                      : p.status === 'pending'
-                        ? <Badge tone="warning" dot>Pending</Badge>
-                        : <Badge tone="danger" dot>Failed</Badge>}]}
+                    key: 'action', label: '', align: 'right' as const, render: (p: LivePayment) => (
+                      <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                        {p.reconciliation_status === 'disputed' && canOperate && (
+                          <Button size="sm" variant="secondary" loading={opsBusy === `match:${p.id}`} onClick={() => markMatched(p)}>Mark matched</Button>
+                        )}
+                        {p.status === 'confirmed' && canRefund && (
+                          <Button size="sm" variant="ghost" onClick={() => { setRefundRow(p); setRefundReason(''); }}>Refund</Button>
+                        )}
+                      </span>)},
+                ]}
               />
             )}
+          </Card>
+
+          {(canReconcile || canDun) && (
+            <Card pad style={{ marginTop: 12 }}>
+              <div className="u-between" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 580 }}>Money operations</div>
+                  <div className="u-small u-muted">Reconcile the ledger against the gateway, or run the dunning sweep.</div>
+                </div>
+                <div className="u-flex" style={{ gap: 8 }}>
+                  {canReconcile && <Button variant="secondary" icon={<Icon.Refresh size={13} />} loading={opsBusy === 'reconcile'} onClick={runReconcile}>Run reconciliation</Button>}
+                  {canDun && <Button variant="secondary" icon={<Icon.Send size={13} />} loading={opsBusy === 'dunning'} onClick={runDunning}>Run dunning</Button>}
+                </div>
+              </div>
+              {opsNote && <p className="u-small u-muted" style={{ marginTop: 10, marginBottom: 0 }}>{opsNote}</p>}
+            </Card>
+          )}
+
+          {canManagePolicy && policy && (
+            <Card pad style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 580 }}>Fee policy</div>
+              <div className="u-small u-muted" style={{ marginBottom: 10 }}>Per-tenant settings saved to the fee ledger; every save is audited.</div>
+              <div className="u-flex u-gap-2 u-wrap" style={{ alignItems: 'flex-end' }}>
+                <label className="u-small">Refund approval threshold (₹)
+                  <input className="input" type="number" min={0} value={policy.refund} onChange={e => setPolicy(p => p && ({ ...p, refund: e.target.value }))} style={{ width: 180 }} />
+                </label>
+                <label className="u-small">Receipt prefix
+                  <input className="input" value={policy.prefix} onChange={e => setPolicy(p => p && ({ ...p, prefix: e.target.value }))} style={{ width: 120 }} />
+                </label>
+                <Button variant="secondary" icon={<Icon.Send size={13} />} loading={policyBusy} onClick={runLateFees}>Run late fees</Button>
+                <Button variant="primary" loading={policyBusy} onClick={savePolicy}>Save policy</Button>
+              </div>
+            </Card>
+          )}
+        </Section>
+      )}
+
+      {/* ---- Installments (FEE-PRD-6b) ---- */}
+      {tab === 'installments' && (
+        <Section role="tabpanel" id="fees-tab-panel-installments" aria-labelledby="fees-tab-tab-installments"
+          title="Installments" sub="Scheduled parts of an obligation. A plan with an installment schedule creates these rows at generation, and settlement marks them paid in order.">
+          <Card>
+            {installments.loading ? (
+              <div className="u-col" style={{ gap: 10, padding: 'var(--s-5)' }}><Skeleton h={12} /><Skeleton h={12} /><Skeleton h={12} /></div>
+            ) : installments.error ? (
+              <div className="card-body"><ErrorState title="Could not load installments" sub={friendly(installments.error)} onRetry={installments.retry} /></div>
+            ) : (
+              <DataTable
+                rows={installments.data ?? []}
+                rowKey={(i: LiveInstallment) => i.id}
+                empty={<Empty icon={<Icon.Calendar size={22} />} title="No installment schedules" sub="Create a fee plan with an installment schedule, then generate its obligations." />}
+                columns={[
+                  { key: 'student', label: 'Student', render: (i: LiveInstallment) => <div><div>{i.student_name ?? '—'}</div><div className="u-xs u-faint">{i.grade ? `Grade ${i.grade}-${i.section ?? '—'}` : ''}</div></div> },
+                  { key: 'towards', label: 'Towards', render: (i: LiveInstallment) => <span className="u-small u-muted">{i.term} {i.obligation_label}</span> },
+                  { key: 'seq', label: '#', align: 'right', render: (i: LiveInstallment) => <span className="tnum">{i.seq}</span> },
+                  { key: 'due', label: 'Due', render: (i: LiveInstallment) => <span className="u-small">{i.due_on ? fmtDate(i.due_on) : '—'}</span> },
+                  { key: 'amount', label: 'Amount', align: 'right', render: (i: LiveInstallment) => <span className="tnum">{fmtMoney(i.amount_cents / 100)}</span> },
+                  { key: 'status', label: 'Status', align: 'right', render: (i: LiveInstallment) => i.status === 'paid' ? <Badge tone="success" dot>Paid</Badge> : i.status === 'overdue' ? <Badge tone="warning" dot>Overdue</Badge> : i.status === 'waived' ? <Badge tone="outline">Waived</Badge> : <Badge tone="info" dot>Pending</Badge> },
+                ]}
+              />
+            )}
+          </Card>
+        </Section>
+      )}
+
+      {/* ---- Delivery (FEE-DEL-6) ---- */}
+      {tab === 'delivery' && (
+        <Section role="tabpanel" id="fees-tab-panel-delivery" aria-labelledby="fees-tab-tab-delivery"
+          title="Fee message delivery" sub="Every fee reminder, receipt and escalation with its honest carrier state — 'delivered' is only claimed with a provider receipt.">
+          <Card>
+            {delivery.loading ? (
+              <div className="u-col" style={{ gap: 10, padding: 'var(--s-5)' }}><Skeleton h={12} /><Skeleton h={12} /><Skeleton h={12} /></div>
+            ) : delivery.error ? (
+              <div className="card-body"><ErrorState title="Could not load fee delivery" sub={friendly(delivery.error)} onRetry={delivery.retry} /></div>
+            ) : (
+              <DataTable
+                rows={delivery.data ?? []}
+                rowKey={(m: LiveFeeMessage) => m.id}
+                empty={<Empty icon={<Icon.Send size={22} />} title="No fee messages yet" sub="Reminders and receipts appear here once dunning runs or a payment is confirmed." />}
+                columns={[
+                  { key: 'date', label: 'Queued', render: (m: LiveFeeMessage) => <span className="u-small">{fmtDate(m.created_at)}</span> },
+                  { key: 'template', label: 'Message', render: (m: LiveFeeMessage) => <Badge tone="outline">{m.template}</Badge> },
+                  { key: 'channel', label: 'Channel', render: (m: LiveFeeMessage) => <span className="u-small">{m.channel}</span> },
+                  { key: 'provider', label: 'Provider', render: (m: LiveFeeMessage) => <span className="u-small u-muted">{m.provider ?? '—'}</span> },
+                  { key: 'attempts', label: 'Tries', align: 'right', render: (m: LiveFeeMessage) => <span className="tnum">{m.attempts ?? 0}</span> },
+                  { key: 'status', label: 'Status', align: 'right', render: (m: LiveFeeMessage) => m.status === 'delivered' ? <Badge tone="success" dot>Delivered</Badge> : m.status === 'sent' ? <Badge tone="info" dot>Sent</Badge> : m.status === 'failed' ? <Badge tone="danger" dot>Failed</Badge> : <Badge tone="warning" dot>Queued</Badge> },
+                  { key: 'error', label: 'Last error', render: (m: LiveFeeMessage) => <span className="u-xs u-faint">{m.last_error ?? '—'}</span> },
+                ]}
+              />
+            )}
+          </Card>
+        </Section>
+      )}
+
+      {/* ---- Concessions ---- */}
+      {tab === 'concessions' && (
+        <Section role="tabpanel" id="fees-tab-panel-concessions" aria-labelledby="fees-tab-tab-concessions"
+          title="Concessions & waivers"
+          sub="Reductions on an obligation. A request must be approved by a second authorized person before it applies."
+          actions={canInitiate ? <Button variant="primary" icon={<Icon.Plus size={14} />} onClick={() => setConOpen(true)}>Request concession</Button> : undefined}
+        >
+          <Card>
+            {concessions.loading ? <div style={{ padding: 'var(--s-5)' }}><Skeleton h={12} /></div>
+              : concessions.error ? <div className="card-body"><ErrorState title="Could not load concessions" sub={friendly(concessions.error)} onRetry={concessions.retry} /></div>
+                : (
+                  <DataTable
+                    rows={concessions.data ?? []}
+                    rowKey={(c: LiveConcession) => c.id}
+                    empty={<Empty icon={<Icon.Scale size={22} />} title="No concessions" sub="Request one to reduce a student's fee with an audit trail." />}
+                    columns={[
+                      { key: 'student', label: 'Student', render: (c: LiveConcession) => <div><div>{c.student_name ?? '—'}</div><div className="u-xs u-faint">{c.grade ? `Grade ${c.grade}-${c.section ?? '—'}` : ''}</div></div> },
+                      { key: 'kind', label: 'Kind', render: (c: LiveConcession) => <Badge tone="outline">{c.kind}</Badge> },
+                      { key: 'towards', label: 'Towards', render: (c: LiveConcession) => <span className="u-small u-muted">{c.obligation_label ?? 'Student-level'}</span> },
+                      { key: 'amount', label: 'Amount', align: 'right', render: (c: LiveConcession) => <span className="tnum">{c.amount_cents != null ? fmtMoney(c.amount_cents / 100) : c.percent != null ? `${c.percent}%` : '—'}</span> },
+                      { key: 'status', label: 'Status', align: 'right', render: (c: LiveConcession) => c.status === 'approved' || c.status === 'active' ? <Badge tone="success" dot>{c.status}</Badge> : c.status === 'rejected' ? <Badge tone="danger" dot>Rejected</Badge> : <Badge tone="warning" dot>Requested</Badge> },
+                      { key: 'action', label: '', align: 'right' as const, render: (c: LiveConcession) => c.status === 'requested' && canConfirm
+                        ? <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                            <Button size="sm" variant="secondary" loading={conBusy === c.id} onClick={() => decideConcession(c, 'approve')}>Approve</Button>
+                            <Button size="sm" variant="ghost" loading={conBusy === c.id} onClick={() => decideConcession(c, 'reject')}>Reject</Button>
+                          </span>
+                        : null },
+                    ]}
+                  />
+                )}
           </Card>
         </Section>
       )}
@@ -540,6 +759,67 @@ export default function Fees() {
         <div className="field">
           <label htmlFor="void-reason">Reason (recommended)</label>
           <input id="void-reason" className="input" value={voidReason} onChange={e => setVoidReason(e.target.value)} placeholder="e.g. duplicate entry · corrected after reconciliation" />
+        </div>
+      </Modal>
+
+      {/* refund confirm — maker-checker enforced server-side above the threshold */}
+      <Modal
+        open={!!refundRow}
+        onClose={() => !refunding && setRefundRow(null)}
+        title="Refund this payment?"
+        sub={refundRow ? `${refundRow.student_name ?? ''} · ${fmtMoney(refundRow.amount_cents / 100)} · ${refundRow.method} · receipt ${refundRow.receipt_no ?? '—'}` : undefined}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRefundRow(null)} disabled={refunding}>Cancel</Button>
+            <Button variant="danger" loading={refunding} onClick={refundPayment}>Refund</Button>
+          </>
+        }
+      >
+        <p className="u-small u-muted" style={{ marginTop: 0, lineHeight: 1.65 }}>
+          The full remaining amount is returned and the obligation is recomputed. A refund at or above the approval
+          threshold needs a checker — a maker cannot approve their own reversal. The receipt is voided, and the
+          reversal is audited with your name.
+        </p>
+        <div className="field">
+          <label htmlFor="refund-reason">Reason {refundRow && refundRow.amount_cents >= 500000 ? '(required above ₹5,000)' : '(recommended)'}</label>
+          <input id="refund-reason" className="input" value={refundReason} onChange={e => setRefundReason(e.target.value)} placeholder="e.g. duplicate payment · admission cancelled" />
+        </div>
+      </Modal>
+
+      {/* concession request */}
+      <Modal
+        open={conOpen}
+        onClose={() => !conBusy && setConOpen(false)}
+        title="Request a concession"
+        sub="A second authorized person approves it before the obligation is reduced."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConOpen(false)} disabled={!!conBusy}>Cancel</Button>
+            <Button variant="primary" loading={conBusy === 'create'} onClick={createConcession}>Request</Button>
+          </>
+        }
+      >
+        <div className="field">
+          <label htmlFor="con-student">Student id (uuid)</label>
+          <input id="con-student" className="input" value={conForm.studentId} onChange={e => setConForm(f => ({ ...f, studentId: e.target.value }))} placeholder="00000000-0000-0000-0000-000000000000" />
+        </div>
+        <div className="field">
+          <label htmlFor="con-kind">Kind</label>
+          <select id="con-kind" className="input" value={conForm.kind} onChange={e => setConForm(f => ({ ...f, kind: e.target.value }))}>
+            <option value="concession">Concession</option>
+            <option value="scholarship">Scholarship</option>
+            <option value="sibling">Sibling discount</option>
+            <option value="staff">Staff ward</option>
+            <option value="waiver">Waiver</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="con-amount">Amount (₹)</label>
+          <input id="con-amount" className="input" inputMode="decimal" value={conForm.amountRupees} onChange={e => setConForm(f => ({ ...f, amountRupees: e.target.value }))} placeholder="e.g. 5000" />
+        </div>
+        <div className="field">
+          <label htmlFor="con-reason">Reason</label>
+          <input id="con-reason" className="input" value={conForm.reason} onChange={e => setConForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. sibling of a current student" />
         </div>
       </Modal>
     </div>

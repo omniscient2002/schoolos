@@ -14,7 +14,7 @@ export default {
   kernel: '>=1.0.0 <2.0.0',
   class: 'C',
   trust: 'T1',
-  description: 'One-tap concerns with append-only status events and coordinator routing (counselor/principal designees), the anonymous student safety box (reporter identity never stored for anonymous reports; serious severity raises the per-instance kernel page safety.page.<boxId> to the principal; designated-authority reads only — never teachers; weekly pattern summary counts classes/categories, never people), deterministic doubt routing over timetable data (no AI) with FAQ promotion, intervention plans with an append-only lifecycle, and PTM slots/bookings with strictly teacher-private notes (RLS-pinned to schoolos.user_id). Comms templates: concern.routed.v1, ptm.invite.v1.',
+  description: 'One-tap concerns with append-only status events and coordinator routing (counselor/principal designees), the anonymous student safety box (reporter identity never stored for anonymous reports; serious severity raises the per-instance kernel page safety.page.<boxId> to the principal; designated-authority reads only — never teachers; weekly pattern summary counts classes/categories, never people), deterministic doubt routing over timetable data (no AI) with FAQ promotion, intervention plans with an append-only lifecycle, and PTM slots/bookings with strictly teacher-private notes (RLS-pinned to schoolos.user_id). Events: concern.routed.v1; comms template: ptm.invite.v1.',
   permissions: ['students.read', 'users.read', 'events.emit', 'audit.request', 'actions.raise', 'comms.send'],
   events: {
     subscribe: [],

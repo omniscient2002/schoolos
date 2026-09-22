@@ -18,7 +18,13 @@ export default {
   trust: 'T1',
   description: 'The parent assistant: morning/evening/week brief per child (attendance today, homework due in the next 24h when the homework lane is connected, pending consents, exams announced in the last 7 days, open requests, weekly attendance share and published reports), a keyword ask that answers ONLY from the family\'s own records with sources, labelled template drafts (question to teacher, leave note) that the parent edits before sending, and plain-language explains built from real numbers. Deterministic-only: no LLM is contacted anywhere; unknown topics get an honest no and point to the class teacher; every ask/draft call writes a parent.copilot_call budget row (P-copilot, 100 per calendar month). Guardian scoping via family.child_link; cross-guardian access refused; teachers refused on every door.',
   permissions: ['students.read', 'events.emit', 'audit.request'],
-  events: { subscribe: [], publish: [] },
+  events: {
+    subscribe: [],
+    publish: [
+      { type: 'parent.brief.v1', schema: 'v1' },
+      { type: 'parent.copilot.v1', schema: 'v1' },
+    ],
+  },
   eventSubscriptions: [],
   slots: ['settings', 'reports'],
   routes: [],

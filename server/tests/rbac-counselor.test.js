@@ -49,10 +49,13 @@ before(async () => {
 after(async () => { await app?.close(); });
 
 describe('RBAC-2 · the counsellor role exists', () => {
-  test('the server publishes 13 roles and issues `counselor` through the people console', async () => {
+  test('the server publishes the role planes and issues `counselor` through the people console', async () => {
     const { ROLES } = await import('../src/auth.js');
-    assert.equal(ROLES.length, 13, `docs publish 13 roles; the code must agree: ${ROLES.join(', ')}`);
+    // 13 original planes + librarian (library v2) + the finance split finance_head/finance_clerk (fees 109).
+    assert.equal(ROLES.length, 16, `13 role planes + librarian + finance_head + finance_clerk: ${ROLES.join(', ')}`);
     assert.ok(ROLES.includes('counselor'), 'counselor is one of them');
+    assert.ok(ROLES.includes('librarian'), 'and librarian is one of them');
+    assert.ok(ROLES.includes('finance_head') && ROLES.includes('finance_clerk'), 'and the finance split is present');
 
     const created = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token), payload: {
       name: 'Anita Rao', email: COUNSELOR, role: 'counselor', password: 'schoolos-counsellor-1' } });

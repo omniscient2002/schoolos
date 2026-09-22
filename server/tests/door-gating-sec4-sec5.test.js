@@ -98,10 +98,20 @@ describe('SEC-4: a family can report, but cannot forge staff-case fields', () =>
 });
 
 describe('SEC-5: the whole-school fee ledger is staff-only', () => {
-  test('a STUDENT is refused the full ledger (the actual leak)', async () => {
+  test('a STUDENT is scoped to their own dues, never the whole school (FEE-PRD-9)', async () => {
+    // The leak that mattered was a student receiving EVERY family's dues. A student is now structurally
+    // scoped through app.student_accounts: with no link the view is honestly empty; with one it is only
+    // their own student_id. The assertion is scoping, not a blanket 403.
     const s = await loginAs(app, 'student@meridian.edu');
     const r = await app.inject({ method: 'GET', url: '/fees/obligations', headers: H(s.token) });
-    assert.equal(r.statusCode, 403, `a student must not receive every family's dues: ${r.body}`);
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.json().scoped, 'self');
+    const own = r.json().obligations;
+    assert.ok(own.every((o) => o.student_id === own[0]?.student_id), 'every row belongs to one student — no whole-school fan-out');
+    const finance = await loginAs(app, 'finance@meridian.edu');
+    const all = await app.inject({ method: 'GET', url: '/fees/obligations?status=open', headers: H(finance.token) });
+    assert.ok(own.length < (all.json().obligations?.length ?? 0) || own.length === 0,
+      'a student sees strictly less than the school ledger');
   });
 
   test('a TEACHER is also refused — financial data about children is not their mandate', async () => {

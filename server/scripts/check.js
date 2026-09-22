@@ -60,5 +60,21 @@ await dbStep('rls baseline: catalog + revocation tables', async (client) => {
   if (!rev.rows[0]) throw new Error('auth.revoked_token missing — run migrations');
 });
 
+await step('fees read-plane OpenAPI builds (FEE-API-6)', async () => {
+  const { FEES_OPENAPI } = await import('../src/fees/openapi.js');
+  if (FEES_OPENAPI.openapi !== '3.1.0') throw new Error('openapi version must be 3.1.0');
+  const required = ['/fees/obligations', '/payments', '/fees/receipts', '/fee-plans', '/fees/concessions'];
+  const missing = required.filter((p) => !FEES_OPENAPI.paths?.[p]);
+  if (missing.length) throw new Error(`read-plane paths missing: ${missing.join(', ')}`);
+  for (const s of ['Obligation', 'Payment', 'Receipt', 'FeePlan', 'Concession']) {
+    if (!FEES_OPENAPI.components?.schemas?.[s]) throw new Error(`schema ${s} missing`);
+  }
+  // Every path must carry a GET operation (read plane) with responses.
+  for (const [p, ops] of Object.entries(FEES_OPENAPI.paths)) {
+    if (!ops.get) throw new Error(`${p} has no GET operation`);
+    if (!ops.get.responses?.['200']) throw new Error(`${p} GET has no 200 response`);
+  }
+});
+
 console.log(failed ? '✖ check: FAILED' : '✔ check: all green');
 process.exit(failed);

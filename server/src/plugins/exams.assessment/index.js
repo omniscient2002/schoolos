@@ -206,8 +206,8 @@ export function register(app, kernel) {
         [req.user.tenant_id, `exams.publish.${e.id}`])).rows[0];
       if (open) return reply.code(409).send({ error: 'A publication approval is already waiting', actionId: open.id });
       const act = await c.query(
-        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-         VALUES ($1,'exams.publish.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Assessment publication',false,'exam.published.v1',$5::jsonb) RETURNING id`,
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+         VALUES ($1,'exams.publish.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Assessment publication',false,'exam.published.v1',$5::jsonb,'exams.assessment') RETURNING id`,
         [req.user.tenant_id, `Publish exam: ${e.name} (class ${e.class_grade})`,
           `Assemble deterministic report cards and freeze marks. Weightage: ${JSON.stringify(e.weightage)}.`,
           'Publication is approval-required before any guardian-visible surface; marks freeze read-only at publish.',
@@ -243,8 +243,11 @@ export function register(app, kernel) {
         [e.id, req.user.tenant_id])).rows;
       const total = Object.values(e.weightage ?? {}).reduce((a, b) => a + Number(b || 0), 0);
       if (Math.round(total) !== 100) return bad(reply, `Marks must add up to 100% — these add up to ${total}%`, 409);
-      const policy = readBoardPolicy((await sysq(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      const pluginPolicy = readBoardPolicy((await sysq(`SELECT settings->'board_policy' AS bp FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
         [req.user.tenant_id, ID])).rows[0]?.bp);
+      // F5: the PER-EXAM board policy (`POST /exams/:id/board-policy`, stored on the exam row) now takes
+      // precedence over the plugin-level default; both feed the same deterministic assembly.
+      const policy = (e.board_policy ? readBoardPolicy(e.board_policy) : null) ?? pluginPolicy;
       const reports = assembleReports(e, marks, scale, policy);
       const digest = createHash('sha256').update(canonical({ examId: e.id, weightage: e.weightage, reports: reports.map((r) => r.digest) })).digest('hex');
       for (const r of reports) {

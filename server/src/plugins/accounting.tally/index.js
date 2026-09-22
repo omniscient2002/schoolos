@@ -1,4 +1,5 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { meterPlugin } from '../../plugin-usage.js';
 // accounting.tally — Tally reconciliation rails (Class B, read-only on money).
 // Day-book + voucher export from the kernel fee ledger (app.payments, status
 // 'confirmed'). The plugin READS money and exports — it NEVER posts: every door
@@ -119,6 +120,7 @@ export function register(app, kernel) {
         { type: 'accounting', label: `Tally voucher export — ${vouchers.length} vouchers (${contentHash})`, severity: 'info', ref: exportRef },
         'tally.export.completed', { exportRef, window: { from, to }, voucherCount: vouchers.length, contentHash },
         { emittedBy: `plugin:${ID}`, schemaVersion: 1 });
+      await meterPlugin(c, req.user.tenant_id, ID, 'vouchers_exported', vouchers.length);
       reply.header('content-type', 'application/xml; charset=utf-8');
       reply.header('content-disposition', `attachment; filename="${exportRef}.xml"`);
       return xml;

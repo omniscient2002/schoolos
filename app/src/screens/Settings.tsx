@@ -21,9 +21,11 @@ const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
    purpose. Reference only — the server is the authority on what a role may reach. */
 const ROLE_LABELS: Record<string, string> = {
   owner: 'Owner', principal: 'Principal', teacher: 'Teacher', coordinator: 'Coordinator',
-  counselor: 'Counsellor (wellbeing)', finance: 'Accounts (Finance)', admissions: 'Admissions desk',
+  counselor: 'Counsellor (wellbeing)', finance: 'Accounts (Finance)',
+  finance_head: 'Finance head (approver)', finance_clerk: 'Finance clerk (maker)',
+  admissions: 'Admissions desk',
   transport: 'Transport in-charge', itadmin: 'IT admin', facilities: 'Facilities',
-  technician: 'Technician', parent: 'Parent', student: 'Student',
+  technician: 'Technician', parent: 'Parent', student: 'Student', librarian: 'Librarian',
 };
 const ROLE_PURPOSE: Record<string, string> = {
   owner: 'Runs the school and its modules; full configuration.',
@@ -31,6 +33,8 @@ const ROLE_PURPOSE: Record<string, string> = {
   coordinator: 'Timetable, substitutions and workload fairness.',
   counselor: 'The wellbeing queue and safeguarding notes only.',
   finance: 'Fee plans, collection and reconciliation.',
+  finance_head: 'Approves refunds and concessions; runs reconciliation and dunning.',
+  finance_clerk: 'Collects payments and proposes refunds; cannot approve them.',
   admissions: 'Enquiries, follow-ups and the admissions funnel.',
   transport: 'Routes, fleet and transport incidents.',
   itadmin: 'Accounts, roles, modules and platform settings.',
@@ -83,7 +87,7 @@ export default function Settings() {
       ]} />
 
       {tab === 'school' && (
-        <Section title="School profile" sub="Applies across all campuses. Campus-specific details live in Operations.">
+        <Section title="School profile" sub="Applies to the whole school.">
           <div className="grid grid-2">
             <Card head="Identity" actions={canManage ? <Button size="sm" variant="ghost" icon={<Icon.Edit size={13} />} onClick={() => toast({ title: 'Not connected', sub: 'Editing the school profile requires server support — no request was logged.', tone: 'info' })}>Edit</Button> : <Badge tone="outline">Read-only for your role</Badge>}>
               <div style={{ padding: 'var(--s-5)' }}>
@@ -132,28 +136,11 @@ export default function Settings() {
                 </div>
               </div>
             </Card>
-            <Card head="Campuses">
-              <div style={{ padding: 'var(--s-3) var(--s-5) var(--s-4)' }}>
-                {seed.campuses.map(c => (
-                  <div key={c.id} className="u-flex" style={{ gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 4, background: c.hue, marginTop: 5 }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 590 }}>{c.name}</div>
-                      <div className="u-small u-muted">{c.students} students · capacity {c.capacity} · {Math.round((c.students / c.capacity) * 100)}% utilisation</div>
-                    </div>
-                    <Badge tone="success" dot>Active</Badge>
-                  </div>
-                ))}
-              </div>
-              <div style={{ padding: '0 var(--s-5) var(--s-4)' }}>
-                <Button size="sm" variant="ghost" icon={<Icon.Plus size={13} />} disabled={!canManage} onClick={() => toast({ title: 'Not connected', sub: 'Campus creation requires server support — no draft was created.', tone: 'info' })}>Add campus</Button>
-              </div>
-            </Card>
             <Card head="Academic structure">
               <div style={{ padding: 'var(--s-5)' }}>
                 <KeyValue items={[
                   { k: 'Grades', v: '1 – 10' },
-                  { k: 'Sections', v: `${seed.sections.length} across 3 campuses` },
+                  { k: 'Sections', v: `${seed.sections.length}` },
                   { k: 'Periods / day', v: '6 · 08:00 – 13:20' },
                   { k: 'Working days', v: 'Mon – Sat (Sundays off)' },
                   { k: 'Attendance policy', v: 'First-period mark · leniency for delayed transport' },
@@ -245,6 +232,8 @@ export default function Settings() {
             </Card>
             <Card head="Templates">
               <div style={{ padding: 'var(--s-5)' }} className="u-col u-gap-2">
+                {/* FE-7: the "uses / mo" figures are illustrative — there is no template-usage door. The
+                    per-row label says so; no measured-looking count is presented as the school's record. */}
                 {[
                   { name: 'Absence notification', lang: 'EN + HI', uses: 142, policy: 'Attendance §1.1 · AUTO' },
                   { name: 'Transport delay', lang: 'EN + HI', uses: 9, policy: 'Transport §3.1 · AUTO' },
@@ -258,7 +247,7 @@ export default function Settings() {
                       <Badge tone="outline">{t.lang}</Badge>
                     </div>
                     <div className="u-flex" style={{ gap: 10, alignItems: 'center' }}>
-                      <span className="u-xs u-faint u-hide-mobile">{t.policy} · {t.uses} sends / mo</span>
+                      <span className="u-xs u-faint u-hide-mobile">{t.policy} · sample ~{t.uses} sends / mo</span>
                       <Button size="sm" variant="ghost" onClick={() => toast({ title: `${t.name} — preview`, sub: 'Template opens with live placeholders resolved for your class', tone: 'info' })}>Preview</Button>
                     </div>
                   </div>

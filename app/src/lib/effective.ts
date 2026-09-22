@@ -39,7 +39,15 @@ export function canSurface(eff: EffectiveAccess | null | undefined, path: string
       return re.test(path);
     })
     .sort((a, b) => b.length - a.length)[0];
-  return match == null ? false : caps[match] === true;
+  if (match != null) return caps[match] === true;
+  /* A NESTED route inherits its section's surface: the desk's pages (`/library/desk/issue`, `/library/desk/catalog`,
+     …) are all the librarian's desk, and the server names the section (`/library/desk`). Without this, every
+     sub-page of a sectioned workspace failed closed and the tabs rendered "Not available for your role". The
+     longest non-param prefix wins, so `/library/desk/...` is decided by `/library/desk`, not `/library`. */
+  const prefix = Object.keys(caps)
+    .filter(p => !p.includes(':') && path.startsWith(p + '/'))
+    .sort((a, b) => b.length - a.length)[0];
+  return prefix == null ? false : caps[prefix] === true;
 }
 
 /** The classes this caller owns (a teacher's form-classes); empty for every other role. */

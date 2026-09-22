@@ -80,6 +80,29 @@ function csrfToken(): string | null {
   return null;
 }
 
+/* OPP-SEC-1: step-up re-auth. A critical door (plugin disable, role grant, DSR erasure) answers 403
+ * `stepUpRequired`; we ask for the password once, exchange it for a 5-minute token, and retry the
+ * original request with `x-step-up-token`. The token is cached in memory for its window. */
+let stepUpToken: string | null = null;
+let stepUpExpiresAt = 0;
+async function obtainStepUpToken(): Promise<string | null> {
+  if (stepUpToken && Date.now() < stepUpExpiresAt) return stepUpToken;
+  if (typeof window === 'undefined') return null;
+  const password = window.prompt('Confirm your password to continue — this is a high-risk action.');
+  if (!password) return null;
+  const res = await fetch(`${BASE}/me/step-up`, {
+    method: 'POST',
+    ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ password }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) return null;
+  stepUpToken = (body as { stepUpToken?: string }).stepUpToken ?? null;
+  stepUpExpiresAt = Date.now() + Math.max(0, ((body as { expiresIn?: number }).expiresIn ?? 300) - 10) * 1000;
+  return stepUpToken;
+}
+
 async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const method = (opts.method ?? 'GET').toUpperCase();
   const csrf = csrfToken();
@@ -103,6 +126,15 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
     setToken(null);
     redirectToLoginWithReturn();
     throw new Error('session expired');
+  }
+  if (res.status === 403 && (body as { stepUpRequired?: boolean }).stepUpRequired) {
+    const existing = (opts.headers as Record<string, string> | undefined)?.['x-step-up-token'];
+    if (!existing) {
+      const stepToken = await obtainStepUpToken();
+      if (stepToken) {
+        return call<T>(path, { ...opts, headers: { ...(opts.headers ?? {}), 'x-step-up-token': stepToken } });
+      }
+    }
   }
   if (!res.ok) {
     const message = (body as { error?: string }).error ?? `HTTP ${res.status}`;
@@ -132,8 +164,9 @@ export const apiRequestOtp = (phone: string) =>
 export const apiVerifyOtp = (phone: string, code: string) =>
   call<{ token: string; user: ApiUser }>('/auth/otp/verify', { method: 'POST', body: JSON.stringify({ phone, code }) });
 
-export const apiGoogleDemo = (email: string) =>
-  call<{ token: string; user: ApiUser }>('/auth/google/demo', { method: 'POST', body: JSON.stringify({ email }) });
+/* I5: `apiGoogleDemo`, `DEMO_ACCOUNTS` and `DEMO_PASSWORD` were dead exports with no consumers —
+   removed. The demo SSO door still exists server-side (gated by AUTH_DEV_SSO) but no shipped screen
+   calls it (the Google tab is disabled and says so). */
 
 export const apiLogoutAudit = () => call<{ ok: boolean }>('/auth/logout', { method: 'POST' });
 
@@ -162,6 +195,12 @@ export const apiGet = <T,>(path: string) => call<T>(path);
    source, one 401 return-to-login path for the whole app. */
 export const apiPost = <T,>(path: string, body?: unknown) =>
   call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+/* Generic PUT/DELETE escape hatches (library v2 services) — same brain, one token source. */
+export const apiPut = <T,>(path: string, body?: unknown) =>
+  call<T>(path, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) });
+export const apiDelete = <T,>(path: string) => call<T>(path, { method: 'DELETE' });
+export const apiPatch = <T,>(path: string, body?: unknown) =>
+  call<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) });
 
 /* ---- read APIs (shape-compatible with the mock service layer) ---- */
 export const apiStudents = (params: Record<string, string> = {}) =>
@@ -180,12 +219,16 @@ export const apiFeeObligations = (status?: string) =>
    feePlan. Idempotency is server-side: (tenant, student, term, label) unique —
    regeneration skips what exists; no client idempotency-key header exists. */
 export interface FeePlanTerm { term: string; label: string; amount_cents: number; due_on?: string }
+export interface FeeInstallmentPart { amount_cents?: number; due_on?: string }
 export interface FeePlan {
   id: string;
   name: string;
   category?: string;
   grades: string[];
   terms: FeePlanTerm[];
+  fee_head_id?: string | null;
+  fee_head_name?: string | null;
+  installments?: FeeInstallmentPart[] | null;
   academic_year_id?: string | null;
   created_at?: string;
   created_by?: string;
@@ -193,12 +236,101 @@ export interface FeePlan {
   last_generated_at?: string | null;
 }
 export const apiFeePlans = () => call<{ feePlans: FeePlan[] }>('/fee-plans');
-export const apiCreateFeePlan = (body: { name: string; category?: string; grades: string[]; terms: FeePlanTerm[] }) =>
+export const apiCreateFeePlan = (body: { name: string; category?: string; grades: string[]; terms: FeePlanTerm[]; feeHeadId?: string; installments?: FeeInstallmentPart[] }) =>
   call<{ feePlan: FeePlan }>('/fee-plans', { method: 'POST', body: JSON.stringify(body) });
 export const apiGenerateFeePlan = (id: string) =>
-  call<{ inserted: number; skipped: number; students: number }>(`/fee-plans/${id}/generate`, { method: 'POST', body: '{}' });
+  call<{ inserted: number; skipped: number; students: number; installmentsCreated?: number; autoConcessions?: number; billingRunId?: string }>(`/fee-plans/${id}/generate`, { method: 'POST', body: '{}' });
+
+/* ---- fee heads (FEE-DAT-1b) ---- */
+export interface FeeHead {
+  id: string; name: string; category: string | null; is_refundable: boolean;
+  tax_code: string | null; gl_ledger_name: string | null; active: boolean; obligations?: number;
+}
+export const apiFeeHeads = () => call<{ feeHeads: FeeHead[] }>('/fees/heads');
+export const apiCreateFeeHead = (body: { name: string; category?: string; isRefundable?: boolean; taxCode?: string; glLedgerName?: string }) =>
+  call<{ feeHead: FeeHead }>('/fees/heads', { method: 'POST', body: JSON.stringify(body) });
+
+/* ---- installments (FEE-DAT-5b) ---- */
+export interface LiveInstallment {
+  id: string; obligation_id: string; seq: number; due_on: string | null; amount_cents: number;
+  status: string; payment_id: string | null; obligation_label?: string | null; term?: string | null;
+  student_id?: string; student_name?: string; grade?: string; section?: string;
+}
+export const apiInstallments = (q: { obligationId?: string; studentId?: string; status?: string } = {}) => {
+  const p = new URLSearchParams();
+  if (q.obligationId) p.set('obligationId', q.obligationId);
+  if (q.studentId) p.set('studentId', q.studentId);
+  if (q.status) p.set('status', q.status);
+  const qs = p.toString();
+  return call<{ installments: LiveInstallment[] }>(`/fees/installments${qs ? `?${qs}` : ''}`);
+};
+
+/* ---- student own-dues (FEE-PRD-9) ---- */
+export interface StudentFeeView {
+  linked: boolean; studentId: string | null;
+  obligations: Array<Record<string, unknown>>;
+  payments: Array<Record<string, unknown>>;
+  receipts: Array<Record<string, unknown>>;
+  outstandingCents: number;
+}
+export const apiStudentFees = () => call<StudentFeeView>('/student/fees');
+
+/* ---- fee-message delivery view (FEE-DEL-6) ---- */
+export interface LiveFeeMessage {
+  id: string; template: string; channel: string; status: string; provider: string | null;
+  provider_ref: string | null; attempts: number; last_error: string | null;
+  dedup_key: string | null; sent_at: string | null; delivered_at: string | null; created_at: string;
+}
+export const apiFeeDelivery = (status?: string) =>
+  call<{ messages: LiveFeeMessage[] }>(`/fees/delivery${status ? `?status=${encodeURIComponent(status)}` : ''}`);
 export const apiVoidObligation = (id: string, reason: string) =>
   call<{ obligation: Record<string, unknown> }>(`/fees/obligations/${id}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
+
+/* ---- payments list, refund, reconciliation, dunning, receipts (FEE-API-*) ---- */
+export interface LivePayment {
+  id: string; student_id: string; obligation_id: string | null; amount_cents: number; refunded_cents: number;
+  method: string; status: string; gateway_ref: string | null; receipt_no: string | null;
+  confirmed_at: string | null; created_at: string; settled_via: string | null; reconciliation_status: string;
+  student_name?: string; grade?: string; section?: string; obligation_label?: string | null; term?: string | null;
+}
+export const apiPayments = (q: { status?: string; method?: string; studentId?: string } = {}) => {
+  const p = new URLSearchParams();
+  if (q.status) p.set('status', q.status);
+  if (q.method) p.set('method', q.method);
+  if (q.studentId) p.set('studentId', q.studentId);
+  const qs = p.toString();
+  return call<{ payments: LivePayment[]; scoped: string }>(`/payments${qs ? `?${qs}` : ''}`);
+};
+export const apiRefundPayment = (id: string, body: { reason?: string; refundCents?: number } = {}) =>
+  call<{ payment: { id: string; status: string; refunded_cents: number }; gateway: Record<string, unknown>; refundedCents: number }>(
+    `/payments/${id}/refund`, { method: 'POST', body: JSON.stringify(body) });
+export interface ReconDiscrepancy { id: string; [k: string]: unknown }
+export const apiMarkMatched = (id: string, note?: string) =>
+  call<{ payment: { id: string; reconciliation_status: string } }>(
+    `/payments/${id}/mark-matched`, { method: 'POST', body: JSON.stringify({ note }) });
+export const apiReconcile = () =>
+  call<{ checked: Record<string, number>; discrepancies: { ghostLocalConfirmed: ReconDiscrepancy[]; missingLocalConfirmation: ReconDiscrepancy[]; orphanNoRailLog: ReconDiscrepancy[]; amountMismatch: ReconDiscrepancy[] }; total: number }>(
+    '/payments/reconcile', { method: 'POST', body: '{}' });
+export const apiRunDunning = () =>
+  call<{ queued: number; overdueQueued: number; beforeDueQueued: number; escalated: number; skippedNoContact: number; note?: string }>(
+    '/fees/dunning/run', { method: 'POST', body: '{}' });
+export interface LiveReceipt {
+  id: string; receipt_no: string; payment_id: string; student_id: string; amount_cents: number;
+  issued_at: string; voided_at: string | null; student_name?: string; obligation_label?: string | null; term?: string | null;
+}
+export const apiReceipts = () => call<{ receipts: LiveReceipt[] }>('/fees/receipts');
+export const apiReceipt = (id: string) => call<{ receipt: LiveReceipt & Record<string, unknown> }>(`/fees/receipts/${id}`);
+export interface LiveConcession {
+  id: string; student_id: string; obligation_id: string | null; kind: string; percent: number | null;
+  amount_cents: number | null; reason: string | null; status: string; created_at: string;
+  student_name?: string; grade?: string; section?: string; obligation_label?: string | null; term?: string | null;
+}
+export const apiCreateConcession = (body: { studentId: string; obligationId?: string; kind: string; percent?: number; amountCents?: number; reason?: string }) =>
+  call<{ concession: Record<string, unknown> }>('/fees/concessions', { method: 'POST', body: JSON.stringify(body) });
+export const apiConcessions = (status?: string) =>
+  call<{ concessions: LiveConcession[] }>(`/fees/concessions${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+export const apiDecideConcession = (id: string, decision: 'approve' | 'reject') =>
+  call<{ concession: LiveConcession }>(`/fees/concessions/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision }) });
 
 /* ---- Wave-5 kernel doors (L1-5.1 ranking service, L1-5.2 collection summary) ---- */
 export interface AdmissionFollowup {
@@ -258,6 +390,8 @@ export const apiBiAttendance = (days: number, grade?: string) =>
   call<Record<string, unknown>>(`/plugins/ops.bi/attendance?days=${days}${grade ? `&grade=${encodeURIComponent(grade)}` : ''}`);
 export const apiBiAging = () => call<Record<string, unknown>>('/plugins/ops.bi/fees/aging');
 export const apiBiFunnel = () => call<Record<string, unknown>>('/plugins/ops.bi/funnel');
+export const apiBiHomework = (grade?: string) =>
+  call<Record<string, unknown>>(`/plugins/ops.bi/homework${grade ? `?grade=${encodeURIComponent(grade)}` : ''}`);
 
 /* ---- transport routes door (L4-5.1 door-back) ---- */
 export interface LiveRouteRow { id: string; code: string; name: string; vehicle: string | null; capacity: number | null; riders: number | null }
@@ -283,22 +417,46 @@ export const apiRoutes = () => call<{ routes: Record<string, unknown>[] }>('/tra
 export const apiTransportEvent = (routeCode: string, delayMins: number, note?: string) =>
   call<{ event: Record<string, unknown>; riders: number; action: Record<string, unknown> | null }>('/transport/events', { method: 'POST', body: JSON.stringify({ routeCode, kind: 'gps_delay', delayMins, note }) });
 export const apiMemory = () => call<{ entries: Record<string, unknown>[] }>('/memory');
+/* ---- OPP: owner/principal oversight product (docs/OWNER-PRINCIPAL-PERFECT-100.md) ---- */
+export const apiBoardPack = () => call<Record<string, unknown>>('/reports/board-pack');
+export const apiBoardPackSnapshot = (kind = 'board_pack', period?: string) =>
+  call<{ snapshot: Record<string, unknown> | null; content_hash: string; already?: boolean }>('/reports/board-pack/snapshot', { method: 'POST', body: JSON.stringify({ kind, period }) });
+export const apiPrincipalBrief = () => call<{ brief: Record<string, unknown> | null; brief_date: string | null }>('/brief/principal');
+export const apiAnnouncements = () => call<{ announcements: Record<string, unknown>[] }>('/announcements');
+export const apiCreateAnnouncement = (body: Record<string, unknown>) =>
+  call<{ announcement: Record<string, unknown>; recipients: number }>('/announcements', { method: 'POST', body: JSON.stringify(body) });
+export const apiApproveAnnouncement = (id: string) =>
+  call<{ announcement: Record<string, unknown> }>(`/announcements/${id}/approve`, { method: 'POST', body: '{}' });
+export const apiCompliance = () => call<{ items: Record<string, unknown>[] }>('/compliance');
+export const apiCreateCompliance = (body: Record<string, unknown>) =>
+  call<{ item: Record<string, unknown> | null; already?: boolean }>('/compliance', { method: 'POST', body: JSON.stringify(body) });
+export const apiFileCompliance = (id: string, evidenceRef?: string) =>
+  call<{ item: Record<string, unknown> }>(`/compliance/${id}/file`, { method: 'POST', body: JSON.stringify({ evidenceRef }) });
+export const apiCertificates = () => call<{ certificates: Record<string, unknown>[] }>('/certificates');
+export const apiRequestCertificate = (body: Record<string, unknown>) =>
+  call<{ certificate: Record<string, unknown> }>('/certificates', { method: 'POST', body: JSON.stringify(body) });
+export const apiSignCertificate = (id: string) =>
+  call<{ certificate: Record<string, unknown> }>(`/certificates/${id}/sign`, { method: 'POST', body: '{}' });
+export const apiCertificateArtifact = (id: string) =>
+  call<{ artifact: { id: string; filename: string; mime: string; sha256: string } }>(`/certificates/${encodeURIComponent(id)}/artifact`);
+export const apiAnnouncementReceipts = (id: string) =>
+  call<{ receipts: { status: string; n: number }[]; total: number }>(`/announcements/${encodeURIComponent(id)}/receipts`);
+export const apiSnapshots = () => call<{ snapshots: Record<string, unknown>[] }>('/reports/snapshots');
+export const apiSnapshot = (id: string) =>
+  call<{ snapshot: Record<string, unknown>; hash_ok: boolean; recomputed_hash: string }>(`/reports/snapshots/${encodeURIComponent(id)}`);
+export const apiOwnerHome = () => call<Record<string, unknown>>('/owner/home');
+export const apiPrincipalHome = () => call<Record<string, unknown>>('/principal/home');
+export const apiFeeSettings = () => call<{ settings: Record<string, unknown> }>('/fees/settings');
+export const apiSaveFeeSettings = (body: Record<string, unknown>) =>
+  call<{ settings: Record<string, unknown> }>('/fees/settings', { method: 'PUT', body: JSON.stringify(body) });
+export const apiRunLateFees = () =>
+  call<{ updated: number }>('/fees/late-fees/run', { method: 'POST', body: '{}' });
+export const apiObligationInvoice = (id: string) =>
+  call<{ invoice: { fileId: string; filename: string; sha256: string }; cached: boolean }>(`/fees/obligations/${encodeURIComponent(id)}/invoice`);
+export const apiVoidBillingRun = (id: string, reason?: string) =>
+  call<{ ok: boolean; voidedObligations: number }>(`/billing-runs/${encodeURIComponent(id)}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
 export const apiMigrationSources = () => call<{ sources: Record<string, unknown>[] }>('/migration/sources');
 export const apiMigrationActivate = () => call<{ trustReceipt: Record<string, unknown> }>('/migration/activate', { method: 'POST', body: '{}' });
-
-/* ---- canonical demo credentials (seeded tenant) ---- */
-export const DEMO_ACCOUNTS = [
-  { email: 'principal@meridian.edu', label: 'Principal — Dr. Meera Krishnan' },
-  { email: 'teacher@meridian.edu', label: 'Teacher — Priya Iyer' },
-  { email: 'finance@meridian.edu', label: 'Finance — Ms. Rao' },
-  { email: 'transport@meridian.edu', label: 'Transport desk' },
-  { email: 'facilities@meridian.edu', label: 'Facilities desk' },
-  { email: 'technician@meridian.edu', label: 'Technician — Arif Shaikh' },
-  { email: 'parent@meridian.edu', label: 'Parent — Kavita Sharma' },
-  { email: 'owner@meridian.edu', label: 'Owner' },
-  { email: 'itadmin@meridian.edu', label: 'IT Admin — Sam Dsouza' },
-];
-export const DEMO_PASSWORD = 'schoolos-demo';
 
 /* ---- plugins (server truth for enable/disable) ---- */
 export const apiEnablePlugin = (id: string, version: string, pclass: string, permissions: string[]) =>
@@ -309,15 +467,38 @@ export const apiDisablePlugin = (id: string) =>
 /* ---- admissions.funnel (wave-2 #1; server truth for PII masking + lattice) ---- */
 export interface ApiFunnelLead {
   id: string; studentName: string; classApplied: string; source: string; stage: string;
-  admissionYear: string | null; createdAt: string; updatedAt: string;
+  admissionYear: string | null; documentCount?: number; createdAt: string; updatedAt: string;
   guardianName: string | null; guardianPhone: string | null; /* masked shape for non-office roles */
 }
-export const apiFunnelLeads = () => call<{ masked: boolean; leads: ApiFunnelLead[] }>(`/plugins/admissions.funnel/leads`);
+export interface ApiFunnelActivity {
+  id: string; kind: string; scheduled_at: string | null; completed_at: string | null;
+  outcome: string | null; notes: string | null; actor: string; created_at: string;
+}
+export const apiFunnelLeads = (stage?: string) =>
+  call<{ masked: boolean; capped: boolean; leads: ApiFunnelLead[] }>(`/plugins/admissions.funnel/leads${stage ? `?stage=${encodeURIComponent(stage)}` : ''}`);
+export const apiCreateFunnelLead = (body: { studentName: string; guardianName?: string; guardianPhone: string; classApplied: string; source?: string; admissionYear?: string }) =>
+  call<{ ok: boolean; leadId: string; stage: string; admissionYear: string }>(`/plugins/admissions.funnel/leads`, { method: 'POST', body: JSON.stringify(body) });
+export const apiEditFunnelLead = (id: string, patch: { studentName?: string; guardianName?: string; guardianPhone?: string; classApplied?: string; source?: string }) =>
+  call<{ ok: boolean; lead: Record<string, unknown> }>(`/plugins/admissions.funnel/leads/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
 export const apiFunnelMoveStage = (id: string, to: string) =>
   call<{ ok: boolean; from: string; to: string; actionId: string | null }>(`/plugins/admissions.funnel/leads/${id}/stage`, { method: 'POST', body: JSON.stringify({ to }) });
 export const apiFunnelHistory = (id: string) =>
   call<{ history: { from_stage: string | null; to_stage: string; actor: string; at: string }[] }>(`/plugins/admissions.funnel/leads/${id}/history`);
 export const apiFunnelSummary = () => call<{ byStage: Record<string, number>; total: number }>(`/plugins/admissions.funnel/summary`);
+export const apiFunnelActivities = (id: string) =>
+  call<{ activities: ApiFunnelActivity[] }>(`/plugins/admissions.funnel/leads/${id}/activities`);
+export const apiLogFunnelActivity = (id: string, body: { kind: string; scheduledAt?: string; outcome?: string; notes?: string; completed?: boolean }) =>
+  call<{ ok: boolean; activity: ApiFunnelActivity }>(`/plugins/admissions.funnel/leads/${id}/activities`, { method: 'POST', body: JSON.stringify(body) });
+export const apiAttachFunnelDocument = (id: string, body: { fileId: string; label?: string }) =>
+  call<{ ok: boolean; documents: { fileId: string; label: string }[] }>(`/plugins/admissions.funnel/leads/${id}/documents`, { method: 'POST', body: JSON.stringify(body) });
+export const apiFunnelOfferLetter = (id: string) =>
+  call<{ leadId: string; studentName: string; classApplied: string; admissionYear: string; letter: string }>(`/plugins/admissions.funnel/leads/${id}/offer-letter`);
+export interface FunnelHealth {
+  healthy: boolean; probe: string; openLeads: number; stuckOver7d: number;
+  stages: Record<string, { count: number; oldestDays: number | null }>;
+  orphans: { strandedEnrolled: { id: string; student_name: string; stage: string }[]; danglingActions: { id: string; code: string; lead_id: string }[] };
+}
+export const apiFunnelHealth = () => call<FunnelHealth>(`/plugins/admissions.funnel/health`);
 
 /* ---- ops.visitors (wave-2 #2; gate pass — DESK-gated doors, fail-closed release) ---- */
 export interface ApiVisitorVisit {

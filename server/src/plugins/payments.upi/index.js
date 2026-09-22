@@ -4,6 +4,7 @@
 const ID = 'payments.upi';
 export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { meterPlugin } from '../../plugin-usage.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 
 export function register(app, kernel) {
@@ -20,14 +21,36 @@ export function register(app, kernel) {
     }
   });
 
-  app.post(`/plugins/${ID}/links`, { preHandler: [require('finance','owner','principal'), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/links`, { preHandler: [require('finance','finance_head','finance_clerk','owner','principal','parent'), lifecycleGate] }, async (req, reply) => {
     const { obligationId } = req.body ?? {};
     if (!obligationId) return reply.code(400).send({ error: 'Which fee is being paid? (obligationId is missing)' });
+    const idem = String(req.headers['idempotency-key'] ?? '').trim();
+    if (idem && (idem.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(idem))) return reply.code(400).send({ error: 'Idempotency-Key must be 1-128 letters, numbers, dots, underscores, colons or hyphens' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const o = (await c.query(`SELECT o.*, s.name AS student_name FROM app.fee_obligations o
         JOIN app.students s ON s.id = o.student_id WHERE o.id=$1 AND o.status <> 'void'`, [obligationId])).rows[0];
       if (!o) return reply.code(404).send({ error: 'We couldn\'t find that fee record' });
-      const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
+      // A2: a parent may pay only their OWN child's fee. Missing link table ⇒ fail closed.
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE tenant_id=$1 AND user_id=$2 AND student_id=$3`,
+          [req.user.tenant_id, req.user.id, o.student_id]).catch(() => ({ rows: [] }))).rows[0];
+        if (!own) return reply.code(403).send({ error: 'This fee is not for your child' });
+      }
+      // A4: the school VPA comes from the configured settings, never a fabricated `schoolos@<name>`.
+      // Unset ⇒ fail honestly rather than mint an intent to a VPA that is not the school's.
+      const upiSettings = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID])).rows[0]?.settings ?? {};
+      const vpa = String(upiSettings.default_vpa ?? '').trim();
+      if (!vpa) return reply.code(503).send({ error: 'UPI is not configured — set the school VPA (default_vpa) in plugin settings' });
+      // FEE-SEC-8: a caller replay key makes link creation idempotent, matching POST /fees/payments.
+      if (idem) {
+        const prior = (await c.query(`SELECT id FROM app.payments WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`, [req.user.tenant_id, idem])).rows[0];
+        if (prior) {
+          const priorDue = (await c.query(`SELECT amount_cents FROM app.payments WHERE id=$1`, [prior.id])).rows[0].amount_cents;
+          const link = `upi://pay?pa=${encodeURIComponent(vpa)}&tr=${prior.id}&am=${Number(priorDue) / 100}&cu=INR&tn=${encodeURIComponent(`Fees — ${o.label}`)}`;
+          return { paymentId: prior.id, linkId: 'existing', link, amountCents: String(priorDue), studentName: o.student_name, obligationLabel: o.label, already: true };
+        }
+      }
+      const due = BigInt(o.net_amount_cents ?? o.amount_cents) - BigInt(o.paid_cents);
       if (due <= 0n) return reply.code(409).send({ error: 'This fee is already settled' });
       // existing open attempt → 409 with its paymentId (recoverable), never a raw 23505 → 500
       const open = (await c.query(
@@ -36,11 +59,11 @@ export function register(app, kernel) {
       if (open) return reply.code(409).send({ error: 'A payment is already in progress for this fee', paymentId: open.id });
       const linkId = `plink_${randomUUID().slice(0, 12)}`;
       const r = await c.query(
-        `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status)
-         VALUES ($1,$2,$3,$4,'upi','initiated') RETURNING id`,
-        [req.user.tenant_id, o.student_id, obligationId, due.toString()]);
+        `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status, idempotency_key)
+         VALUES ($1,$2,$3,$4,'upi','initiated',$5) RETURNING id`,
+        [req.user.tenant_id, o.student_id, obligationId, due.toString(), idem || null]);
       const paymentId = r.rows[0].id;
-      const link = `upi://pay?pa=schoolos@${o.student_name.slice(0, 12).replace(/\s+/g, '')}&tr=${paymentId}&am=${Number(due) / 100}&cu=INR&tn=${encodeURIComponent(`Fees — ${o.label}`)}`;
+      const link = `upi://pay?pa=${encodeURIComponent(vpa)}&tr=${paymentId}&am=${Number(due) / 100}&cu=INR&tn=${encodeURIComponent(`Fees — ${o.label}`)}`;
       await emitEvent(c, req.user.tenant_id,
         { type: 'fees', label: `payment.link.created — ${o.student_name} · ₹${Number(due) / 100} (${o.label})`, ref: paymentId },
         'payment.link.created', { paymentId, obligationId, amountCents: due.toString(), linkId });
@@ -48,6 +71,7 @@ export function register(app, kernel) {
         actor: req.user.name, action: 'Payment link created', recordType: 'Payment', recordRef: paymentId,
         reason: `obligation ${o.label}`, policyRef: 'Fees §4.2', risk: 'medium',
         outcome: `link ${linkId} · ₹${Number(due) / 100} · settlement remains kernel-only` });
+      await meterPlugin(c, req.user.tenant_id, ID, 'links_created');
       return { paymentId, linkId, link, amountCents: due.toString(), studentName: o.student_name, obligationLabel: o.label };
     });
   });
@@ -129,6 +153,7 @@ export function register(app, kernel) {
         actor: 'gateway webhook', action: `UPI webhook ${type}`, recordType: 'Payment', recordRef: paymentId,
         reason: `event ${eventId}`, policyRef: 'Fees §4.2', risk: 'low',
         outcome: `fact recorded · HMAC verified over raw bytes · settlement untouched (kernel-only)` });
+      await meterPlugin(c, p.tenant_id, ID, 'webhooks_received');
       return { ok: true, outcome: 'fact recorded; settlement is kernel-only (staff confirm)' };
     });
   });

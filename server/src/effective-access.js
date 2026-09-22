@@ -26,10 +26,19 @@ export const SURFACE_DOOR = Object.freeze({
   '/people': 'GET /students',
   '/people/:id': 'GET /students/:id',
   '/attendance': 'GET /attendance',
+  /* the class/section structure editor: owner, principal and IT admin (the write door is the gate) */
+  '/classes': 'PUT /school/classes',
+  /* M3: the timetable write surface — renderable when the grid read door is reachable (the writes re-gate) */
+  '/timetable': 'GET /plugins/ops.timetable/grid',
   '/admissions': 'GET /admissions/followups',
   '/learning': 'GET /plugins/exams.assessment/exams',
   '/fees': 'GET /fees/obligations',
   '/fees/plans': 'GET /fee-plans',
+  /* FEE-RBAC-7: the surfaces added by the fees-to-100 work name their real doors, so canSurface answers
+     correctly instead of failing every one of them closed. */
+  '/fees/heads': 'GET /fees/heads',
+  '/fees/installments': 'GET /fees/installments',
+  '/student/fees': 'GET /student/fees',
   '/audit': 'GET /audit',
   '/cases': 'GET /cases',
   '/cases/:id': 'GET /cases',
@@ -50,43 +59,77 @@ export const SURFACE_DOOR = Object.freeze({
   '/maintenance/intelligence': 'GET /work-orders',
   '/maintenance/map': 'GET /work-orders',
   '/maintenance/report': 'GET /work-orders',
-  '/documents': 'GET /plugins/files.store',
-  '/operations/hr': 'GET /plugins/hr.leave/leave',
-  '/calendar': 'GET /academic-years',
+  /* OPP-FE-1: `/documents`, `/operations/hr`, `/calendar`, `/constitution`, `/data-health`,
+     `/ai-governance`, `/ai-usage`, `/automation` and `/reception` render SAMPLE data and have no live
+     data door of their own. They used to be authorized by an unrelated live door (a files door, an
+     academic-years door, an audit door) — a surface claiming a door it does not use. They are now
+     authorized by the explicit SAMPLE_SURFACES role list below. */
   '/incidents': 'GET /cases',
-  '/constitution': 'GET /academic-years',
   '/memory': 'GET /memory',
-  '/data-health': 'GET /audit',
-  '/ai-governance': 'GET /ai/calls',
   /* FEX-5: these admin surfaces used to proxy to `GET /plugins`, which is a `me` door — so every
      authenticated caller (including a parent) was told they could render the group, settings, rails
      and plugin-settings screens. Each now names a door whose real gate is owner/itadmin, so the
      server's own answer hides them exactly where the doors would refuse. */
-  '/group': 'GET /metrics',
+  /* OPP-FE-3: the group console's audience is Owner/Principal/Finance (its own copy), so it maps to a
+     cross-domain management read those roles hold rather than the owner/itadmin-only metrics door. */
+  '/group': 'GET /reports/fees/summary',
   '/transport': 'GET /transport/routes',
   '/migration': 'GET /migration/sources',
   '/roles': 'GET /roles',
   '/plugins': 'GET /plugins',
   '/plugins/settings': 'POST /plugins/:id/settings',
   '/plugins/settings/:id': 'POST /plugins/:id/settings',
-  '/settings': 'GET /metrics',
+  /* OPP-FE-2: Settings is a personal + school-profile surface every signed-in user is linked to; its
+     tabs gate their own content (roles owner/itadmin, DSR DPO tier). Mapping it to the owner/itadmin-only
+     `/metrics` door told parents/students/principal "Not available for your role" while the account menu
+     linked them to it. `GET /me` is the honest floor: authenticated, role-scoped inside. */
+  '/settings': 'GET /me',
   '/account/password': 'GET /me',
   '/rails': 'GET /metrics',
   '/it': 'GET /metrics',
-  '/library': 'GET /plugins/library/books',
+  /* library v2 (docs/LIBRARY-DESIGN.md): the borrower catalog is open to every non-parent role; the desk
+     is librarian-only and the ops dashboard is librarian/owner/principal — each names its real door so the
+     server's own answer hides the management surfaces exactly where the doors refuse. */
+  '/library': 'GET /plugins/library/catalog',
+  '/library/desk': 'GET /plugins/library/desk/overview',
+  '/library/insights': 'GET /plugins/library/ops/overview',
+  '/library/setup': 'POST /plugins/:id/settings',
   '/visitors': 'GET /plugins/ops.visitors/visitors',
-  '/reception': 'GET /plugins/ops.visitors/visitors',
   '/insights': 'GET /reports/fees/summary',
+  '/reports': 'GET /plugins/ops.bi/fees/aging',
   '/people-admin': 'GET /plugins/people.admin/users',
+  /* OPP: owner/principal oversight product surfaces each name their real door. */
+  '/board-pack': 'GET /reports/board-pack',
+  '/principal-brief': 'GET /brief/principal',
+  '/owner/home': 'GET /owner/home',
+  '/principal/home': 'GET /principal/home',
+  '/compliance': 'GET /compliance',
+  '/certificates': 'GET /certificates',
+  '/announcements': 'GET /announcements',
+  '/delegations': 'GET /delegations',
+  '/appraisals': 'GET /staff/appraisals', /* OPP-PRD-11 */
   /* These staff surfaces previously existed only in the client's hardcoded
      palette. Their backing doors are now part of the same answer. */
   '/action-center': 'GET /actions',
-  '/automation': 'GET /workflow-rules',
-  '/ai-usage': 'GET /ai/calls',
-  '/teacher': 'GET /plugins/teacher.classroom/homework',
+  '/teacher': 'GET /teacher/home',
   '/teacher/homework': 'GET /plugins/teacher.classroom/homework',
   '/teacher/submissions': 'GET /plugins/teacher.classroom/submissions',
   '/teacher/leave': 'GET /teacher/leave/mine',
+  '/teacher/copilot': 'POST /copilot/ask',
+  '/teacher/support': 'GET /teacher/concerns',
+  '/teacher/concerns': 'GET /teacher/concerns',
+  '/counselor/concerns': 'GET /teacher/concerns', /* OPP-PRD-8 */
+  '/teacher/doubts': 'GET /teacher/support/doubts',
+  '/teacher/interventions': 'GET /interventions',
+  '/teacher/ptm': 'GET /ptm/slots',
+  '/teacher/safety': 'GET /safety/box',
+  '/teacher/lessons': 'GET /plugins/teacher.classroom/lessons',
+  '/teacher/duties': 'GET /duty/roster',
+  '/teacher/mastery': 'GET /mastery/class/:grade',
+  '/teacher/curriculum': 'GET /curriculum/tree',
+  '/teacher/progress-story': 'GET /progress/story/:studentId',
+  '/teacher/exam-marks': 'GET /plugins/exams.assessment/exams',
+  '/teacher/analytics': 'GET /analytics/class/:grade',
   '/print-queue': 'GET /student/print/queue',
   '/noticeboard': 'GET /student/noticeboard',
   '/wellbeing-queue': 'GET /student/wellbeing',
@@ -96,18 +139,42 @@ export const SURFACE_DOOR = Object.freeze({
   '/parent/requests': 'GET /parent/requests',
   '/parent/complaints': 'GET /parent/requests',
   '/parent/chat': 'GET /parent/brief',
+  '/parent/child/:id': 'GET /parent/home',
   '/parent/fees': 'GET /fees/obligations',
   '/parent/copilot': 'GET /parent/brief',
   '/student': 'GET /student/home',
   '/student/home2': 'GET /student/home',
   '/student/learning': 'GET /student/homework',
   '/student/portfolio': 'GET /student/results',
+  '/student/homework': 'GET /student/homework',
+  '/student/mistakes': 'GET /student/mistakes',
+  '/student/flashcards': 'GET /student/flashcards',
+  '/student/tasks': 'GET /student/tasks',
+  '/student/results': 'GET /student/results',
   '/coord/home': 'GET /coord/home',
   '/coord/substitutions': 'GET /coord/teacher-workload',
   '/coord/workload': 'GET /coord/teacher-workload',
   '/coord/escalations': 'GET /coord/escalations',
   '/coord/curriculum': 'GET /coord/curriculum-monitor',
   '/coord/approvals': 'GET /actions',
+});
+
+/**
+ * OPP-FE-1 · seed-only surfaces. Each renders SAMPLE data and has no live data door of its own, so it
+ * is authorized by an explicit role list rather than by a live door it does not use. These surfaces
+ * carry a `SampleNote` in the UI (the honesty gate enforces that); this map only decides who may
+ * render the labelled sample. A surface absent from both maps still fails closed.
+ */
+export const SAMPLE_SURFACES = Object.freeze({
+  '/documents': ['owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'admissions', 'transport', 'facilities', 'technician', 'finance', 'finance_head', 'finance_clerk'],
+  '/operations/hr': ['owner', 'principal', 'itadmin', 'coordinator', 'admissions', 'finance', 'finance_head', 'finance_clerk'],
+  '/calendar': ['owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'admissions', 'finance', 'finance_head', 'finance_clerk'],
+  '/constitution': ['owner', 'principal', 'itadmin'],
+  '/data-health': ['owner', 'principal', 'itadmin'],
+  '/ai-governance': ['owner', 'principal', 'itadmin'],
+  '/ai-usage': ['owner', 'principal', 'itadmin'],
+  '/automation': ['owner', 'principal', 'itadmin'],
+  '/reception': ['owner', 'principal', 'itadmin', 'coordinator', 'facilities', 'transport'],
 });
 
 /**
@@ -137,9 +204,15 @@ export function reachableDoors({ role, mask, doorRoles, registeredRoutes, maskDe
  *  true/false; the client fails closed on a surface the server did not name, so the map must cover
  *  every renderable route (FEX-5). Surfaces deliberately absent are structural/public ones that never
  *  reach this gate. */
-export function capabilitiesFor(doors, surfaces = SURFACE_DOOR) {
+export function capabilitiesFor(doors, surfaces = SURFACE_DOOR, role = null) {
   const set = new Set(doors);
   const out = {};
   for (const [surface, door] of Object.entries(surfaces)) out[surface] = set.has(door);
+  // OPP-FE-1: seed-only surfaces are authorized by an explicit role list, not a live door.
+  if (role) {
+    for (const [surface, roles] of Object.entries(SAMPLE_SURFACES)) {
+      if (out[surface] === undefined) out[surface] = roles.includes(role);
+    }
+  }
   return out;
 }

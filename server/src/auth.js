@@ -69,7 +69,12 @@ export function dummyVerify(password) {
    `teacher.support`'s box readers) described a role the server refused to issue. The docs already publish
    13 roles; the code now agrees with them (RBAC-8). Adding it here is what makes those lists satisfiable and
    lets a custom role use `counselor` as its base. */
-export const ROLES = ['owner','principal','coordinator','counselor','finance','admissions','transport','facilities','technician','teacher','itadmin','parent','student'];
+/* FEES-109: `finance` is split into `finance_clerk` (maker) and `finance_head` (checker). `finance` is
+   retained as a legacy broad role so existing tenants and gate lists keep working; the split is the
+   go-forward taxonomy and is what makes separation of duties expressible. */
+/* RBAC-1: the canonical list lives in role-catalog.js; re-exported here so every existing importer of
+   `auth.js` ROLES keeps working from the single source. */
+export { BUILTIN_ROLES as ROLES } from './role-catalog.js';
 
 /** Surface a role's data scope: what tenant rows it may read. */
 export function roleScope(role) {

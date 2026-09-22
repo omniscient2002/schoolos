@@ -8,8 +8,9 @@
      GET  /plugins/teacher.classroom/homework?mine=1[&class=]
    20-second law: class/subject prefilled from context, four
    fields visible, one Enter to publish. Student submissions
-   auto-publish to the class + the guardian digest at 17:00 —
-   the teacher never chases.
+   auto-publish to the class + a guardian digest after school on
+   school days (homework-reminders worker, 16:30 IST) — the
+   teacher never chases.
    ============================================================ */
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -23,11 +24,17 @@ import { useStore } from '../../state/store';
 import {
   createHomework, listHomework, listSubmissions,
   type NewHomework, type TeacherHomework, type TeacherSubmission,
-} from '../../services/teacherFixtures';
-import { AsyncGate, dueState, onEnter, TEACHER_STAFF_ROLES, useAsync, DeniedState } from './teacherKit';
+} from '../../services/teacherApi';
+import { AsyncGate, dueState, onEnter, useAsync, DeniedState, useTeacherAccess } from './teacherKit';
+import { useSession } from '../../App';
+import { ownedClasses } from '../../lib/effective';
+import { useTeacher } from '../../state/teacherContext';
 
-/* class list used to prefill the assign form — the live door owns the real roster */
-const MY_CLASSES = ['8-B', '8-A', '7-A'];
+/* FE-3: the form prefills from the SERVER's own scope (GET /me/effective →
+   scope.classes, the form-classes this teacher owns) and from the class context
+   the command center publishes. The demo list is only a fallback when the server
+   has not spoken (no effective payload), never a fabricated live roster. */
+const FALLBACK_CLASSES = ['8-B', '8-A', '7-A'];
 const subjectFor = (_cls: string) => 'Maths';
 
 /* one-tap due presets — plain words, no calendar gymnastics */
@@ -65,9 +72,14 @@ export default function Homework() {
   const toast = useToast();
   const navigate = useNavigate();
   const { session, actorName } = useStore();
+  const live = useSession();
+  const allowed = useTeacherAccess('/teacher/homework');
+  const { classContext } = useTeacher();
+  const owned = useMemo(() => ownedClasses(live.effective).map(c => `${c.grade}-${c.section}`), [live.effective]);
+  const classes = owned.length ? owned : FALLBACK_CLASSES;
 
-  const [cls, setCls] = useState(MY_CLASSES[0]);
-  const [subject, setSubject] = useState(subjectFor(MY_CLASSES[0]));
+  const [cls, setCls] = useState(classContext?.classGrade ?? classes[0]);
+  const [subject, setSubject] = useState(classContext?.subject ?? subjectFor(classContext?.classGrade ?? classes[0]));
   const [title, setTitle] = useState('');
   const [detail, setDetail] = useState('');
   const [attachment, setAttachment] = useState('');
@@ -101,7 +113,7 @@ export default function Homework() {
       const r = await createHomework(body);
       toast({
         title: 'Homework published',
-        sub: `${r.homework.class_grade} · due ${fmtDate(due)}. Students were notified and the guardian digest goes out at 17:00 — nothing to chase.`,
+        sub: `${r.homework.class_grade} · due ${fmtDate(due)}. Students were notified and the guardian digest goes out after school on school days — nothing to chase.`,
         tone: 'success',
       });
       setTitle(''); setDetail(''); setAttachment(''); setDuePreset('tomorrow');
@@ -125,27 +137,27 @@ export default function Homework() {
     };
   }, [list.data]);
 
-  if (!TEACHER_STAFF_ROLES.includes(session.roleId)) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={session.roleId} />;
 
   return (
     <div>
       <PageHead
         title="Homework"
-        sub={`Assign in about 20 seconds — ${MY_CLASSES.join(', ')} prefilled for ${actorName.split(' ')[0]}. Submissions land in your inbox automatically.`}
+        sub={`Assign in about 20 seconds — ${classes.join(', ')} prefilled for ${actorName.split(' ')[0]}. Submissions land in your inbox automatically.`}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 18 }}>
         <Stat label="Open homework" value={String(totals.open)} sub={`${cls === 'all' ? 'All my classes' : cls}`} />
         <Stat label="Waiting for review" value={String(totals.waiting)} sub="Across the list below" />
         <Stat label="Not yet submitted" value={String(totals.missing)} sub="Auto-reminders are on" />
-        <Stat label="Guardian digest" value="17:00" sub="Sent automatically every day" />
+        <Stat label="Guardian digest" value="After school" sub="Sent on school days" />
       </div>
 
       <Section title="Assign homework" sub="Fill the title — everything else is already set. Enter publishes.">
         <Card pad>
           {/* class / subject — prefilled from context (P1 rule) */}
           <div className="u-flex u-wrap" style={{ gap: 8, marginBottom: 14 }}>
-            {['all', ...MY_CLASSES].map(c => (
+            {['all', ...classes].map(c => (
               <button
                 key={c}
                 className={`tab ${cls === c ? 'active' : ''}`}
@@ -216,7 +228,7 @@ export default function Homework() {
 
           <div className="u-between u-wrap" style={{ gap: 10 }}>
             <span className="u-small u-muted">
-              Publishing notifies students now and guardians at 17:00. You never send reminders yourself.
+              Publishing notifies students now and guardians after school on school days. You never send reminders yourself.
             </span>
             <Button variant="primary" icon={<Icon.Send size={14} />} loading={publishing} onClick={publish} disabled={!title.trim()}>
               Publish homework

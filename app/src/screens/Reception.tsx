@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { useStore } from '../state/store';
 import * as d from '../data/dataset';
-import { PageHead, Card, Stat, Badge, Button, Drawer, Empty, Avatar, useToast, KeyValue } from '../components/ui';
+import { PageHead, Card, Stat, Badge, Button, Drawer, Empty, Avatar, useToast, KeyValue, SampleNote } from '../components/ui';
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtTime, fmtDateTime } from '../lib/format';
@@ -88,7 +88,7 @@ export default function Reception() {
           : `The AI receptionist — answers from school records, never guesses · ${d.deskSettings.hours ?? 'desk hours not set yet'}`}
         actions={
           <div className="u-inline" style={{ gap: 8 }}>
-            <Badge tone="success" dot>Desk online</Badge>
+            <Badge tone="outline">Preview — not connected</Badge>
             {isDeskStaff && (
               <Button variant="secondary" icon={<Icon.Phone size={14} />} onClick={() => toast({
                 title: 'Simulated call ringing…', tone: 'info',
@@ -97,6 +97,8 @@ export default function Reception() {
           </div>
         }
       />
+
+      <SampleNote>Sample front-desk data — the call log, transcripts and desk analytics are illustrative in this build; no live reception or telephony door is connected.</SampleNote>
 
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
         <Stat label="Calls today" value={a.callsToday} sub={hasCalls ? `${a.missedCalls} missed · 0 hold time` : 'No calls on the desk log yet'} />

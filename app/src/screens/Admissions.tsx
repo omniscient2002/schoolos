@@ -1,9 +1,11 @@
 /* ============================================================
-   Admissions — the enrollment funnel as a kanban. Drag a card
-   between stages (or use the a11y "Move to" dropdown), watch
-   stage values accumulate in the headers, and read the AI
-   diagnosis of the visit-stage stall. All mutations go through
-   admissionsService and land in the audit trail.
+   Admissions — SAMPLE preview of the enrollment funnel, shown only while
+   the `admissions.funnel` plugin is switched off for the school (the live
+   server-backed board is FunnelBoard.tsx). It renders the SAME stage lattice
+   the server enforces (enquiry → form → interaction → offer → waitlisted →
+   enrolled, side exits rejected/withdrawn) so there is one vocabulary across
+   the product. Sample leads come from the demo dataset; nothing here writes
+   to a server, and no money or AI claim is made.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
@@ -11,11 +13,9 @@ import * as seed from '../data/dataset';
 import { admissionsService } from '../demo/seedServices';
 import {
   PageHead, Card, Stat, Badge, Avatar, Button, useToast,
-  Dropdown, Empty, ErrorState, SkeletonCard, SampleNote} from '../components/ui';
-import { AiTraceCard } from '../components/Ai';
+  Dropdown, Empty, ErrorState, SkeletonCard, SampleNote } from '../components/ui';
 import { SegmentedBar } from '../components/Chart';
 import { Icon } from '../components/Icon';
-import { fmtMoneyShort } from '../lib/format';
 import type { Lead, LeadStage } from '../types/domain';
 
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
@@ -33,28 +33,28 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   return { ...state, retry: () => setTick(t => t + 1) };
 }
 
-/* ---------- stage metadata ---------- */
-const STAGES: { id: LeadStage; label: string; color: string; closed?: boolean }[] = [
-  { id: 'inquiry', label: 'Inquiry', color: 'var(--info)' },
-  { id: 'contacted', label: 'Contacted', color: 'var(--chart-steel)' },
-  { id: 'visit', label: 'Visit', color: 'var(--accent)' },
-  { id: 'interview', label: 'Interview', color: 'var(--accent-text)' },
+/* ---------- the server lattice (mirrors _shared/admissions-access.js) ---------- */
+const STAGES: { id: LeadStage; label: string; color: string }[] = [
+  { id: 'enquiry', label: 'Enquiry', color: 'var(--info)' },
+  { id: 'form', label: 'Form', color: 'var(--chart-steel)' },
+  { id: 'interaction', label: 'Interaction', color: 'var(--accent)' },
   { id: 'offer', label: 'Offer', color: 'var(--ai)' },
-  { id: 'accepted', label: 'Accepted', color: 'var(--chart-teal)' },
-  { id: 'enrolled', label: 'Enrolled', color: 'var(--success)' }];
+  { id: 'waitlisted', label: 'Waitlisted', color: 'var(--warning)' },
+  { id: 'enrolled', label: 'Enrolled', color: 'var(--success)' },
+];
 const COLLAPSED: { id: LeadStage; label: string }[] = [
   { id: 'rejected', label: 'Rejected' },
-  { id: 'withdrawn', label: 'Withdrawn' }];
+  { id: 'withdrawn', label: 'Withdrawn' },
+];
 const ALL_STAGES = [...STAGES.map(s => s.id), ...COLLAPSED.map(s => s.id)];
 
-const STALL_TRACE = {
-  trigger: 'Weekly funnel review · a visit enquiry has waited more than 7 days',
-  policy: 'Read-only analysis · Admissions decisions stay with the Admissions Head (Constitution pol_14)',
-  dataUsed: ['lead records (90 days)', 'follow-up task log', 'communication log'],
-  reasoningRole: 'Investigator (read-only)',
-  action: 'None — analysis and draft follow-up tasks only',
-  approvalStatus: 'Not required (read-only)',
-  verification: 'Illustrative sample in this build — not recomputed from lead timestamps'};
+/* the demo dataset predates the India lattice — normalise old names so the
+   sample renders in the same columns as the live server board. */
+const LEGACY: Record<string, LeadStage> = {
+  inquiry: 'enquiry', contacted: 'form', visit: 'interaction', interview: 'interaction',
+  accepted: 'waitlisted', offer: 'offer', enrolled: 'enrolled', rejected: 'rejected', withdrawn: 'withdrawn',
+};
+const stageOf = (l: Lead): LeadStage => (ALL_STAGES.includes(l.stage) ? l.stage : LEGACY[l.stage] ?? 'enquiry');
 
 function daysInStage(l: Lead) {
   return Math.max(0, Math.round((Date.now() - l.lastTouch.getTime()) / 86400000));
@@ -72,6 +72,7 @@ function LeadCard({ lead, onMove, dragging, busy, onDragStart, onDragEnd }: {
   lead: Lead; onMove: (stage: LeadStage) => void; dragging: boolean; busy: boolean;
   onDragStart: () => void; onDragEnd: () => void;
 }) {
+  const stage = stageOf(lead);
   const days = daysInStage(lead);
   const stale = days > 7;
   return (
@@ -111,7 +112,7 @@ function LeadCard({ lead, onMove, dragging, busy, onDragStart, onDragEnd }: {
             {close => (
               <div className="u-col" style={{ padding: 4 }}>
                 <div role="none" className="dropdown-label">Move to</div>
-                {ALL_STAGES.filter(s => s !== lead.stage).map(s => (
+                {ALL_STAGES.filter(s => s !== stage).map(s => (
                   <button key={s} role="menuitem" className="dropdown-item" onClick={() => { close(); onMove(s); }}>
                     {STAGES.find(x => x.id === s)?.label ?? s}
                   </button>
@@ -137,7 +138,6 @@ function KanbanColumn({ stage, leads, collapsedOpen, onToggleCollapsed, onMove, 
   busyLeadId: string | null;
 }) {
   const [hover, setHover] = useState(false);
-  const value = leads.reduce((a, l) => a + l.value, 0);
   const hidden = collapsedOpen === false;
   return (
     <div
@@ -171,12 +171,12 @@ function KanbanColumn({ stage, leads, collapsedOpen, onToggleCollapsed, onMove, 
             <span style={{ fontWeight: 620, fontSize: 'var(--text-sm)' }}>{stage.label}</span>
           )}
         </span>
-        <span className="u-xs u-faint tnum">{leads.length} · {fmtMoneyShort(value)}</span>
+        <span className="u-xs u-faint tnum">{leads.length}</span>
       </div>
       <div className="scroll-thin" style={{ flex: 1, overflowY: 'auto', maxHeight: 560 }}>
         {leads.length === 0 ? (
           <div className="u-small u-faint" style={{ padding: '14px 6px', textAlign: 'center' }}>
-            {hidden ? 'Collapsed' : 'Drop leads here'}
+            {hidden ? 'Collapsed' : 'No sample leads'}
           </div>
         ) : hidden ? (
           <button
@@ -232,43 +232,36 @@ export default function Admissions() {
 
   const columns = useMemo(() => STAGES.map(stage => ({
     stage,
-    leads: filtered.filter(l => l.stage === stage.id)})), [filtered]);
+    leads: filtered.filter(l => stageOf(l) === stage.id)})), [filtered]);
 
   const collapsedColumns = useMemo(() => COLLAPSED.map(stage => ({
     stage: { ...stage, color: 'var(--text-3)' },
-    leads: filtered.filter(l => l.stage === stage.id)})), [filtered]);
+    leads: filtered.filter(l => stageOf(l) === stage.id)})), [filtered]);
 
   const stats = useMemo(() => {
     const weekAgo = Date.now() - 7 * 86400000;
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const newThisWeek = filtered.filter(l => l.createdOn.getTime() >= weekAgo).length;
-    const inVisitInterview = filtered.filter(l => l.stage === 'visit' || l.stage === 'interview').length;
-    const offersOut = filtered.filter(l => l.stage === 'offer' || l.stage === 'accepted').length;
-    const enrolledThisMonth = filtered.filter(l => l.stage === 'enrolled' && l.lastTouch.getTime() >= monthStart.getTime()).length;
-    const revenueEnrolled = filtered.filter(l => l.stage === 'enrolled').reduce((a, l) => a + l.value, 0);
-    return { newThisWeek, inVisitInterview, offersOut, enrolledThisMonth, revenueEnrolled };
+    const inInteraction = filtered.filter(l => stageOf(l) === 'interaction').length;
+    const offersOut = filtered.filter(l => stageOf(l) === 'offer' || stageOf(l) === 'waitlisted').length;
+    const enrolledThisMonth = filtered.filter(l => stageOf(l) === 'enrolled' && l.lastTouch.getTime() >= monthStart.getTime()).length;
+    return { newThisWeek, inInteraction, offersOut, enrolledThisMonth };
   }, [filtered]);
 
-  const stalledAtVisit = useMemo(
-    () => filtered.filter(l => l.stage === 'visit' && daysInStage(l) > 7),
-    [filtered],
-  );
-
   const funnelParts = useMemo(() => {
-    const enrolled = filtered.filter(l => l.stage === 'enrolled').length;
-    const accepted = filtered.filter(l => l.stage === 'accepted').length + enrolled;
-    const offers = filtered.filter(l => l.stage === 'offer').length + accepted;
-    const interview = filtered.filter(l => l.stage === 'interview').length + offers;
-    const visit = filtered.filter(l => l.stage === 'visit').length + interview;
-    const contacted = filtered.filter(l => l.stage === 'contacted').length + visit;
-    const inquiry = filtered.filter(l => l.stage === 'inquiry').length + contacted;
+    const at = (id: LeadStage) => filtered.filter(l => stageOf(l) === id).length;
+    const enrolled = at('enrolled');
+    const waitlisted = at('waitlisted') + enrolled;
+    const offers = at('offer') + waitlisted;
+    const interaction = at('interaction') + offers;
+    const form = at('form') + interaction;
+    const enquiry = at('enquiry') + form;
     return [
-      { value: inquiry, color: 'var(--info)', label: `Inquiry — ${inquiry}` },
-      { value: contacted, color: 'var(--chart-steel)', label: `Contacted — ${contacted}` },
-      { value: visit, color: 'var(--accent)', label: `Visit — ${visit}` },
-      { value: interview, color: 'var(--accent-text)', label: `Interview — ${interview}` },
+      { value: enquiry, color: 'var(--info)', label: `Enquiry — ${enquiry}` },
+      { value: form, color: 'var(--chart-steel)', label: `Form — ${form}` },
+      { value: interaction, color: 'var(--accent)', label: `Interaction — ${interaction}` },
       { value: offers, color: 'var(--ai)', label: `Offer — ${offers}` },
-      { value: accepted, color: 'var(--chart-teal)', label: `Accepted — ${accepted}` },
+      { value: waitlisted, color: 'var(--warning)', label: `Waitlisted — ${waitlisted}` },
       { value: enrolled, color: 'var(--success)', label: `Enrolled — ${enrolled}` }];
   }, [filtered]);
 
@@ -277,7 +270,7 @@ export default function Admissions() {
 
   const moveLead = async (leadId: string, stage: LeadStage) => {
     const lead = localLeads.find(l => l.id === leadId);
-    if (!lead || lead.stage === stage) return;
+    if (!lead || stageOf(lead) === stage) return;
     setMovingId(leadId);
     const label = STAGES.find(s => s.id === stage)?.label ?? stage;
     try {
@@ -288,11 +281,12 @@ export default function Admissions() {
         entry: {
           actor: actorName, actorRole: session.roleId, action: `Moved lead to ${label}`,
           recordType: 'Admission lead', recordRef: `${lead.name} (Grade ${lead.grade})`,
-          reason: 'Stage change from admissions funnel', policyRef: 'Approvals §1.2 · offers remain human-decided (pol_14)',
+          reason: 'Stage change from admissions funnel (sample)',
+          policyRef: 'Approvals §1.2 · offers remain human-decided (pol_14)',
           aiInvolved: false, risk: 'low', outcome: `Stage → ${stage}`}});
-      toast({ title: `${lead.name} → ${label}`, sub: 'Lead moved. Owner notified; audit entry recorded.', tone: 'success' });
+      toast({ title: `${lead.name} → ${label}`, sub: 'Sample lead moved. Enable the Admissions plugin for the live, server-enforced funnel.', tone: 'success' });
     } catch {
-      toast({ title: 'Could not move lead', sub: 'The service did not accept the change. Try again.', tone: 'error' });
+      toast({ title: 'Could not move lead', sub: 'The sample service did not accept the change. Try again.', tone: 'error' });
     } finally {
       setMovingId(null);
     }
@@ -300,34 +294,24 @@ export default function Admissions() {
 
   return (
     <div>
-      <SampleNote>Sample funnel data — lead counts, conversion and the stall analysis are illustrative in this build, not read from your admissions records.</SampleNote>
+      <SampleNote>Sample funnel data — this preview is illustrative. Turn on the Admissions plugin to capture real enquiries, schedule visits, and convert offers on the server-enforced lattice.</SampleNote>
       <PageHead
         title="Admissions"
-        sub="Drag a card between stages, or use the arrow menu on each card. Offers and rejections stay human-decided (pol_14)."
+        sub="Sample preview of the enrollment funnel. The live board (enquiry → form → interaction → offer → waitlisted → enrolled) is server-enforced; offers and rejections stay human-decided (pol_14)."
         actions={<Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={leads.retry}>Refresh</Button>}
       />
 
       {/* ---- Stats ---- */}
-      <div className="grid grid-5" style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>
-        <Stat label="New this week" value={stats.newThisWeek} sub="Inquiries logged in 7 days" />
-        <Stat label="In visit / interview" value={stats.inVisitInterview} sub="Families actively touring" />
-        <Stat label="Offers out" value={stats.offersOut} sub="Offer + accepted, awaiting join" />
+      <div className="grid grid-5" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>
+        <Stat label="New this week" value={stats.newThisWeek} sub="Enquiries logged in 7 days" />
+        <Stat label="In interaction" value={stats.inInteraction} sub="Visits and interviews in progress" />
+        <Stat label="Offers out" value={stats.offersOut} sub="Offer + waitlisted, awaiting join" />
         <Stat label="Enrolled this month" value={stats.enrolledThisMonth} sub="Since the 1st" />
-        <Stat label="Revenue enrolled" value={fmtMoneyShort(stats.revenueEnrolled)} sub="Annualised tuition of enrolled leads" />
       </div>
 
-      {/* ---- AI stall diagnosis ---- */}
-      <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
+      {/* ---- conversion funnel (no money, no fabricated AI) ---- */}
+      <Card pad style={{ marginBottom: 28 }}>
         <div className="u-col" style={{ gap: 12 }}>
-          <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="ai-chip"><Icon.Sparkle size={12} /> Why are leads stalling at visit?</span>
-            <Badge tone="warning" dot>{stalledAtVisit.length} leads &gt;7 days without touch</Badge>
-          </div>
-          <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.65, maxWidth: 880 }}>
-            Visit-stage leads are waiting on follow-up, not on families. Nine leads have had no touchpoint for more than 7 days —
-            the follow-up SLA (48h after a visit request) was missed on each one, all owned by two counselors during the exhibition week.
-            Post-visit conversion to interview is healthy at 62%; the leak is entirely in the &ldquo;requested visit &rarr; scheduled visit&rdquo; gap.
-          </p>
           <div>
             <div className="u-upper" style={{ marginBottom: 6 }}>Enrollment conversion funnel</div>
             <SegmentedBar parts={funnelParts} height={12} />
@@ -339,7 +323,6 @@ export default function Admissions() {
               ))}
             </div>
           </div>
-          <AiTraceCard trace={STALL_TRACE} />
         </div>
       </Card>
 
@@ -407,8 +390,8 @@ export default function Admissions() {
 
       <div style={{ height: 20 }} />
       <div className="u-small u-muted">
-        Stage values use annualised tuition per grade. Offers, rejections and waitlists are decided by the Admissions Head only —
-        SchoolOS ranks logistics and drafts follow-ups (Constitution, pol_14). Days-in-stage counts from each lead's last touchpoint.
+        This is sample data. The live funnel validates every move server-side and keeps a full audit trail.
+        Offers, rejections and waitlists are decided by the Admissions Head only — SchoolOS ranks logistics and drafts follow-ups (Constitution, pol_14).
       </div>
     </div>
   );

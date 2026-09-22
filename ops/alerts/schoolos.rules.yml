@@ -115,6 +115,76 @@ rules:
       away from development. In production a non-zero reading means the install is missing a real
       provider for that channel, which is the exact lie SEC-0 and PRD-13 were about.
 
+  - name: fee_reconciliation_discrepancies
+    check: fee_reconciliation_discrepancies
+    metric: schoolos_fee_reconciliation_discrepancies
+    severity: critical
+    threshold_gte: 1
+    description: >-
+      A payment is marked 'disputed': the reconciliation sweep could not match the kernel ledger to the
+      gateway's own record (ghost, missing, orphan or amount mismatch). Money and the gateway disagree —
+      investigate before the next collection run. Mirrors schoolos_fee_reconciliation_discrepancies.
+
+  - name: fee_settlement_latency_breach
+    check: fee_settlement_latency_seconds
+    metric: schoolos_fleet_fee_settlement_latency_seconds
+    severity: warning
+    threshold_gte: 86400
+    description: >-
+      The slowest initiation→confirmation in the last 24h exceeded 24 hours. A fee payment captured at the
+      gateway but left unconfirmed for a day means the desk is not settling; the ledger understates
+      collections and the parent has no receipt. FEE-OPS-3 settlement SLO.
+
+  - name: fee_dunning_queue_stalled
+    check: fee_dunning_queue_age_seconds
+    metric: schoolos_fleet_fee_dunning_queue_age_seconds
+    severity: warning
+    threshold_gte: 3600
+    description: >-
+      The oldest queued fee reminder is more than an hour old. Fee messages are queued but the dispatcher is
+      not draining them, so guardians are not being reminded. FEE-OPS-3 dunning-delivery SLO.
+
+  - name: fee_reconciliation_age_breach
+    check: fee_reconciliation_age_seconds
+    metric: schoolos_fleet_fee_reconciliation_age_seconds
+    severity: critical
+    threshold_gte: 604800
+    description: >-
+      A disputed payment has waited more than 7 days for a human. The reconciliation discrepancy Action was
+      never decided; the ledger and the gateway have disagreed for a week. FEE-OPS-3 reconciliation-age SLO.
+
+  # ── library ────────────────────────────────────────────────────────────────────────────────────────
+  - name: library_holds_stalled
+    check: library_holds_stalled
+    metric: schoolos_fleet_library_holds_stalled
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      A hold is still `ready` past its expiry. The day-worker's reservation-expiry step is what expires
+      uncollected holds and promotes the next requester, so any ready hold past expiry means that sweep is
+      not running — the queue behind it never moves and borrowers wait forever. Mirrors
+      schoolos_fleet_library_holds_stalled.
+
+  - name: library_overdue_chronic
+    check: library_overdue_chronic
+    metric: schoolos_fleet_library_overdue_chronic
+    severity: warning
+    threshold_gte: 50
+    description: >-
+      More than fifty loans are more than thirty days overdue, fleet-wide. An ordinary overdue count is
+      normal in every school; a chronic backlog means the due/overdue chase is not reaching borrowers, so
+      books and money are quietly leaking. Mirrors schoolos_fleet_library_overdue_chronic.
+
+  - name: library_fines_not_recovering
+    check: library_fines_stale
+    metric: schoolos_fleet_library_fines_stale
+    severity: warning
+    threshold_gte: 25
+    description: >-
+      More than twenty-five fines have sat `outstanding` for over six months, fleet-wide. The desk has
+      stopped collecting: the replacement/overdue charge was assessed and then never settled or waived, so
+      the ledger no longer reflects reality. Mirrors schoolos_fleet_library_fines_stale.
+
   # ── process liveness ───────────────────────────────────────────────────────────────────────────────
   - name: api_heartbeat_stale
     check: api_heartbeat_age_seconds
@@ -135,6 +205,48 @@ rules:
       No successful backup recorded in 26 hours (24h RPO plus slack). OPS-6: backups were a script
       NOTHING ran, while the README claimed an RPO the project could not meet. This rule is what makes
       that claim checkable rather than aspirational.
+
+  # ── teacher / parent / student domain queues ────────────────────────────────────────────────────────
+  - name: wellbeing_queue_stalled
+    check: wellbeing_stalled
+    metric: schoolos_fleet_wellbeing_stalled
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      A student's wellbeing request has been open for more than a week. The counselor plane exists but
+      nothing is draining it — a student asked for help and nobody picked it up. Mirrors
+      schoolos_fleet_wellbeing_stalled.
+
+  - name: homework_review_backlog
+    check: homework_backlog
+    metric: schoolos_fleet_homework_backlog
+    severity: warning
+    threshold_gte: 25
+    description: >-
+      More than twenty-five submissions have waited over a week for review, fleet-wide. A small backlog is
+      normal; a chronic one means the teacher inbox is not being worked and students get no feedback.
+      Mirrors schoolos_fleet_homework_backlog.
+
+  # ── owner / principal oversight plane ───────────────────────────────────────────────────────────────
+  - name: actions_overdue
+    check: open_actions_overdue
+    metric: schoolos_fleet_actions_overdue
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      An approval has sat past its deadline, fleet-wide. The SLA worker escalates it to the owner, but a
+      non-zero count means the owning desk is not deciding and the escalation path is load-bearing.
+      Mirrors schoolos_fleet_actions_overdue (OPP-OVR-3).
+
+  - name: compliance_overdue
+    check: compliance_overdue
+    metric: schoolos_fleet_compliance_overdue
+    severity: warning
+    threshold_gte: 1
+    description: >-
+      A statutory compliance item is unfiled and past its due date, fleet-wide. This is a governance
+      deadline missed, not an ordinary backlog — the compliance calendar exists so it can be watched.
+      Mirrors schoolos_fleet_compliance_overdue (OPP-PRD-5).
 
   # ── schema ─────────────────────────────────────────────────────────────────────────────────────────
   - name: migrations_drift

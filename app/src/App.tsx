@@ -1,10 +1,10 @@
 import { Suspense, lazy, useEffect, useState, createContext, useContext } from 'react';
 import { setSessionIdentity } from './services/sessionIdentity';
-import { KernelProvider, KernelGate, useKernel } from './plugins/useKernel';
+import { KernelProvider, KernelGate } from './plugins/useKernel';
 import './plugins/registerWidgets';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { StoreProvider, useStore } from './state/store';
-import { ToastProvider, Empty } from './components/ui';
+import { ToastProvider } from './components/ui';
 import { Sidebar, Topbar, CommandPalette } from './components/Shell';
 import { MobileTabbar } from './components/DemoBar';
 import { apiMe, apiMeEffective, setToken, getToken, LIVE_BASE } from './services/liveApi';
@@ -16,7 +16,7 @@ import { SkeletonCard } from './components/ui';
 import { Icon } from './components/Icon';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TeacherProvider } from './state/teacherContext';
-import { mapAccountRole, isLightRole } from './lib/roles';
+import { mapAccountRole, isLightRole, homeForRole } from './lib/roles';
 import { canSurface } from './lib/effective';
 
 /* ---------- lazy screens ---------- */
@@ -43,9 +43,11 @@ const People = F(() => import('./screens/People'));
 const PersonDetail = F(() => import('./screens/PersonDetail'));
 const Learning = F(() => import('./screens/Learning'));
 const Attendance = F(() => import('./screens/Attendance'));
+/* school structure — configurable classes & sections (owner/principal/itadmin) */
+const Classes = F(() => import('./screens/Classes'));
+const Timetable = F(() => import('./screens/Timetable'));
 const Operations = F(() => import('./screens/Operations'));
 const Fees = F(() => import('./screens/Fees'));
-const Admissions = F(() => import('./screens/Admissions'));
 const FunnelBoard = F(() => import('./screens/FunnelBoard'));
 const VisitorsBoard = F(() => import('./screens/VisitorsBoard'));
 const Transport = F(() => import('./screens/Transport'));
@@ -72,6 +74,7 @@ const Cases = F(() => import('./screens/Cases'));
 const CaseDetail = F(() => import('./screens/CaseDetail'));
 const Incidents = F(() => import('./screens/Incidents'));
 const Insights = F(() => import('./screens/Insights'));
+const Reports = F(() => import('./screens/Reports'));
 const Automation = F(() => import('./screens/Automation'));
 const Constitution = F(() => import('./screens/Constitution'));
 const Memory = F(() => import('./screens/Memory'));
@@ -83,8 +86,31 @@ const AiUsage = F(() => import('./screens/AiUsage'));
 const Settings = F(() => import('./screens/Settings'));
 const Group = F(() => import('./screens/Group'));
 const ItAdmin = F(() => import('./screens/ItAdmin'));
+/* OPP: owner/principal oversight product (docs/OWNER-PRINCIPAL-PERFECT-100.md) */
+const BoardPack = F(() => import('./screens/BoardPack'));
+const PrincipalBrief = F(() => import('./screens/PrincipalBrief'));
+const OversightHome = F(() => import('./screens/OversightHome')); /* OPP-API-1 */
+const Announcements = F(() => import('./screens/Announcements'));
+const Compliance = F(() => import('./screens/Compliance'));
+const Certificates = F(() => import('./screens/Certificates'));
+const Delegations = F(() => import('./screens/Delegations'));
 const PeopleAdmin = F(() => import('./screens/PeopleAdmin'));
-const LibraryLive = F(() => import('./screens/LibraryLive'));
+const LibraryHome = F(() => import('./screens/library/LibraryHome'));
+const LibraryDesk = F(() => import('./screens/library/LibraryDesk'));
+const LibraryDeskDashboard = F(() => import('./screens/library/desk/Dashboard'));
+const LibraryDeskCatalog = F(() => import('./screens/library/desk/Catalog'));
+const LibraryDeskAddBook = F(() => import('./screens/library/desk/AddBook'));
+const LibraryDeskBook = F(() => import('./screens/library/desk/BookDetail'));
+const LibraryDeskIssue = F(() => import('./screens/library/desk/Issue'));
+const LibraryDeskReturn = F(() => import('./screens/library/desk/Return'));
+const LibraryDeskHolds = F(() => import('./screens/library/desk/Holds'));
+const LibraryDeskFines = F(() => import('./screens/library/desk/Fines'));
+const LibraryDeskRequests = F(() => import('./screens/library/desk/Requests'));
+const LibraryDeskMembers = F(() => import('./screens/library/desk/Members'));
+const LibraryDeskReports = F(() => import('./screens/library/desk/Reports'));
+const LibraryDeskSettings = F(() => import('./screens/library/desk/Settings'));
+const LibraryInsights = F(() => import('./screens/library/LibraryInsights'));
+const LibrarySetup = F(() => import('./screens/library/LibrarySetup'));
 const RailsBoard = F(() => import('./screens/RailsBoard'));
 const ParentHome = F(() => import('./screens/ParentHome'));
 const ParentComplaints = F(() => import('./screens/ParentComplaints'));
@@ -95,6 +121,7 @@ const ParentConsents = F(() => import('./screens/parent/Consents'));
 const ParentRequests = F(() => import('./screens/parent/Requests'));
 const ParentCopilot = F(() => import('./screens/parent/Copilot'));
 const StudentHome = F(() => import('./screens/StudentHome'));
+const StudentFees = F(() => import('./screens/StudentFees'));
 const StudentLearning = F(() => import('./screens/StudentLearning'));
 const StudentPortfolio = F(() => import('./screens/StudentPortfolio'));
 const StudentHome2 = F(() => import('./screens/student/StudentHome2'));
@@ -107,6 +134,28 @@ const TeacherHome = F(() => import('./screens/TeacherHome'));
 const TeacherHomework = F(() => import('./screens/teacher/Homework'));
 const SubmissionsInbox = F(() => import('./screens/teacher/SubmissionsInbox'));
 const MyLeave = F(() => import('./screens/teacher/MyLeave'));
+const TeacherCopilot = F(() => import('./screens/teacher/Copilot'));
+const TeacherSupport = F(() => import('./screens/teacher/Support'));
+const TeacherConcerns = F(() => import('./screens/teacher/Concerns'));
+const TeacherDoubts = F(() => import('./screens/teacher/Doubts'));
+const TeacherInterventions = F(() => import('./screens/teacher/Interventions'));
+const TeacherPtm = F(() => import('./screens/teacher/Ptm'));
+const TeacherSafetyBox = F(() => import('./screens/teacher/SafetyBox'));
+const CounselorConcerns = F(() => import('./screens/CounselorConcerns')); /* OPP-PRD-8 */
+const Appraisals = F(() => import('./screens/Appraisals')); /* OPP-PRD-11 */
+const TeacherLessons = F(() => import('./screens/teacher/Lessons'));
+const TeacherDutyWorkload = F(() => import('./screens/teacher/DutyWorkload'));
+const MasteryMap = F(() => import('./screens/teacher/MasteryMap'));
+const CurriculumProgress = F(() => import('./screens/teacher/CurriculumProgress'));
+const ProgressStory = F(() => import('./screens/teacher/ProgressStory'));
+const ExamMarks = F(() => import('./screens/teacher/ExamMarks'));
+const ClassAnalytics = F(() => import('./screens/teacher/ClassAnalytics'));
+const StudentHomework = F(() => import('./screens/student/learn/Homework'));
+const StudentMistakes = F(() => import('./screens/student/learn/Mistakes'));
+const StudentFlashcards = F(() => import('./screens/student/learn/Flashcards'));
+const StudentStudyTasks = F(() => import('./screens/student/learn/StudyTasks'));
+const StudentResults = F(() => import('./screens/student/learn/Results'));
+const ParentChildFlows = F(() => import('./screens/parent/ChildFlowPage'));
 /* CU-1 coordinator lane (CoordinatorOS) */
 const CoordHome = F(() => import('./screens/coord/CoordHome'));
 const CoordSubstitutions = F(() => import('./screens/coord/SubstitutionReview'));
@@ -352,23 +401,21 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* unit 14: server flag wins on enablement — while admissions.funnel is
-   enabled (kernel resyncs from the server registry), /admissions shows the
-   live funnel board; otherwise the demo kanban stays. */
-function AdmissionsHost() {
-  const { isEnabled } = useKernel();
-  return isEnabled('admissions.funnel') ? <FunnelBoard /> : <Admissions />;
-}
+/* I2: admissions and visitors now use the SAME KernelGate as every other module surface, so
+   "switched off" looks and behaves identically everywhere (with the owner's one-click turn-on).
+   The old bespoke hosts kept a labelled demo screen alive as the off-state; that mock plane is
+   retired here — the honest off-state is the module gate. */
 
-/* unit 15: server flag wins — ops.visitors gate pass appears at /visitors while
-   the server flag is on; when off the route answers with an honest empty state. */
-function VisitorsHost() {
-  const { isEnabled } = useKernel();
-  return isEnabled('ops.visitors') ? <VisitorsBoard /> : (
-    <PageShell>
-      <Empty icon={<Icon.Shield size={22} />} title="Visitors gate pass is switched off" sub="Ask the school owner to switch it on in Modules. Your visitor records are saved and will be here when it is on." />
-    </PageShell>
-  );
+
+/* Each role lands on its own main page, not the generic Today: the server gates /today behind GET /actions,
+   which parent, student and librarian do not hold, so the generic landing showed them "Not available for
+   your role" on sign-in. Any navigation to /today self-corrects here, whatever sign-in method produced it.
+   homeForRole returns '/today' for every role that can render it, so this only redirects the roles that
+   cannot (see app/src/lib/roles.ts). */
+function RoleHome({ children }: { children: React.ReactNode }) {
+  const { role } = useSession();
+  const home = homeForRole(role);
+  return home === '/today' ? <S>{children}</S> : <Navigate to={home} replace />;
 }
 
 function AppRoutes() {
@@ -378,19 +425,23 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<Navigate to="/today" replace />} />
       <Route path="/login" element={<Navigate to="/today" replace />} />
-      <Route path="/today" element={<S><Today /></S>} />
+      <Route path="/today" element={<RoleHome><Today /></RoleHome>} />
       <Route path="/attention" element={<S><Attention /></S>} />
       <Route path="/next" element={<S><Next /></S>} />
       <Route path="/people" element={<S><People /></S>} />
       <Route path="/people/:id" element={<S><PersonDetail /></S>} />
       <Route path="/learning" element={<S><Learning /></S>} />
       <Route path="/attendance" element={<S><Attendance /></S>} />
+      {/* school structure: owner/principal/IT admin define the classes & sections every picker uses */}
+      <Route path="/classes" element={<S><Classes /></S>} />
+      {/* M3/M4: the timetable write surface — gated on the ops.timetable plugin like every module */}
+      <Route path="/timetable" element={<S><KernelGate plugin="ops.timetable"><Timetable /></KernelGate></S>} />
       <Route path="/operations" element={<S><Operations /></S>} />
       <Route path="/fees" element={<S><Fees /></S>} />
       {/* L5-2.2 (L4-2.1 request): dedicated fee-plans door for finance/owner/principal */}
       <Route path="/fees/plans" element={<S><FeePlans /></S>} />
-      <Route path="/admissions" element={<S><AdmissionsHost /></S>} />
-      <Route path="/visitors" element={<S><VisitorsHost /></S>} />
+      <Route path="/admissions" element={<S><KernelGate plugin="admissions.funnel"><FunnelBoard /></KernelGate></S>} />
+      <Route path="/visitors" element={<S><KernelGate plugin="ops.visitors"><VisitorsBoard /></KernelGate></S>} />
       <Route path="/transport" element={<S><Transport /></S>} />
       <Route path="/documents" element={<S><Documents /></S>} />
       <Route path="/maintenance" element={<S><Maintenance /></S>} />
@@ -412,7 +463,26 @@ function AppRoutes() {
       {/* live admin/ops surfaces (build-out wave D): real doors behind the
           plugin gates — the demo Library remains the fallback when off */}
       <Route path="/people-admin" element={<S><KernelGate plugin="people.admin"><PeopleAdmin /></KernelGate></S>} />
-      <Route path="/library" element={<S><KernelGate plugin="library"><LibraryLive /></KernelGate></S>} />
+      {/* library v2 (docs/LIBRARY-DESIGN.md): borrower catalog, librarian desk, owner/principal ops,
+          and the setup wizard. Each surface names its real door; the server enforces the role. */}
+      <Route path="/library" element={<S><KernelGate plugin="library"><LibraryHome /></KernelGate></S>} />
+      {/* the desk is a sectioned workspace: one persistent nav, one page per job */}
+      <Route path="/library/desk" element={<S><KernelGate plugin="library"><LibraryDesk /></KernelGate></S>}>
+        <Route index element={<LibraryDeskDashboard />} />
+        <Route path="issue" element={<LibraryDeskIssue />} />
+        <Route path="return" element={<LibraryDeskReturn />} />
+        <Route path="catalog" element={<LibraryDeskCatalog />} />
+        <Route path="catalog/new" element={<LibraryDeskAddBook />} />
+        <Route path="catalog/:id" element={<LibraryDeskBook />} />
+        <Route path="holds" element={<LibraryDeskHolds />} />
+        <Route path="fines" element={<LibraryDeskFines />} />
+        <Route path="requests" element={<LibraryDeskRequests />} />
+        <Route path="members" element={<LibraryDeskMembers />} />
+        <Route path="reports" element={<LibraryDeskReports />} />
+        <Route path="settings" element={<LibraryDeskSettings />} />
+      </Route>
+      <Route path="/library/insights" element={<S><KernelGate plugin="library"><LibraryInsights /></KernelGate></S>} />
+      <Route path="/library/setup" element={<S><KernelGate plugin="library"><LibrarySetup /></KernelGate></S>} />
       <Route path="/rails" element={<S><RailsBoard /></S>} />
       <Route path="/maintenance/report" element={<S><ReportIssue /></S>} />
       <Route path="/operations/hr" element={<S><HR /></S>} />
@@ -421,6 +491,7 @@ function AppRoutes() {
       <Route path="/cases/:id" element={<S><CaseDetail /></S>} />
       <Route path="/incidents" element={<S><Incidents /></S>} />
       <Route path="/insights" element={<S><Insights /></S>} />
+      <Route path="/reports" element={<S><Reports /></S>} />
       <Route path="/automation" element={<S><Automation /></S>} />
       <Route path="/constitution" element={<S><Constitution /></S>} />
       <Route path="/memory" element={<S><Memory /></S>} />
@@ -430,6 +501,14 @@ function AppRoutes() {
       <Route path="/ai-governance" element={<S><AiGovernance /></S>} />
       <Route path="/ai-usage" element={<S><AiUsage /></S>} />
       <Route path="/group" element={<S><Group /></S>} />
+      <Route path="/board-pack" element={<S><BoardPack /></S>} />
+      <Route path="/principal-brief" element={<S><PrincipalBrief /></S>} />
+      <Route path="/owner/home" element={<S><OversightHome /></S>} />
+      <Route path="/principal/home" element={<S><OversightHome /></S>} />
+      <Route path="/announcements" element={<S><Announcements /></S>} />
+      <Route path="/compliance" element={<S><Compliance /></S>} />
+      <Route path="/certificates" element={<S><Certificates /></S>} />
+      <Route path="/delegations" element={<S><Delegations /></S>} />
       <Route path="/it" element={<S><ItAdmin /></S>} />
       <Route path="/settings" element={<S><Settings /></S>} />
       {/* L5-5.1: custom-roles console — owner + IT admin (server ROLES_ADMIN) */}
@@ -450,10 +529,19 @@ function AppRoutes() {
       <Route path="/parent/consents" element={<S><ParentConsents /></S>} />
       <Route path="/parent/requests" element={<S><ParentRequests /></S>} />
       <Route path="/parent/copilot" element={<S><ParentCopilot /></S>} />
+      {/* PRD-5: per-child flow hub */}
+      <Route path="/parent/child/:id" element={<S><ParentChildFlows /></S>} />
       <Route path="/student" element={<S><StudentHome /></S>} />
       <Route path="/student/home2" element={<S><StudentHome2 /></S>} />
+      <Route path="/student/fees" element={<S><StudentFees /></S>} />
       <Route path="/student/learning" element={<S><StudentLearning /></S>} />
       <Route path="/student/portfolio" element={<S><StudentPortfolio /></S>} />
+      {/* PRD-6: the student learn lane */}
+      <Route path="/student/homework" element={<S><StudentHomework /></S>} />
+      <Route path="/student/mistakes" element={<S><StudentMistakes /></S>} />
+      <Route path="/student/flashcards" element={<S><StudentFlashcards /></S>} />
+      <Route path="/student/tasks" element={<S><StudentStudyTasks /></S>} />
+      <Route path="/student/results" element={<S><StudentResults /></S>} />
       {/* TeacherOS: command center + P6 classroom doors (staff-gated) */}
       <Route path="/teacher" element={<S><TeacherHome /></S>} />
       <Route path="/teacher/homework" element={<S><TeacherHomework /></S>} />
@@ -461,9 +549,30 @@ function AppRoutes() {
       {/* T508: P8 teacher self-leave — screen existed unrouted; both doors are
           live (teacher.classroom:239 POST /teacher/leave, :271 GET /mine) */}
       <Route path="/teacher/leave" element={<S><MyLeave /></S>} />
+      {/* PRD-4: the teaching copilot (ask + draft) — previously unregistered */}
+      <Route path="/teacher/copilot" element={<S><TeacherCopilot /></S>} />
+      {/* PRD-1: the student-support desk (concerns/doubts/interventions/PTM/safety) */}
+      <Route path="/teacher/support" element={<S><TeacherSupport /></S>} />
+      <Route path="/teacher/concerns" element={<S><TeacherConcerns /></S>} />
+      <Route path="/teacher/doubts" element={<S><TeacherDoubts /></S>} />
+      <Route path="/teacher/interventions" element={<S><TeacherInterventions /></S>} />
+      <Route path="/teacher/ptm" element={<S><TeacherPtm /></S>} />
+      <Route path="/teacher/safety" element={<S><TeacherSafetyBox /></S>} />
+      {/* PRD-2: lessons lifecycle */}
+      <Route path="/teacher/lessons" element={<S><TeacherLessons /></S>} />
+      {/* PRD-3: duty roster + workload */}
+      <Route path="/teacher/duties" element={<S><TeacherDutyWorkload /></S>} />
+      {/* PRD-9: previously orphaned insight screens are now routed */}
+      <Route path="/teacher/mastery" element={<S><MasteryMap /></S>} />
+      <Route path="/teacher/curriculum" element={<S><CurriculumProgress /></S>} />
+      <Route path="/teacher/progress-story" element={<S><ProgressStory /></S>} />
+      <Route path="/teacher/exam-marks" element={<S><ExamMarks /></S>} />
+      <Route path="/teacher/analytics" element={<S><ClassAnalytics /></S>} />
       {/* StudentOS staff desks — paper-first ops behind the student surface (staff-gated) */}
       <Route path="/print-queue" element={<S><PrintQueue /></S>} />
       <Route path="/wellbeing-queue" element={<S><WellbeingQueue /></S>} />
+      <Route path="/counselor/concerns" element={<S><CounselorConcerns /></S>} />
+      <Route path="/appraisals" element={<S><Appraisals /></S>} />
       <Route path="/noticeboard" element={<S><Noticeboard /></S>} />
       {/* CU-1 coordinator lane — /coord/* is staff-gated via staffOnly '/coord' above */}
       <Route path="/coord/home" element={<S><CoordHome /></S>} />

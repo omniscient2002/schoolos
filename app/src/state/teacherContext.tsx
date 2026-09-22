@@ -16,6 +16,8 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from './store';
+import { useSession } from '../App';
+import { canSurface } from '../lib/effective';
 import { QuickActions } from '../components/teacher/QuickActions';
 
 export interface TeacherClassContext {
@@ -45,7 +47,12 @@ export function TeacherProvider({ children }: { children: ReactNode }) {
   const [classContext, setClassContext] = useState<TeacherClassContext | null>(null);
   const navigate = useNavigate();
   const { session } = useStore();
-  const isTeacher = session.roleId === 'teacher';
+  const live = useSession();
+  // RBAC-1: prefer the server's capability answer, so a mask-granted custom role that can
+  // reach the teacher lane still gets the quick-actions menu. Fall back to the built-in
+  // role only when the server has not spoken (demo preview / no payload).
+  const caps = live.effective?.capabilities;
+  const isTeacher = caps ? canSurface(live.effective, '/teacher/homework') : session.roleId === 'teacher';
 
   const openAction = useCallback((to: string, prefill?: QuickActionPrefill) => {
     navigate(to, prefill ? { state: { prefill } } : undefined);

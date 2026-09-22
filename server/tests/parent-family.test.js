@@ -25,10 +25,16 @@ before(async () => {
 });
 after(async () => { await app?.close(); });
 
+/* Cached: the login limiter is 20/min, and these privacy tests legitimately log the same
+   few accounts in over and over. One session per account keeps the suite under the cap. */
+const _sessions = new Map();
 const login = async (email) => {
+  if (_sessions.has(email)) return _sessions.get(email);
   const r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'schoolos-demo' }, headers: { 'content-type': 'application/json' } });
   assert.equal(r.statusCode, 200, `login ${email}: ${r.body}`);
-  return r.json();
+  const s = r.json();
+  _sessions.set(email, s);
+  return s;
 };
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 
@@ -181,4 +187,156 @@ test('graceful degradation: doors work when TeacherOS tables are absent', async 
   const r1 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
   assert.equal(r1.statusCode, 200, r1.body);
   for (const ch of r1.json().children) assert.ok(Array.isArray(ch.assignments), 'assignments is an array when tables exist');
+});
+
+test('parent home carries class + actions; assignments door buckets the child\'s homework', async () => {
+  const p = await login('parent@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  assert.equal(home.statusCode, 200, home.body);
+  const child = home.json().children[0];
+  assert.ok(child, 'a linked child exists');
+  assert.ok(child.class, 'the home child carries the class label');
+  assert.ok(Array.isArray(home.json().actions), 'the ACTION CENTER checklist is present');
+  const r = await app.inject({ method: 'GET', url: `/parent/child/${child.child_id}/assignments`, headers: H(p.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  const a = r.json();
+  assert.equal(a.child_id, child.child_id);
+  for (const k of ['upcoming', 'submitted', 'reviewed', 'overdue', 'missing']) assert.ok(Array.isArray(a[k]), `${k} is an array`);
+  // cross-guardian: a teacher is refused on the new door
+  const t = await login('teacher@meridian.edu');
+  const denied = await app.inject({ method: 'GET', url: `/parent/child/${child.child_id}/assignments`, headers: H(t.token) });
+  assert.equal(denied.statusCode, 403, 'teacher refused on the assignments door');
+});
+
+test('parent documents door lists the child\'s shared files and refuses a non-guardian (PRD-5)', async () => {
+  const p = await login('parent@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  const child = home.json().children[0];
+  const r = await app.inject({ method: 'GET', url: `/parent/child/${child.child_id}/documents`, headers: H(p.token) });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().child_id, child.child_id);
+  assert.ok(Array.isArray(r.json().documents), 'documents is an array');
+  const t = await login('teacher@meridian.edu');
+  const denied = await app.inject({ method: 'GET', url: `/parent/child/${child.child_id}/documents`, headers: H(t.token) });
+  assert.equal(denied.statusCode, 403, 'teacher refused on the documents door');
+});
+
+test('approved child leave writes back: request resolved + attendance marked leave (DEL-4)', async () => {
+  const p = await login('parent@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  const child = home.json().children[0];
+  assert.ok(child, 'linked child exists');
+  const d = '2026-11-03';
+  const lr = await app.inject({ method: 'POST', url: '/parent/leave-request', headers: H(p.token),
+    payload: { childId: child.child_id, kind: 'sick', dates: d, reason: 'fever' } });
+  assert.equal(lr.statusCode, 200, lr.body);
+  const coord = await login('coordinator@meridian.edu');
+  const decide = await app.inject({ method: 'POST', url: `/actions/${lr.json().actionId}/decide`, headers: H(coord.token), payload: { decision: 'approved' } });
+  assert.equal(decide.statusCode, 200, decide.body);
+  assert.equal(decide.json().execution?.type, 'child_leave', 'the kernel decide path executed the child-leave write-back');
+  const attRow = (await sysq(`SELECT status FROM app.attendance WHERE student_id=$1 AND school_date=$2::date`, [child.child_id, d])).rows[0];
+  assert.ok(attRow, 'attendance row exists for the approved leave date');
+  assert.equal(attRow.status, 'leave', 'approved leave is marked leave, never absent');
+  const att = await app.inject({ method: 'GET', url: `/parent/child/${child.child_id}/attendance`, headers: H(p.token) });
+  assert.equal(att.statusCode, 200, att.body);
+  assert.ok((att.json().history ?? []).some((h) => String(h.date) === d), 'the parent attendance door reflects the approved leave as a calendar date');
+  const reqs = await app.inject({ method: 'GET', url: '/parent/requests', headers: H(p.token) });
+  const fr = reqs.json().requests.find((x) => x.id === lr.json().requestId);
+  assert.equal(fr.status, 'resolved', 'the leave ticket is resolved on approval');
+  assert.ok(fr.events.some((e) => e.to === 'resolved'), 'the resolution is an append-only event');
+});
+
+test('staff author a consent; the parent decides; the loop closes (DAT-1)', async () => {
+  const coord = await login('coordinator@meridian.edu');
+  const p = await login('parent@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  const child = home.json().children[0];
+  const author = await app.inject({ method: 'POST', url: '/parent/consents', headers: H(coord.token),
+    payload: { kind: 'trip', title: 'Science museum trip', detail: 'Grade 8 field trip', studentId: child.child_id, dueAt: '2026-12-01T09:00:00.000Z' } });
+  assert.equal(author.statusCode, 200, author.body);
+  const consentId = author.json().consent.id;
+  const list = await app.inject({ method: 'GET', url: '/parent/consents', headers: H(p.token) });
+  const row = list.json().consents.find((c) => c.id === consentId);
+  assert.ok(row, 'parent sees the authored consent');
+  assert.equal(row.status, 'pending');
+  assert.ok(row.child_id && row.child_name, 'child attribution present');
+  const denied = await app.inject({ method: 'POST', url: '/parent/consents', headers: H(p.token),
+    payload: { kind: 'trip', title: 'x', studentId: child.child_id } });
+  assert.equal(denied.statusCode, 403, 'a parent cannot author their own consent');
+  const decide = await app.inject({ method: 'POST', url: `/parent/consents/${consentId}/decide`, headers: H(p.token), payload: { decision: 'granted' } });
+  assert.equal(decide.statusCode, 200, decide.body);
+  assert.equal(decide.json().consent.status, 'granted');
+});
+
+test('office advances a request ticket with an append-only event (DAT-2)', async () => {
+  const p = await login('parent@meridian.edu');
+  const coord = await login('coordinator@meridian.edu');
+  const created = await app.inject({ method: 'POST', url: '/parent/requests', headers: H(p.token), payload: { category: 'certificate', title: 'Bonafide for scholarship' } });
+  assert.equal(created.statusCode, 200, created.body);
+  const id = created.json().requestId;
+  const t = await app.inject({ method: 'POST', url: `/parent/requests/${id}/transition`, headers: H(coord.token), payload: { status: 'in_progress', note: 'checking records' } });
+  assert.equal(t.statusCode, 200, t.body);
+  assert.equal(t.json().status, 'in_progress');
+  const list = await app.inject({ method: 'GET', url: '/parent/requests', headers: H(p.token) });
+  const fr = list.json().requests.find((x) => x.id === id);
+  assert.equal(fr.status, 'in_progress');
+  assert.ok(fr.events.some((e) => e.to === 'in_progress'), 'the transition is an append-only event');
+  const denied = await app.inject({ method: 'POST', url: `/parent/requests/${id}/transition`, headers: H(p.token), payload: { status: 'resolved' } });
+  assert.equal(denied.statusCode, 403, 'a parent cannot transition their own ticket');
+});
+
+/* ── PERFECT-100 hardening pins (DAT-3, SEC-4, SEC-5) ───────────────────────── */
+
+test('staff manage child links; a parent is refused; the child home follows (DAT-3/SEC-5)', async () => {
+  const p = await login('parent@meridian.edu');
+  const coord = await login('coordinator@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  const child = home.json().children[0];
+  assert.ok(child, 'the parent has a linked child to start with');
+  const list = await app.inject({ method: 'GET', url: '/parent/links', headers: H(coord.token) });
+  assert.equal(list.statusCode, 200, list.body);
+  const link = list.json().links.find((l) => l.student_id === child.child_id);
+  assert.ok(link, 'the link is listed for the office');
+  assert.equal((await app.inject({ method: 'GET', url: '/parent/links', headers: H(p.token) })).statusCode, 403, 'a parent cannot manage links');
+  const del = await app.inject({ method: 'DELETE', url: `/parent/links/${link.id}`, headers: H(coord.token), payload: {} });
+  assert.equal(del.statusCode, 200, del.body);
+  const home2 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  assert.ok(!home2.json().children.some((c) => c.child_id === child.child_id), 'the unbound child disappears from the parent home');
+  const bind = await app.inject({ method: 'POST', url: '/parent/links', headers: H(coord.token),
+    payload: { userId: link.user_id, studentId: child.child_id, relation: 'guardian', isPrimary: true } });
+  assert.equal(bind.statusCode, 200, bind.body);
+  const home3 = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  assert.ok(home3.json().children.some((c) => c.child_id === child.child_id), 're-binding restores access');
+});
+
+test('request status is append-only: a direct app-role UPDATE is refused (SEC-4)', async () => {
+  const p = await login('parent@meridian.edu');
+  const coord = await login('coordinator@meridian.edu');
+  const created = await app.inject({ method: 'POST', url: '/parent/requests', headers: H(p.token), payload: { category: 'other', title: 'Direct-write probe' } });
+  assert.equal(created.statusCode, 200, created.body);
+  const id = created.json().requestId;
+  // the sanctioned door works…
+  const t = await app.inject({ method: 'POST', url: `/parent/requests/${id}/transition`, headers: H(coord.token), payload: { status: 'received' } });
+  assert.equal(t.statusCode, 200, t.body);
+  // …an illegal backward jump is a plain 409…
+  const bad = await app.inject({ method: 'POST', url: `/parent/requests/${id}/transition`, headers: H(coord.token), payload: { status: 'submitted' } });
+  assert.equal(bad.statusCode, 409, bad.body);
+  // …and a direct status write that skips the door is refused at the database layer.
+  // (The tenant GUC must be set for the row to be visible to the app role at all; with it
+  // set, the BEFORE UPDATE guard — not RLS — is what refuses the write.)
+  const tenant = (await sysq(`SELECT tenant_id FROM app.users WHERE email='parent@meridian.edu'`)).rows[0].tenant_id;
+  await assert.rejects(
+    sysq(`SET ROLE schoolos_app; SELECT set_config('schoolos.tenant_id','${tenant}',false); UPDATE family.request SET status='closed' WHERE id='${id}'`),
+    /append-only|42501/);
+});
+
+test('D4 · a parent may REQUEST a concession for their own child; another child is refused', async () => {
+  const p = await login('parent@meridian.edu');
+  const home = await app.inject({ method: 'GET', url: '/parent/home', headers: H(p.token) });
+  const child = home.json().children[0];
+  const r = await app.inject({ method: 'POST', url: '/fees/concessions', headers: H(p.token), payload: { studentId: child.child_id, kind: 'concession', percent: 10, reason: 'hardship' } });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().concession.status, 'requested', 'a parent request is pending, not auto-approved');
+  const denied = await app.inject({ method: 'POST', url: '/fees/concessions', headers: H(p.token), payload: { studentId: '00000000-0000-0000-0000-000000000000', kind: 'concession', percent: 10 } });
+  assert.equal(denied.statusCode, 403, denied.body);
 });

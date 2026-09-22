@@ -29,6 +29,7 @@ import { useStore } from '../state/store';
 import { useSession } from '../App';
 import type { RoleId } from '../types/domain';
 import { apiStudents } from '../services/liveApi';
+import { useRoleOrGrant } from '../lib/access';
 
 /* server DESK set (front-desk authority) — the UI mirrors it, the server decides */
 const DESK = ['owner', 'principal', 'itadmin', 'coordinator'];
@@ -55,7 +56,11 @@ export default function VisitorsBoard() {
   const toast = useToast();
   const { actorName, dispatch } = useStore();
   const live = useSession();
-  const desk = (DESK as string[]).includes(live.role);
+  /* FEX-4/FEX-7: the desk set plus any custom-role mask granting a visitors door. `canOverride`
+     stays role-based because the SERVER's release-override check is itself role-based
+     (`ops.visitors` complete door: `['owner','principal'].includes(req.user.role)`); mirroring a
+     mask here would render a control the server refuses. */
+  const desk = useRoleOrGrant(DESK, ['GET /plugins/ops.visitors/visitors']);
   const canOverride = (OVERRIDE_ROLES as string[]).includes(live.role);
 
   const [visits, setVisits] = useState<ApiVisitorVisit[] | null>(null);

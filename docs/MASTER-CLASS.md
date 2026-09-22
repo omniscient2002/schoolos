@@ -31,7 +31,7 @@
 10. [Where the project is weak (read this)](#10-where-the-project-is-weak)
 
 **Part II — The catalogues (reference)**
-- [Catalogue A — The 13 roles, end-to-end](#catalogue-a--the-13-roles-end-to-end)
+- [Catalogue A — The 16 roles, end-to-end](#catalogue-a--the-16-roles-end-to-end)
 - [Catalogue B — Every screen](#catalogue-b--every-screen)
 - [Catalogue C — 18 end-to-end scenarios](#catalogue-c--18-end-to-end-scenarios)
 - [Catalogue D — The data model (104 tables)](#catalogue-d--the-data-model-104-tables)
@@ -440,7 +440,7 @@ full data model, the plugin catalogue, and the route index. They are generated f
 
 ---
 
-# Catalogue A — The 13 roles, end-to-end
+# Catalogue A — The 16 roles, end-to-end
 
 
 Source of truth for this document (read-only survey, 2026-09-17):
@@ -720,8 +720,8 @@ owner 161 · principal 135 · itadmin 125 · coordinator 123 · teacher 52 · fi
   - **Students:** `POST /students` (`routes.js:514`), full roster reads **with guardian phones** (`STAFF_ROSTER` includes admissions, `:453`).
   - **Import:** `POST /plugins/people.admin/import/students` (owner/principal/coordinator/admissions), `ops.import` schema + validate-mapping (owner/principal/coordinator/itadmin/admissions).
   - **Approvals:** `GET /actions` + decide (ten staff roles, `:1287`, `:1370`), events/lineage, timetable grid, safety box read+close.
-  - **Admissions follow-up queue:** `GET /admissions/followups` is `me` (any auth) and **masks PII for admissions** because `fullPii` is only owner/principal/itadmin/coordinator (`routes.js:1763`).
-  - **⚠️ Important drift to record:** the generated matrix shows the `admissions` built-in role is **not** in the `admissions.funnel` plugin doors at all. `ADMIN = owner, principal, itadmin, finance, coordinator` and `FULL_PII = owner, principal, itadmin, coordinator` (`admissions.funnel/index.js:56-57`). The role named "admissions" cannot capture leads, move stages, read funnel history, or see the summary; `docs/ROLE-CAPABILITIES.md` §5 (which says admissions is the FULL_PII tier) and the pre-build `role-matrices/admissions.txt` are stale on this point. Teacher, by contrast, **is** on the masked `GET .../leads` door (`admissions.funnel:136`).
+  - **Admissions follow-up queue:** `GET /admissions/followups` is role-gated (owner/principal/itadmin/finance/coordinator/**admissions**/teacher) and masks PII for roles outside `FULL_PII = owner/principal/itadmin/coordinator/admissions` (`_shared/admissions-access.js`).
+  - **Resolved (v1.3):** the `admissions` role is now in both `ADMIN` and `FULL_PII` (`_shared/admissions-access.js`) and holds every funnel door (capture/list/edit/move/history/summary/activities/documents/offer-letter), matching `docs/ROLE-CAPABILITIES.md` §5 and the regenerated `role-matrices/admissions.txt`. The shared module is the single source, so the plugin, the kernel follow-up queue and `ops.bi` cannot drift again.
 - **Data they GENERATE.** `app.students` rows via `POST /students` (+ audit + `people` event), CSV-imported students and enrollment history, import mapping/validation artifacts, action decisions, audit rows.
 - **Data they CONSUME.** Whole-school roster with guardian contacts, seed/import schemas, action board, events, timetable grid, safety box.
 - **How other roles see their data.** Students they admit immediately appear on teacher/coordinator/principal/finance/parent surfaces and in fee-plan generation scope; their action decisions execute comms/notifications; their import produces source-linked students.
@@ -954,7 +954,7 @@ Roles-as-rows is too wide, so each row is a capability domain and the cells name
 
 ### Notes on divergences found during the survey
 
-1. **`admissions` vs the admissions funnel.** The built-in `admissions` role is **not** on any `admissions.funnel` door; funnel authority sits with owner/principal/itadmin/finance/coordinator, and FULL_PII only for owner/principal/itadmin/coordinator. `docs/ROLE-CAPABILITIES.md` §5 and `docs/role-matrices/admissions.txt` are stale here; the generated `PERMISSION-MATRIX.md` is correct.
+1. **`admissions` vs the admissions funnel — RESOLVED (v1.3).** The `admissions` role is now on every `admissions.funnel` door, in both `ADMIN` and `FULL_PII` (`_shared/admissions-access.js`). `docs/ROLE-CAPABILITIES.md` §5, `docs/role-matrices/admissions.txt` and the generated `PERMISSION-MATRIX.md` all agree.
 2. **Technician work-order create.** `POST /work-orders` includes technician in the live gate (`routes.js:1126`) and in the generated matrix, contradicting the prose in `ROLE-CAPABILITIES.md` §8 that says technician only transitions status.
 3. **Facilities and the safety box.** Facilities' nav declares Front desk and Maintenance, but per the matrix it has no safety-box doors and no visitors doors; effective-access hides surfaces the server says are unreachable, so the nav rendering is the honest gate.
 4. **Student Library item.** Student nav declares `/library`, but `SURFACE_DOOR['/library'] = 'GET /plugins/library/books'`, a staff door — so `canSurface` normally drops it for students; their own-loans door is separate.
@@ -2875,11 +2875,11 @@ Conventions used throughout:
 - subscribes: payment.captured
 - settings: tally_url, company_name, export_hour, ledger_mapping
 
-### `admissions.funnel` — class C v1.2.1
-- Admission inquiry-to-enrollment funnel: lead capture, enforced stage lattice (inquiry → applied → interview → offer → enrolled, side exits rejected/withdrawn), stage history trail, PII-masked teacher surfaces. Applicant/guardian PII stays in plugin_admissions 
-- publishes: —
+### `admissions.funnel` — class C v1.3.0
+- Admission enquiry-to-enrollment funnel: lead capture, correction, and a DB-enforced stage lattice (enquiry → form → interaction → offer → waitlisted → enrolled, side exits rejected/withdrawn), visit/interview scheduling, admission-document attachment, generated offer letters, stage history trail, health/orphan reconciliation, and PII-masked teacher surfaces. Applicant/guardian PII stays in plugin_admissions (purgeable); never writes core students; no money surfaces.
+- publishes: admission.enquiry.captured, admission.stage.transitioned, admission.offer.accepted, admission.<visit|interview|call|note>.logged, admission.followup.overdue
 - subscribes: —
-- settings: default_source, enrollment_term, admission_year, cycle_start, cycle_end
+- settings: default_source, enrollment_term, admission_year, cycle_start, cycle_end, notify_guardians
 
 ### `comms.whatsapp` — class B v1.0.0
 - WhatsApp BSP rail beneath the kernel Communication Orchestrator: DLT template registry, receipt surface. Headless by rule (docs/11 §2.3) — delivers approved orchestrator intents only, never sends directly.

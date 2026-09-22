@@ -99,7 +99,7 @@ describe('PLG-1 · permissions are the ceiling, the row is the grant', () => {
       [tenantId, JSON.stringify(declared.slice(1))]);
     const drift = (await sql(`SELECT permissions FROM app.plugins WHERE tenant_id=$1 AND plugin_id='library'`, [tenantId])).rows[0].permissions;
     assert.notDeepEqual([...drift].sort(), [...declared].sort(), 'fixture: the stored grant is genuinely short');
-    const denied = await app.inject({ method: 'GET', url: '/plugins/library/books', headers: H(owner.token) });
+    const denied = await app.inject({ method: 'GET', url: '/plugins/library/catalog', headers: H(owner.token) });
     assert.equal(denied.statusCode, 403, `a short grant must refuse the door: ${denied.statusCode} ${String(denied.body).slice(0, 160)}`);
     assert.equal(denied.json().code, 'PERMISSION_DENIED');
     assert.equal(denied.json().permission, declared[0], 'the refusal names the permission that is missing');
@@ -107,7 +107,7 @@ describe('PLG-1 · permissions are the ceiling, the row is the grant', () => {
 
     // re-enabling records the manifest's set again, and the door opens
     await app.inject({ method: 'POST', url: '/plugins/library/enable', headers: H(owner.token), payload: { version: '1.0.0', class: 'C' } });
-    const ok = await app.inject({ method: 'GET', url: '/plugins/library/books', headers: H(owner.token) });
+    const ok = await app.inject({ method: 'GET', url: '/plugins/library/catalog', headers: H(owner.token) });
     assert.equal(ok.statusCode, 200, `after re-enable the grant covers the declaration: ${String(ok.body).slice(0, 160)}`);
   });
 

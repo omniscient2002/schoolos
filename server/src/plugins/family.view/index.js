@@ -21,9 +21,23 @@ const ID = 'family.view';
 export { default as manifest } from './manifest.js';
 
 const GUARDIAN = ['parent'];
+// School-side authority for the two staff actions on the family plane: authoring a consent
+// (the school asks; a parent never authors their own) and advancing a request ticket.
+const STAFF_AUTHORITY = ['owner', 'principal', 'itadmin', 'coordinator'];
 const STAFF_OVERSIGHT = ['owner', 'principal', 'itadmin', 'coordinator'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TICKET_STATUSES = ['submitted','received','assigned','in_progress','waiting_parent','resolved','closed'];
+// SEC-4: the ticket state machine. The door validates it here (plain 409) and the DB guard
+// in 113 enforces the same edges for any write that bypasses the door.
+const TICKET_TRANSITIONS = {
+  submitted: ['received','assigned','in_progress','waiting_parent','resolved','closed'],
+  received: ['assigned','in_progress','waiting_parent','resolved','closed'],
+  assigned: ['in_progress','waiting_parent','resolved','closed'],
+  in_progress: ['waiting_parent','resolved','closed'],
+  waiting_parent: ['in_progress','resolved','closed'],
+  resolved: ['closed'],
+  closed: [],
+};
 const REQUEST_CATEGORIES = ['leave','certificate','document','transport','activity','profile_correction','reevaluation','other'];
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
@@ -52,6 +66,15 @@ export function register(app, kernel) {
        WHERE table_name = split_part($1, '.', 2)
          AND table_schema = CASE WHEN position('.' in $1) > 0 THEN split_part($1, '.', 1) ELSE 'public' END`,
       [name])).rows.length;
+
+  /* A1: the exams plugin tables are absent when the plugin is off; degrade ONLY for that case.
+     A silent `.catch(() => ({rows:[]}))` used to hide real query errors (a wrong column made every
+     parent result silently empty). Now a missing table degrades and anything else surfaces. */
+  const pluginAbsent = (e) => {
+    // 42P01 = undefined_table (plugin off). A wrong COLUMN (42703) must surface, not hide.
+    if (e?.code === '42P01' || /relation .* does not exist/i.test(String(e))) return { rows: [] };
+    throw e;
+  };
 
   // ── home aggregation ────────────────────────────────────────────────────────
   app.get('/parent/home', { preHandler: [require(...GUARDIAN), lifecycleGate] }, async (req) => {
@@ -95,7 +118,8 @@ export function register(app, kernel) {
             attention.push({ tier: 'upcoming', ref: `/parent/assignments`, title: `Homework due: ${hw.title}`, due: hw.due_at });
         }
         out.push({
-          child_id: ch.id, name: ch.name, class_grade: ch.grade, section: ch.section,
+          child_id: ch.id, name: ch.name, class: `${ch.grade}${ch.section ? `-${ch.section}` : ''}`,
+          class_grade: ch.grade, section: ch.section,
           attendance_today: attToday, assignments, consents, attention,
         });
       }
@@ -103,7 +127,53 @@ export function register(app, kernel) {
         `SELECT id, category, title, status, created_at FROM family.request
          WHERE guardian_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 10`,
         [req.user.id, req.user.tenant_id])).rows;
-      return { children: out, requests };
+      // ACTION CENTER checklist — pending consents (fees are added by the fees read plane
+      // in the UI). Derived from the same rows the children aggregate already read.
+      const actions = [];
+      for (const ch of out) {
+        for (const cs of (ch.consents ?? []).filter((x) => x.status === 'pending'))
+          actions.push({ kind: 'consent', ref: '/parent/consents', title: `Consent: ${cs.title}`, due: cs.due_at ?? null });
+      }
+      return { children: out, requests, actions, brief: {} };
+    });
+  });
+
+  // ── per-child assignments (teacher.homework probe; 034 name-bridge) ────────
+  app.get('/parent/child/:id/assignments', { preHandler: [require(...GUARDIAN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await assertOwnChild(c, req.user.id, req.params.id)))
+        return bad(reply, 'This child is not linked to your family account', 403);
+      const child = (await c.query(`SELECT name, grade FROM app.students WHERE id=$1 AND tenant_id=$2`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!child || !(await tableExists(c, 'teacher.homework'))) {
+        return { child_id: req.params.id, upcoming: [], submitted: [], reviewed: [], overdue: [], missing: [],
+          explain: 'The homework lane is not connected yet — ask the class teacher until homework appears here.' };
+      }
+      const rows = (await c.query(
+        `SELECT h.id, h.title, h.subject, h.due_at, sub.status AS submission_status
+         FROM teacher.homework h
+         LEFT JOIN teacher.submission sub ON sub.homework_id=h.id
+           AND (sub.student_id=$1
+                OR ($3::text IS NOT NULL AND EXISTS (SELECT 1 FROM app.users su
+                       WHERE su.id = sub.student_id AND su.tenant_id=$2
+                       AND lower(su.name) = lower($3)
+                       AND (SELECT count(*) FROM app.students d WHERE d.tenant_id=$2 AND lower(d.name)=lower($3)) = 1
+                       AND (SELECT count(*) FROM app.users u2 WHERE u2.tenant_id=$2 AND u2.role='student' AND lower(u2.name)=lower($3)) = 1)))
+         WHERE h.class_grade=$4 AND h.tenant_id=$2 AND h.due_at > now() - interval '30 days'
+         ORDER BY h.due_at ASC LIMIT 50`,
+        [req.params.id, req.user.tenant_id, child.name, child.grade])).rows;
+      const now = Date.now();
+      const out = { child_id: req.params.id, upcoming: [], submitted: [], reviewed: [], overdue: [], missing: [] };
+      for (const r of rows) {
+        const item = { id: r.id, title: r.title, subject: r.subject, due: r.due_at, status: r.submission_status ?? null };
+        if (r.submission_status === 'reviewed' || r.submission_status === 'graded') out.reviewed.push(item);
+        else if (r.submission_status === 'submitted') out.submitted.push(item);
+        else if (r.submission_status === 'late') out.overdue.push(item);
+        else if (new Date(r.due_at).getTime() < now) out.missing.push(item);
+        else out.upcoming.push(item);
+      }
+      out.explain = 'Homework status comes from the class teacher\'s records. Paper homework needs no upload here.';
+      return out;
     });
   });
 
@@ -114,7 +184,7 @@ export function register(app, kernel) {
         return bad(reply, 'This child is not linked to your family account', 403);
       const events = [];
       const att = await c.query(
-        `SELECT school_date AS date, status FROM app.attendance WHERE student_id=$1 AND tenant_id=$2 ORDER BY school_date DESC LIMIT 30`,
+        `SELECT to_char(school_date,'YYYY-MM-DD') AS date, status FROM app.attendance WHERE student_id=$1 AND tenant_id=$2 ORDER BY school_date DESC LIMIT 30`,
         [req.params.id, req.user.tenant_id]);
       for (const a of att.rows) events.push({ at: a.date, kind: 'attendance', text: a.status === 'present' ? 'Present' : a.status === 'absent' ? 'Absent' : `Attendance: ${a.status}` });
       if (await tableExists(c, 'teacher.submission')) {
@@ -134,10 +204,14 @@ export function register(app, kernel) {
            ORDER BY sub.submitted_at DESC LIMIT 30`, [req.params.id, req.user.tenant_id, child?.name ?? null, child?.grade ?? null]);
         for (const s of sub.rows) events.push({ at: s.submitted_at, kind: 'homework', text: `${s.subject}: ${s.title} — ${s.status}` });
       }
+      // A1: plugin_exams.report has `snapshot`/`digest`/`created_at` — NOT total_pct/grade/published_at.
+      // The pct and grade live inside the snapshot JSON; the row's time is created_at.
       const rep = await c.query(
-        `SELECT published_at, total_pct FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
-         WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published' ORDER BY r.published_at DESC NULLS LAST LIMIT 10`,
-        [req.params.id, req.user.tenant_id]).catch(() => ({ rows: [] }));
+        `SELECT r.created_at AS published_at, (r.snapshot->>'pct') AS total_pct
+           FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
+          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
+          ORDER BY r.created_at DESC NULLS LAST LIMIT 10`,
+        [req.params.id, req.user.tenant_id]).catch(pluginAbsent);
       for (const r of rep.rows) events.push({ at: r.published_at, kind: 'result', text: `Report card published — ${r.total_pct}%` });
       events.sort((a, b) => new Date(b.at) - new Date(a.at));
       return { timeline: events.slice(0, 50) };
@@ -149,13 +223,15 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (!(await assertOwnChild(c, req.user.id, req.params.id)))
         return bad(reply, 'This child is not linked to your family account', 403);
+      // A1: derive pct/grade from the snapshot JSON; the row's time is created_at.
       const rep = (await c.query(
-        `SELECT e.name AS exam_name, e.term, r.total_pct, r.grade, r.digest, r.published_at
-         FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
-         WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
-         ORDER BY r.published_at DESC NULLS LAST LIMIT 12`, [req.params.id, req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
+        `SELECT e.name AS exam_name, e.term, (r.snapshot->>'pct') AS total_pct,
+                COALESCE(r.snapshot->>'grade', r.snapshot->>'division') AS grade, r.digest, r.created_at AS published_at
+           FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
+          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
+          ORDER BY r.created_at DESC NULLS LAST LIMIT 12`, [req.params.id, req.user.tenant_id]).catch(pluginAbsent)).rows;
       return { reports: rep.map(r => ({ exam: r.exam_name, term: r.term, pct: r.total_pct, grade: r.grade, publishedAt: r.published_at,
-        explain: r.total_pct == null ? 'Result details will appear here once the school publishes them.' : // S0 fix E5: the column alias is total_pct — r.pct never existed
+        explain: r.total_pct == null ? 'Result details will appear here once the school publishes them.' :
           `This result is from ${r.exam_name}. It shows what was understood at that point — growth across results matters more than any single score.` })) };
     });
   });
@@ -166,7 +242,7 @@ export function register(app, kernel) {
       if (!(await assertOwnChild(c, req.user.id, req.params.id)))
         return bad(reply, 'This child is not linked to your family account', 403);
       const rows = (await c.query(
-        `SELECT school_date AS date, status FROM app.attendance WHERE student_id=$1 AND tenant_id=$2 ORDER BY school_date DESC LIMIT 60`,
+        `SELECT to_char(school_date,'YYYY-MM-DD') AS date, status FROM app.attendance WHERE student_id=$1 AND tenant_id=$2 ORDER BY school_date DESC LIMIT 60`,
         [req.params.id, req.user.tenant_id])).rows;
       const month = rows.filter(r => new Date(r.date) >= new Date(Date.now() - 30 * 864e5));
       // S0 fix E6: late = showed up (kernel eligibility precedent); approved leave
@@ -190,12 +266,57 @@ export function register(app, kernel) {
       const upcoming = (await c.query(
         `SELECT id, name, term, class_grade FROM plugin_exams.exam
          WHERE tenant_id=$1 AND class_grade=$2 AND status IN ('draft','published')
-         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, (await c.query(`SELECT grade FROM app.students WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0]?.grade]).catch(() => ({ rows: [] }))).rows;
+         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, (await c.query(`SELECT grade FROM app.students WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0]?.grade]).catch(pluginAbsent)).rows;
+      // A1: derive pct/grade from the snapshot JSON.
       const published = (await c.query(
-        `SELECT e.name AS exam, r.total_pct, r.grade FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
-         WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published' ORDER BY r.published_at DESC NULLS LAST LIMIT 8`,
-        [req.params.id, req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
+        `SELECT e.name AS exam, (r.snapshot->>'pct') AS total_pct,
+                COALESCE(r.snapshot->>'grade', r.snapshot->>'division') AS grade
+           FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
+          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
+          ORDER BY r.created_at DESC NULLS LAST LIMIT 8`,
+        [req.params.id, req.user.tenant_id]).catch(pluginAbsent)).rows;
       return { upcoming, published };
+    });
+  });
+
+  // ── transport (own child's bus route) ──────────────────────────────────────
+  app.get('/parent/child/:id/transport', { preHandler: [require(...GUARDIAN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await assertOwnChild(c, req.user.id, req.params.id)))
+        return bad(reply, 'This child is not linked to your family account', 403);
+      const child = (await c.query(`SELECT name, bus_route FROM app.students WHERE id=$1 AND tenant_id=$2`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!child) return bad(reply, 'We couldn\'t find that child', 404);
+      let route = null;
+      if (child.bus_route) {
+        route = (await c.query(
+          `SELECT code, name, vehicle, capacity FROM app.routes WHERE tenant_id=$1 AND code=$2`,
+          [req.user.tenant_id, child.bus_route]).catch(() => ({ rows: [] }))).rows[0] ?? null;
+      }
+      return {
+        child_id: req.params.id,
+        route: route ? { code: route.code, name: route.name, vehicle: route.vehicle ?? null, capacity: route.capacity ?? null } : null,
+        route_code: child.bus_route ?? null,
+        note: child.bus_route
+          ? 'Your child is assigned to this route. Live position is not published to families.'
+          : 'The school has not assigned a bus route for your child yet.',
+      };
+    });
+  });
+
+  // ── documents (own child's student-scoped files; metadata only, download via files.store) ──
+  app.get('/parent/child/:id/documents', { preHandler: [require(...GUARDIAN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await assertOwnChild(c, req.user.id, req.params.id)))
+        return bad(reply, 'This child is not linked to your family account', 403);
+      if (!(await tableExists(c, 'app.files'))) {
+        return { child_id: req.params.id, documents: [], note: 'The document store is not connected yet.' };
+      }
+      const rows = (await c.query(
+        `SELECT id, filename, mime, bytes, created_at FROM app.files
+          WHERE tenant_id=$1 AND scope='student' AND ref_id=$2 ORDER BY created_at DESC LIMIT 100`,
+        [req.user.tenant_id, req.params.id])).rows;
+      return { child_id: req.params.id, documents: rows, note: 'Only files the school has shared for this child appear here.' };
     });
   });
 
@@ -204,11 +325,42 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const kids = (await myChildren(c, req.user.id)).map(k => k.id);
       const rows = kids.length ? (await c.query(
-        `SELECT c.id, c.kind, c.title, c.due_at, c.status, s.name AS child
+        `SELECT c.id, c.kind, c.title, c.detail_ref AS detail, c.due_at, c.status, c.decided_at,
+                c.student_id AS child_id, s.name AS child_name, s.name AS child
          FROM family.consent c JOIN app.students s ON s.id=c.student_id
          WHERE c.student_id = ANY($1) AND c.tenant_id=$2 ORDER BY (c.status='pending') DESC, c.due_at NULLS LAST`,
         [kids, req.user.tenant_id])).rows : [];
       return { consents: rows };
+    });
+  });
+
+  // author a consent (school/office act — the parent never authors their own). Closes the
+  // consent loop: without this the consent centre could never be populated (DAT-1).
+  app.post('/parent/consents', { preHandler: [require(...STAFF_AUTHORITY), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const KINDS = ['trip', 'photo', 'medical', 'activity', 'transport', 'other'];
+    if (!KINDS.includes(b.kind)) return bad(reply, 'Choose a consent kind: trip, photo, medical, activity, transport or other');
+    if (!b.title || !String(b.title).trim()) return bad(reply, 'Give the consent a short title');
+    if (!b.studentId || !UUID.test(String(b.studentId))) return bad(reply, 'Pick the student this consent is for');
+    if (b.dueAt && Number.isNaN(new Date(b.dueAt).getTime())) return bad(reply, 'Due date must be a valid date and time');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND tenant_id=$2`,
+        [b.studentId, req.user.tenant_id])).rows[0];
+      if (!st) return bad(reply, 'We couldn\'t find that student', 404);
+      const row = (await c.query(
+        `INSERT INTO family.consent (tenant_id, student_id, kind, title, detail_ref, due_at)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, kind, title, detail_ref, due_at, status, created_at`,
+        [req.user.tenant_id, st.id, b.kind, String(b.title).slice(0, 160),
+         b.detail ? String(b.detail).slice(0, 2000) : null, b.dueAt ?? null])).rows[0];
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'family', label: `Consent requested: ${row.title}`, ref: row.id },
+        'family.consent.v1', { consentId: row.id, studentId: st.id, kind: b.kind, action: 'requested' });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Consent authored', recordType: 'FamilyConsent', recordRef: row.id,
+        reason: row.title, policyRef: 'PARENTOS-PLAN · consent centre (school asks, parent decides)', risk: 'medium',
+        outcome: `pending for ${st.name}` });
+      return { ok: true, consent: { id: row.id, student_id: st.id, child_name: st.name, kind: row.kind,
+        title: row.title, detail: row.detail_ref, due_at: row.due_at, status: row.status } };
     });
   });
 
@@ -231,7 +383,7 @@ export function register(app, kernel) {
         actor: req.user.name, action: `Consent ${decision}`, recordType: 'FamilyConsent', recordRef: row.id,
         reason: row.title, policyRef: 'PARENTOS-PLAN · immutable consent', risk: 'medium',
         outcome: `status ${decision} (final)` });
-      return { ok: true, status: decision };
+      return { ok: true, status: decision, consent: { id: row.id, status: decision } };
     });
   });
 
@@ -271,6 +423,114 @@ export function register(app, kernel) {
          FROM family.request r WHERE r.guardian_id=$1 AND r.tenant_id=$2 ORDER BY r.created_at DESC LIMIT 50`,
         [req.user.id, req.user.tenant_id])).rows;
       return { requests: rows };
+    });
+  });
+
+  // advance a request ticket (school/office act) — append-only status event (DAT-2)
+  app.post('/parent/requests/:id/transition', { preHandler: [require(...STAFF_AUTHORITY), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!TICKET_STATUSES.includes(b.status)) return bad(reply, `Status must be one of: ${TICKET_STATUSES.join(', ')}`);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(
+        `SELECT id, guardian_id, status, title FROM family.request WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!r) return bad(reply, 'We couldn\'t find that request', 404);
+      if (r.status === b.status) return bad(reply, `This request is already ${b.status}`, 409);
+      const allowed = TICKET_TRANSITIONS[r.status] ?? [];
+      if (!allowed.includes(b.status)) {
+        return bad(reply, allowed.length
+          ? `From ${r.status} a request can move to: ${allowed.join(', ')}`
+          : `${r.status} is a final state — the request cannot move further`, 409);
+      }
+      // SEC-4: mark this transaction as a sanctioned transition so the append-only DB
+      // guard (113) admits it; every other UPDATE that changes the status is refused.
+      await c.query(`SELECT set_config('schoolos.family_request_transition', 'on', true)`);
+      await c.query(`UPDATE family.request SET status=$2 WHERE id=$1`, [r.id, b.status]);
+      await c.query(
+        `INSERT INTO family.request_event (tenant_id, request_id, from_status, to_status, note, actor_id)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [req.user.tenant_id, r.id, r.status, b.status, b.note ? String(b.note).slice(0, 500) : null, req.user.id]);
+      await c.query(
+        `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref)
+         VALUES ($1,$2,'needs-you',$3,$4,$5)`,
+        [req.user.tenant_id, r.guardian_id, `Request update: ${r.title}`, `Your request is now ${String(b.status).replace('_', ' ')}.`, r.id]);
+      await emitEvent(c, req.user.tenant_id, { type: 'family', label: `Request ${b.status}: ${r.title}`, ref: r.id },
+        'family.request.v1', { requestId: r.id, from: r.status, to: b.status });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: `Request ${b.status}`, recordType: 'FamilyRequest', recordRef: r.id,
+        reason: b.note ? String(b.note).slice(0, 200) : 'office ticket transition',
+        policyRef: 'PARENTOS-PLAN §requests · append-only ticket', risk: 'low',
+        outcome: `${r.status} → ${b.status}` });
+      return { ok: true, requestId: r.id, status: b.status };
+    });
+  });
+
+  // ── child-link management (school authority; DAT-3 / SEC-5) ─────────────────
+  // Binding a guardian to a roster child was seed-only — production provisioning was
+  // manual SQL. These three doors make the authorization table manageable: list, bind
+  // (idempotent upsert) and unbind, all audited and event-spined. A guardian can never
+  // reach them; only the school authority can change who sees a child.
+  app.get('/parent/links', { preHandler: [require(...STAFF_AUTHORITY), lifecycleGate] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const studentId = req.query?.studentId ? String(req.query.studentId) : null;
+      const rows = (await c.query(
+        `SELECT l.id, l.user_id, l.student_id, l.relation, l.is_primary, l.created_at,
+                u.name AS guardian_name, u.email AS guardian_email,
+                s.name AS child_name, s.grade, s.section
+         FROM family.child_link l
+         JOIN app.users u ON u.id = l.user_id AND u.tenant_id = l.tenant_id
+         JOIN app.students s ON s.id = l.student_id AND s.tenant_id = l.tenant_id
+         WHERE l.tenant_id=$1 AND ($2::uuid IS NULL OR l.student_id=$2::uuid)
+         ORDER BY s.name, u.name`, [req.user.tenant_id, studentId])).rows;
+      return { links: rows };
+    });
+  });
+
+  app.post('/parent/links', { preHandler: [require(...STAFF_AUTHORITY), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!b.userId || !UUID.test(String(b.userId))) return bad(reply, 'Pick the guardian account to link');
+    if (!b.studentId || !UUID.test(String(b.studentId))) return bad(reply, 'Pick the student to link');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const guardian = (await c.query(
+        `SELECT id, name, role FROM app.users WHERE id=$1 AND tenant_id=$2 AND active`, [b.userId, req.user.tenant_id])).rows[0];
+      if (!guardian) return bad(reply, 'We couldn\'t find that guardian account', 404);
+      if (guardian.role !== 'parent') return bad(reply, 'Only a guardian (parent) account can be linked to a child');
+      const student = (await c.query(
+        `SELECT id, name FROM app.students WHERE id=$1 AND tenant_id=$2`, [b.studentId, req.user.tenant_id])).rows[0];
+      if (!student) return bad(reply, 'We couldn\'t find that student', 404);
+      const row = (await c.query(
+        `INSERT INTO family.child_link (tenant_id, user_id, student_id, relation, is_primary)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (tenant_id, user_id, student_id)
+         DO UPDATE SET relation=EXCLUDED.relation, is_primary=EXCLUDED.is_primary
+         RETURNING id, user_id, student_id, relation, is_primary`,
+        [req.user.tenant_id, guardian.id, student.id,
+         b.relation ? String(b.relation).slice(0, 40) : 'guardian', b.isPrimary === true])).rows[0];
+      // No event contract exists for link management (the published family contracts are
+      // request/consent/child-leave); the append-only audit row below is the permanent record.
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Guardian linked to child', recordType: 'FamilyChildLink', recordRef: row.id,
+        reason: `${guardian.name} → ${student.name}`, policyRef: 'PARENTOS-PLAN §53 (authorization table)', risk: 'medium',
+        outcome: `relation ${row.relation}${row.is_primary ? ' (primary)' : ''}` });
+      return { ok: true, link: row };
+    });
+  });
+
+  app.delete('/parent/links/:id', { preHandler: [require(...STAFF_AUTHORITY), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `SELECT l.id, u.name AS guardian_name, s.name AS child_name
+         FROM family.child_link l
+         JOIN app.users u ON u.id = l.user_id
+         JOIN app.students s ON s.id = l.student_id
+         WHERE l.id=$1 AND l.tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!row) return bad(reply, 'We couldn\'t find that link', 404);
+      await c.query(`DELETE FROM family.child_link WHERE id=$1 AND tenant_id=$2`, [row.id, req.user.tenant_id]);
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Guardian unlinked from child', recordType: 'FamilyChildLink', recordRef: row.id,
+        reason: `${row.guardian_name} ✕ ${row.child_name}`, policyRef: 'PARENTOS-PLAN §53 (authorization table)', risk: 'medium',
+        outcome: 'link removed — guardian can no longer read this child' });
+      return { ok: true, id: row.id };
     });
   });
 
@@ -316,8 +576,8 @@ export function register(app, kernel) {
       await c.query(`INSERT INTO family.request_event (tenant_id, request_id, to_status, note, actor_id)
         VALUES ($1,$2,'submitted','leave requested', $3)`, [req.user.tenant_id, row.id, req.user.id]);
       const actionId = (await c.query(
-        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Coordinator','coordinator','PARENTOS-PLAN · child leave via kernel approval',false,$6,$7::jsonb)
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Coordinator','coordinator','PARENTOS-PLAN · child leave via kernel approval',false,$6,$7::jsonb,'family.view')
          RETURNING id`,
         [req.user.tenant_id, `parent.leave.${row.id}`,
          `Leave request: ${child?.name ?? 'child'} (${b.kind}, ${String(b.dates).slice(0, 60)})`,

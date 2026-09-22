@@ -67,14 +67,14 @@ describe('PLG-2 · entitlement is enforced at the door and at every request', ()
     assert.equal(enabled.status, 'enabled', 'fixture: the plugin really is enabled before the downgrade');
 
     await sql(`UPDATE app.tenants SET plan='core' WHERE id=$1`, [tenantId]);
-    const denied = await app.inject({ method: 'GET', url: '/plugins/library/books', headers: H(owner.token) });
+    const denied = await app.inject({ method: 'GET', url: '/plugins/library/catalog', headers: H(owner.token) });
     assert.equal(denied.statusCode, 402, `a downgrade must revoke access at the door: ${brief(denied)}`);
     assert.equal(denied.json().code, 'NOT_ENTITLED');
     const row = (await sql(`SELECT status FROM app.plugins WHERE tenant_id=$1 AND plugin_id='library'`, [tenantId])).rows[0];
     assert.equal(row.status, 'enabled', 'the row is deliberately NOT rewritten: access follows the plan, and the ledger keeps its history');
 
     await sql(`UPDATE app.tenants SET plan='trial' WHERE id=$1`, [tenantId]);
-    const back = await app.inject({ method: 'GET', url: '/plugins/library/books', headers: H(owner.token) });
+    const back = await app.inject({ method: 'GET', url: '/plugins/library/catalog', headers: H(owner.token) });
     assert.equal(back.statusCode, 200, `and restoring the plan restores access without touching the row: ${brief(back)}`);
   });
 

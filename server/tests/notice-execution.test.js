@@ -34,6 +34,7 @@ let app;
 let sql;
 let tenantId;
 let routeCode;
+let proposerId;
 
 before(async () => {
   await setupTestDb();
@@ -48,6 +49,9 @@ before(async () => {
     return r;
   };
   tenantId = (await sql(`SELECT id FROM app.tenants ORDER BY created_at LIMIT 1`)).rows[0].id;
+  // OVR-4: every human raise now stamps a proposer; a principal approving a coordinator's notice is
+  // a genuine second authority. Use a coordinator as the proposer so the SoD rule is not tripped.
+  proposerId = (await sql(`SELECT id FROM app.users WHERE tenant_id=$1 AND role='coordinator' LIMIT 1`, [tenantId])).rows[0].id;
   // a bus route that actually has students with a reachable guardian
   routeCode = (await sql(`SELECT s.bus_route FROM app.students s JOIN app.guardians g ON g.student_id=s.id
     WHERE s.bus_route IS NOT NULL AND g.phone IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC LIMIT 1`)).rows[0].bus_route;
@@ -61,7 +65,7 @@ before(async () => {
 const raise = async (payload, code = `act_prd17_${Math.random().toString(36).slice(2, 8)}`) => (await sql(
   `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
    VALUES ($1,$2,'approval','Parent notice','draft','duty of care','normal','open','Principal','principal','Comms §1.2',false,'prd17',$3::jsonb) RETURNING id`,
-  [tenantId, code, JSON.stringify(payload)])).rows[0].id;
+  [tenantId, code, JSON.stringify({ ...payload, proposed_by: proposerId, proposed_by_role: 'coordinator' })])).rows[0].id;
 
 const approve = async (id) => {
   const pr = await loginAs(app, 'principal@meridian.edu');

@@ -139,12 +139,13 @@ describe('the librarian role renders its controls (RBAC-3)', () => {
     // management shell and passed the staff-only guard. A guess toward maximum privilege.
     // (`counselor` used to belong in this list — it was a string the client knew and the server did not.
     //  RBAC-2 made it real, so it is asserted on the KNOWN side now, which is the point of the drift guard.)
-    for (const r of ['librarian', 'api', 'warden', '', 'PRINCIPAL', 'owner ', 'principal2', null, undefined]) {
+    for (const r of ['api', 'warden', '', 'PRINCIPAL', 'owner ', 'principal2', null, undefined]) {
       assert.equal(mapAccountRole(r), 'student', `unrecognised role ${JSON.stringify(r)} must fail closed`);
       assert.notEqual(mapAccountRole(r), 'principal', 'and never to the broadest role');
     }
     assert.equal(UNKNOWN_ROLE_FALLBACK, 'student', 'the fallback is the lightest surface, by definition');
     assert.equal(mapAccountRole('counselor'), 'counselor', 'the 13th role maps to itself like the other twelve');
+    assert.equal(mapAccountRole('librarian'), 'librarian', 'the 14th role (library v2) maps to itself');
     // every genuine role still maps to itself — the fix must not disturb the shipped roles
     for (const r of KNOWN_ROLES) assert.equal(mapAccountRole(r), r);
     // case matters: the server sends lowercase, so 'PRINCIPAL' is NOT a known role and must not be trusted
@@ -198,11 +199,14 @@ describe('the librarian role renders its controls (RBAC-3)', () => {
     assert.match(appSrc, /canSurface\(live\.effective, pathname\)/, 'the route guard must consult the server answer');
   });
 
-  test('LibraryLive asks the mask, not the built-in role string (source check — no DOM runner exists)', () => {
-    const src = readFileSync(join(HERE, '../../app/src/screens/LibraryLive.tsx'), 'utf8');
-    assert.match(src, /roleOrGrant\(live,/, 'the screen must consult the caller\'s own mask');
-    assert.ok(!/const isStaff = \[[^\]]*\]\.includes\(live\.role\)/.test(src),
-      'and must NOT decide from the built-in role list alone — that is the bug (teacher-based librarian)');
+  test('the library screens ask the server answer, not a built-in role string (source check — no DOM runner exists)', () => {
+    const home = readFileSync(join(HERE, '../../app/src/screens/library/LibraryHome.tsx'), 'utf8');
+    assert.ok(!/const isStaff = \[[^\]]*\]\.includes\(live\.role\)/.test(home),
+      'the borrower screen must NOT decide from the built-in role list alone — that is the bug');
+    const desk = readFileSync(join(HERE, '../../app/src/screens/library/desk/Dashboard.tsx'), 'utf8');
+    assert.match(desk, /libraryDeskOverview/, 'the desk dashboard talks to its librarian-gated doors');
+    const app = readFileSync(join(HERE, '../../app/src/App.tsx'), 'utf8');
+    assert.match(app, /KernelGate plugin="library"/, 'library routes are plugin-gated');
     // the server must be the one that actually surfaces the mask, or the client has nothing to ask
     const me = readFileSync(join(HERE, '../src/routes.js'), 'utf8');
     assert.match(me, /role_key: custom\?\.key \?\? null/, '/me must return the caller\'s own binding');

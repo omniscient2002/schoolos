@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Section, Card, Badge, Button, Empty, Skeleton} from '../components/ui';
+import { PageHead, Section, Card, Badge, Button, Empty, Skeleton, SampleNote} from '../components/ui';
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtDuration } from '../lib/format';
@@ -220,6 +220,8 @@ export default function Next() {
         }
       />
 
+      <SampleNote>Sample plan — the bands, counts and AI trace are composed from illustrative data in this build, not from your school&rsquo;s records.</SampleNote>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 24, alignItems: 'start' }}>
         {/* ---------- bands ---------- */}
         <div className="u-col" style={{ gap: 20 }}>
@@ -284,7 +286,7 @@ export default function Next() {
                   reasoningRole: 'Planner (read-only)',
                   action: 'Ordered existing commitments into time bands',
                   approvalStatus: 'Not required (read-only)',
-                  verification: 'Band counts recomputed from the live store on every render'}} />
+                  verification: 'Band counts recomputed on every render — from the illustrative dataset in this build, not school records'}} />
               </div>
             )}
           </Card>

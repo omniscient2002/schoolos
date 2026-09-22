@@ -11,6 +11,7 @@
    shown once with a copy button.
    ============================================================ */
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   PageHead, Card, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable,
 } from '../components/ui';
@@ -21,9 +22,10 @@ import {
   adminResetPassword, adminTransferStudent, adminImportStudents,
   type AdminUser, type ImportReport, type ImportOkRow, type ImportFailRow,
 } from '../services/adminApi';
-import { apiOnboardStatus, type OnboardStatus } from '../services/onboardingApi';
+import { apiOnboardStatus, apiSchoolClasses, type OnboardStatus, type SchoolClass } from '../services/onboardingApi';
 import { apiUpdateStudent, apiWithdrawStudent } from '../services/liveApi';
 import { KNOWN_ROLES } from '../lib/roles';
+import { useRoleOrGrant } from '../lib/access';
 
 /* Review round 20, P2: this list is what a school actually sees when appointing someone, and it was missing
    `counselor` — the role RBAC-2 added, whose whole purpose is the safeguarding work this product ships
@@ -35,18 +37,26 @@ const ROLE_OPTIONS = KNOWN_ROLES.filter((r) => r !== 'owner' && r !== 'student')
 const ROLE_LABEL: Record<string, string> = {
   principal: 'Principal', coordinator: 'Coordinator', counselor: 'Counsellor (wellbeing)',
   finance: 'Accounts (Finance)',
+  finance_head: 'Finance head (approver)', finance_clerk: 'Finance clerk (maker)',
   admissions: 'Admissions desk', transport: 'Transport in-charge', facilities: 'Facilities',
   technician: 'Technician', teacher: 'Teacher', itadmin: 'IT admin', parent: 'Parent',
+  librarian: 'Librarian',
 };
-const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
-const SECTIONS = ['A', 'B', 'C'];
+/* Classes and sections are NOT hardcoded: the school defines them on the Classes & sections
+   screen (owner/principal/IT admin) and this console reads that one list. */
 
 type Pane = 'accounts' | 'transfer' | 'import' | 'lifecycle';
 
 export default function PeopleAdmin() {
   const toast = useToast();
   const live = useSession();
-  const canAdmin = ['owner', 'itadmin'].includes(live.role);
+  /* FEX-4/FEX-7: the people.admin authority sets plus any custom-role mask granting the door.
+     The server's require(...ADMIN / ...ROSTER) re-decides every write. */
+  const canAdmin = useRoleOrGrant(['owner', 'itadmin'], ['GET /plugins/people.admin/users', 'POST /plugins/people.admin/users']);
+  const canRoster = useRoleOrGrant(['owner', 'principal', 'coordinator'],
+    ['POST /plugins/people.admin/students/:id/transfer', 'PATCH /plugins/people.admin/students/:id', 'POST /plugins/people.admin/students/:id/withdraw']);
+  const canImport = useRoleOrGrant(['owner', 'principal', 'coordinator', 'admissions', 'itadmin'],
+    ['POST /plugins/people.admin/import/students']);
 
   const [pane, setPane] = useState<Pane>('accounts');
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -67,6 +77,8 @@ export default function PeopleAdmin() {
   const [toSection, setToSection] = useState('');
   const [reason, setReason] = useState('');
   const [transferring, setTransferring] = useState(false);
+  /* the school's configured classes & sections (owner/principal/IT admin define them) */
+  const [classes, setClasses] = useState<SchoolClass[]>([]);
 
   /* import */
   const fileRef = useRef<HTMLInputElement>(null);
@@ -90,6 +102,14 @@ export default function PeopleAdmin() {
     adminListUsers()
       .then(r => { if (!dead) { setUsers(r.users); setLoading(false); } })
       .catch(e => { if (!dead) { setError(friendly(e)); setLoading(false); } });
+    return () => { dead = true; };
+  }, [tick]);
+
+  useEffect(() => {
+    let dead = false;
+    apiSchoolClasses()
+      .then(r => { if (!dead) setClasses(r.classes ?? []); })
+      .catch(() => { /* class pickers degrade to empty; the transfer pane points at /classes */ });
     return () => { dead = true; };
   }, [tick]);
 
@@ -301,7 +321,7 @@ export default function PeopleAdmin() {
 
       {pane === 'transfer' && (
         <Card headAs="h2" head="Change a student's class" sub="Use when a student moves to a different class or section. Past attendance, fees and results stay untouched; the move is recorded in the student's history.">
-          {!['owner', 'principal', 'coordinator'].includes(live.role) ? (
+          {!canRoster ? (
             <Empty title="Owner, Principal or Coordinator only" sub="Class changes are a school-office decision." />
           ) : (
             <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
@@ -311,16 +331,19 @@ export default function PeopleAdmin() {
               </label>
               <label style={{ display: 'grid', gap: 4 }}>
                 <span style={{ fontSize: 13, opacity: 0.75 }}>New class</span>
-                <select value={toGrade} onChange={e => setToGrade(e.target.value)} aria-label="New class">
+                <select value={toGrade} onChange={e => { setToGrade(e.target.value); setToSection(''); }} aria-label="New class">
                   <option value="">Select…</option>
-                  {GRADES.map(g => <option key={g} value={g}>Class {g}</option>)}
+                  {classes.map(c => <option key={c.grade} value={c.grade}>Class {c.grade}</option>)}
                 </select>
               </label>
               <label style={{ display: 'grid', gap: 4 }}>
                 <span style={{ fontSize: 13, opacity: 0.75 }}>New section</span>
-                <select value={toSection} onChange={e => setToSection(e.target.value)} aria-label="New section">
-                  <option value="">Select…</option>
-                  {SECTIONS.map(s => <option key={s} value={s}>Section {s}</option>)}
+                <select
+                  value={toSection} onChange={e => setToSection(e.target.value)} aria-label="New section"
+                  disabled={!toGrade || !(classes.find(c => c.grade === toGrade)?.sections.length)}
+                >
+                  <option value="">{toGrade && !(classes.find(c => c.grade === toGrade)?.sections.length) ? 'No sections in this class' : 'Select…'}</option>
+                  {(classes.find(c => c.grade === toGrade)?.sections ?? []).map(s => <option key={s} value={s}>Section {s}</option>)}
                 </select>
               </label>
               <label style={{ display: 'grid', gap: 4 }}>
@@ -330,6 +353,11 @@ export default function PeopleAdmin() {
               <div style={{ display: 'flex', alignItems: 'end' }}>
                 <Button onClick={transfer} disabled={transferring}>{transferring ? 'Moving…' : 'Move student'}</Button>
               </div>
+              {!classes.length && (
+                <div style={{ gridColumn: '1 / -1', fontSize: 12.5, color: 'var(--text-2)' }}>
+                  No classes defined yet. <Link to="/classes" style={{ color: 'var(--accent-text)' }}>Set up classes &amp; sections</Link> first.
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -337,7 +365,7 @@ export default function PeopleAdmin() {
 
       {pane === 'lifecycle' && (
         <Card headAs="h2" head="Edit a record · withdraw a student" sub="Direct actions on the student ledger (people.admin doors). Withdrawal keeps attendance, fees and guardian links; the bus seat is released and the action is audited.">
-          {!['owner', 'principal', 'coordinator'].includes(live.role) ? (
+          {!canRoster ? (
             <Empty title="Owner, Principal or Coordinator only" />
           ) : (
             <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))' }}>
@@ -376,7 +404,7 @@ export default function PeopleAdmin() {
 
       {pane === 'import' && (
         <Card headAs="h2" head="Bring in students from a spreadsheet" sub="CSV with a header row: name,grade,section,admission_no,guardian_name,guardian_phone — only the first three are required. You get a line-by-line report; nothing half-lands.">
-          {!['owner', 'principal', 'coordinator', 'admissions'].includes(live.role) ? (
+          {!canImport ? (
             <Empty title="School office roles only" />
           ) : (
             <>

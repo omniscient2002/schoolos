@@ -3,12 +3,12 @@
 export default {
   id: 'admissions.funnel',
   name: 'Admissions Funnel',
-  version: '1.2.1',
+  version: '1.3.0',
   kernel: '>=1.0.0 <2.0.0',
   class: 'C',
   trust: 'T1',
-  description: 'Admission inquiry-to-enrollment funnel: lead capture, enforced stage lattice (inquiry → applied → interview → offer → enrolled, side exits rejected/withdrawn), stage history trail, PII-masked teacher surfaces. Applicant/guardian PII stays in plugin_admissions (purgeable); never writes core students; no money surfaces.',
-  permissions: ['events.emit', 'audit.request', 'actions.raise'],
+  description: 'Admission enquiry-to-enrollment funnel: lead capture, correction and stage progression along a DB-enforced lattice (enquiry → form → interaction → offer → waitlisted → enrolled, side exits rejected/withdrawn), visit/interview scheduling, admission-document attachment, generated offer letters, stage history trail, health/orphan reconciliation, and PII-masked teacher surfaces. Applicant/guardian PII stays in plugin_admissions (purgeable); never writes core students; no money surfaces.',
+  permissions: ['events.emit', 'audit.request', 'actions.raise', 'comms.send'],
   settingsSchema: {
     type: 'object',
     properties: {
@@ -34,6 +34,7 @@ export default {
       admission_year: { type: 'string', pattern: '^\\d{4}-\\d{2}$', default: '2026-27', description: 'Admission session year (e.g. 2026-27); defaults to the current Apr–Mar cycle' },
       cycle_start: { type: 'string', pattern: '^\\d{2}-\\d{2}$', default: '02-01', description: 'Session window start (MM-DD); Feb 1 default — India admissions cycle Feb–Jun' },
       cycle_end: { type: 'string', pattern: '^\\d{2}-\\d{2}$', default: '06-30', description: 'Session window end (MM-DD)' },
+      notify_guardians: { type: 'boolean', default: true, description: 'Queue a guardian message when an offer is made and when it is accepted (delivery is owned by the comms dispatcher/rails)' },
     },
   },
   data: { schema: 'plugin_admissions', core_refs: [], retention: { on_uninstall: 'export_then_purge_30d' }, residency: ['IN'] },

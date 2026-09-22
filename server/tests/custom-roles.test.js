@@ -13,7 +13,7 @@ let app;
 let pool;
 let owner, principal, teacher, itadmin;
 let present = false; // schema present? (L1's migration may or may not be merged yet)
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const HD = (t) => ({ authorization: `Bearer ${t}` }); // DELETE: no body, no content-type
 
 before(async () => {
@@ -95,6 +95,30 @@ describe('custom roles kernel (L3-4.2)', () => {
     assert.equal(dup.statusCode, 409);
   });
 
+  test('FIX-ITADMIN: only the owner may base a custom role on principal; owner-based is refused for everyone', async () => {
+    // itadmin cannot create a principal-based role (escalation path closed)
+    const itPrin = await app.inject({ method: 'POST', url: '/roles', headers: H(itadmin.token),
+      payload: { key: 'itprin', label: 'IT principal', base_role: 'principal' } });
+    assert.equal(itPrin.statusCode, 403, itPrin.body);
+    // the owner can
+    const okPrin = await app.inject({ method: 'POST', url: '/roles', headers: H(owner.token),
+      payload: { key: 'ownprin', label: 'Owner principal', base_role: 'principal' } });
+    assert.equal(okPrin.statusCode, 200, okPrin.body);
+    // owner-based is refused for everyone
+    for (const [tok, key] of [[owner.token, 'ownbase'], [itadmin.token, 'itbase']]) {
+      const r = await app.inject({ method: 'POST', url: '/roles', headers: H(tok),
+        payload: { key, label: 'Owner base', base_role: 'owner' } });
+      assert.equal(r.statusCode, 400, r.body);
+    }
+    // PATCH variant: itadmin cannot rebase a role onto principal; owner-base refused
+    const patch = await app.inject({ method: 'PATCH', url: '/roles/frontdesk', headers: H(itadmin.token),
+      payload: { base_role: 'principal' } });
+    assert.equal(patch.statusCode, 403, patch.body);
+    const patchOwner = await app.inject({ method: 'PATCH', url: '/roles/frontdesk', headers: H(owner.token),
+      payload: { base_role: 'owner' } });
+    assert.equal(patchOwner.statusCode, 400, patchOwner.body);
+  });
+
   test('assignment rules: no self-assign, no owner overlay, unknown user list guarded', async () => {
     const ownerId = (await pool.query(`SELECT id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].id;
     const self = await app.inject({ method: 'POST', url: '/roles/frontdesk/assign', headers: H(owner.token),
@@ -128,7 +152,7 @@ describe('custom roles kernel (L3-4.2)', () => {
     // proof the gate passed; 403 would mean the grant failed)
     const granted = await app.inject({ method: 'POST', url: '/fees/payments', headers: H(t2.token), payload: {} });
     assert.notEqual(granted.statusCode, 403, `mask granted the door (${granted.statusCode} — handler validation, not a role refusal)`);
-    assert.match(granted.json().error, /obligationId required/, 'the DOOR answered, the gate did not');
+    assert.match(granted.json().error, /obligationId(s)? required/, 'the DOOR answered, the gate did not');
     // untouched: a user WITHOUT role_key behaves exactly as before
     const plain = await loginAs(app, 'principal@meridian.edu');
     const still = await app.inject({ method: 'GET', url: '/students', headers: H(plain.token) });

@@ -141,9 +141,10 @@ export async function buildApp(opts = {}) {
   // which check failed.
   //
   // L2-4.1: X-API-Key machine identities — scoped, read-only, default-deny.
-  // The raw key is shown once at creation; the row stores sha256(key). Allowed
-  // doors live in API_DOOR_SCOPES (kernel read doors; L1's routes.js doors can
-  // adopt requireScope() later — blocks.md note). Mutations are always refused.
+  // The raw key is shown once at creation; the row stores sha256(key). Allowed doors live in
+  // API_DOOR_SCOPES below; `authenticate` enforces the door allowlist + the key's scope. (C7: the
+  // old comment referenced a `requireScope()` helper that was never implemented — removed.)
+  // Mutations are always refused.
   const API_DOOR_SCOPES = {
     'GET /me': null,              // identity door — no scope
     'GET /dataset': 'core.read',  // hydrated dataset
@@ -155,7 +156,15 @@ export async function buildApp(opts = {}) {
     // precisely because authenticate has already validated the door is in this map AND the key holds the
     // scope. Without it, alerting had no machine identity at all.
     'GET /metrics': 'metrics.read',
+    // OPP-SEC-2: a distinct operator identity can verify the audit chain without a tenant-owner JWT.
+    'GET /audit/verify': 'audit.verify',
   };
+  /* STU-GAP-9 / J-S4 / C3: server-enforced idle for student kiosk sessions. The kiosk UI counts down,
+     but a shared or stolen session must also die server-side. The shared store is `auth.session_activity`
+     (migration 126), so the window holds ACROSS replicas; the in-process map below is only a fallback for
+     a database that predates 126. */
+  const studentIdle = new Map(); // jti -> lastSeen ms (fallback only)
+
   app.decorate('authenticate', async (req, reply) => {
     try {
       const apiKeyHeader = req.headers['x-api-key'];
@@ -225,7 +234,45 @@ export async function buildApp(opts = {}) {
           return reply.code(403).send({ error: 'Second factor required — finish the MFA challenge.', mfaRequired: true });
         }
       }
+      // C2: mandatory MFA for privileged roles (config-gated; empty by default). A role in
+      // REQUIRE_MFA_ROLES with no enrolled second factor may only reach the enrolment door, /me and
+      // logout until it enrols. Enforced here so it holds on EVERY door regardless of how the session
+      // was issued (password / OTP / SSO / renew).
+      if (config.requireMfaRoles.includes(u.rows[0].role) && !u.rows[0].mfa_enrolled_at) {
+        const path = (req.routeOptions?.url ?? req.url ?? '').split('?')[0];
+        if (!['/me/mfa/enroll', '/me', '/auth/logout'].includes(path)) {
+          return reply.code(403).send({ error: 'This role must enrol a second factor before continuing.', mfaEnrollRequired: true });
+        }
+      }
       req.user = u.rows[0];
+      // STU-GAP-9 / J-S4: server-enforced student idle (kiosk isolation).
+      if (u.rows[0].role === 'student') {
+        const idleMs = process.env.STUDENT_IDLE_TIMEOUT_MS
+          ? Math.max(1, Number(process.env.STUDENT_IDLE_TIMEOUT_MS))
+          : Math.max(1, Number(process.env.STUDENT_IDLE_TIMEOUT_MINUTES ?? 10)) * 60_000;
+        try {
+          // C3: shared store, so the idle window holds across replicas.
+          const prev = await sysq(`SELECT last_seen_at FROM auth.session_activity WHERE jti=$1`, [payload.jti]);
+          const last = prev.rows[0] ? new Date(prev.rows[0].last_seen_at).getTime() : Date.now();
+          if (Date.now() - last > idleMs) {
+            await sysq(`DELETE FROM auth.session_activity WHERE jti=$1`, [payload.jti]);
+            return reply.code(401).send({ error: 'session ended — you were away too long', idleExpired: true });
+          }
+          await sysq(`INSERT INTO auth.session_activity (jti, tenant_id, user_id, last_seen_at)
+                      VALUES ($1,$2,$3, now())
+                      ON CONFLICT (jti) DO UPDATE SET last_seen_at = now()`, [payload.jti, u.rows[0].tenant_id, u.rows[0].id]);
+        } catch (e) {
+          // Pre-126 database: degrade to the in-process map (per-replica, but no worse than before).
+          if (e?.code !== '42P01') throw e;
+          const now = Date.now();
+          const last = studentIdle.get(payload.jti) ?? now;
+          if (now - last > idleMs) {
+            studentIdle.delete(payload.jti);
+            return reply.code(401).send({ error: 'session ended — you were away too long', idleExpired: true });
+          }
+          studentIdle.set(payload.jti, now);
+        }
+      }
       // RBAC-1: a custom-role DENY is honoured on EVERY authenticated door, including plugin doors that
       // carry no role gate of their own (the self-service ones gated only by `authenticate`). Enforcement
       // used to live solely in the kernel `require`, so a deny was honoured on some doors and silently
@@ -1258,7 +1305,7 @@ export async function buildApp(opts = {}) {
       const { name, scopes } = req.body ?? {};
       if (!name || typeof name !== 'string') return reply.code(400).send({ error: 'key name required' });
       // OPSX-4: 'metrics.read' is what lets an operator's scraper reach GET /metrics (API_DOOR_SCOPES).
-      const SCOPES = ['core.read', 'students.read', 'fees.read', 'attendance.read', 'events.read', 'metrics.read'];
+      const SCOPES = ['core.read', 'students.read', 'fees.read', 'attendance.read', 'events.read', 'metrics.read', 'audit.verify'];
       const list = Array.isArray(scopes) ? scopes.filter((s) => SCOPES.includes(s)) : [];
       const raw = `sk_${randomBytes(24).toString('hex')}`;
       const row = await sysq(
@@ -1317,6 +1364,39 @@ export async function buildApp(opts = {}) {
       return { ok: true };
     });
   }
+
+  /* OPP-SEC-1 · step-up re-authentication. The highest-risk doors (plugin disable, role grant,
+     DSR erasure) require a short-lived proof that the human is still at the keyboard — a session
+     token alone is not enough. Two equivalent proofs are accepted: a 5-minute step-up token from
+     `POST /me/step-up` (the UI path), or the account password re-entered on the request
+     (`x-step-up-password`, the scriptable path). Both are verified against the live credential. */
+  app.decorate('requireStepUp', async (req, reply) => {
+    const token = req.headers['x-step-up-token'];
+    if (token) {
+      try {
+        const p = app.jwt.verify(String(token));
+        if (p?.stepUp && p.sub === req.user?.id && p.tenant === req.user?.tenant_id) return;
+      } catch { /* fall through to the password proof */ }
+    }
+    const pw = req.headers['x-step-up-password'];
+    if (pw) {
+      const u = await sysq(`SELECT password_hash FROM app.users WHERE id=$1 AND active`, [req.user.id]);
+      if (u.rows[0] && verifyPassword(String(pw), u.rows[0].password_hash)) return;
+    }
+    return reply.code(403).send({ error: 'This action needs your password again (step-up).', stepUpRequired: true });
+  });
+  app.post('/me/step-up', { preHandler: app.authenticate, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const { password } = req.body ?? {};
+    if (!password) return reply.code(400).send({ error: 'password is required' });
+    const u = await sysq(`SELECT id, tenant_id, name, role, email, password_hash FROM app.users WHERE id=$1 AND active`, [req.user.id]);
+    if (!u.rows[0] || !verifyPassword(String(password), u.rows[0].password_hash)) {
+      return reply.code(403).send({ error: 'That password did not match.', stepUpRequired: true });
+    }
+    const token = app.jwt.sign({ sub: req.user.id, tenant: req.user.tenant_id, stepUp: true }, { expiresIn: '5m' });
+    await withUser(req.user.tenant_id, req.user.role, (c) =>
+      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Step-up confirmation', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: 'password re-confirmed for a high-risk action (5m window)' }));
+    return { stepUpToken: token, expiresIn: 300 };
+  });
 
   await registerRoutes(app, { withUser, auditLog, emitEvent, ROLES });
   // Self-serve school onboarding (053): the one sanctioned runtime tenant path.
@@ -1485,7 +1565,9 @@ export async function buildApp(opts = {}) {
       if (!r.ok) return reply.code(503).send({ error: r.error ?? 'AI provider unavailable', code: r.code ?? 'unconfigured' });
       return r;
     });
-    app.get('/ai/calls', { preHandler: requireRole('owner', 'itadmin') }, async (req) => {
+    /* OPP-RBAC: the principal is a school-running authority and oversees AI use day-to-day; the
+       owner/itadmin retain the platform-wide view. Students/parents/desks remain refused. */
+    app.get('/ai/calls', { preHandler: requireRole('owner', 'principal', 'itadmin') }, async (req) => {
       return withUser(req.user.tenant_id, req.user.role, async (c) => {
         const r = await c.query(
           `SELECT id, plugin_id, purpose, provider, model, tokens_in, tokens_out, latency_ms, outcome, error, sandbox, created_at
@@ -1493,7 +1575,7 @@ export async function buildApp(opts = {}) {
         return { calls: r.rows };
       });
     });
-    app.post('/ai/eval', { preHandler: requireRole('owner', 'itadmin'), config: { rateLimit: { max: 5, timeWindow: '1 hour' } } }, async (req, reply) => {
+    app.post('/ai/eval', { preHandler: requireRole('owner', 'principal', 'itadmin'), config: { rateLimit: { max: 5, timeWindow: '1 hour' } } }, async (req, reply) => {
       const { pluginId, provider, cases, settings } = req.body ?? {};
       if (!Array.isArray(cases) || !cases.length) return reply.code(400).send({ error: 'cases: a non-empty array of {name?, input} is required' });
       const r = await gateway.evalRun({ tenantId: req.user.tenant_id, userId: req.user.id, pluginId, provider, cases, settings });
@@ -1504,13 +1586,13 @@ export async function buildApp(opts = {}) {
   // --- L2-5.2: workflow rules — minimal honest step-runner state --------------
   // One rule = topic filter + tiny condition + ONE action (see
   // .coop/L2-5.2-workflow-runtime-decision.md). No UI yet; every change audited.
-  app.get('/workflow-rules', { preHandler: requireRole('owner', 'itadmin') }, async (req) => {
+  app.get('/workflow-rules', { preHandler: requireRole('owner', 'principal', 'itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`SELECT id, name, topic, condition, action, enabled, created_at FROM app.workflow_rules WHERE tenant_id=$1 ORDER BY created_at DESC`, [req.user.tenant_id]);
       return { rules: r.rows };
     });
   });
-  app.post('/workflow-rules', { preHandler: requireRole('owner', 'itadmin'), config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/workflow-rules', { preHandler: requireRole('owner', 'principal', 'itadmin'), config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { name, topic, condition, action } = req.body ?? {};
     if (!name || !topic || !action?.kind) return reply.code(400).send({ error: 'name, topic and action.kind are required' });
     if (!['outbox', 'comms'].includes(action.kind)) return reply.code(400).send({ error: 'action.kind must be outbox or comms' });
@@ -1525,7 +1607,7 @@ export async function buildApp(opts = {}) {
       return { id: r.rows[0].id };
     });
   });
-  app.delete('/workflow-rules/:id', { preHandler: requireRole('owner', 'itadmin') }, async (req, reply) => {
+  app.delete('/workflow-rules/:id', { preHandler: requireRole('owner', 'principal', 'itadmin') }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       /* S0 fix A1: the app role has NO table-level DELETE in schema app (D-35 law;
          migration 071 grants SELECT/INSERT/UPDATE only) — the hard DELETE here 500'd
@@ -1615,7 +1697,25 @@ export async function buildApp(opts = {}) {
           THEN (SELECT count(*)::int FROM app.outbox WHERE discovered_at IS NULL AND created_at < now() - interval '15 minutes') END AS undiscovered,
         CASE WHEN EXISTS (SELECT 1 FROM information_schema.columns
           WHERE table_schema='app' AND table_name='outbox' AND column_name='workflow_scanned_at')
-          THEN (SELECT count(*)::int FROM app.outbox WHERE workflow_scanned_at IS NULL AND created_at < now() - interval '15 minutes') END AS workflow_unscanned
+          THEN (SELECT count(*)::int FROM app.outbox WHERE workflow_scanned_at IS NULL AND created_at < now() - interval '15 minutes') END AS workflow_unscanned,
+        (SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (confirmed_at - created_at))), 0)::int
+           FROM app.payments WHERE status IN ('confirmed','refunded')
+             AND confirmed_at > now() - interval '24 hours') AS fee_settlement_latency,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0)::int
+           FROM app.communications WHERE status='queued' AND template LIKE 'FEE%') AS fee_dunning_queue_age,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(confirmed_at))), 0)::int
+           FROM app.payments WHERE reconciliation_status='disputed' AND confirmed_at IS NOT NULL) AS fee_reconciliation_age,
+        CASE WHEN to_regclass('student.wellbeing_request') IS NOT NULL THEN
+          (SELECT count(*)::int FROM student.wellbeing_request
+            WHERE status <> 'resolved' AND created_at < now() - interval '7 days') END AS wellbeing_stalled,
+        CASE WHEN to_regclass('teacher.submission') IS NOT NULL THEN
+          (SELECT count(*)::int FROM teacher.submission
+            WHERE status IN ('submitted','late') AND submitted_at < now() - interval '7 days') END AS homework_backlog,
+        (SELECT count(*)::int FROM app.actions
+          WHERE status='open' AND deadline IS NOT NULL AND deadline < now()) AS actions_overdue,
+        CASE WHEN to_regclass('app.compliance_items') IS NOT NULL THEN
+          (SELECT count(*)::int FROM app.compliance_items
+            WHERE status <> 'filed' AND due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date) END AS compliance_overdue
       `).catch(() => null);
     // The migrations comparison needs filesystem + a schema_migrations read; kept separate and LAST so it
     // is the only other owner-path site this batch adds.
@@ -1751,6 +1851,44 @@ export async function buildApp(opts = {}) {
       if (fr.workflow_unscanned !== null && fr.workflow_unscanned !== undefined) {
         lines.push('# TYPE schoolos_fleet_workflow_unscanned gauge', `schoolos_fleet_workflow_unscanned ${fr.workflow_unscanned}`);
       }
+      if (fr.fee_settlement_latency !== null && fr.fee_settlement_latency !== undefined) {
+        lines.push(
+          '# TYPE schoolos_fleet_fee_settlement_latency_seconds gauge',
+          `schoolos_fleet_fee_settlement_latency_seconds ${fr.fee_settlement_latency}`,
+          '# HELP schoolos_fleet_fee_settlement_latency_seconds The slowest initiation→confirmation in the last 24h. '
+          + 'A fee collection that takes a day to settle is a desk process failure, not a gateway one.',
+          '# TYPE schoolos_fleet_fee_dunning_queue_age_seconds gauge',
+          `schoolos_fleet_fee_dunning_queue_age_seconds ${fr.fee_dunning_queue_age}`,
+          '# HELP schoolos_fleet_fee_dunning_queue_age_seconds Age of the oldest queued fee reminder. Non-trivial '
+          + 'values mean the comms dispatcher is not draining fee messages.',
+          '# TYPE schoolos_fleet_fee_reconciliation_age_seconds gauge',
+          `schoolos_fleet_fee_reconciliation_age_seconds ${fr.fee_reconciliation_age}`,
+          '# HELP schoolos_fleet_fee_reconciliation_age_seconds How long the oldest disputed payment has waited for '
+          + 'a human. Money and the gateway still disagree; the discrepancy action is unactioned.');
+      }
+      // DEL-8: the teacher/student domain queues. Emitted only when the table answered, so a
+      // database that predates 031/036 still serves every other metric.
+      if (fr.wellbeing_stalled !== null && fr.wellbeing_stalled !== undefined) {
+        lines.push('# TYPE schoolos_fleet_wellbeing_stalled gauge', `schoolos_fleet_wellbeing_stalled ${fr.wellbeing_stalled}`,
+          '# HELP schoolos_fleet_wellbeing_stalled Student wellbeing requests open for over 7 days (ALL tenants). '
+          + 'Non-zero means a student asked for help and the counselor queue is not being worked.');
+      }
+      if (fr.homework_backlog !== null && fr.homework_backlog !== undefined) {
+        lines.push('# TYPE schoolos_fleet_homework_backlog gauge', `schoolos_fleet_homework_backlog ${fr.homework_backlog}`,
+          '# HELP schoolos_fleet_homework_backlog Submissions waiting over 7 days for review (ALL tenants). '
+          + 'A chronic backlog means students are getting no feedback.');
+      }
+      // OPP-OVR-3 / DEL-6: the oversight plane's own gauges (all tenants).
+      lines.push(
+        '# TYPE schoolos_fleet_actions_overdue gauge', `schoolos_fleet_actions_overdue ${fr.actions_overdue}`,
+        '# HELP schoolos_fleet_actions_overdue Open decisions past their deadline (ALL tenants). A rising '
+        + 'count means the approval spine is not being worked and the SLA escalation is doing the deciding.');
+      if (fr.compliance_overdue !== null && fr.compliance_overdue !== undefined) {
+        lines.push(
+          '# TYPE schoolos_fleet_compliance_overdue gauge', `schoolos_fleet_compliance_overdue ${fr.compliance_overdue}`,
+          '# HELP schoolos_fleet_compliance_overdue Statutory compliance items not filed and past due (ALL '
+          + 'tenants). A missed return is a governance failure, not a backlog.');
+      }
     }
     if (migPending !== null && migPending !== undefined) {
       lines.push('# TYPE schoolos_fleet_migrations_pending gauge', `schoolos_fleet_migrations_pending ${migPending}`);
@@ -1776,6 +1914,65 @@ export async function buildApp(opts = {}) {
       if (!/^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(metric)) continue; // never emit a malformed sample
       if (lines.includes(`# TYPE ${metric} counter`)) continue;  // belt-and-braces against a future collision
       lines.push(`# TYPE ${metric} counter`, `${metric} ${Number(value) || 0}`);
+    }
+    /* FEE-OPS-1: fee-domain gauges. Without these the money desk has no instrument panel — collection,
+       unconfirmed attempts, reconciliation discrepancies and the dunning queue were all invisible. */
+    const fee = await sysq(`SELECT
+        (SELECT COALESCE(SUM(net_amount_cents - paid_cents),0)::bigint FROM app.fee_obligations WHERE tenant_id=$1 AND status IN ('open','partial')) AS outstanding_cents,
+        (SELECT COALESCE(SUM(paid_cents),0)::bigint FROM app.fee_obligations WHERE tenant_id=$1) AS collected_cents,
+        (SELECT count(*)::int FROM app.payments WHERE tenant_id=$1 AND status='initiated' AND created_at < now() - interval '1 hour') AS stale_initiated,
+        (SELECT count(*)::int FROM app.payments WHERE tenant_id=$1 AND reconciliation_status='disputed') AS disputed,
+        (SELECT count(*)::int FROM app.communications WHERE tenant_id=$1 AND template IN ('FEE_REMINDER','FEE_ESCALATION') AND status='queued') AS dunning_queued
+      `, [req.user.tenant_id]).catch(() => null);
+    if (fee?.rows?.[0]) {
+      const f = fee.rows[0];
+      lines.push(
+        '# TYPE schoolos_fee_outstanding_cents gauge',
+        `schoolos_fee_outstanding_cents ${Number(f.outstanding_cents) || 0}`,
+        '# TYPE schoolos_fee_collected_cents gauge',
+        `schoolos_fee_collected_cents ${Number(f.collected_cents) || 0}`,
+        '# TYPE schoolos_fee_stale_initiated gauge',
+        `schoolos_fee_stale_initiated ${Number(f.stale_initiated) || 0}`,
+        '# TYPE schoolos_fee_reconciliation_discrepancies gauge',
+        `schoolos_fee_reconciliation_discrepancies ${Number(f.disputed) || 0}`,
+        '# TYPE schoolos_fee_dunning_queue gauge',
+        `schoolos_fee_dunning_queue ${Number(f.dunning_queued) || 0}`);
+    }
+    /* LIB-E6: library-domain gauges. The library had an aggregate ops DOOR but no instrument panel, so
+       a stalled hold queue, a chronic overdue backlog or fines nobody is collecting were invisible to
+       alerting. The tenant-scoped series serve the school's own dashboard; the `fleet_` series are the
+       platform-wide signals the alert rules in ops/alerts/schoolos.rules.yml name (so they are emitted
+       only when the owner-path read answered — never a fabricated zero on a pre-108 database). */
+    const library = await sysq(`SELECT
+        (SELECT count(*)::int FROM library.loan WHERE tenant_id=$1 AND status='issued') AS on_loan,
+        (SELECT count(*)::int FROM library.loan WHERE tenant_id=$1 AND status='issued'
+           AND due_on < ('now'::timestamptz AT TIME ZONE 'UTC')::date) AS overdue,
+        (SELECT count(*)::int FROM library.reservation WHERE tenant_id=$1 AND status='ready') AS holds_ready,
+        (SELECT count(*)::int FROM library.copy WHERE tenant_id=$1 AND status='available') AS copies_available,
+        (SELECT count(*)::int FROM library.reservation WHERE status='ready' AND expires_at IS NOT NULL
+           AND expires_at < now()) AS holds_stalled,
+        (SELECT count(*)::int FROM library.loan WHERE status='issued'
+           AND due_on < ('now'::timestamptz AT TIME ZONE 'UTC')::date - 30) AS overdue_chronic,
+        (SELECT count(*)::int FROM library.fine WHERE status='outstanding'
+           AND assessed_at < now() - interval '180 days') AS fines_stale
+      `, [req.user.tenant_id]).catch(() => null);
+    if (library?.rows?.[0]) {
+      const l = library.rows[0];
+      lines.push(
+        '# TYPE schoolos_library_on_loan gauge', `schoolos_library_on_loan ${Number(l.on_loan) || 0}`,
+        '# TYPE schoolos_library_overdue gauge', `schoolos_library_overdue ${Number(l.overdue) || 0}`,
+        '# TYPE schoolos_library_holds_ready gauge', `schoolos_library_holds_ready ${Number(l.holds_ready) || 0}`,
+        '# TYPE schoolos_library_copies_available gauge', `schoolos_library_copies_available ${Number(l.copies_available) || 0}`,
+        '# TYPE schoolos_fleet_library_holds_stalled gauge', `schoolos_fleet_library_holds_stalled ${Number(l.holds_stalled) || 0}`,
+        '# HELP schoolos_fleet_library_holds_stalled Ready holds past their expiry, fleet-wide. The day-worker '
+        + 'expiry sweep should have expired them and advanced the queue — a non-zero reading means the sweep is '
+        + 'not running or is failing.',
+        '# TYPE schoolos_fleet_library_overdue_chronic gauge', `schoolos_fleet_library_overdue_chronic ${Number(l.overdue_chronic) || 0}`,
+        '# HELP schoolos_fleet_library_overdue_chronic Loans more than 30 days overdue, fleet-wide. An ordinary '
+        + 'overdue count is normal in any school; a chronic backlog means the chase is not working.',
+        '# TYPE schoolos_fleet_library_fines_stale gauge', `schoolos_fleet_library_fines_stale ${Number(l.fines_stale) || 0}`,
+        '# HELP schoolos_fleet_library_fines_stale Outstanding fines assessed more than 180 days ago, '
+        + 'fleet-wide — money the desk has stopped recovering.');
     }
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(lines.join('\n') + '\n');
   });

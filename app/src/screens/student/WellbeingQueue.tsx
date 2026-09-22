@@ -28,8 +28,9 @@ import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
 import { apiRequest } from '../../services/liveApi';
-import { useStore } from '../../state/store';
 import { useSession } from '../../App';
+import { canSurface } from '../../lib/effective';
+import { useRoleOrGrant } from '../../lib/access';
 
 /* authorized staff (plan: "counselor sees wellbeing routing"). The server
    decides who actually sees rows — this is a UI mirror, not authority. */
@@ -108,9 +109,11 @@ function parseRows(raw: unknown): WellbeingRow[] {
 }
 
 export default function WellbeingQueue() {
-  const { session } = useStore();
   const live = useSession();
-  const allowed = STAFF_ROLES.includes(live.role) || STAFF_ROLES.includes(session.roleId);
+  /* FEX-4/FEX-7: the wellbeing desk's server gate is `GET /student/wellbeing`; a mask-granted
+     custom role reaches it through the grant, not a built-in role string. */
+  const staffGranted = useRoleOrGrant(STAFF_ROLES, ['GET /student/wellbeing']);
+  const allowed = live.effective ? canSurface(live.effective, '/wellbeing-queue') : staffGranted;
 
   const [rows, setRows] = useState<WellbeingRow[] | null>(null);
   const [loading, setLoading] = useState(true);

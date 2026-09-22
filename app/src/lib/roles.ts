@@ -17,8 +17,8 @@
 import type { RoleId } from '../types/domain';
 
 export const KNOWN_ROLES: readonly RoleId[] = [
-  'owner', 'principal', 'teacher', 'coordinator', 'counselor', 'finance', 'admissions',
-  'transport', 'parent', 'student', 'itadmin', 'facilities', 'technician',
+  'owner', 'principal', 'teacher', 'coordinator', 'counselor', 'finance', 'finance_head', 'finance_clerk',
+  'admissions', 'transport', 'parent', 'student', 'itadmin', 'facilities', 'technician', 'librarian',
 ];
 
 /** The lightest surface: what an unrecognised role gets. Never the broadest — see the note above. */
@@ -32,3 +32,23 @@ export function mapAccountRole(role: string | null | undefined): RoleId {
 /** Does this role get the calm (parent/student) surface? */
 export const isLightRole = (role: string | null | undefined): boolean =>
   mapAccountRole(role) === 'parent' || mapAccountRole(role) === 'student';
+
+/* The role's own landing page — the first item in that role's navigation (Shell.tsx useNavItems), so a
+   signed-in account opens on its own workspace instead of the generic /today.
+ *
+ * /today is gated by the server (`GET /actions`), which parent, student and librarian do NOT hold, so the
+ * generic landing showed them "Not available for your role" the moment they signed in. Technician holds
+ * /today but has no Today item in its nav either, so it also lands on its jobs board. Roles whose nav
+ * starts at /today (owner, principal, teacher, finance, admissions, transport, facilities, itadmin,
+ * counselor) are unchanged. Coordinator deliberately stays on /today because its nav DOES link to Today:
+ * redirecting every /today visit would break that link, and /today is reachable for it anyway. */
+const ROLE_HOME: Partial<Record<RoleId, string>> = {
+  parent: '/parent/family',
+  student: '/student/home2',
+  librarian: '/library/desk',
+  technician: '/maintenance/technician',
+};
+
+export function homeForRole(role: string | null | undefined): string {
+  return ROLE_HOME[mapAccountRole(role)] ?? '/today';
+}

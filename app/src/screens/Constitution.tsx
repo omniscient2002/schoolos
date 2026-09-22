@@ -2,13 +2,18 @@
    Constitution — the three-layer policy manager.
    Platform floor · regulatory pack · school constitution.
    ============================================================ */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, Empty, Modal, PageHead, Section, Stat, useToast } from '../components/ui';
+import { apiGet, apiPost } from '../services/liveApi';
+import { Badge, Button, Card, Empty, Modal, PageHead, SampleNote, Section, SkeletonCard, Stat, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDate } from '../lib/format';
 import type { PolicyRule } from '../types/domain';
+
+/* OPP-PRD-12: the school's own policy store is live (GET/POST /policy-documents) — versioned and
+   audited. The seed `policies` below remain as the labelled REFERENCE set (platform floor + pack). */
+interface PolicyDoc { id: string; ref: string; title: string; category: string; body: string; version: number; updated_at: string }
 
 const CATEGORIES = ['Attendance', 'Fees', 'Communication', 'Approvals', 'Safeguarding', 'Transport', 'Privacy', 'AI Governance'];
 const POSTURES: PolicyRule['posture'][] = ['AUTO', 'APPROVAL REQUIRED', 'HUMAN-ONLY'];
@@ -63,6 +68,40 @@ export default function Constitution() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editStatement, setEditStatement] = useState('');
   const [editPosture, setEditPosture] = useState<PolicyRule['posture']>('AUTO');
+  // OPP-PRD-12: the live school policy store.
+  const [live, setLive] = useState<PolicyDoc[] | null>(null);
+  const [liveErr, setLiveErr] = useState<string | null>(null);
+  const [liveEdit, setLiveEdit] = useState<Partial<PolicyDoc> | null>(null);
+  const [liveBody, setLiveBody] = useState('');
+  const [liveTitle, setLiveTitle] = useState('');
+  const [liveBusy, setLiveBusy] = useState(false);
+  const loadLive = () => {
+    apiGet<{ policies: PolicyDoc[] }>('/policy-documents')
+      .then(r => { setLive(r.policies ?? []); setLiveErr(null); })
+      .catch(e => { setLive([]); setLiveErr(String(e)); });
+  };
+  useEffect(loadLive, []);
+
+  const openLiveEdit = (p?: PolicyDoc) => {
+    setLiveEdit(p ?? { ref: '', title: '', category: 'school' });
+    setLiveTitle(p?.title ?? '');
+    setLiveBody(p?.body ?? '');
+  };
+  const saveLive = async () => {
+    if (!liveEdit) return;
+    if (!liveTitle.trim() || !liveBody.trim() || !String(liveEdit.ref ?? '').trim()) {
+      toast({ title: 'Reference, title and body are required', tone: 'error' }); return;
+    }
+    setLiveBusy(true);
+    try {
+      await apiPost('/policy-documents', { ref: liveEdit.ref, title: liveTitle.trim(), category: liveEdit.category ?? 'school', body: liveBody.trim() });
+      toast({ title: 'Policy saved — a new version is live', tone: 'success' });
+      setLiveEdit(null);
+      loadLive();
+    } catch (e) {
+      toast({ title: 'Could not save the policy', sub: String(e).replace('Error: ', ''), tone: 'error' });
+    } finally { setLiveBusy(false); }
+  };
 
   const refOf = (p: PolicyRule) => POLICY_REF[p.id] ?? `${p.category} §${CATEGORIES.indexOf(p.category) + 1}.${p.id.replace('pol_', '')}`;
   const isFloor = (p: PolicyRule) => (p.details ?? []).some(d => d.startsWith('Platform-invariant'));
@@ -96,12 +135,12 @@ export default function Constitution() {
         recordType: 'Policy', recordRef: `${refOf(p)} — ${p.title}`,
         reason: 'Draft edit saved from Constitution page', policyRef: refOf(p),
         aiInvolved: false, risk: 'medium',
-        outcome: `Draft version ${version} saved in this workspace — resets on reload (server policy store read-only today)`,
+        outcome: `Reference-set draft ${version} saved in this workspace (the illustrative reference set is not persisted)`,
       },
     });
     toast({
-      title: 'Draft saved in this workspace',
-      sub: `${refOf(p)} · ${p.title} → ${version}. Resets when you leave the page — the server policy store is read-only today (versioning door pending).`,
+      title: 'Reference draft saved in this workspace',
+      sub: `${refOf(p)} · ${p.title} → ${version}. This is the illustrative reference set — your own rules live in the School constitution section above.`,
       tone: 'success',
     });
     setEditId(null);
@@ -114,9 +153,11 @@ export default function Constitution() {
       <PageHead
         title="School policies"
         sub={session.roleId === 'itadmin'
-          ? 'Reference policy set. The server policy store is read-only today — edits here are workspace drafts (resets on reload) with a local audit note.'
-          : 'The rules every automation is designed against; runtime enforcement rolls out with the workflow runtime.'}
+          ? 'Your school constitution is saved, versioned and audited on the server; the reference set below is illustrative.'
+          : 'The rules every automation is designed against. Your own rules are saved, versioned and audited; the reference set below is illustrative.'}
       />
+
+      <SampleNote>Sample policies — the reference set below is illustrative in this build. Your own school constitution (top of this page) is stored live, versioned and audited.</SampleNote>
 
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
         <Card>
@@ -138,9 +179,44 @@ export default function Constitution() {
             <Icon.Scale size={15} style={{ color: 'var(--ai)' }} />
             <span style={{ fontWeight: 620 }}>3 · School constitution</span>
           </div>
-          <div className="u-small u-muted">Meridian's own rules. Edited here by the Principal; every change is versioned and audit-logged.</div>
+          <div className="u-small u-muted">Meridian's own rules. Saved, versioned and audit-logged on the server; edit them below.</div>
         </Card>
       </div>
+
+      {/* OPP-PRD-12 · the live school constitution */}
+      <Section
+        title="School constitution"
+        sub="Your own rules — each save creates a new version and writes an audit entry."
+        style={{ marginBottom: 4 }}
+      >
+        {live === null ? <SkeletonCard lines={3} /> : (
+          <Card pad>
+            {liveErr ? <div className="u-small u-muted">Could not load the policy store — {liveErr}</div> : live.length === 0 ? (
+              <Empty icon={<Icon.Scale size={22} />} title="No school policies yet" sub="Add your first rule — it is versioned and audited from the moment you save."
+                action={<Button variant="secondary" onClick={() => openLiveEdit()}>Add a policy</Button>} />
+            ) : (
+              <div className="u-col" style={{ gap: 10 }}>
+                {live.map(p => (
+                  <div key={p.id} className="u-between u-wrap" style={{ gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className="mono u-xs" style={{ color: 'var(--accent-text)', fontWeight: 650 }}>{p.ref}</span>
+                        <Badge tone="outline">{p.category}</Badge>
+                        <Badge tone="neutral">v{p.version}</Badge>
+                        <span className="u-xs u-faint">updated {fmtDate(new Date(p.updated_at))}</span>
+                      </div>
+                      <div style={{ fontWeight: 610, marginTop: 3 }}>{p.title}</div>
+                      <div className="u-small u-muted">{p.body}</div>
+                    </div>
+                    <Button variant="secondary" size="sm" icon={<Icon.Edit size={12} />} onClick={() => openLiveEdit(p)}>Edit</Button>
+                  </div>
+                ))}
+                <div><Button variant="ghost" size="sm" icon={<Icon.Check size={12} />} onClick={() => openLiveEdit()}>Add a policy</Button></div>
+              </div>
+            )}
+          </Card>
+        )}
+      </Section>
 
       <div className="grid grid-4" style={{ marginBottom: 22 }}>
         <Stat label="Constitution entries" value={local.length} sub={`across ${new Set(local.map(p => p.category)).size} categories`} />
@@ -231,7 +307,7 @@ export default function Constitution() {
                         </span>
                       ))}
                     </div>
-                    <div className="u-xs u-faint">Status: {p.status} · edits here are workspace drafts (resets on reload) until the server policy store accepts versions.</div>
+                    <div className="u-xs u-faint">Status: {p.status} · this is the illustrative reference set; your own rules live in the School constitution section above.</div>
                   </div>
                 )}
               </Card>
@@ -283,6 +359,38 @@ export default function Constitution() {
               </div>
             </div>
             <div className="u-xs u-faint">Current version {editing.version} → next save creates {bumpMinor(editing.version)}.</div>
+          </div>
+        )}
+      </Modal>
+
+      {/* OPP-PRD-12 · edit the live school policy (saved, versioned, audited) */}
+      <Modal
+        open={!!liveEdit}
+        onClose={() => setLiveEdit(null)}
+        title={liveEdit?.id ? 'Edit policy — new version' : 'Add a school policy'}
+        sub={liveEdit?.id ? `${liveEdit.ref} · currently v${liveEdit.version}. Saving creates a new version.` : 'Give the rule a reference, a title and its text.'}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setLiveEdit(null)}>Cancel</Button>
+            <Button variant="primary" icon={<Icon.Check size={13} />} loading={liveBusy} onClick={saveLive}>Save policy</Button>
+          </>
+        }
+      >
+        {liveEdit && (
+          <div className="u-col" style={{ gap: 12 }}>
+            <div>
+              <label className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }} htmlFor="live-ref">Reference</label>
+              <input id="live-ref" className="input" value={liveEdit.ref ?? ''} disabled={!!liveEdit.id} onChange={e => setLiveEdit(v => ({ ...v, ref: e.target.value }))} placeholder="e.g. Fees §4.2" style={{ marginTop: 5, width: '100%' }} />
+            </div>
+            <div>
+              <label className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }} htmlFor="live-title">Title</label>
+              <input id="live-title" className="input" value={liveTitle} onChange={e => setLiveTitle(e.target.value)} placeholder="e.g. Late-fee cap" style={{ marginTop: 5, width: '100%' }} />
+            </div>
+            <div>
+              <label className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }} htmlFor="live-body">Rule</label>
+              <textarea id="live-body" className="textarea" rows={4} value={liveBody} onChange={e => setLiveBody(e.target.value)} style={{ marginTop: 5 }} />
+            </div>
+            <div className="u-xs u-faint">Saving writes an audit entry naming you and the new version.</div>
           </div>
         )}
       </Modal>

@@ -351,7 +351,7 @@ export default function Today() {
       detail: failedCount
         ? `${failedCount} online payment${failedCount === 1 ? '' : 's'} failed this week and await retry or guardian assistance.`
         : 'No failed payments on record this week.',
-      chips: [demo('Fees records · live'), demo('Gateway settlement · live')],
+      chips: [demo('Fees records · sample'), demo('Gateway settlement · sample')],
       badge: { label: 'Fee dip', tone: 'warning' },
       to: '/fees',
     } : null;
@@ -474,7 +474,7 @@ export default function Today() {
       const overdueSum = feeObligationsAll.filter(f => f.status === 'overdue').reduce((a, f) => a + (f.amount - f.paidAmount), 0);
       headSub = `${weekday(now)} · ${fmtDate(now)} · Finance · ${campusLabel}`;
       stats = [
-        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'From the fee obligations on record' : 'No fee records yet', to: '/fees' },
+        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'Sample insight in this build — open Fees for the live ledger' : 'No fee records yet', to: '/fees' },
         { label: 'Failed payments', value: String(failed.length), sub: failed.length ? `${failed.length} awaiting retry or settlement` : 'Nothing awaiting retry', to: '/fees' },
         { label: 'Overdue outstanding', value: fmtMoneyShortLocal(overdueSum), sub: 'Across all campuses · Term 1 + 2', to: '/fees' },
         { label: 'Open items', value: String(openCount), sub: `${highCount} high priority`, to: '/action-center' },
@@ -485,8 +485,8 @@ export default function Today() {
         items: [
           ...(collection != null ? [{
             id: 'fee-trend', icon: 'Money' as const, title: `Collection ${collection}% this week`,
-            detail: 'Fee movement recomputed from the live obligations ledger.',
-            chips: [demo('Fees records · live')],
+            detail: 'Sample figure in this build — open the Fees desk for the live obligations ledger.',
+            chips: [demo('Fees records · sample')],
             badge: { label: 'Dip', tone: 'warning' as BadgeTone }, to: '/fees',
           }] : []),
         ],
@@ -558,7 +558,7 @@ export default function Today() {
       stats = [
         { label: 'WOC — coverage', value: woc != null ? `${woc.toFixed(1)}%` : '—', spark: wocSeries.length ? <Sparkline points={wocSeries} color="var(--accent)" /> : undefined, sub: `Weekly Operating Coverage · ${campusesAll.reduce((a, c) => a + (c.students ?? 0), 0)} students`, to: '/attendance' },
         { label: 'Open actions', value: String(openCount), sub: `${criticalCount} critical · ${highCount} high priority`, to: '/action-center' },
-        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? `${feeObligationsAll.filter(f => f.status === 'failed').length} failed payments on record` : 'No fee records yet', to: '/fees' },
+        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? 'Sample figure in this build — the live ledger is on the Fees desk' : 'No fee records yet', to: '/fees' },
         { label: 'Transport on time', value: `${onTimePct}%`, sub: r7 ? (r7.status === 'delayed' ? `Bus 14 delayed +${r7.delayMins ?? 13} min` : 'All routes nominal') : 'No routes yet', to: '/transport' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'priority-ranked, oldest deadline first', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });

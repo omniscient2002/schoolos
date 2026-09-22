@@ -221,6 +221,11 @@ export function register(app, kernel) {
       for (const subject of bagSubjects)
         bag.push({ text: /lab/i.test(subject) ? `${subject} — lab record, apron and kit` : `${subject} — textbook and notebook` });
       const idle = Math.max(1, parseInt(process.env.STUDENT_IDLE_TIMEOUT_MINUTES ?? '10', 10) || 10);
+      // API-13: the declared student.home.v1 contract is emitted when the home plane is
+      // read (the kiosk's landing view — the natural trigger for a day-view event).
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'student', label: `Student home viewed${me ? ` — ${me.name}` : ''}`, ref: me?.id ?? null },
+        'student.home.v1', { studentId: me?.id ?? null, hasNextClass: !!next_class });
       return {
         student: me ? { name: me.name, grade: me.grade, section: me.section, admission_no: me.admission_no } : null,
         next_class,
@@ -438,7 +443,7 @@ export function register(app, kernel) {
   app.get('/student/print/queue', { preHandler: [require(...STAFF), lifecycleGate] }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
-        `SELECT j.id, j.kind, j.status, j.created_at, j.printed_at,
+        `SELECT j.id, j.kind, j.status, j.payload, j.created_at, j.printed_at,
                 COALESCE(s.name, u.name) AS student_name,
                 CASE WHEN s.id IS NOT NULL THEN s.grade || '-' || s.section END AS class
          FROM student.print_job j
@@ -462,6 +467,25 @@ export function register(app, kernel) {
         reason: 'printed at the school printer', policyRef: 'STUDENTOS-PLAN §78 (kiosk print plane)', risk: 'low',
         outcome: 'status printed' });
       return { ok: true, id: row.id, status: 'printed' };
+    });
+  });
+
+  // cancel an own queued job (DAT-6: the declared `cancelled` state was unreachable).
+  // Strictly own-row (creator_user_id) and only while still queued — once the office has
+  // printed it, the paper exists and the record must stay truthful.
+  app.post('/student/print/:id/cancel', { preHandler: [require(...STUDENT), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    return withStudentUser(req.user.tenant_id, req.user.id, async (c) => {
+      const row = (await c.query(
+        `UPDATE student.print_job SET status='cancelled', updated_at=now()
+         WHERE id=$1 AND tenant_id=$2 AND creator_user_id=$3 AND status='queued'
+         RETURNING id, kind`,
+        [req.params.id, req.user.tenant_id, req.user.id])).rows[0];
+      if (!row) return bad(reply, 'We couldn\'t find a queued print job of yours to cancel', 404);
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: `Print cancelled (${row.kind})`, recordType: 'PrintJob', recordRef: row.id,
+        reason: 'student cancelled before printing', policyRef: 'STUDENTOS-PLAN §78 (kiosk print plane)', risk: 'low',
+        outcome: 'status cancelled' });
+      return { ok: true, id: row.id, status: 'cancelled' };
     });
   });
 

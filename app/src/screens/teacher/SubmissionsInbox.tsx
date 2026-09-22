@@ -23,8 +23,8 @@ import { useStore } from '../../state/store';
 import {
   listHomework, listSubmissions, reviewSubmission,
   type TeacherSubmission,
-} from '../../services/teacherFixtures';
-import { AsyncGate, DeniedState, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+} from '../../services/teacherApi';
+import { AsyncGate, DeniedState, useAsync, useTeacherAccess } from './teacherKit';
 
 /* class filter options — the live door owns the real roster */
 const MY_CLASSES = ['8-B', '8-A', '7-A'];
@@ -53,6 +53,7 @@ const CONTENT_ICON: Record<TeacherSubmission['content_type'], keyof typeof Icon>
 export default function SubmissionsInbox() {
   const toast = useToast();
   const { session } = useStore();
+  const allowed = useTeacherAccess('/teacher/submissions');
 
   const [tab, setTab] = useState<string>('all');
   const [cls, setCls] = useState('all');
@@ -184,7 +185,7 @@ export default function SubmissionsInbox() {
     } finally { setSaving(false); }
   };
 
-  if (!TEACHER_STAFF_ROLES.includes(session.roleId)) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={session.roleId} />;
 
   return (
     <div>

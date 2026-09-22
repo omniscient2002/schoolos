@@ -69,11 +69,10 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://schoolos:${DB_PASSWORD:-schoolos_dev_pw}@db:5432/schoolos
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      # T206 backlog stub — log shipping (no shipper wired in code yet; pino only
-      # writes stdout). When a shipper lands, these become real contract:
-      # LOG_LEVEL: ${LOG_LEVEL:-info}          # pino level (config.js reads it today)
-      # LOG_SHIP_URL: ${LOG_SHIP_URL:-}        # e.g. vector/loki endpoint (UNIMPLEMENTED)
-      # LOG_SHIP_TOKEN: ${LOG_SHIP_TOKEN:-}    # shipper auth (UNIMPLEMENTED)
+      # Log shipping: pino writes JSON to stdout; the container runtime (Docker/systemd)
+      # collects it. There is NO in-app shipper — the former LOG_SHIP_* stubs were removed
+      # (C9) rather than left as a contract the code does not honour. Add a sidecar collector
+      # (vector/loki/promtail) if central shipping is required.
       # config.js refuses CORS_ORIGINS="*" in production — pass the operator's
       # allowlist through (comma-separated); see server/.env.example.
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in production}

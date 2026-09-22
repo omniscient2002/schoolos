@@ -134,7 +134,7 @@ export default function Incidents() {
       <PageHead
         title="Incidents"
         sub={session.roleId === 'transport'
-          ? 'Transport-linked incidents surface first for your role. Every status change is audit-logged.'
+          ? 'Transport-linked incidents surface first for your role. Status changes here are workspace-local in this build — the shared ledger is not connected yet.'
           : 'Everything that went wrong, from detection to review — with the timeline that proves what happened.'}
       />
 
@@ -288,7 +288,8 @@ export default function Incidents() {
             </div>
 
             <div className="u-xs u-faint">
-              Detected {fmtDate(selected.openedOn)} — this incident and its full timeline are preserved in the audit trail; entries cannot be edited or deleted.
+              Detected {fmtDate(selected.openedOn)} — this incident board is sample data in this build: status
+              changes update this session only and are not written to the server audit ledger.
             </div>
           </div>
         )}

@@ -39,10 +39,11 @@ export default function Onboard() {
   };
 
   const enterApp = () => {
-    // Token is already stored (apiSignup). Route through the root so AuthGate
-    // validates the session live, then lands on the setup checklist.
+    // Token is already held in memory (apiSignup). Navigate client-side so the
+    // session survives: switching pathname re-mounts SessionApp, whose AuthGate
+    // validates the fresh token live via GET /me. A hard reload (navigate(0))
+    // would drop the memory-only bearer and bounce straight back to /login.
     navigate('/people-admin', { replace: true });
-    navigate(0); // hard reload → AuthGate cold-open validates the fresh token
   };
 
   return (
@@ -81,7 +82,7 @@ export default function Onboard() {
             <button className="btn btn-primary" type="submit" disabled={busy || school.schoolName.trim().length < 3} style={{ width: '100%', justifyContent: 'center', marginTop: 4 }}>
               Continue <Icon.ArrowRight size={15} />
             </button>
-            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Classes 1–8 with sections A/B/C are set up by default — you can change everything later.</div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Your classes and sections are yours to define — nothing is added for you. You'll set them up right after signup.</div>
           </form>
         )}
 

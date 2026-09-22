@@ -65,7 +65,10 @@ before(async () => {
   // is resolved from the database, which is what every other test in this suite does.
   const t1row = (await pool.query(`SELECT id, tenant_id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0];
   tenantId = t1row.tenant_id;
-  await pool.query(`UPDATE app.class_assignments SET active=false WHERE teacher_id=$1`, [t1row.id]);
+  // J5: the seed now populates class_assignments (083 is replayed), so retire EVERY active assignment in
+  // the tenant — not just this teacher's — before pinning the fixture. Otherwise a seeded owner of the
+  // chosen class collides with the unique (tenant, grade, section) WHERE active index.
+  await pool.query(`UPDATE app.class_assignments SET active=false WHERE tenant_id=$1 AND active`, [tenantId]);
   await pool.query(`INSERT INTO app.class_assignments (tenant_id, teacher_id, grade, section) VALUES ($1,$2,$3,$4)`,
     [tenantId, t1row.id, cls.ownedGrade, cls.ownedSection]);
   const seeded = (await pool.query(

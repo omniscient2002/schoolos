@@ -5,8 +5,16 @@
 // allowed to be slightly stale — never wrong by more than a minute. Rides the same
 // RLS session as every door (withUser), so a parent can never reach these doors and
 // staff see only their own tenant's numbers.
+//
+// H8 · multi-replica note: the cache is PER PROCESS, so two replicas may serve a
+// read model up to 60 s apart. That is within the stated staleness bound and every
+// value is a real SQL aggregate (never fabricated); a shared store is deliberately
+// not used because the read models are cheap and a cross-replica cache would add a
+// shared dependency for no correctness gain. If a deployment ever needs identical
+// reads across replicas, put them behind the same sticky routing or a shared cache.
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { registerSettingsFormDoors } from '../../settings-contract.js';
+import { FORWARD, CLOSED_STAGES } from '../_shared/admissions-access.js';
 
 const ID = 'ops.bi';
 import manifestDef from './manifest.js';
@@ -33,7 +41,7 @@ export function register(app, kernel) {
   registerSettingsFormDoors(app, kernel, ID, manifestDef);
   const { withUser, require, sysq } = kernel;
   const lifecycleGate = makeLifecycleGate(sysq, ID);
-  const STAFF = ['owner', 'principal', 'coordinator', 'finance', 'itadmin'];
+  const STAFF = ['owner', 'principal', 'coordinator', 'finance', 'finance_head', 'finance_clerk', 'itadmin'];
   const windowDays = (v) => {
     const n = Number(v);
     if (!Number.isFinite(n) || n < 1 || n > 365) return 30;
@@ -132,7 +140,10 @@ export function register(app, kernel) {
            FROM plugin_admissions.lead WHERE tenant_id=$1 GROUP BY stage ORDER BY leads DESC`,
           [req.user.tenant_id])).rows;
         const total = stages.reduce((a, s) => a + s.leads, 0);
-        const order = ['inquiry', 'school-visit', 'applied', 'assessment', 'offer', 'enrolled', 'dropped'];
+        // D-3: the order was the OLD lattice, so every live stage landed in `extraStages`
+        // and `enrolledPct` was computed against a `dropped` key that no longer exists. The
+        // forward order and the closed set now come from the shared module the plugin uses.
+        const order = [...FORWARD, ...CLOSED_STAGES];
         const byStage = Object.fromEntries(stages.map((s) => [s.stage, s.leads]));
         const enrolled = byStage['enrolled'] ?? 0;
         const conversions = (await c.query(
@@ -149,7 +160,9 @@ export function register(app, kernel) {
           byStage: order.filter((s) => byStage[s] !== undefined).map((s) => ({ stage: s, leads: byStage[s], sharePct: total ? Math.round((byStage[s] / total) * 1000) / 10 : 0 })),
           extraStages: stages.filter((s) => !order.includes(s.stage)),
           enrolled, enrolledPct: total ? Math.round((enrolled / total) * 1000) / 10 : 0,
-          dropped: byStage['dropped'] ?? 0,
+          rejected: byStage['rejected'] ?? 0,
+          withdrawn: byStage['withdrawn'] ?? 0,
+          waitlisted: byStage['waitlisted'] ?? 0,
           transitions: conversions, avgDaysInStage: Object.fromEntries(aging.map((a) => [a.stage, Number(a.avg_days_in_stage)])),
           cacheSeconds: CACHE_TTL_MS / 1000,
         };

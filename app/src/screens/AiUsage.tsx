@@ -6,7 +6,7 @@
 import { useMemo } from 'react';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Card, DataTable, PageHead, Section, Stat } from '../components/ui';
+import { Badge, Card, DataTable, PageHead, SampleNote, Section, Stat } from '../components/ui';
 import { BarChart, Donut, LineChart, Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtNum } from '../lib/format';
@@ -35,6 +35,8 @@ export default function AiUsage() {
           : 'Token and rupee spend across the AI features, with guardrails that keep it predictable.'}
         actions={<Badge tone={budgetPct >= 90 ? 'danger' : budgetPct >= 70 ? 'warning' : 'success'} dot>{budgetPct}% of monthly budget</Badge>}
       />
+
+      <SampleNote>Sample AI usage — spend, latency, failure rate and model mix are illustrative in this build and are not read from your school&rsquo;s records.</SampleNote>
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <Stat label="Month spend" value={`₹${fmtNum(monthSpend)}`} sub={`Budget ₹${fmtNum(budget)} · ₹${fmtNum(budget - monthSpend)} remaining`} />

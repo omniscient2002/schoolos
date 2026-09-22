@@ -20,7 +20,7 @@ export default {
       key_id: { type: 'string', description: 'Razorpay key id (rzp_test_/rzp_live_…) — falls back to RAZORPAY_KEY_ID env' },
       key_secret: { type: 'string', description: 'Razorpay key secret — falls back to RAZORPAY_KEY_SECRET env; secret-class, never surfaced' },
       webhook_secret: { type: 'string', description: 'webhook HMAC secret — falls back to RAZORPAY_WEBHOOK_SECRET env (boot-guard parity with payments.upi); secret-class' },
-      webhook_freshness_mins: { type: 'integer', minimum: 1, maximum: 120, default: 15, description: 'reject webhook events older than this (stale-replay defense)' },
+      webhook_freshness_mins: { type: 'integer', minimum: 1, maximum: 60, default: 15, description: 'reject webhook events older than this (stale-replay defense)' },
     },
     required: [],
   },

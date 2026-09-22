@@ -21,7 +21,18 @@
 //   required?: [keys], additionalProperties?: false (default: false — the manifest
 //   is the contract; unknown keys are refused, not silently stored).
 
-const SECRET_KEY_RE = /secret|password|token|api_?key|webhook_?signing|credential/i;
+const SECRET_KEY_RE = /secret|password|token|api_?key|webhook_?signing|credential|auth_?header/i;
+
+/* FEE-SEC-7: a platform ceiling on security-sensitive numeric settings. A manifest may declare a smaller
+ * maximum, but it can never widen the platform's own bound — a school cannot set a 120-minute webhook
+ * freshness window just because one manifest said 120. Enforced here (the ONE validator both sides use)
+ * so the refusal is uniform across every door and the UI's own pre-save validation. */
+export const PLATFORM_SETTING_CEILINGS = Object.freeze({
+  webhook_freshness_mins: 60,
+});
+export function platformCeiling(key) {
+  return PLATFORM_SETTING_CEILINGS[key] ?? null;
+}
 
 export function isSecretKey(key) {
   return SECRET_KEY_RE.test(String(key));
@@ -147,6 +158,8 @@ function validateOne(key, def, value, errors) {
       if (!Number.isInteger(n)) return fail(`"${humanize(key)}" must be a whole number`);
       if (def.minimum != null && n < def.minimum) return fail(`"${humanize(key)}" must be at least ${def.minimum}`);
       if (def.maximum != null && n > def.maximum) return fail(`"${humanize(key)}" must be at most ${def.maximum}`);
+      const ceiling = platformCeiling(key);
+      if (ceiling != null && n > ceiling) return fail(`"${humanize(key)}" must be at most ${ceiling} — the platform ceiling for this setting`);
       return n;
     }
     case 'number': {
@@ -154,6 +167,8 @@ function validateOne(key, def, value, errors) {
       if (!Number.isFinite(n)) return fail(`"${humanize(key)}" must be a number`);
       if (def.minimum != null && n < def.minimum) return fail(`"${humanize(key)}" must be at least ${def.minimum}`);
       if (def.maximum != null && n > def.maximum) return fail(`"${humanize(key)}" must be at most ${def.maximum}`);
+      const ceiling = platformCeiling(key);
+      if (ceiling != null && n > ceiling) return fail(`"${humanize(key)}" must be at most ${ceiling} — the platform ceiling for this setting`);
       return n;
     }
     case 'boolean':

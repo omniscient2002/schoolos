@@ -62,17 +62,39 @@ PGDATABASE=schoolos
 # always skipped. This line is the production alert path, so it declares the production posture.
 45 2 * * * cd $SCHOOLOS_HOME/server && NODE_ENV=production node scripts/health-probe.js
 
-# ── 03:05 IST weekdays: the umbrella day-worker ─────────────────────────────────────────────────────
-# scripts/day-worker.js already sequences the tally export, the retention pass and the dunning sweep.
+# ── 03:05 IST weekdays: the umbrella day-worker (all steps except the principal brief) ──────────────
+# scripts/day-worker.js sequences the tally export, the retention pass and the dunning sweep. Named
+# steps are listed explicitly so the principal brief is EXCLUDED here and runs at 07:00 instead (a brief
+# computed at 03:05 reports 3am absentees, not the school day's).
 # Weekdays only: there is no school business to act on over the weekend, and running it daily would
 # double-queue dunning reminders against the same dedup keys as the 03:30 job below.
-5 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js >> /var/log/schoolos/day-worker.log 2>&1
+5 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js preventive tally retention dunning library library-expiry compliance action-sla owner-security >> /var/log/schoolos/day-worker.log 2>&1
+
+# ── 07:00 IST weekdays: the principal's morning brief (OPP-DEL-7) ───────────────────────────────────
+# The one screen ROLE-NEEDS §4 asks for, computed at the START of the school day so "today's absentees"
+# and "deadlines today" are real. Runs the brief step alone; exit 1 on failure so cron mail is the alert.
+0 7 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js principal-brief >> /var/log/schoolos/principal-brief.log 2>&1
+
+# ── 04:00 IST daily: money ledger integrity + hash-chain drill (FEE-OPS-4) ───────────────────────────
+# The live integrity half of the DR drill: the audit chain still verifies, every fee receipt still points
+# at its payment, and no allocation is orphaned. Exit 1 when anything fails, so cron mail IS the alert.
+# The restore half (dump → scratch DB → same checks) is ops/backup/money-drill.sh, run by hand or after a
+# backup. This line is scheduled so the money path has a daily, machine-checked heartbeat.
+0 4 * * * cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/money-dr-drill.js >> /var/log/schoolos/money-drill.log 2>&1
 
 # ── 03:30 IST weekdays: payment reconciliation ──────────────────────────────────────────────────────
 # Exit 1 when it finds a discrepancy between the local ledger and the gateway. Redirected to a log ON
 # PURPOSE: the exit code is a finding, and every finding mailed daily is how an operator learns to
 # ignore this address. `node` is invoked explicitly because the file has no shebang.
 30 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/reconcile-payments.js >> /var/log/schoolos/reconcile.log 2>&1
+
+# ── 16:30 IST weekdays: homework reminders (TODO_FIX_MAP L4 / TEACHER-PARENT-STUDENT DEL-1) ──────────
+# Homework due in the next 24h (a heads-up to the class's guardians) and homework overdue in the last 7
+# days with no submission (a nudge to the guardians of the students who have not turned it in).
+# DELIBERATELY NOT part of day-worker: that runs at 03:05 IST, inside comms quiet hours (21:00–08:00),
+# so this sweep's own quiet-hours guard would skip every night. 16:30 is after the school day and before
+# quiet hours. Exit 1 when reminders were queued, so cron mail is the alert.
+30 16 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/homework-reminders.js >> /var/log/schoolos/homework.log 2>&1
 
 # 1. (the two pollers -- webhook-worker, workflow-worker -- are compose services, see docker-compose.yml)
 # 2. dunning-reminders.js is DELIBERATELY NOT scheduled here.

@@ -15,7 +15,7 @@
      BRIEFS     17:00 end-of-day banner (dismissible) + weekly
 
    Data: GET /teacher/home + /teacher/brief?when=eod|week
-   (frozen §4 contracts) via teacherFixtures.ts. An absent door
+   (frozen §4 contracts) via teacherApi.ts. An absent door
    throws an honest "not connected yet" error — the page renders
    its real empty/loading/error paths, never sample data.
 
@@ -34,7 +34,7 @@ import { fmtDate, weekday } from '../lib/format';
 import {
   getTeacherHome, getTeacherBrief, _resetTeacherDoors,
   type TeacherHomeAggregate, type TeacherNeed, type TeacherBrief,
-} from '../services/teacherFixtures';
+} from '../services/teacherApi';
 
 /* ---------- async card state ---------- */
 type DoorPhase<T> = { loading: boolean; data: T | null; err?: string };
@@ -139,7 +139,7 @@ function NextRow({ c }: { c: TeacherHomeAggregate['next'][number] }) {
     setClassContext(m
       ? { period: Number(m[1]), subject: m[2], classGrade: m[3], room: m[4] }
       : { subject: c.detail });
-    openAction('/teacher/attendance');
+    openAction('/attendance');
   };
   return (
     <div
@@ -308,7 +308,7 @@ export default function TeacherHome() {
                 }}>Start lesson</Button>
                 <Button variant="secondary" size="sm" icon={<Icon.Clipboard size={13} />} onClick={() => {
                   setClassContext({ classGrade: agg.now!.classGrade, subject: agg.now!.subject, room: agg.now!.room, period: agg.now!.period });
-                  openAction('/teacher/attendance');
+                  openAction('/attendance');
                 }}>Take attendance</Button>
                 <Button variant="ghost" size="sm" icon={<Icon.Check size={13} />} onClick={() => setClassContext(null)}>End lesson</Button>
                 <Button variant="ai" size="sm" icon={<Icon.Sparkle size={13} />} onClick={() => openAction('/teacher/copilot')}>Ask AI</Button>
@@ -318,7 +318,7 @@ export default function TeacherHome() {
               <span className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }}>Attendance for this class</span>
               <span className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Badge tone="warning" dot>Not marked yet</Badge>
-                <span className="u-xs u-faint">Takes about 30 seconds · absent guardians are told automatically</span>
+                <span className="u-xs u-faint">Takes about 30 seconds</span>
               </span>
               <StateNotice state="pending" label="attendance" />
             </div>

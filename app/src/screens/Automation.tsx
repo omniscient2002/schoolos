@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import * as seed from '../data/dataset';
 import { workflowService } from '../demo/seedServices';
 import { useStore } from '../state/store';
-import {Badge, Button, Card, Drawer, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, Stat, useToast, ClickThrough} from '../components/ui';
+import {Badge, Button, Card, Drawer, Empty, ErrorState, Modal, PageHead, SampleNote, Section, SkeletonCard, Stat, useToast, ClickThrough} from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDateTime, fmtNum, fmtRelative } from '../lib/format';
 import type { WorkflowDef, WorkflowRun, WorkflowStep } from '../types/domain';
@@ -315,6 +315,8 @@ export default function Automation() {
           : 'Constitution-gated automations — drafts and approvals work here; the run engine lands with the workflow runtime (P5).' }
         actions={<Button variant="secondary" icon={<Icon.Grid size={14} />} onClick={openBuilder}>Visual builder</Button>}
       />
+
+      <SampleNote>Sample automation data — workflows and run counts are illustrative in this build; no server runtime is connected, so nothing here is scheduled or executed.</SampleNote>
 
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Active workflows" value={activeCount} sub={`of ${effective.length} in the library`} />

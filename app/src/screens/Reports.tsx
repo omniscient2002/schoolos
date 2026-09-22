@@ -8,12 +8,12 @@
    dressed up as insight.
    ============================================================ */
 import { useEffect, useState } from 'react';
-import { apiBiAttendance, apiBiAging, apiBiFunnel } from '../services/liveApi';
+import { apiBiAttendance, apiBiAging, apiBiFunnel, apiBiHomework } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, Empty, Stat, SkeletonCard, ErrorState, DataTable, Tabs } from '../components/ui';
 import { BarChart, Donut } from '../components/Chart';
 import { Icon } from '../components/Icon';
-import { fmtMoney } from '../lib/format';
+import { fmtMoney, fmtDate } from '../lib/format';
 
 /* local async hook */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -221,6 +221,70 @@ function FunnelConversion() {
   );
 }
 
+/* ---------- homework completion (GET /plugins/ops.bi/homework) ---------- */
+interface BiHwClass { grade: string; assignments: number; submissions: number; turned_in: number; late: number }
+interface BiHwRecent { id: string; grade: string; subject: string | null; title: string; dueAt: string; status: string; submissions: number }
+interface BiHomework { byClass: BiHwClass[]; recent: BiHwRecent[]; capped: boolean; rowCap: number; cacheSeconds: number }
+
+function HomeworkCompletion() {
+  const hw = useAsync<BiHomework>(async () => {
+    const res = await apiBiHomework();
+    return res as unknown as BiHomework;
+  }, []);
+
+  const byClass = (hw.data?.byClass ?? []).map(c => ({
+    cls: c.grade,
+    turnedIn: c.turned_in,
+    submissions: c.submissions,
+    assignments: c.assignments,
+    late: c.late,
+    pct: c.submissions ? Math.round((c.turned_in / c.submissions) * 100) : null,
+  }));
+  const recent = hw.data?.recent ?? [];
+
+  return (
+    <Card pad>
+      <div className="u-col" style={{ gap: 2, marginBottom: 10 }}>
+        <span style={{ fontWeight: 620 }}>Homework completion by class</span>
+        <span className="u-xs u-faint">Source: GET /plugins/ops.bi/homework · turned-in = submitted, late, reviewed or graded · cached {hw.data?.cacheSeconds ?? '—'}s on the server</span>
+      </div>
+      {hw.loading ? <SkeletonCard lines={3} />
+        : hw.error ? <ErrorState title="Could not load homework completion" sub={friendly(hw.error)} onRetry={hw.retry} />
+        : byClass.length === 0 ? (
+          <Empty icon={<Icon.Book size={22} />} title="No homework on record" sub="No assignments have been set in this school yet — the report fills as teachers post homework." />
+        ) : (
+          <div className="u-col" style={{ gap: 12 }}>
+            <DataTable
+              rows={byClass}
+              rowKey={c => c.cls}
+              columns={[
+                { key: 'cls', label: 'Class' },
+                { key: 'assignments', label: 'Assignments', align: 'right' as const, render: c => String(c.assignments) },
+                { key: 'turnedIn', label: 'Turned in', align: 'right' as const, render: c => `${c.turnedIn} of ${c.submissions}` },
+                { key: 'pct', label: 'Completion', align: 'right' as const, render: c => c.pct == null ? <span className="u-muted">—</span> : <Badge tone={c.pct >= 90 ? 'success' : c.pct >= 70 ? 'info' : 'warning'}>{c.pct}%</Badge> },
+              ]}
+            />
+            {recent.length > 0 && (
+              <>
+                <span className="u-xs u-faint">Most recent assignments{hw.data?.capped ? ` (capped at ${hw.data.rowCap})` : ''}:</span>
+                <DataTable
+                  rows={recent}
+                  rowKey={r => r.id}
+                  columns={[
+                    { key: 'title', label: 'Assignment', render: r => <span>{r.title} <span className="u-xs u-faint">{r.grade}{r.subject ? ` · ${r.subject}` : ''}</span></span> },
+                    { key: 'dueAt', label: 'Due', render: r => fmtDate(new Date(r.dueAt)) },
+                    { key: 'submissions', label: 'Submissions', align: 'right' as const, render: r => String(r.submissions) },
+                    { key: 'status', label: 'Status', render: r => <Badge tone="outline">{r.status}</Badge> },
+                  ]}
+                />
+              </>
+            )}
+          </div>
+        )}
+    </Card>
+  );
+}
+
 export default function Reports() {
   const [tab, setTab] = useState('attendance');
 
@@ -235,6 +299,7 @@ export default function Reports() {
           { id: 'attendance', label: 'Attendance by class' },
           { id: 'fees', label: 'Fee ageing' },
           { id: 'funnel', label: 'Admissions funnel' },
+          { id: 'homework', label: 'Homework completion' },
         ]}
         active={tab}
         onChange={setTab}
@@ -242,6 +307,7 @@ export default function Reports() {
       {tab === 'attendance' && <AttendanceByClass />}
       {tab === 'fees' && <FeeAgeing />}
       {tab === 'funnel' && <FunnelConversion />}
+      {tab === 'homework' && <HomeworkCompletion />}
     </div>
   );
 }

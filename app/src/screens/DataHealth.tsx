@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { PageHead, Card, Badge, Button, Empty, Skeleton, SkeletonCard, DataTable, Drawer, useToast, Progress, Section } from '../components/ui';
+import { PageHead, Card, Badge, Button, Empty, Skeleton, SkeletonCard, DataTable, Drawer, useToast, Progress, Section, SampleNote } from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtRelative } from '../lib/format';
@@ -383,6 +383,8 @@ export default function DataHealth() {
         sub="The state of the records every decision stands on — duplicates, gaps, mismatches and expiries, each with an audited fix path."
         actions={<Button variant="secondary" size="sm" icon={<Icon.Database size={13} />} onClick={() => navigate('/audit')}>Open the audit trail</Button>}
       />
+
+      <SampleNote>Sample data quality — the health score and issue list are this screen&rsquo;s illustrative model in this build; nothing here is read from your school&rsquo;s records and no fix is written to the server.</SampleNote>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 24, alignItems: 'start' }}>
         {/* ---------- issues ---------- */}

@@ -392,6 +392,96 @@ export function register(app, kernel) {
     });
   });
 
+  // GET /progress/story/:studentId — P5: the narrative instead of the score. Built only
+  // from real evidence rows (submissions, mastery evidence, intervention events). Every
+  // step is one plain sentence; nothing is invented.
+  app.get('/progress/story/:studentId', { preHandler: [require(...STAFF), uuidParams('studentId'), lifecycleGate] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const student = (await c.query(`SELECT id, name FROM app.students WHERE id=$1`, [req.params.studentId])).rows[0];
+      if (!student) return bad(reply, 'We couldn\'t find that student', 404);
+      const steps = [];
+      if (await tableExists(c, 'teacher', 'submission')) {
+        const subs = (await c.query(
+          `SELECT s.id, s.status, s.submitted_at, s.grade, h.title, h.subject
+           FROM teacher.submission s JOIN teacher.homework h ON h.id=s.homework_id
+           WHERE s.student_id=$1 ORDER BY s.submitted_at DESC LIMIT 30`, [student.id])).rows;
+        for (const s of subs) {
+          steps.push({ id: `sub-${s.id}`, at: s.submitted_at, kind: 'submission',
+            sentence: `${s.subject}: “${s.title}” was ${s.status === 'late' ? 'submitted late' : s.status === 'graded' ? `graded ${s.grade ?? ''}`.trim() : s.status}.`,
+            evidenceRef: s.id });
+        }
+      }
+      if (await tableExists(c, 'mastery', 'evidence')) {
+        const ev = (await c.query(
+          `SELECT e.id, e.kind, e.value, e.observed_at, n.name AS topic
+           FROM mastery.evidence e LEFT JOIN curriculum.node n ON n.id=e.node_id
+           WHERE e.student_id=$1 ORDER BY e.observed_at DESC LIMIT 40`, [student.id])).rows;
+        for (const e of ev) {
+          const kind = e.kind === 'assessment' ? 'assessment' : e.kind === 'observation' ? 'observed' : 'assessment';
+          steps.push({ id: `ev-${e.id}`, at: e.observed_at, kind,
+            sentence: e.topic ? `${e.topic}: evidence recorded (${e.value}%).` : `Evidence recorded (${e.value}%).`,
+            evidenceRef: e.id });
+        }
+      }
+      if (await tableExists(c, 'intervention', 'plan_event')) {
+        const pe = (await c.query(
+          `SELECT pe.id, pe.to_status, pe.note, pe.created_at, p.objective
+           FROM intervention.plan_event pe JOIN intervention.plan p ON p.id=pe.plan_id
+           WHERE p.student_id=$1 ORDER BY pe.created_at DESC LIMIT 30`, [student.id])).rows;
+        for (const e of pe) {
+          steps.push({ id: `int-${e.id}`, at: e.created_at, kind: 'intervention',
+            sentence: `Support plan “${e.objective}” moved to ${String(e.to_status).replace('_', ' ')}${e.note ? ` — ${e.note}` : ''}.`,
+            evidenceRef: e.id });
+        }
+      }
+      steps.sort((a, b) => new Date(b.at) - new Date(a.at));
+      return { studentId: student.id, studentName: student.name, steps: steps.slice(0, 60),
+        note: 'A chronological story from real records — no score, no judgement.' };
+    });
+  });
+
+  // GET /analytics/class/:grade — P7/P11 composite: questions, never rankings. Aggregates
+  // only; no per-student score, no ordering of children.
+  app.get('/analytics/class/:grade', { preHandler: [require(...STAFF), lifecycleGate] }, async (req, reply) => {
+    const grade = String(req.params.grade);
+    if (!/^[0-9]{1,2}$/.test(grade)) return bad(reply, 'Please use a class grade (e.g. 8)');
+    const subject = req.query?.subject ? String(req.query.subject) : 'Mathematics';
+    if (!SUBJECTS.includes(subject)) return bad(reply, 'Please pick a subject: Mathematics or Science');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const students = (await c.query(
+        `SELECT id FROM app.students WHERE tenant_id=$1 AND grade=$2 AND status='active'`, [req.user.tenant_id, grade])).rows;
+      const ids = students.map((s) => s.id);
+      const mastery = { strong: 0, developing: 0, needs_support: 0, unlabelled: 0 };
+      if (ids.length && (await tableExists(c, 'mastery', 'state'))) {
+        const rows = (await c.query(
+          `SELECT level, count(*)::int AS n FROM mastery.state WHERE subject=$1 AND student_id = ANY($2::uuid[]) GROUP BY level`,
+          [subject, ids])).rows;
+        for (const r of rows) if (r.level in mastery) mastery[r.level] = r.n;
+        mastery.unlabelled = Math.max(0, ids.length - (mastery.strong + mastery.developing + mastery.needs_support));
+      }
+      let homework = { assigned: 0, turned_in: 0, completion_pct: null };
+      if (await tableExists(c, 'teacher', 'submission')) {
+        const hw = (await c.query(
+          `SELECT h.id, (SELECT count(*)::int FROM teacher.submission s WHERE s.homework_id=h.id AND s.status IN ('submitted','late','reviewed','graded')) AS turned_in
+           FROM teacher.homework h WHERE h.tenant_id=$1 AND h.class_grade=$2`, [req.user.tenant_id, grade])).rows;
+        const assigned = hw.length * Math.max(1, ids.length);
+        const turned = hw.reduce((a, h) => a + h.turned_in, 0);
+        homework = { assigned, turned_in: turned, completion_pct: assigned ? Math.round((turned / assigned) * 100) : null };
+      }
+      let attendance = { pct: null };
+      if (ids.length) {
+        const a = (await c.query(
+          `SELECT count(*) FILTER (WHERE status IN ('present','late'))::int AS present,
+                  count(*) FILTER (WHERE status <> 'leave')::int AS held
+           FROM app.attendance WHERE tenant_id=$1 AND student_id = ANY($2::uuid[]) AND school_date > (now() AT TIME ZONE 'Asia/Kolkata')::date - 30`,
+          [req.user.tenant_id, ids])).rows[0];
+        attendance = { pct: a.held ? Math.round((a.present / a.held) * 100) : null };
+      }
+      return { grade, subject, students: ids.length, mastery, homework, attendance,
+        note: 'Aggregates only — this is a picture of the class, never a ranking of children.' };
+    });
+  });
+
   // ═══════════════════════ BRIEF (deterministic aggregation) ═══════════════════
 
   // Shared aggregation for /teacher/brief — also the grounding data for /copilot/ask.
@@ -549,8 +639,8 @@ export function register(app, kernel) {
   app.post('/copilot/draft', { preHandler: [require(...TEACHER_ONLY), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     const kind = String(b.kind ?? '');
-    if (!['lesson', 'worksheet', 'feedback', 'message'].includes(kind))
-      return bad(reply, 'Pick a draft type: lesson, worksheet, feedback or message');
+    if (!['lesson', 'worksheet', 'feedback', 'message', 'questions'].includes(kind))
+      return bad(reply, 'Pick a draft type: lesson, worksheet, feedback, message or questions');
     const params = (b.params && typeof b.params === 'object') ? b.params : {};
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const used = await budgetUsedToday(c, req);
@@ -621,6 +711,29 @@ export function register(app, kernel) {
           '',
           'Note: feedback is about the work, never the child. Deterministic template v0 — no AI model involved.',
         ].join('\n');
+      } else if (kind === 'questions') {
+        if (!subject || !grade) return bad(reply, 'A question set needs a subject and class — or pick a topic from the curriculum tree');
+        const focus = topicName ?? (params.focus ? String(params.focus).slice(0, 120) : subject);
+        const count = Math.min(20, Math.max(4, Number.isFinite(Number(params.count)) ? Number(params.count) : 8));
+        title = `Question set draft · ${subject} · Class ${grade} · ${focus}`;
+        body = [
+          'QUESTION SET (ai_draft — review, edit and validate before use)',
+          `${subject} · Class ${grade} · ${focus}`,
+          '',
+          `Section A — Recall (${Math.ceil(count / 3)} questions)`,
+          `1. Define ${focus} in one sentence.`,
+          `2. State one key property or rule of ${focus}.`,
+          '',
+          `Section B — Apply (${Math.ceil(count / 3)} questions)`,
+          `3. Solve a worked problem on ${focus}, showing each step.`,
+          `4. Find and correct the mistake in the given example of ${focus}.`,
+          '',
+          `Section C — Reason (${Math.ceil(count / 3)} questions)`,
+          `5. Explain why ${focus} matters, with one real-life example.`,
+          `6. Compare ${focus} with the previous topic — one similarity, one difference.`,
+          '',
+          'Teacher note: adjust marks and difficulty to your blueprint before use. Deterministic template v0 — no AI model involved.',
+        ].join('\n');
       } else { // message
         if (!params.studentName) return bad(reply, 'Tell me which parent this message is for');
         const name = String(params.studentName).slice(0, 80);
@@ -666,6 +779,7 @@ export function register(app, kernel) {
       const brief = await buildBrief(c, req.user.tenant_id, req.user.id, 'eod');
       const sources = [];
       let answer = null;
+      let suggestedAction = null; // API-9: deterministic next step for the routed branch
 
       const mGrade = qLower.match(/class\s*([6-9]|10)/) ?? qLower.match(/(?:^|\s)grade\s*([6-9]|10)/);
       const mSubject = SUBJECTS.find((s) => qLower.includes(s.toLowerCase()));
@@ -685,6 +799,7 @@ export function register(app, kernel) {
         answer = pick
           ? `${pick.subject} class ${pick.grade}: ${pick.covered} of ${pick.total} topics fully covered (${pick.pacePct}%)${pick.partial > 0 ? `, ${pick.partial} partially ticked` : ''}. ${pick.pacePct < 50 ? 'Pace looks behind — plan a catch-up week or tick pending coverage.' : 'Pace looks healthy.'}`
           : `No curriculum coverage has been ticked yet${mSubject ? ` for ${mSubject}` : ''}${mGrade ? ` class ${mGrade}` : ''} — tick topics in the curriculum tree and the pace will show here.`;
+        suggestedAction = { label: 'Open the curriculum tree', to: '/teacher/curriculum' };
       }
 
       // 2 · mastery (own tables; persisted deterministic states)
@@ -703,6 +818,7 @@ export function register(app, kernel) {
           answer = cells.length
             ? `Needs support in ${subject} class ${grade}: ${cells.map((r) => `${r.student} (${r.topic})`).join(', ')}. Evidence links are on the mastery map — labels decay when their evidence expires.`
             : `No student in ${subject} class ${grade} is currently marked "needs support" — either everyone is doing fine or no evidence has been recorded yet.`;
+          if (cells.length) suggestedAction = { label: 'Create an intervention', to: '/interventions' };
         } else {
           answer = 'Tell me the class too — for example "who needs support in class 8 Mathematics?" — and I\'ll pull the mastery map.';
         }
@@ -716,6 +832,7 @@ export function register(app, kernel) {
             ? `On ${brief.timetable.day}s you teach ${brief.timetable.teachingToday} period${brief.timetable.teachingToday === 1 ? '' : 's'}${brief.timetable.currentPeriod ? `; right now: ${brief.timetable.currentPeriod.subject}${brief.timetable.currentPeriod.room ? ` (${brief.timetable.currentPeriod.room})` : ''}` : ''}${brief.timetable.nextPeriod ? `; next: ${brief.timetable.nextPeriod.subject} at ${brief.timetable.nextPeriod.start_time}` : brief.timetable.currentPeriod ? '; that was the last one for today' : ''}.`
             : `No teaching periods are scheduled for you on ${brief.timetable.day}s.`)
           : 'The timetable isn\'t reachable in this database yet, so I can\'t see your periods — everything else on the brief still works.';
+        suggestedAction = { label: 'Open your command center', to: '/teacher' };
       }
 
       // 4 · homework / submissions
@@ -724,6 +841,7 @@ export function register(app, kernel) {
         answer = brief.homework.available
           ? `${brief.homework.pendingSubmissions} submission${brief.homework.pendingSubmissions === 1 ? ' is' : 's are'} waiting for review across ${brief.homework.openHomework} open homework; ${brief.homework.reviewedSubmissions} reviewed.`
           : 'The homework inbox isn\'t connected in this database yet — the homework lane hasn\'t been built, so I can\'t count submissions.';
+        suggestedAction = { label: 'Open the submissions inbox', to: '/teacher/submissions' };
       }
 
       // 5 · fallback: the brief itself
@@ -739,7 +857,7 @@ export function register(app, kernel) {
         aiInvolved: false, risk: 'low',
         outcome: `keyword-routed to ${sources.map((s) => s.kind).join(', ')} · deterministic answer, no model call · budget ${used + 1}/${DAILY_CAP}` });
       return { ok: true, question, answer, sources, label: 'deterministic_answer',
-        deterministic: true, suggested_action: null,
+        deterministic: true, suggested_action: suggestedAction,
         budget: { used: used + 1, cap: DAILY_CAP, budgetClass: BUDGET_CLASS } };
     });
   });

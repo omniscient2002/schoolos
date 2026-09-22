@@ -1,21 +1,46 @@
 // Domain routes — every request runs as the RLS-constrained app role with the
 // caller's tenant + role in session. Mutations write the audit ledger.
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { linkLineage, requestAudit } from './audit.js';
 import { ensurePluginCatalog } from './plugin-catalog.js';
 import { isSecretKey, canonicalSchema, validateSettingsAgainstSchema } from './settings-contract.js';
 import { checkEventBudget } from './governance.js';
 import { q, sysq } from './db.js';
 import { uuidParams } from './plugins/_shared/uuid-param.js';
-import { toE164 } from './plugins/_shared/phone.js';
+import { toE164, maskPhone } from './plugins/_shared/phone.js';
+import { FULL_PII, ADMIN as ADMISSIONS_ADMIN, FOLLOWUP_WEIGHTS, CLOSED_STAGES } from './plugins/_shared/admissions-access.js';
 import { customRoles, canReach } from './custom-roles.js';
 import { reachableDoors, capabilitiesFor } from './effective-access.js';
 import { istNow, istToday } from './ist.js';
 import { decryptSettings, encryptSettings, maskSettings } from './settings-crypto.js';
-import { planIncludes, PLUGIN_PLAN } from './entitlements.js';
+import { planIncludes, PLUGIN_PLAN, feeFeatureIncluded, feeEntitlements, feeNotEntitled } from './entitlements.js';
 import { enabledCapability } from './plugin-capabilities.js';
+import { selectOverdue, selectBeforeDue, selectEscalation, overdueBody, beforeDueBody, escalationBody, overdueDedup, beforeDueDedup, escalationDedup, outstanding } from './fees/dunning.js';
+import { findDiscrepancies, raiseDiscrepancyActions } from './fees/reconcile.js';
+import { splitInstallments } from './fees/installments.js';
+import { receiptPdf } from './fees/receipt-pdf.js';
+import { putFile, storageBase } from './file-artifacts.js';
+import { moneyError } from './error-codes.js';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
+
+/* OPP-API-9: the board pack runs several full-table aggregates; cache the per-tenant roll-up for a
+   short window so a hot owner surface cannot be used as a cheap aggregate amplifier. */
+const BOARD_PACK_TTL_MS = 30_000;
+const boardPackCache = new Map(); // tenant_id -> { at:number, data:object }
+
+/* Stable JSON (recursively sorted keys) so a content hash computed at write time still re-derives
+   after PostgreSQL jsonb has normalized key order — a snapshot's hash must verify. */
+const canonicalJson = (v) => {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v);
+};
 
 export function pageParams(query = {}, { defaultLimit = 100, maxLimit = 500 } = {}) {
   const rawLimit = query.limit == null || query.limit === '' ? defaultLimit : Number(query.limit);
@@ -23,6 +48,37 @@ export function pageParams(query = {}, { defaultLimit = 100, maxLimit = 500 } = 
   const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, maxLimit) : defaultLimit;
   const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
   return { limit, offset };
+}
+
+/* School classes & sections — the school's own structure, authored by the owner, principal or IT
+   admin. Stored in `app.tenants.config.setup.sections` in the SAME shape onboarding writes:
+   `[{ grade: '6', sections: ['A', 'B'] }]`, so student rosters, class transfers and every class
+   filter read ONE source. Nothing is fabricated — a new school starts with an empty list and the
+   setup checklist points here. Pure + exported so the GET door normalises stored rows identically. */
+export function normalizeClasses(input) {
+  if (!Array.isArray(input)) return { ok: false, error: 'classes must be a list' };
+  if (input.length > 60) return { ok: false, error: 'Too many classes — the maximum is 60' };
+  const out = [];
+  const seenGrades = new Set();
+  for (const raw of input) {
+    const grade = String(raw?.grade ?? '').trim().slice(0, 40);
+    if (!grade) return { ok: false, error: 'Every class needs a name' };
+    if (seenGrades.has(grade.toLowerCase())) return { ok: false, error: `Class '${grade}' is listed twice` };
+    seenGrades.add(grade.toLowerCase());
+    const rawSections = Array.isArray(raw?.sections) ? raw.sections : [];
+    if (rawSections.length > 30) return { ok: false, error: `Too many sections in class '${grade}' (max 30)` };
+    const sections = [];
+    const seenSections = new Set();
+    for (const s of rawSections) {
+      const name = String(s ?? '').trim().toUpperCase().slice(0, 8);
+      if (!name) continue;
+      if (seenSections.has(name)) return { ok: false, error: `Section '${name}' is listed twice in class '${grade}'` };
+      seenSections.add(name);
+      sections.push(name);
+    }
+    out.push({ grade, sections });
+  }
+  return { ok: true, classes: out };
 }
 
 // PLG-2: manifests use a deliberately small semver range dialect. Reject
@@ -126,7 +182,48 @@ export async function resolveNoticeRecipients(c, tenantId, p) {
       [tenantId, String(p.routeCode)]);
     return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
   }
+  // OPP-PRD-3: the announcement composer resolves its audience by kind.
+  if (p?.audienceKind === 'class' && p?.audienceRef) {
+    const r = await c.query(
+      `SELECT DISTINCT g.phone FROM app.guardians g JOIN app.students s ON s.id = g.student_id
+        WHERE g.tenant_id=$1 AND s.grade=$2 AND g.phone IS NOT NULL`,
+      [tenantId, String(p.audienceRef)]);
+    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
+  }
+  if (p?.audienceKind === 'route' && p?.audienceRef) {
+    const r = await c.query(
+      `SELECT DISTINCT g.phone FROM app.guardians g JOIN app.students s ON s.id = g.student_id
+        WHERE g.tenant_id=$1 AND s.bus_route=$2 AND g.phone IS NOT NULL`,
+      [tenantId, String(p.audienceRef)]);
+    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
+  }
+  if (p?.audienceKind === 'staff') {
+    const r = await c.query(
+      `SELECT DISTINCT phone FROM app.users WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student') AND phone IS NOT NULL`,
+      [tenantId]);
+    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
+  }
+  if (p?.audienceKind === 'all_guardians') {
+    const r = await c.query(`SELECT DISTINCT phone FROM app.guardians WHERE tenant_id=$1 AND phone IS NOT NULL`, [tenantId]);
+    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
+  }
   return [];
+}
+
+/** OPP-PRD-3: the in-app audience is guardian/staff USER ids (notifications), not phones. */
+export async function resolveNoticeUserIds(c, tenantId, p) {
+  const ids = [];
+  const push = (rows) => { for (const r of rows) if (r.user_id) ids.push(r.user_id); };
+  if (p?.audienceKind === 'staff') {
+    push((await c.query(`SELECT id AS user_id FROM app.users WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student')`, [tenantId])).rows);
+  } else if (p?.audienceKind === 'class' && p?.audienceRef) {
+    push((await c.query(`SELECT cl.user_id FROM family.child_link cl JOIN app.students s ON s.id=cl.student_id WHERE cl.tenant_id=$1 AND s.grade=$2`, [tenantId, String(p.audienceRef)])).rows);
+  } else if (p?.audienceKind === 'route' && p?.audienceRef) {
+    push((await c.query(`SELECT cl.user_id FROM family.child_link cl JOIN app.students s ON s.id=cl.student_id WHERE cl.tenant_id=$1 AND s.bus_route=$2`, [tenantId, String(p.audienceRef)])).rows);
+  } else {
+    push((await c.query(`SELECT DISTINCT user_id FROM family.child_link WHERE tenant_id=$1`, [tenantId])).rows);
+  }
+  return [...new Set(ids)];
 }
 
 export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
@@ -237,7 +334,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     const doors = reachableDoors({
       role: req.user.role, mask, doorRoles, registeredRoutes, maskDecides: cr.maskDecides,
     });
-    const capabilities = capabilitiesFor(doors);
+    const capabilities = capabilitiesFor(doors, undefined, req.user.role);
     const nav = Object.keys(capabilities).filter((k) => capabilities[k]);
     // `app.class_assignments` arrives with migration 083; a database without it (or a non-teacher) has
     // no classes — an empty scope, never a fabricated one.
@@ -354,6 +451,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     const label = typeof b.label === 'string' ? b.label.trim() : '';
     if (label.length < 2 || label.length > 60) return bad(reply, 'Give the role a name of 2-60 characters');
     if (!ROLES.includes(b.base_role)) return bad(reply, `base_role must be one of: ${ROLES.join(', ')}`);
+    if (b.base_role === 'owner') return bad(reply, 'A custom role cannot be based on the owner role');
+    if (b.base_role === 'principal' && req.user.role !== 'owner')
+      return bad(reply, 'Only the school owner can create a custom role based on the principal role', 403);
     const mask = validateMask(b.permissions, req.user.role);
     if (mask === MASK_AMP) return reply.code(403).send({ error: `A custom role can only grant doors your own role (${req.user.role}) can already reach. Ask the owner to create this role. Nothing was saved.` });
     if (mask === null) return bad(reply, 'permissions must be {allow:[], deny:[]} — entries like "GET /fees" or "POST /students/*" (max 100, each must match a real screen)');
@@ -388,6 +488,9 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       if (label.length < 2 || label.length > 60) return bad(reply, 'The name must be 2-60 characters');
       const base = b.base_role != null ? b.base_role : cur.base_role;
       if (!ROLES.includes(base)) return bad(reply, `base_role must be one of: ${ROLES.join(', ')}`);
+      if (base === 'owner') return bad(reply, 'A custom role cannot be based on the owner role');
+      if (base === 'principal' && req.user.role !== 'owner')
+        return bad(reply, 'Only the school owner can create a custom role based on the principal role', 403);
       const r = (await c.query(
         `UPDATE app.roles SET label=$3, base_role=$4, permissions=$5::jsonb, updated_at=now() WHERE tenant_id=$1 AND key=$2 RETURNING *`,
         [req.user.tenant_id, req.params.key, label, base, JSON.stringify(mask)])).rows[0];
@@ -421,7 +524,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
 
   // assignment: a user carries ONE role_key (their custom overlay). Re-assigning
   // replaces it; assigning with {roleKey: null} clears back to the pure builtin.
-  app.post('/roles/:key/assign', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+  app.post('/roles/:key/assign', { preHandler: [require(...ROLES_ADMIN), app.requireStepUp] }, async (req, reply) => {
     if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
     const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
     if (!userIds.length || userIds.length > 200) return bad(reply, 'Send userIds (1-200 accounts to carry this role)');
@@ -440,7 +543,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/roles/:key/unassign', { preHandler: require(...ROLES_ADMIN) }, async (req, reply) => {
+  app.post('/roles/:key/unassign', { preHandler: [require(...ROLES_ADMIN), app.requireStepUp] }, async (req, reply) => {
     if (!(await rolesAvailable())) return reply.code(503).send({ error: 'Custom roles need the roles store (migration 061 by L1) — not on this database yet' });
     const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
     // RTE-13: `assign` caps at 200 but `unassign` did not — a caller could send an unbounded array.
@@ -515,7 +618,22 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/students', { preHandler: require('owner','principal','coordinator','admissions') }, async (req, reply) => {
+  // F1: link a roster student to their student-role user when the name match is UNAMBIGUOUS (exactly one
+  // roster row and one student user with that name). Best-effort: an ambiguous name stays unlinked.
+  const linkStudentUser = async (c, tenantId, studentId, name) => {
+    try {
+      await c.query(
+        `UPDATE app.students s SET user_id = u.id
+           FROM app.users u
+          WHERE s.id=$1 AND s.tenant_id=$2 AND s.user_id IS NULL
+            AND u.tenant_id=$2 AND u.role='student' AND lower(u.name)=lower($3)
+            AND (SELECT count(*) FROM app.students d WHERE d.tenant_id=$2 AND lower(d.name)=lower($3)) = 1
+            AND (SELECT count(*) FROM app.users u2 WHERE u2.tenant_id=$2 AND u2.role='student' AND lower(u2.name)=lower($3)) = 1`,
+        [studentId, tenantId, name]);
+    } catch { /* best-effort link; a name mismatch just leaves user_id null */ }
+  };
+
+  app.post('/students', { preHandler: require('owner','principal','coordinator','admissions','itadmin') }, async (req, reply) => {
     const b = req.body ?? {};
     for (const f of ['name','grade','section']) if (!b[f]) return bad(reply, `${f} required`);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -524,9 +642,34 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
         `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, bus_route, source, source_ref)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
         [req.user.tenant_id, code, b.name, b.grade, b.section, b.guardianName ?? null, b.guardianPhone ?? null, b.busRoute ?? null, 'staff', req.user.id]);
+      const student = r.rows[0];
+      await linkStudentUser(c, req.user.tenant_id, student.id, b.name);
+      /* M1: keep the canonical guardian contact table in sync at creation. The manual roster door
+         previously wrote only the denormalised `students.guardian_*` columns, so `app.guardians`
+         stayed empty for app-created students — and absence/visitor/audience lookups found no
+         contact. Both guardian models are now written together. */
+      if (b.guardianName && b.guardianPhone) {
+        await c.query(
+          `INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary)
+           VALUES ($1,$2,$3,$4,'guardian',true)`,
+          [req.user.tenant_id, student.id, b.guardianName, b.guardianPhone]);
+      }
+      // Structural phone match only (never name-equality): bind an existing parent account so the
+      // family sees the child immediately. No match means the parent is provisioned via people.admin.
+      if (b.guardianPhone) {
+        const parent = (await c.query(
+          `SELECT id FROM app.users WHERE tenant_id=$1 AND role='parent' AND active=true AND phone=$2 ORDER BY created_at ASC LIMIT 1`,
+          [req.user.tenant_id, b.guardianPhone])).rows[0];
+        if (parent) {
+          await c.query(
+            `INSERT INTO family.child_link (tenant_id, user_id, student_id, relation, is_primary)
+             VALUES ($1,$2,$3,'guardian',true) ON CONFLICT (tenant_id, user_id, student_id) DO NOTHING`,
+            [req.user.tenant_id, parent.id, student.id]);
+        }
+      }
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created student', recordType: 'Student', recordRef: code, reason: b.reason ?? 'manual entry', outcome: 'created' });
       await emitEvent(c, req.user.tenant_id, { type: 'people', label: `Student enrolled — ${b.name} (${b.grade}-${b.section})`, ref: code });
-      return { student: r.rows[0] };
+      return { student };
     });
   });
 
@@ -639,21 +782,132 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       // rows above already record the act — so a separate summary row was a duplicate.
       const newlyAbsent = absents.filter((m) => was.get(m.studentId) !== 'absent');
       // Policy: Attendance §1.1 — guardians informed of NEW absences automatically.
+      let noticesQueued = 0;
       if (newlyAbsent.length) {
         await emitEvent(c, req.user.tenant_id,
           { type: 'attendance', label: `attendance.marked — ${marks.length} students on ${date} · ${newlyAbsent.length} newly absent`, severity: newlyAbsent.length > 2 ? 'warn' : 'info' },
           'attendance.absences', { date, absentCount: newlyAbsent.length });
+        /* M1: resolve each newly-absent child's guardian phone from EITHER guardian model.
+           `app.guardians` is the canonical contact table (visitors/library/audience doors read it),
+           while app-onboarded families link a parent USER structurally via `family.child_link`.
+           The defect was that only `app.guardians` was read — empty for app-created students — so
+           absence notices never queued. Reading the union means a notice is queued whichever path
+           created the family; DISTINCT keeps one row per (child, phone). */
         const info = await c.query(
-          `SELECT s.name, g.phone FROM app.students s JOIN app.guardians g ON g.student_id = s.id
-           WHERE s.id = ANY($1::uuid[]) AND g.is_primary`, [newlyAbsent.map(m => m.studentId)]);
+          `SELECT DISTINCT s.id AS student_id, s.name, t.phone
+             FROM app.students s
+             JOIN (
+               SELECT g.student_id, g.phone FROM app.guardians g WHERE g.is_primary AND g.phone IS NOT NULL
+               UNION
+               SELECT cl.student_id, u.phone FROM family.child_link cl
+                 JOIN app.users u ON u.id = cl.user_id
+                WHERE u.phone IS NOT NULL AND u.active
+             ) t ON t.student_id = s.id
+            WHERE s.id = ANY($1::uuid[])`, [newlyAbsent.map(m => m.studentId)]);
         for (const g of info.rows) {
           await c.query(
             `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, policy_ref, dedup_key)
              VALUES ($1, $2::jsonb, 'whatsapp', 'ABSENCE_NOTICE', $3, 'Attendance §1.1', $4)`,
             [req.user.tenant_id, JSON.stringify([g.phone]), `Absence notice for ${g.name} (${date}) — please confirm.`, randomUUID()]);
+          noticesQueued += 1;
         }
       }
-      return { ok: true, marked: marks.length, absent: absents.length, noticesQueued: newlyAbsent.length };
+      // M2: report the number of communication rows actually inserted (and guardians resolved),
+      // never the number of newly-absent students — the old value reported 1 when 0 were queued.
+      return { ok: true, marked: marks.length, absent: absents.length, noticesQueued, guardiansResolved: noticesQueued };
+    });
+  });
+
+  // ============ school classes & sections (school structure) ============
+  // The school's own class list. Owner, principal and IT admin define it; every roster, class
+  // transfer and class/section filter reads it. A new school starts EMPTY (onboarding writes []) —
+  // nothing is fabricated, and the setup checklist points the owner here. The read door is open to
+  // any authenticated caller (a class NAME is not sensitive; the write door is gated).
+  const CLASSES_ADMIN = ['owner', 'principal', 'itadmin'];
+  app.get('/school/classes', { preHandler: me }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const t = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const parsed = normalizeClasses(t?.config?.setup?.sections ?? []);
+      return { classes: parsed.ok ? parsed.classes : [] };
+    });
+  });
+
+  app.put('/school/classes', { preHandler: require(...CLASSES_ADMIN) }, async (req, reply) => {
+    const parsed = normalizeClasses(req.body?.classes);
+    if (!parsed.ok) return bad(reply, parsed.error);
+    const classes = parsed.classes;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // FOR UPDATE: read-modify-write on the JSONB config loses a concurrent profile edit without it.
+      const cur = (await c.query(`SELECT name, config FROM app.tenants WHERE id=$1 FOR UPDATE`, [req.user.tenant_id])).rows[0];
+      if (!cur) return reply.code(404).send({ error: 'School not found' });
+      const nextConfig = { ...(cur.config ?? {}) };
+      nextConfig.setup = { ...(nextConfig.setup ?? {}), sections: classes, updatedAt: new Date().toISOString() };
+      await c.query(`UPDATE app.tenants SET config=$1::jsonb WHERE id=$2`, [JSON.stringify(nextConfig), req.user.tenant_id]);
+      /* F3: keep the normalized structure in step with the config the pickers read. Upsert every
+         class/section, then mark the ones no longer listed inactive — never DELETE (D-35). The JSONB
+         config stays the fast read; these tables are the real references new code can join on. */
+      for (const [i, cls] of classes.entries()) {
+        const row = (await c.query(
+          `INSERT INTO app.classes (tenant_id, name, sort_idx, active) VALUES ($1,$2,$3,true)
+           ON CONFLICT (tenant_id, name) DO UPDATE SET sort_idx=EXCLUDED.sort_idx, active=true RETURNING id`,
+          [req.user.tenant_id, cls.grade, i])).rows[0];
+        for (const sec of cls.sections) {
+          await c.query(
+            `INSERT INTO app.sections (tenant_id, class_id, name, active) VALUES ($1,$2,$3,true)
+             ON CONFLICT (tenant_id, class_id, name) DO UPDATE SET active=true`,
+            [req.user.tenant_id, row.id, sec]);
+        }
+        await c.query(
+          `UPDATE app.sections SET active=false WHERE tenant_id=$1 AND class_id=$2 AND active AND name <> ALL($3::text[])`,
+          [req.user.tenant_id, row.id, cls.sections]);
+      }
+      await c.query(
+        `UPDATE app.classes SET active=false WHERE tenant_id=$1 AND active AND name <> ALL($2::text[])`,
+        [req.user.tenant_id, classes.map((x) => x.grade)]);
+      const sectionCount = classes.reduce((n, x) => n + x.sections.length, 0);
+      await auditLog(c, req.user.tenant_id, {
+        actor: req.user.name, actorRole: req.user.role, action: 'Updated classes & sections',
+        recordType: 'Tenant', recordRef: cur.name,
+        reason: `classes: ${classes.map((x) => `${x.grade}(${x.sections.join('/') || 'no sections'})`).join(', ') || 'none'}`,
+        policyRef: 'School structure', risk: 'low',
+        outcome: `${classes.length} class(es) · ${sectionCount} section(s)`,
+      });
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'platform', label: `Classes & sections updated (${classes.length} classes)` },
+        'platform.school.classes.updated.v1', { by: req.user.id, classes: classes.length, sections: sectionCount });
+      return { ok: true, classes };
+    });
+  });
+
+  // ============ subjects (F3) ============
+  // The school's own subject list — the real references behind the free-text `subject` columns in
+  // timetable/homework/exams. Any authenticated caller may read it (a subject name is not sensitive);
+  // owner/principal/IT admin define it. Adding a subject that already exists is idempotent, never a 409.
+  app.get('/school/subjects', { preHandler: me }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const subjects = (await c.query(
+        `SELECT id, name, code FROM app.subjects WHERE tenant_id=$1 AND active ORDER BY name`,
+        [req.user.tenant_id])).rows;
+      return { subjects };
+    });
+  });
+
+  app.post('/school/subjects', { preHandler: require(...CLASSES_ADMIN) }, async (req, reply) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
+    if (!name) return bad(reply, 'A subject name is required');
+    const code = typeof req.body?.code === 'string' ? req.body.code.trim().slice(0, 12) || null : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.subjects (tenant_id, name, code, active) VALUES ($1,$2,$3,true)
+         ON CONFLICT (tenant_id, name) DO UPDATE SET active=true, code=COALESCE(EXCLUDED.code, app.subjects.code)
+         RETURNING id, name, code`, [req.user.tenant_id, name, code])).rows[0];
+      await auditLog(c, req.user.tenant_id, {
+        actor: req.user.name, actorRole: req.user.role, action: 'Subject added',
+        recordType: 'Tenant', recordRef: name, reason: 'school structure', policyRef: 'School structure',
+        risk: 'low', outcome: `subject '${name}'${code ? ` (${code})` : ''}` });
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'platform', label: `Subject added — ${name}` }, 'platform.school.subject.added.v1', { name, code });
+      return { subject: row };
     });
   });
 
@@ -747,7 +1001,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
-  app.post('/academic-years', { preHandler: require('owner', 'principal', 'finance') }, async (req, reply) => {
+  app.post('/academic-years', { preHandler: require('owner', 'principal', 'finance', 'finance_head') }, async (req, reply) => {
     const b = req.body ?? {};
     const name = typeof b.name === 'string' ? b.name.trim() : '';
     const startsOn = typeof b.starts_on === 'string' ? b.starts_on.trim() : '';
@@ -814,22 +1068,151 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     return null;
   };
 
+  // FEE-COM-1: the fee feature matrix surfaced with the tenant's plan, so a client can show what is
+  // available and what each locked feature would require.
+  // A6/D12: per-tenant fee policy is now writable (it was read-only; only tests wrote it directly).
+  const FEE_SETTINGS_ROLES = ['owner', 'principal', 'finance', 'finance_head'];
+  app.get('/fees/settings', { preHandler: require(...FEE_SETTINGS_ROLES) }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => ({ settings: await feeSettings(c, req.user.tenant_id) }));
+  });
+  app.put('/fees/settings', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const numeric = ['refund_approval_threshold_cents', 'reconciliation_tolerance_cents', 'min_partial_cents', 'receipt_series_start', 'late_fee_per_day_cents', 'late_fee_cap_cents', 'late_fee_grace_days'];
+    const bools = ['allow_parent_partial'];
+    const patch = {};
+    for (const k of numeric) {
+      if (b[k] == null) continue;
+      const n = Number(b[k]);
+      if (!Number.isFinite(n) || n < 0) return bad(reply, `${k} must be a non-negative number`);
+      patch[k] = Math.trunc(n);
+    }
+    for (const k of bools) if (b[k] != null) patch[k] = Boolean(b[k]);
+    if (b.receipt_prefix != null) patch.receipt_prefix = String(b.receipt_prefix).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12) || 'RCP';
+    if (!Object.keys(patch).length) return bad(reply, 'no recognised setting supplied');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      await c.query(
+        `INSERT INTO app.fee_settings (tenant_id, settings, updated_at) VALUES ($1,$2::jsonb, now())
+         ON CONFLICT (tenant_id) DO UPDATE SET settings = app.fee_settings.settings || EXCLUDED.settings, updated_at=now()`,
+        [req.user.tenant_id, JSON.stringify(patch)]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Fee settings updated', recordType: 'FeeSettings', recordRef: req.user.tenant_id, reason: 'fee policy', policyRef: 'Fees §1', risk: 'medium', outcome: Object.keys(patch).join(', ') });
+      return { settings: await feeSettings(c, req.user.tenant_id) };
+    });
+  });
+
+  // D2 · apply late fees to overdue obligations from the tenant policy. Deterministic and idempotent:
+  // each obligation's late_fee_cents is SET (not added) from days-overdue × per-day, bounded by the cap.
+  app.post('/fees/late-fees/run', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = await feeSettings(c, req.user.tenant_id);
+      const perDay = Math.max(0, Math.trunc(Number(s.late_fee_per_day_cents) || 0));
+      if (perDay <= 0) return bad(reply, 'Late fees are not configured — set late_fee_per_day_cents in fee settings first', 409);
+      const cap = Math.max(0, Math.trunc(Number(s.late_fee_cap_cents) || 0));
+      const grace = Math.max(0, Math.trunc(Number(s.late_fee_grace_days) || 0));
+      const r = await c.query(
+        `WITH calc AS (
+           SELECT id, LEAST(CASE WHEN $4 > 0 THEN $4 ELSE 9223372036854775807 END,
+                            GREATEST(0, (('now' AT TIME ZONE 'Asia/Kolkata')::date - due_on) - $3) * $2) AS fee
+             FROM app.fee_obligations
+            WHERE tenant_id=$1 AND status NOT IN ('paid','void') AND due_on IS NOT NULL
+              AND due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date
+         )
+         UPDATE app.fee_obligations o SET late_fee_cents = calc.fee
+           FROM calc WHERE o.id = calc.id AND o.late_fee_cents <> calc.fee
+           RETURNING o.id`, [req.user.tenant_id, perDay, grace, cap]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Late fees applied', recordType: 'FeeSettings', recordRef: req.user.tenant_id, reason: `₹${perDay / 100}/day · grace ${grace}d · cap ${cap ? `₹${cap / 100}` : 'none'}`, policyRef: 'Fees §4.4', risk: 'medium', outcome: `${r.rowCount} obligation(s) updated` });
+      return { updated: r.rowCount, perDayCents: perDay, graceDays: grace, capCents: cap };
+    });
+  });
+  app.get('/fees/entitlements', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const plan = (await c.query(`SELECT plan FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0]?.plan ?? 'trial';
+      return { plan, features: feeEntitlements(plan) };
+    });
+  });
+
+  // ============ fee heads (FEE-DAT-1b) ============
+  // First-class charge categories, so a plan/obligation carries a head instead of a free-text label and a
+  // report can group by head. Staff-configurable; the desk reads them for pickers.
+  app.get('/fees/heads', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const includeInactive = req.query?.includeInactive === 'true';
+      const r = await c.query(
+        `SELECT h.id, h.name, h.category, h.is_refundable, h.tax_code, h.gl_ledger_name, h.active, h.created_at,
+                (SELECT count(*)::int FROM app.fee_obligations o WHERE o.fee_head_id = h.id) AS obligations
+           FROM app.fee_heads h
+          WHERE ($1 OR h.active)
+          ORDER BY h.active DESC, h.name`, [includeInactive]);
+      return { feeHeads: r.rows };
+    });
+  });
+
+  app.post('/fees/heads', { preHandler: require('owner','principal','finance','finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (!name || name.length > 80) return bad(reply, 'name is required (≤80 characters)');
+    const category = typeof b.category === 'string' ? b.category.trim().slice(0, 60) || null : null;
+    const taxCode = typeof b.taxCode === 'string' ? b.taxCode.trim().slice(0, 40) || null : null;
+    const glLedgerName = typeof b.glLedgerName === 'string' ? b.glLedgerName.trim().slice(0, 120) || null : null;
+    const isRefundable = b.isRefundable === undefined ? true : Boolean(b.isRefundable);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.heads'))) return;
+      try {
+        const r = await c.query(
+          `INSERT INTO app.fee_heads (tenant_id, name, category, is_refundable, tax_code, gl_ledger_name)
+           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [req.user.tenant_id, name, category, isRefundable, taxCode, glLedgerName]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee head', recordType: 'FeeHead', recordRef: name, reason: category ?? 'charge category', outcome: `created — refundable ${isRefundable}` });
+        return { feeHead: r.rows[0] };
+      } catch (e) {
+        if (e.code === '23505') return bad(reply, 'a fee head with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
   // RTE-11: a `me`-only read exposed every tenant-wide fee-plan template to any role (parent/student
   // included), whose mutations are owner/finance-gated. Staff/admin gate.
-  app.get('/fee-plans', { preHandler: roleGatedMe('owner','principal','finance','coordinator','itadmin') }, async (req) => {
+  app.get('/fee-plans', { preHandler: roleGatedMe('owner','principal','finance','finance_head','finance_clerk','coordinator','itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
-        `SELECT t.id, t.name, t.grades, t.terms, t.academic_year_id, t.created_at,
+        `SELECT t.id, t.name, t.grades, t.terms, t.academic_year_id, t.fee_head_id, t.installments, t.auto_concession, t.created_at,
+                h.name AS fee_head_name,
                 (SELECT count(*)::int FROM app.fee_obligations o
                   WHERE o.source_ref = 'feeplan:' || t.id::text) AS obligations_generated,
                 (SELECT max(o.created_at) FROM app.fee_obligations o
                   WHERE o.source_ref = 'feeplan:' || t.id::text) AS last_generated_at
-         FROM app.fee_plan_templates t ORDER BY t.created_at DESC`);
+         FROM app.fee_plan_templates t
+         LEFT JOIN app.fee_heads h ON h.id = t.fee_head_id
+         ORDER BY t.created_at DESC`);
       return { feePlans: r.rows };
     });
   });
 
-  app.post('/fee-plans', { preHandler: require('owner', 'principal', 'finance') }, async (req, reply) => {
+  // FEE-DAT-5b: an installment schedule is an ordered list of parts. `amount_cents` is optional — an omitted
+  // part is split evenly from the obligation's net, with the remainder on the last part (integer paise, never
+  // floats). `due_on` is optional; when absent the term's due date is used.
+  const validateInstallments = (installments) => {
+    if (installments == null) return null;
+    if (!Array.isArray(installments) || installments.length === 0 || installments.length > 24) return 'installments must be a non-empty list (≤24 parts)';
+    for (const p of installments) {
+      if (!p || typeof p !== 'object') return 'each installment must be an object';
+      if (p.amount_cents !== undefined && (!Number.isInteger(p.amount_cents) || p.amount_cents < 0)) return 'each installment amount_cents must be an integer ≥ 0';
+      if (p.due_on !== undefined && (typeof p.due_on !== 'string' || !DATE_RE.test(p.due_on))) return 'installment due_on must be a YYYY-MM-DD date';
+    }
+    return null;
+  };
+  // D3: the auto-concession rule applied at generation. `sibling` = a student who shares a guardian phone
+  // with another active student gets `percent` off each generated obligation.
+  const validateAutoConcession = (ac) => {
+    if (ac == null) return null;
+    if (typeof ac !== 'object' || Array.isArray(ac)) return 'autoConcession must be an object';
+    if (ac.kind !== 'sibling') return 'autoConcession.kind must be sibling';
+    if (!Number.isFinite(Number(ac.percent)) || Number(ac.percent) < 0 || Number(ac.percent) > 100) return 'autoConcession.percent must be 0..100';
+    if (ac.min_children !== undefined && (!Number.isInteger(ac.min_children) || ac.min_children < 2 || ac.min_children > 10)) return 'autoConcession.min_children must be 2..10';
+    return null;
+  };
+
+  app.post('/fee-plans', { preHandler: require('owner', 'principal', 'finance', 'finance_head', 'finance_clerk') }, async (req, reply) => {
     const b = req.body ?? {};
     const name = typeof b.name === 'string' ? b.name.trim() : '';
     const grades = Array.isArray(b.grades) ? b.grades.filter((g) => typeof g === 'string' && g.trim()) : null;
@@ -837,17 +1220,27 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     if (!grades || grades.length === 0 || grades.length > 40) return bad(reply, 'grades must be a non-empty list of grade names');
     const termsErr = validateTerms(b.terms);
     if (termsErr) return bad(reply, termsErr);
+    const instErr = validateInstallments(b.installments);
+    if (instErr) return bad(reply, instErr);
+    const acErr = validateAutoConcession(b.autoConcession);
+    if (acErr) return bad(reply, acErr);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (b.feeHeadId && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.heads'))) return;
+      if (b.installments && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.installments'))) return;
       try {
         if (b.academicYearId) {
           const ay = await c.query(`SELECT 1 FROM app.academic_years WHERE id=$1`, [b.academicYearId]);
           if (!ay.rows[0]) return bad(reply, 'academicYearId does not reference this school\'s calendar', 400);
         }
+        if (b.feeHeadId) {
+          const head = await c.query(`SELECT 1 FROM app.fee_heads WHERE id=$1 AND active`, [b.feeHeadId]);
+          if (!head.rows[0]) return bad(reply, 'feeHeadId does not reference an active fee head in this school', 400);
+        }
         const r = await c.query(
-          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id)
-           VALUES ($1,$2,$3,$4::jsonb,$5) RETURNING id, name, grades, terms, academic_year_id`,
-          [req.user.tenant_id, name, grades, JSON.stringify(b.terms), b.academicYearId ?? null]);
-        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee plan template', recordType: 'FeePlan', recordRef: name, reason: `grades: ${grades.join(', ')}`, outcome: `created — ${b.terms.length} terms` });
+          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession)
+           VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb) RETURNING id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession`,
+          [req.user.tenant_id, name, grades, JSON.stringify(b.terms), b.academicYearId ?? null, b.feeHeadId ?? null, b.installments ? JSON.stringify(b.installments) : null, b.autoConcession ? JSON.stringify(b.autoConcession) : null]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee plan template', recordType: 'FeePlan', recordRef: name, reason: `grades: ${grades.join(', ')}${b.feeHeadId ? ` · head ${b.feeHeadId}` : ''}`, outcome: `created — ${b.terms.length} terms${b.installments ? ` · ${b.installments.length} installments` : ''}` });
         return { feePlan: r.rows[0] };
       } catch (e) {
         if (e.code === '23505') return bad(reply, 'a fee plan with this name already exists', 409);
@@ -856,24 +1249,69 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.post('/fee-plans/:id/generate', { preHandler: [require('owner', 'principal', 'finance'), uuidParams('id')] }, async (req, reply) => {
+  app.post('/fee-plans/:id/generate', { preHandler: [require('owner', 'principal', 'finance', 'finance_head', 'finance_clerk'), uuidParams('id')] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const tpl = (await c.query(`SELECT id, name, grades, terms, academic_year_id FROM app.fee_plan_templates WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      const tpl = (await c.query(`SELECT id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession FROM app.fee_plan_templates WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!tpl) return bad(reply, 'fee plan not found', 404);
+      if (Array.isArray(tpl.installments) && tpl.installments.length > 0
+        && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.installments'))) return;
       const scope = (await c.query(`SELECT count(*)::int n FROM app.students WHERE status='active' AND grade = ANY($1)`, [tpl.grades])).rows[0].n;
+      // A billing run groups every obligation this generation produces, so a whole run can be reasoned
+      // about (and, later, voided) as one unit.
+      const run = (await c.query(
+        `INSERT INTO app.billing_runs (tenant_id, plan_template_id, created_by, note) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [req.user.tenant_id, tpl.id, req.user.id, `generated from ${tpl.name}`])).rows[0];
+      // FEE-DAT-1b: the head rides the obligation so reports can group by head, not free-text label.
       const ins = await c.query(
-        `INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, due_on, amount_cents, academic_year_id, source_ref)
-         SELECT $1, s.id, te->>'term', te->>'label', NULLIF(te->>'due_on','')::date, (te->>'amount_cents')::bigint, $2, 'feeplan:' || $3
+        `INSERT INTO app.fee_obligations (tenant_id, student_id, term, label, due_on, amount_cents, academic_year_id, source_ref, billing_run_id, fee_head_id)
+         SELECT $1, s.id, te->>'term', te->>'label', NULLIF(te->>'due_on','')::date, (te->>'amount_cents')::bigint, $2, 'feeplan:' || $3, $6, $7
          FROM app.students s CROSS JOIN jsonb_array_elements($4::jsonb) te
          WHERE s.status='active' AND s.grade = ANY($5)
          ON CONFLICT (tenant_id, student_id, term, label) DO NOTHING
-         RETURNING id`,
-        [req.user.tenant_id, tpl.academic_year_id, tpl.id, JSON.stringify(tpl.terms), tpl.grades]);
+         RETURNING id, amount_cents`,
+        [req.user.tenant_id, tpl.academic_year_id, tpl.id, JSON.stringify(tpl.terms), tpl.grades, run.id, tpl.fee_head_id ?? null]);
       const inserted = ins.rowCount;
+      // FEE-DAT-5b: split each generated obligation into its installment schedule, in order. Regeneration
+      // never touches existing rows (ON CONFLICT DO NOTHING), so a paid installment is never re-created.
+      let installmentsCreated = 0;
+      if (Array.isArray(tpl.installments) && tpl.installments.length > 0) {
+        for (const ob of ins.rows) {
+          const split = splitInstallments(tpl.installments, ob.amount_cents);
+          if (split.error) continue;
+          for (let i = 0; i < tpl.installments.length; i++) {
+            const due = tpl.installments[i]?.due_on ?? null;
+            const r = await c.query(
+              `INSERT INTO app.fee_installments (tenant_id, obligation_id, seq, due_on, amount_cents)
+               VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tenant_id, obligation_id, seq) DO NOTHING`,
+              [req.user.tenant_id, ob.id, i + 1, due, split.amounts[i].toString()]);
+            installmentsCreated += r.rowCount;
+          }
+        }
+      }
+      // D3: apply the plan's auto-concession rule (design §6.1) to the obligations this run produced.
+      // `sibling` = a student sharing a guardian phone with another active student. `concession_cents = 0`
+      // guards against re-applying; net_amount_cents is a generated column, so the ledger reflects it.
+      let autoConcessions = 0;
+      const ac = tpl.auto_concession;
+      if (ac && ac.kind === 'sibling' && Number(ac.percent) > 0) {
+        const minC = Number.isInteger(ac.min_children) ? ac.min_children : 2;
+        const upd = await c.query(
+          `UPDATE app.fee_obligations o
+              SET concession_cents = round(o.amount_cents * $3 / 100.0)::bigint
+             FROM app.students s
+            WHERE o.student_id = s.id AND o.billing_run_id=$1 AND o.tenant_id=$2
+              AND o.concession_cents = 0
+              AND (SELECT count(DISTINCT g2.student_id) FROM app.guardians g2
+                    WHERE g2.tenant_id=$2 AND g2.phone IS NOT NULL
+                      AND g2.phone = (SELECT g1.phone FROM app.guardians g1
+                                       WHERE g1.student_id = s.id AND g1.tenant_id=$2 AND g1.phone IS NOT NULL LIMIT 1)) >= $4`,
+          [run.id, req.user.tenant_id, Number(ac.percent), minC]);
+        autoConcessions = upd.rowCount;
+      }
       const attempted = scope * (Array.isArray(tpl.terms) ? tpl.terms.length : 0);
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Generated fee obligations', recordType: 'FeePlan', recordRef: tpl.name, reason: `${scope} active students × ${tpl.terms.length} terms`, outcome: `${inserted} created · ${attempted - inserted} skipped (already exist — payments untouched)` });
-      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee plan ${tpl.name} generated — ${inserted} obligations created for ${scope} students`, ref: tpl.id });
-      return { inserted, skipped: attempted - inserted, students: scope, terms: Array.isArray(tpl.terms) ? tpl.terms.length : 0 };
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Generated fee obligations', recordType: 'FeePlan', recordRef: tpl.name, reason: `${scope} active students × ${tpl.terms.length} terms`, outcome: `${inserted} created · ${attempted - inserted} skipped (already exist — payments untouched) · ${installmentsCreated} installments · ${autoConcessions} auto-concessions · run ${run.id}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee plan ${tpl.name} generated — ${inserted} obligations created for ${scope} students`, ref: run.id });
+      return { inserted, skipped: attempted - inserted, students: scope, terms: Array.isArray(tpl.terms) ? tpl.terms.length : 0, installmentsCreated, autoConcessions, billingRunId: run.id };
     });
   });
 
@@ -895,8 +1333,66 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // SEC-5: roles that legitimately work the school-wide fee ledger. Narrower than
   // STAFF_CASE_ROLES on purpose (no teacher, no admissions) — this is financial data about
   // children, and neither role has a fee mandate in the shipped product.
-  const FEE_LEDGER_ROLES = new Set(['owner', 'principal', 'itadmin', 'finance', 'coordinator']);
-  app.get('/fees/obligations', { preHandler: roleGatedMe('owner','principal','itadmin','finance','coordinator','parent') }, async (req, reply) => {
+  const FEE_LEDGER_ROLES = new Set(['owner', 'principal', 'itadmin', 'finance', 'finance_head', 'finance_clerk', 'coordinator']);
+  // FEES-109: the finance split. `finance` is the legacy broad role (grandfathered as head-equivalent);
+  // `finance_clerk` is maker-only, `finance_head` is checker. A refund at/above the threshold may not be
+  // executed by a pure maker, and never by the same user who settled the payment (unless owner).
+  const FEE_MAKER_ROLES = ['finance', 'finance_head', 'finance_clerk', 'owner', 'principal'];
+  const FEE_REFUND_ROLES = ['finance', 'finance_head', 'finance_clerk', 'owner'];
+  // FEE-SEC-9 / FEE-DAT-8: fee policy is per-tenant, not a constant. `app.fee_settings` holds the overrides;
+  // the defaults below preserve the pre-110 behaviour for a tenant that has never configured anything.
+  const REFUND_APPROVAL_THRESHOLD_CENTS = 500000; // ₹5,000 — the default until a tenant sets its own
+  const FEE_SETTING_DEFAULTS = Object.freeze({
+    refund_approval_threshold_cents: REFUND_APPROVAL_THRESHOLD_CENTS,
+    reconciliation_tolerance_cents: 0,
+    // A7: `auto_settle_verified_capture` was a dead flag — settlement is staff-only by design
+    // (Fees §4.2: the rail never moves money), so a verified capture does not auto-settle. Removed
+    // rather than left as a setting that reads as implemented. `settled_via='auto'` stays reserved
+    // in the CHECK but is never written.
+    allow_parent_partial: true,
+    min_partial_cents: 10000,
+    receipt_prefix: 'RCP',
+    receipt_series_start: 1,
+    // D2 · late fees: per-day paise applied to overdue obligations, with an optional cap and grace.
+    // per_day_cents = 0 means late fees are off.
+    late_fee_per_day_cents: 0,
+    late_fee_cap_cents: 0,
+    late_fee_grace_days: 0,
+  });
+  const feeSettings = async (c, tenantId) => {
+    const row = (await c.query(`SELECT settings FROM app.fee_settings WHERE tenant_id=$1`, [tenantId])).rows[0];
+    return { ...FEE_SETTING_DEFAULTS, ...(row?.settings ?? {}) };
+  };
+  // FEE-COM-1: the tenant's plan gates the fee feature matrix. Returns false and sends 402 when the feature
+  // is not entitled; callers `if (!(await feeFeatureGate(...))) return;`.
+  const feeFeatureGate = async (c, reply, tenantId, feature) => {
+    const plan = (await c.query(`SELECT plan FROM app.tenants WHERE id=$1`, [tenantId])).rows[0]?.plan ?? 'trial';
+    if (feeFeatureIncluded(plan, feature)) return true;
+    reply.code(402).send(feeNotEntitled(feature, plan));
+    return false;
+  };
+  // Append-only money trail (migration 109). Best-effort: a failure here must never roll back the ledger,
+  // so callers wrap it; the audit ledger remains the authoritative hash-chained record.
+  const recordPaymentEvent = async (c, tenantId, { paymentId, kind, actor, actorRole, source, amountCents, payload }) => {
+    try {
+      await c.query(
+        `INSERT INTO app.payment_events (tenant_id, payment_id, kind, actor, actor_role, source, amount_cents, payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [tenantId, paymentId, kind, actor ?? null, actorRole ?? null, source ?? null,
+         amountCents != null ? String(amountCents) : null, JSON.stringify(payload ?? {})]);
+    } catch { /* never fail the money path on the event trail */ }
+  };
+  // Receipt recipients: the primary guardian phones for a student (family.child_link -> users), falling back
+  // to the denormalised app.students.guardian_phone. Used to make FEE_RECEIPT deliverable (FEE-DEL-1).
+  const guardianPhones = async (c, tenantId, studentId) => {
+    const linked = (await c.query(
+      `SELECT u.phone FROM family.child_link cl JOIN app.users u ON u.id = cl.user_id
+        WHERE cl.student_id=$1 AND u.phone IS NOT NULL`, [studentId])).rows.map((r) => r.phone).filter(Boolean);
+    if (linked.length) return [...new Set(linked)];
+    const fallback = (await c.query(`SELECT guardian_phone AS phone FROM app.students WHERE id=$1 AND tenant_id=$2`, [studentId, tenantId])).rows[0]?.phone;
+    return fallback ? [fallback] : [];
+  };
+  app.get('/fees/obligations', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent','student') }, async (req, reply) => {
     const { studentId, status } = req.query;
     if (studentId != null && !UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
     const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
@@ -904,6 +1400,19 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // RT-7cyc8 P1-9: guardians are structurally scoped to their own children
       // (family.child_link) — a parent-supplied studentId for another child is refused.
       let scope = studentId ?? null;
+      // FEE-PRD-9: a student is structurally scoped to their OWN record via app.student_accounts (108). The
+      // link is the identity; a missing link yields an empty, honest self-view rather than the school ledger.
+      if (req.user.role === 'student') {
+        const link = (await c.query(`SELECT student_id FROM app.student_accounts WHERE user_id=$1`, [req.user.id])).rows[0];
+        const mine = link ? [link.student_id] : [];
+        if (scope && !mine.includes(scope)) return { obligations: [], scoped: 'self' };
+        const r2 = await c.query(
+          `SELECT o.*, s.name AS student_name, s.grade, s.section
+           FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
+           WHERE o.student_id = ANY($1::uuid[]) AND ($2::text IS NULL OR o.status=$2)
+           ORDER BY o.due_on NULLS LAST LIMIT $3 OFFSET $4`, [mine, status ?? null, limit, offset]);
+        return { obligations: r2.rows, scoped: 'self', limit, offset, hasMore: r2.rows.length === limit };
+      }
       if (req.user.role === 'parent') {
         const kids = await c.query(
           `SELECT cl.student_id FROM family.child_link cl WHERE cl.user_id=$1`, [req.user.id]);
@@ -918,17 +1427,9 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
            ORDER BY o.due_on NULLS LAST LIMIT $3 OFFSET $4`, [list, status ?? null, limit, offset]);
         return { obligations: r2.rows, scoped: 'own_children', limit, offset, hasMore: r2.rows.length === limit };
       }
-      // SEC-5: the fallback below was reached by EVERY role that is not a parent, so a
-      // student account received up to 500 obligations for the entire school — every
-      // family's dues, with student names, grades and sections. The parent branch above is
-      // structurally scoped (`family.child_link`); the unscoped branch had no gate at all.
-      //
-      // "student → own obligations only" (the audit's first preference) is NOT implementable
-      // today: there is no link from a user account to a student record anywhere in the
-      // schema. `app.users` has no student_id, and the only linkage tables (`app.guardians`,
-      // `family.child_link`) are GUARDIAN links. Inventing one here would be a guess in a
-      // money path, so this denies instead — a missing feature is better than a silent
-      // whole-school disclosure. Building that link is Phase 2 (the organisation model).
+      // SEC-5: the fallback below was reached by EVERY role that is not a parent, so a student account
+      // received up to 500 obligations for the entire school. Students are now handled by the
+      // `app.student_accounts` branch above (FEE-PRD-9); this fallback is staff-only.
       //
       // The allowlist is deliberately narrower than STAFF_CASE_ROLES: a teacher or an
       // admissions officer has no fee mandate, and this is financial data about children.
@@ -950,69 +1451,218 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.post('/fees/payments', { preHandler: require('parent','finance','owner','principal') }, async (req, reply) => {
-    const { obligationId, method = 'upi' } = req.body ?? {};
-    if (!obligationId) return bad(reply, 'obligationId required');
-    const paymentMethod = String(method).toLowerCase();
+  // D7: the documented single-obligation read (FEES-DESIGN §5) — with its payments, installments and
+  // concessions. Scoped exactly like the list door (parents/students to their own rows).
+  app.get('/fees/obligations/:id', { preHandler: [roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent','student'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const o = (await c.query(
+        `SELECT o.*, s.name AS student_name, s.grade, s.section
+           FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
+          WHERE o.id=$1 AND o.tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!o) return bad(reply, 'not found', 404);
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE tenant_id=$1 AND user_id=$2 AND student_id=$3`,
+          [req.user.tenant_id, req.user.id, o.student_id]).catch(() => ({ rows: [] }))).rows[0];
+        if (!own) return bad(reply, 'This fee is not for your child', 403);
+      }
+      if (req.user.role === 'student') {
+        const link = (await c.query(`SELECT student_id FROM app.student_accounts WHERE tenant_id=$1 AND user_id=$2`, [req.user.tenant_id, req.user.id])).rows[0];
+        if (!link || link.student_id !== o.student_id) return bad(reply, 'This fee is not yours', 403);
+      }
+      const payments = (await c.query(
+        `SELECT id, amount_cents, method, status, gateway_ref, settled_via, receipt_no, created_at
+           FROM app.payments WHERE tenant_id=$1 AND obligation_id=$2 ORDER BY created_at DESC`, [req.user.tenant_id, o.id])).rows;
+      const installments = (await c.query(
+        `SELECT id, seq, due_on, amount_cents, status, payment_id FROM app.fee_installments
+          WHERE tenant_id=$1 AND obligation_id=$2 ORDER BY seq`, [req.user.tenant_id, o.id])).rows;
+      return { obligation: o, payments, installments };
+    });
+  });
+
+  // D1 · the invoice document. Renders a deterministic invoice into the private file store on first
+  // request and returns the same artifact thereafter (idempotent). Parents scoped to their child.
+  app.get('/fees/obligations/:id/invoice', { preHandler: [roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const o = (await c.query(
+        `SELECT o.*, s.name AS student_name, s.grade, s.section FROM app.fee_obligations o
+           JOIN app.students s ON s.id=o.student_id WHERE o.id=$1 AND o.tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!o) return bad(reply, 'not found', 404);
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE tenant_id=$1 AND user_id=$2 AND student_id=$3`,
+          [req.user.tenant_id, req.user.id, o.student_id]).catch(() => ({ rows: [] }))).rows[0];
+        if (!own) return bad(reply, 'This invoice is not for your child', 403);
+      }
+      if (o.invoice_file_id) {
+        const f = (await c.query(`SELECT id, filename, sha256 FROM app.files WHERE id=$1 AND tenant_id=$2`, [o.invoice_file_id, req.user.tenant_id])).rows[0];
+        if (f) return { invoice: { fileId: f.id, filename: f.filename, sha256: f.sha256 }, cached: true };
+      }
+      const school = (await c.query(`SELECT name FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0]?.name ?? 'SchoolOS';
+      const money = (v) => (Number(v ?? 0) / 100).toFixed(2);
+      const lines = [
+        `INVOICE — ${school}`,
+        `Student: ${o.student_name} (${o.grade}-${o.section})`,
+        `Term: ${o.term ?? '—'} · ${o.label}`,
+        `Amount: ${money(o.amount_cents)}`,
+        `Concession: ${money(o.concession_cents)}`,
+        `Waived: ${money(o.waived_cents)}`,
+        `Late fee: ${money(o.late_fee_cents)}`,
+        `Net payable: ${money(o.net_amount_cents)}`,
+        `Paid: ${money(o.paid_cents)}`,
+        `Due: ${o.due_on ?? '—'}`,
+        `Status: ${o.status}`,
+      ];
+      const file = await putFile(c, req.user.tenant_id, req.user.id, {
+        filename: `invoice-${o.id}.txt`, mime: 'text/plain', buf: Buffer.from(lines.join('\n'), 'utf8'), scope: 'student', refId: o.student_id });
+      await c.query(`UPDATE app.fee_obligations SET invoice_file_id=$2 WHERE id=$1`, [o.id, file.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Invoice rendered', recordType: 'FeeObligation', recordRef: o.id, reason: 'invoice document', policyRef: 'Fees §5', risk: 'low', outcome: `artifact ${file.id}` });
+      return { invoice: { fileId: file.id, filename: file.filename, sha256: file.sha256 }, cached: false };
+    });
+  });
+
+  // ============ student own-dues (FEE-PRD-9) ============
+  // A student's read-only money view, scoped structurally through app.student_accounts (108). No payments
+  // can be initiated here; the student sees dues, payments and receipts for their own record only.
+  app.get('/student/fees', { preHandler: roleGatedMe('student') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const link = (await c.query(`SELECT student_id FROM app.student_accounts WHERE tenant_id=$1 AND user_id=$2`, [req.user.tenant_id, req.user.id])).rows[0];
+      if (!link) return { linked: false, studentId: null, obligations: [], payments: [], receipts: [], outstandingCents: 0 };
+      const sid = link.student_id;
+      const obligations = (await c.query(
+        `SELECT o.id, o.term, o.label, o.due_on, o.amount_cents, o.concession_cents, o.waived_cents, o.net_amount_cents,
+                o.paid_cents, o.status
+           FROM app.fee_obligations o WHERE o.student_id=$1 ORDER BY o.due_on NULLS LAST`, [sid])).rows;
+      const payments = (await c.query(
+        `SELECT p.id, p.amount_cents, p.refunded_cents, p.method, p.status, p.receipt_no, p.confirmed_at, p.created_at,
+                p.settled_via, p.reconciliation_status
+           FROM app.payments p WHERE p.student_id=$1 ORDER BY p.created_at DESC LIMIT 100`, [sid])).rows;
+      const receipts = (await c.query(
+        `SELECT id, receipt_no, payment_id, amount_cents, issued_at, voided_at, pdf_file_id
+           FROM app.fee_receipts WHERE student_id=$1 ORDER BY issued_at DESC LIMIT 100`, [sid])).rows;
+      const outstanding = obligations.reduce((a, o) => a + (o.status === 'void' ? 0 : Number(o.net_amount_cents) - Number(o.paid_cents)), 0);
+      return { linked: true, studentId: sid, obligations, payments, receipts, outstandingCents: outstanding, scoped: 'self' };
+    });
+  });
+
+  app.post('/fees/payments', { preHandler: require('parent','finance','finance_head','finance_clerk','owner','principal') }, async (req, reply) => {
+    const b = req.body ?? {};
+    // FEE-PRD-10: pay-many. `obligationIds` (or a single `obligationId`) opens ONE payment allocated across
+    // several obligations. All obligations must belong to the same student, and the allocations sum ≤ amount.
+    const ids = Array.isArray(b.obligationIds)
+      ? [...new Set(b.obligationIds.filter((x) => typeof x === 'string'))]
+      : (b.obligationId ? [b.obligationId] : []);
+    if (!ids.length) return moneyError(reply, 'VALIDATION_FAILED', 'obligationId or obligationIds required');
+    if (ids.length > 20) return moneyError(reply, 'VALIDATION_FAILED', 'at most 20 obligations may be settled by one payment');
+    for (const id of ids) if (!UUID_RE_NOTICE.test(String(id))) return moneyError(reply, 'VALIDATION_FAILED', 'obligation ids must be uuids');
+    const paymentMethod = String(b.method ?? 'upi').toLowerCase();
     if (!['upi', 'razorpay', 'cash', 'card', 'cheque', 'netbanking', 'bank_transfer', 'manual'].includes(paymentMethod)) {
-      return bad(reply, 'unsupported payment method');
+      return moneyError(reply, 'VALIDATION_FAILED', 'unsupported payment method');
     }
     const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
     if (idempotencyKey && (idempotencyKey.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey))) {
-      return bad(reply, 'Idempotency-Key must be 1-128 letters, numbers, dots, underscores, colons or hyphens');
+      return moneyError(reply, 'VALIDATION_FAILED', 'Idempotency-Key must be 1-128 letters, numbers, dots, underscores, colons or hyphens');
     }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (ids.length > 1 && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.multi_obligation'))) return;
       if (idempotencyKey) {
         const prior = await c.query(
           `SELECT * FROM app.payments WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`,
           [req.user.tenant_id, idempotencyKey]);
         if (prior.rows[0]) return { payment: prior.rows[0], already: true };
       }
-      const o = await c.query(`SELECT * FROM app.fee_obligations WHERE id=$1 AND status <> 'void' FOR UPDATE`, [obligationId]);
-      if (!o.rows[0]) return bad(reply, 'obligation not found', 404);
-      // T105b (§7.3 P1-3): a parent may start a payment ONLY on their own child's
-      // obligation (structural family.child_link binding, rename-proof) — a parent
-      // initiating on another family's obligation deadlocks the real one via the
-      // one-open-payment constraint. 404 keeps obligation existence private.
-      if (req.user.role === 'parent') {
-        const own = await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, o.rows[0].student_id]);
-        if (!own.rows[0]) return bad(reply, 'obligation not found', 404);
+      // Lock in a stable id order so two concurrent pay-many calls cannot deadlock each other.
+      const obs = [];
+      for (const id of [...ids].sort()) {
+        const row = (await c.query(`SELECT * FROM app.fee_obligations WHERE id=$1 AND status <> 'void' FOR UPDATE`, [id])).rows[0];
+        if (!row) return moneyError(reply, 'NOT_FOUND', 'obligation not found');
+        obs.push(row);
       }
-      const due = BigInt(o.rows[0].amount_cents) - BigInt(o.rows[0].paid_cents);
-      if (due <= 0n) return bad(reply, 'obligation already settled', 409);
-      const open = await c.query(`SELECT id FROM app.payments WHERE obligation_id=$1 AND status='initiated'`, [obligationId]);
-      if (open.rows[0]) return bad(reply, 'a payment for this obligation is already in progress', 409);
+      // T105b (§7.3 P1-3): a parent may start a payment ONLY on their own child's obligation(s) (structural
+      // family.child_link binding, rename-proof). 404 keeps obligation existence private.
+      if (req.user.role === 'parent') {
+        for (const o of obs) {
+          const own = await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, o.student_id]);
+          if (!own.rows[0]) return moneyError(reply, 'NOT_FOUND', 'obligation not found');
+        }
+      }
+      const studentIds = new Set(obs.map((o) => o.student_id));
+      if (studentIds.size > 1) return moneyError(reply, 'VALIDATION_FAILED', 'all obligations must belong to the same student');
+      const studentId = obs[0].student_id;
+      // net_amount_cents = amount − concessions − waivers (generated, migration 109).
+      const parts = obs.map((o) => ({ id: o.id, label: o.label, due: BigInt(o.net_amount_cents ?? o.amount_cents) - BigInt(o.paid_cents) })).filter((x) => x.due > 0n);
+      if (!parts.length) return moneyError(reply, 'OBLIGATION_SETTLED', 'obligation already settled');
+      for (const part of parts) {
+        const open = await c.query(`SELECT id FROM app.payments WHERE obligation_id=$1 AND status='initiated'`, [part.id]);
+        if (open.rows[0]) return moneyError(reply, 'PAYMENT_IN_PROGRESS', 'a payment for this obligation is already in progress');
+      }
+      const totalDue = parts.reduce((s, p2) => s + p2.due, 0n);
+      let amount = totalDue;
+      if (b.amountCents != null) {
+        if (!Number.isInteger(b.amountCents) || b.amountCents <= 0) return moneyError(reply, 'VALIDATION_FAILED', 'amountCents must be a positive integer (paise)');
+        amount = BigInt(b.amountCents);
+        if (amount > totalDue) return moneyError(reply, 'VALIDATION_FAILED', 'amountCents exceeds the total outstanding');
+        const settings = await feeSettings(c, req.user.tenant_id);
+        if (amount < totalDue) {
+          if (req.user.role === 'parent' && settings.allow_parent_partial === false) return moneyError(reply, 'VALIDATION_FAILED', 'partial payments are not enabled for this school');
+          if (amount < BigInt(settings.min_partial_cents)) return moneyError(reply, 'VALIDATION_FAILED', `the minimum partial payment is ${settings.min_partial_cents} paise`);
+        }
+      }
+      // Allocate greedily in obligation order until the amount is exhausted; never allocate more than a due.
+      let remaining = amount;
+      const allocations = [];
+      for (const part of parts) {
+        if (remaining <= 0n) break;
+        const take = part.due < remaining ? part.due : remaining;
+        allocations.push({ obligationId: part.id, amountCents: take.toString(), label: part.label });
+        remaining -= take;
+      }
+      const single = parts.length === 1 ? parts[0].id : null;
       let p;
       try {
         p = await c.query(
           `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status, idempotency_key)
            VALUES ($1,$2,$3,$4,$5,'initiated',$6) RETURNING *`,
-          [req.user.tenant_id, o.rows[0].student_id, obligationId, due.toString(), paymentMethod, idempotencyKey || null]);
+          [req.user.tenant_id, studentId, single, amount.toString(), paymentMethod, idempotencyKey || null]);
       } catch (e) {
         if (e.code !== '23505' || !idempotencyKey) throw e;
         const prior = await c.query(`SELECT * FROM app.payments WHERE tenant_id=$1 AND idempotency_key=$2`, [req.user.tenant_id, idempotencyKey]);
         if (prior.rows[0]) return { payment: prior.rows[0], already: true };
         throw e;
       }
-      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.initiated — ₹${Number(due)/100} (obligation ${o.rows[0].label})`, ref: p.rows[0].id });
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Initiated payment', recordType: 'Payment', recordRef: p.rows[0].id, reason: `settle ${o.rows[0].label}`, outcome: 'initiated' });
-      return { payment: p.rows[0] };
+      for (const a of allocations) {
+        await c.query(
+          `INSERT INTO app.payment_allocations (tenant_id, payment_id, obligation_id, amount_cents)
+           VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, payment_id, obligation_id) DO NOTHING`,
+          [req.user.tenant_id, p.rows[0].id, a.obligationId, a.amountCents.toString()]);
+      }
+      await recordPaymentEvent(c, req.user.tenant_id, { paymentId: p.rows[0].id, kind: 'initiated', actor: req.user.name, actorRole: req.user.role, source: 'kernel', amountCents: amount });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.initiated — ₹${Number(amount)/100} (${allocations.length} obligation${allocations.length > 1 ? 's' : ''})`, ref: p.rows[0].id });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Initiated payment', recordType: 'Payment', recordRef: p.rows[0].id, reason: `settle ${allocations.map((a) => a.label).join(', ')}`, outcome: `initiated · ${allocations.length} allocation(s) · ₹${Number(amount) / 100}` });
+      return { payment: p.rows[0], allocations };
     });
   });
 
-  app.post('/fees/payments/:id/confirm', { preHandler: [require('finance','owner'), uuidParams('id')] }, async (req, reply) => {
-    const gatewayRef = req.body?.gatewayRef ?? `GATEWAY-${randomUUID().slice(0,8)}`;
+  // D6: confirming a settlement is a CHECKER act (FEES-DESIGN §2.2: clerk initiates/collects,
+  // head confirms/reconciles). `finance_clerk` (the maker) was wrongly admitted; removed.
+  app.post('/fees/payments/:id/confirm', { preHandler: [require('finance','finance_head','owner'), uuidParams('id')] }, async (req, reply) => {
+    // FEE-SEC-2: never fabricate a gateway reference. When the desk settles cash/cheque there is no
+    // provider reference; the row records the reserved sentinel `MANUAL` and `settled_via='manual'` so the
+    // provenance is explicit, not a gateway-shaped string the schema's CHECK happens to accept.
+    const suppliedRef = typeof req.body?.gatewayRef === 'string' ? req.body.gatewayRef.trim() : '';
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const p = (await c.query(`SELECT * FROM app.payments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
-      if (!p) return bad(reply, 'payment not found', 404);
+      if (!p) return moneyError(reply, 'NOT_FOUND', 'payment not found');
       if (p.status === 'confirmed') return { payment: p, already: true }; // idempotent
-      if (p.status !== 'initiated') return bad(reply, `payment in status ${p.status}`, 409);
+      if (p.status !== 'initiated') return moneyError(reply, 'CONFLICT', `payment in status ${p.status}`);
       // RTE-5: a VOIDED obligation must not be resurrected by confirming a still-initiated payment against
       // it. `void` refuses paid_cents>0, so a void obligation has no confirmed payment — but an initiated
       // one could be confirmed here afterwards and flip the obligation back to paid/partial. Refuse
       // BEFORE any mutation.
-      const obl = (await c.query(`SELECT status FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [p.obligation_id])).rows[0];
-      if (obl?.status === 'void') return bad(reply, 'the obligation was voided — a payment cannot be confirmed against it', 409);
+      const voided = (await c.query(
+        `SELECT 1 FROM app.fee_obligations o
+          WHERE o.tenant_id=$1 AND o.status='void'
+            AND (o.id = $2 OR o.id IN (SELECT obligation_id FROM app.payment_allocations WHERE tenant_id=$1 AND payment_id=$3))
+          LIMIT 1`, [req.user.tenant_id, p.obligation_id, p.id])).rows[0];
+      if (voided) return moneyError(reply, 'OBLIGATION_SETTLED', 'the obligation was voided — a payment cannot be confirmed against it');
       // SEC-8: `webhookVerified` was decided by REGEX-MATCHING THE CALLER'S OWN STRING —
       // `/^[A-Z0-9-]{10,}$/` — so any finance user could type `MANUAL-123456` into the confirm body and the audit
       // ledger would record "Confirmed payment (gateway webhook verified)". The claim the row depends on for its
@@ -1028,8 +1678,9 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // The lookup runs inside `withUser`, so RLS scopes it to the caller's tenant — and it is additionally
       // joined to THIS payment row, so a genuine gateway reference belonging to a different payment cannot
       // launder this one.
+      const gatewayRef = suppliedRef || 'MANUAL';
       let verifiedBy = null;
-      if (typeof gatewayRef === 'string' && gatewayRef.length > 0) {
+      if (typeof gatewayRef === 'string' && gatewayRef.length > 0 && gatewayRef !== 'MANUAL') {
         const ev = await c.query(
           `SELECT 1 FROM plugin_razorpay.order_log
             WHERE to_regclass('plugin_razorpay.order_log') IS NOT NULL
@@ -1044,6 +1695,21 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
             throw e;
           });
         if (ev.rows[0]) verifiedBy = 'razorpay';
+        // A3: UPI captures verify against the UPI webhook ledger too. A UPI settlement used to always
+        // settle as 'manual' because only razorpay evidence was consulted.
+        if (!verifiedBy) {
+          const upi = await c.query(
+            `SELECT 1 FROM plugin_upi.webhook_log
+              WHERE to_regclass('plugin_upi.webhook_log') IS NOT NULL
+                AND tenant_id = $1
+                AND (event_id = $2
+                     OR payload::jsonb->'payload'->'payment'->'entity'->'notes'->>'paymentId' = $3)
+              LIMIT 1`, [req.user.tenant_id, gatewayRef, p.id]).catch((e) => {
+            if (e?.code === '42P01') return { rows: [] };
+            throw e;
+          });
+          if (upi.rows[0]) verifiedBy = 'upi';
+        }
       }
       // Still permitted without evidence — a desk taking cash must be able to settle a payment — but it is
       // labELLED for what it is. The reference is still STORED even when unverified, and that is deliberate:
@@ -1055,26 +1721,395 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // be the same overclaim this fix exists to remove.
       const webhookVerified = verifiedBy !== null;
       const storedRef = gatewayRef;
+      const settledVia = webhookVerified ? 'gateway' : 'manual';
+      // A5: deterministic per-tenant receipt number under a tenant lock. The old
+      // `RCP-<base36 timestamp>` + ON CONFLICT DO NOTHING could silently skip a receipt on collision.
+      await c.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`fee_receipt:${req.user.tenant_id}`]);
+      const rset = await feeSettings(c, req.user.tenant_id);
+      const rprefix = String(rset.receipt_prefix ?? 'RCP').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12) || 'RCP';
+      const rstart = Math.max(1, Number(rset.receipt_series_start ?? 1) || 1);
+      const rmax = (await c.query(
+        `SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_no, '^[^0-9]*', ''), '')::int), $2 - 1) AS m
+           FROM app.fee_receipts WHERE tenant_id=$1`, [req.user.tenant_id, rstart])).rows[0];
+      const receiptNo = `${rprefix}-${String(Number(rmax.m) + 1).padStart(6, '0')}`;
       const confirmed = await c.query(
-        `UPDATE app.payments SET status='confirmed', confirmed_at=now(), gateway_ref=$2, receipt_no=$3 WHERE id=$1 RETURNING *`,
-        [p.id, storedRef, `RCP-${Date.now().toString(36).toUpperCase()}`]);
-      // ledger: obligation paid_cents
-      const o = await c.query(
-        `UPDATE app.fee_obligations SET paid_cents = paid_cents + $2,
-           status = CASE WHEN paid_cents + $2 >= amount_cents THEN 'paid' ELSE 'partial' END
-         WHERE id=$1 AND status <> 'void' RETURNING *`, [p.obligation_id, p.amount_cents.toString()]);
-      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.confirmed — ₹${Number(p.amount_cents)/100} · receipt ${confirmed.rows[0].receipt_no}`, ref: p.id });
-      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation verified — ${o.rows[0].label} status ${o.rows[0].status}`, ref: o.rows[0].id });
+        `UPDATE app.payments
+            SET status='confirmed', confirmed_at=now(), gateway_ref=$2, receipt_no=$3,
+                settled_by=$4, settled_via=$5,
+                reconciliation_status = CASE WHEN $5='gateway' THEN 'matched' ELSE 'manual' END
+          WHERE id=$1 RETURNING *`,
+        [p.id, storedRef, receiptNo, req.user.id, settledVia]);
+      // ledger: distribute the settlement across the payment's ALLOCATIONS (FEE-PRD-10), so a pay-many
+      // payment moves every obligation it covers. Legacy payments with no allocation fall back to the
+      // single obligation_id. Each obligation's paid_cents is against its NET amount (amount − concessions).
+      const allocRows = (await c.query(
+        `SELECT obligation_id, amount_cents FROM app.payment_allocations WHERE tenant_id=$1 AND payment_id=$2`,
+        [req.user.tenant_id, p.id])).rows;
+      const effectiveAllocs = allocRows.length
+        ? allocRows
+        : (p.obligation_id ? [{ obligation_id: p.obligation_id, amount_cents: p.amount_cents }] : []);
+      const settledObligations = [];
+      for (const a of effectiveAllocs) {
+        const u = await c.query(
+          `UPDATE app.fee_obligations SET paid_cents = paid_cents + $2,
+             status = CASE WHEN paid_cents + $2 >= net_amount_cents THEN 'paid' ELSE 'partial' END
+           WHERE id=$1 AND status <> 'void' RETURNING *`, [a.obligation_id, a.amount_cents.toString()]);
+        if (!u.rows[0]) continue;
+        settledObligations.push(u.rows[0]);
+        // FEE-DAT-5b: settle installments IN ORDER up to this obligation's new paid total.
+        await c.query(
+          `UPDATE app.fee_installments fi SET status='paid', payment_id=$2
+            WHERE fi.tenant_id=$1 AND fi.obligation_id=$3 AND fi.status IN ('pending','overdue')
+              AND (SELECT COALESCE(SUM(x.amount_cents),0) FROM app.fee_installments x
+                    WHERE x.tenant_id=fi.tenant_id AND x.obligation_id=fi.obligation_id AND x.seq <= fi.seq) <= $4`,
+          [req.user.tenant_id, p.id, u.rows[0].id, u.rows[0].paid_cents.toString()]);
+      }
+      const primary = settledObligations[0] ?? null;
+      // immutable receipt artifact (migration 109) — the receipt_no column above is the index; this is the record.
+      // A5: no ON CONFLICT — the number is unique under the tenant lock, and a collision must be a
+      // hard error, never a silently skipped receipt.
+      const receiptRow = (await c.query(
+        `INSERT INTO app.fee_receipts (tenant_id, payment_id, receipt_no, student_id, amount_cents, issued_by)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING id`,
+        [req.user.tenant_id, p.id, receiptNo, p.student_id, p.amount_cents.toString(), req.user.id])).rows[0];
+      // FEE-DAT-3b: render the receipt PDF and store it as a real artifact, then point the receipt row at it.
+      // Best-effort: a storage failure must never roll back a completed settlement; the row still exists and
+      // can be re-rendered. The artifact is scoped `student` so the child's guardians can download it through
+      // files.store's audited door.
+      if (receiptRow) {
+        try {
+          const st = (await c.query(
+            `SELECT name, admission_no, grade, section FROM app.students WHERE id=$1`, [p.student_id])).rows[0] ?? {};
+          const pdf = receiptPdf({
+            receiptNo, studentName: st.name, admissionNo: st.admission_no, grade: st.grade, section: st.section,
+            label: primary?.label, term: primary?.term, amountCents: p.amount_cents, method: p.method,
+            gatewayRef: storedRef, issuedAt: new Date(), paymentId: p.id });
+          const file = await putFile(c, req.user.tenant_id, req.user.id, {
+            filename: `receipt-${receiptNo}.pdf`, mime: 'application/pdf', buf: pdf, scope: 'student', refId: p.student_id });
+          await c.query(`UPDATE app.fee_receipts SET pdf_file_id=$2 WHERE id=$1`, [receiptRow.id, file.id]);
+        } catch { /* artifact is best-effort; the immutable receipt row is the record */ }
+      }
+      await recordPaymentEvent(c, req.user.tenant_id, { paymentId: p.id, kind: 'confirmed', actor: req.user.name, actorRole: req.user.role, source: settledVia, amountCents: p.amount_cents, payload: { verifiedBy, receiptNo, allocations: settledObligations.length } });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.confirmed — ₹${Number(p.amount_cents)/100} · receipt ${receiptNo}`, ref: p.id });
+      if (primary) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation verified — ${primary.label} status ${primary.status}`, ref: primary.id });
+      // FEE-DEL-1: resolve real recipients and a dedup key so the receipt is deliverable, not a row with an
+      // empty audience the dispatcher can never send.
+      const phones = await guardianPhones(c, req.user.tenant_id, p.student_id);
       await c.query(
-        `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, policy_ref)
-         VALUES ($1, '[]'::jsonb, 'whatsapp', 'FEE_RECEIPT', $2, 'Fees §4.2')`,
-        [req.user.tenant_id, `Receipt ${confirmed.rows[0].receipt_no} — ₹${Number(p.amount_cents)/100} received. Thank you.`]);
+        `INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, policy_ref, dedup_key)
+         VALUES ($1,'guardian',$2::jsonb,'whatsapp','FEE_RECEIPT',$3,'Fees §4.2',$4)
+         ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
+        [req.user.tenant_id, JSON.stringify(phones), `Receipt ${receiptNo} — ₹${Number(p.amount_cents)/100} received. Thank you.`, `receipt:${p.id}`]);
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: webhookVerified
           ? `Confirmed payment (gateway reference ${verifiedBy} verified against the provider's own record)`
-          : 'Confirmed payment (manual reconciliation — no gateway evidence)', recordType: 'Payment', recordRef: `${confirmed.rows[0].receipt_no}`, reason: webhookVerified
+          : 'Confirmed payment (manual reconciliation — no gateway evidence)', recordType: 'Payment', recordRef: `${receiptNo}`, reason: webhookVerified
             ? `gateway confirm — reference found in ${verifiedBy} log for this payment`
-            : 'manual confirm — no gateway record for this reference; verify the statement', policyRef: 'Fees §4.2', outcome: `ledger updated · obligation ${o.rows[0].status}` });
-      return { payment: confirmed.rows[0], obligation: o.rows[0] };
+            : 'manual confirm — no gateway record for this reference; verify the statement', policyRef: 'Fees §4.2', outcome: `ledger updated · ${settledObligations.length} obligation(s) settled` });
+      return { payment: confirmed.rows[0], obligation: primary, obligations: settledObligations };
+    });
+  });
+
+  // ============ payments list + receipts (FEE-API-1 / FEE-API-2) ============
+  // The itemised payment list the desk and parents both need — filters, pagination, receipt + verification
+  // state. Parents are structurally scoped to their own children; staff see the tenant ledger.
+  app.get('/payments', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent') }, async (req, reply) => {
+    const { studentId, status, method } = req.query;
+    if (studentId != null && !UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
+    const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const params = [status ?? null, method ?? null, limit, offset];
+      let where = `p.tenant_id = app.current_tenant()::uuid
+        AND ($1::text IS NULL OR p.status=$1) AND ($2::text IS NULL OR p.method=$2)`;
+      if (req.user.role === 'parent') {
+        const kids = (await c.query(`SELECT student_id FROM family.child_link WHERE user_id=$1`, [req.user.id])).rows.map((r) => r.student_id);
+        params.push(kids.length ? kids : ['00000000-0000-0000-0000-000000000000']);
+        where += ` AND p.student_id = ANY($${params.length}::uuid[])`;
+      } else if (studentId != null) {
+        params.push(studentId);
+        where += ` AND p.student_id = $${params.length}`;
+      } else if (!canReach(req, [...FEE_LEDGER_ROLES])) {
+        return reply.code(403).send({ error: 'The full payment ledger is for school staff. Families see their own payments under My fees.' });
+      }
+      const r = await c.query(
+        `SELECT p.id, p.student_id, p.obligation_id, p.amount_cents, p.refunded_cents, p.method, p.status,
+                p.gateway_ref, p.receipt_no, p.confirmed_at, p.created_at, p.settled_via, p.reconciliation_status,
+                s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term
+           FROM app.payments p
+           JOIN app.students s ON s.id = p.student_id
+           LEFT JOIN app.fee_obligations o ON o.id = p.obligation_id
+          WHERE ${where}
+          ORDER BY p.created_at DESC LIMIT $3 OFFSET $4`, params);
+      return { payments: r.rows, limit, offset, hasMore: r.rows.length === limit, scoped: req.user.role === 'parent' ? 'own_children' : 'school' };
+    });
+  });
+
+  // D7: the documented single-payment read (FEES-DESIGN §5) — with its provenance events and allocations.
+  app.get('/payments/:id', { preHandler: [roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const p = (await c.query(
+        `SELECT p.*, s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term
+           FROM app.payments p JOIN app.students s ON s.id = p.student_id
+           LEFT JOIN app.fee_obligations o ON o.id = p.obligation_id
+          WHERE p.id=$1 AND p.tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!p) return bad(reply, 'not found', 404);
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE tenant_id=$1 AND user_id=$2 AND student_id=$3`,
+          [req.user.tenant_id, req.user.id, p.student_id]).catch(() => ({ rows: [] }))).rows[0];
+        if (!own) return bad(reply, 'This payment is not for your child', 403);
+      } else if (!canReach(req, [...FEE_LEDGER_ROLES])) {
+        return bad(reply, 'The payment ledger is for school staff.', 403);
+      }
+      const events = (await c.query(`SELECT kind, actor, actor_role, source, amount_cents, payload, created_at FROM app.payment_events WHERE tenant_id=$1 AND payment_id=$2 ORDER BY created_at`, [req.user.tenant_id, p.id]).catch(() => ({ rows: [] }))).rows;
+      const allocations = (await c.query(`SELECT obligation_id, amount_cents FROM app.payment_allocations WHERE tenant_id=$1 AND payment_id=$2`, [req.user.tenant_id, p.id]).catch(() => ({ rows: [] }))).rows;
+      return { payment: p, events, allocations };
+    });
+  });
+
+  // D7: the documented billing-run void (FEES-DESIGN §5). A run with no money against any of its
+  // obligations can be voided; its still-open obligations are voided with it. Owner / finance head.
+  app.post('/billing-runs/:id/void', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(`SELECT * FROM app.billing_runs WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!run) return bad(reply, 'not found', 404);
+      if (run.status === 'void') return bad(reply, 'this billing run is already void', 409);
+      const paid = (await c.query(
+        `SELECT COALESCE(SUM(paid_cents),0)::bigint AS paid, count(*) FILTER (WHERE paid_cents > 0)::int AS touched
+           FROM app.fee_obligations WHERE tenant_id=$1 AND billing_run_id=$2`, [req.user.tenant_id, run.id])).rows[0];
+      if (Number(paid.touched) > 0) return bad(reply, `This run has payments against ${paid.touched} obligation(s) — refund or reconcile them before voiding`, 409);
+      const voided = (await c.query(
+        `UPDATE app.fee_obligations SET status='void' WHERE tenant_id=$1 AND billing_run_id=$2 AND status <> 'void'`, [req.user.tenant_id, run.id])).rowCount;
+      await c.query(`UPDATE app.billing_runs SET status='void', voided_by=$2, voided_at=now() WHERE id=$1`, [run.id, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Billing run voided`, recordType: 'BillingRun', recordRef: run.id, reason: req.body?.reason ?? 'billing run void', policyRef: 'Fees §3', risk: 'high', outcome: `${voided} obligation(s) voided` });
+      return { ok: true, voidedObligations: voided };
+    });
+  });
+
+  app.get('/fees/receipts', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent') }, async (req, reply) => {
+    const { studentId } = req.query;
+    if (studentId != null && !UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
+    const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const params = [limit, offset];
+      let where = `r.tenant_id = app.current_tenant()::uuid`;
+      if (req.user.role === 'parent') {
+        const kids = (await c.query(`SELECT student_id FROM family.child_link WHERE user_id=$1`, [req.user.id])).rows.map((x) => x.student_id);
+        params.push(kids.length ? kids : ['00000000-0000-0000-0000-000000000000']);
+        where += ` AND r.student_id = ANY($${params.length}::uuid[])`;
+      } else if (studentId != null) {
+        params.push(studentId);
+        where += ` AND r.student_id = $${params.length}`;
+      } else if (!canReach(req, [...FEE_LEDGER_ROLES])) {
+        return reply.code(403).send({ error: 'Receipts are for school staff. Families see their own under My fees.' });
+      }
+      const r = await c.query(
+        `SELECT r.id, r.receipt_no, r.payment_id, r.student_id, r.amount_cents, r.issued_at, r.voided_at, r.pdf_file_id,
+                s.name AS student_name, o.label AS obligation_label, o.term
+           FROM app.fee_receipts r
+           JOIN app.students s ON s.id = r.student_id
+           LEFT JOIN app.payments p ON p.id = r.payment_id
+           LEFT JOIN app.fee_obligations o ON o.id = p.obligation_id
+          WHERE ${where}
+          ORDER BY r.issued_at DESC LIMIT $1 OFFSET $2`, params);
+      return { receipts: r.rows, limit, offset, hasMore: r.rows.length === limit };
+    });
+  });
+
+  app.get('/fees/receipts/:id', { preHandler: [roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(
+        `SELECT r.*, s.name AS student_name, s.admission_no, s.grade, s.section,
+                o.label AS obligation_label, o.term, p.method, p.gateway_ref, p.settled_via
+           FROM app.fee_receipts r
+           JOIN app.students s ON s.id = r.student_id
+           LEFT JOIN app.payments p ON p.id = r.payment_id
+           LEFT JOIN app.fee_obligations o ON o.id = p.obligation_id
+          WHERE r.id=$1`, [req.params.id])).rows[0];
+      if (!r) return bad(reply, 'receipt not found', 404);
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, r.student_id])).rows[0];
+        if (!own) return bad(reply, 'receipt not found', 404);
+      }
+      return { receipt: r, school: { name: 'SchoolOS' } };
+    });
+  });
+
+  // FEE-FE-7: download the immutable receipt PDF artifact. The bytes are never web-served; this kernel door
+  // applies the SAME scoping as the receipt read (parent → own children) and streams the stored file. It
+  // deliberately does not depend on the files.store plugin lifecycle — a parent holding a receipt must be
+  // able to download it even if the school has not enabled the generic file module.
+  app.get('/fees/receipts/:id/pdf', { preHandler: [roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent'), uuidParams('id')] }, async (req, reply) => {
+    const verdict = await withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(
+        `SELECT r.id, r.receipt_no, r.student_id, r.pdf_file_id FROM app.fee_receipts r WHERE r.id=$1`,
+        [req.params.id])).rows[0];
+      if (!r) return { refused: 404, msg: 'receipt not found' };
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, r.student_id])).rows[0];
+        if (!own) return { refused: 404, msg: 'receipt not found' };
+      } else if (!canReach(req, [...FEE_LEDGER_ROLES])) {
+        return { refused: 403, msg: 'Receipts are for school staff. Families see their own under My fees.' };
+      }
+      if (!r.pdf_file_id) return { refused: 404, msg: 'this receipt has no PDF artifact' };
+      const f = (await c.query(`SELECT filename, mime, storage_path FROM app.files WHERE id=$1`, [r.pdf_file_id])).rows[0];
+      if (!f) return { refused: 410, msg: 'the receipt file is no longer available' };
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Downloaded fee receipt PDF', recordType: 'FeeReceipt', recordRef: r.receipt_no, reason: 'receipt artifact download', policyRef: 'Fees §4.2', risk: 'low', outcome: 'served through the kernel receipt door' });
+      return { ok: true, file: f };
+    });
+    if (verdict.ok !== true) return bad(reply, verdict.msg, verdict.refused);
+    if (verdict.file.storage_path.includes('..') || verdict.file.storage_path.startsWith('/')) return bad(reply, 'invalid file reference', 400);
+    const path = join(storageBase(), verdict.file.storage_path);
+    const st = await stat(path).catch(() => null);
+    if (!st) return bad(reply, 'the receipt file is no longer available on this server', 410);
+    const safe = String(verdict.file.filename ?? 'receipt.pdf').replace(/"/g, '');
+    reply.header('content-type', verdict.file.mime ?? 'application/pdf');
+    reply.header('content-length', String(st.size));
+    reply.header('content-disposition', `attachment; filename="${safe}"`);
+    reply.header('cache-control', 'no-store');
+    return reply.send(createReadStream(path));
+  });
+
+  // ============ fee-message delivery view (FEE-DEL-6) ============
+  // The fee-specific delivery surface: every FEE_REMINDER/FEE_RECEIPT/FEE_ESCALATION row with its honest
+  // carrier state. `comms.whatsapp/receipts` is generic; an operator watching fee delivery needs the fee
+  // subset and the reason a message did not reach a guardian.
+  app.get('/fees/delivery', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator') }, async (req, reply) => {
+    if (!canReach(req, [...FEE_LEDGER_ROLES])) return reply.code(403).send({ error: 'Fee delivery is for school staff.' });
+    const { status } = req.query;
+    const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 300 });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, template, channel, status, provider, provider_ref, attempts, last_error,
+                audience_json, dedup_key, sent_at, delivered_at, created_at
+           FROM app.communications
+          WHERE template LIKE 'FEE%' AND ($1::text IS NULL OR status=$1)
+          ORDER BY created_at DESC LIMIT $2 OFFSET $3`, [status ?? null, limit, offset]);
+      return { messages: r.rows, limit, offset, hasMore: r.rows.length === limit };
+    });
+  });
+
+  // ============ installments (FEE-DAT-5b) ============
+  // The scheduled parts of an obligation. Parents are structurally scoped to their own children; staff see
+  // the tenant. A plan that carried an installment schedule produces these rows at generation.
+  app.get('/fees/installments', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent') }, async (req, reply) => {
+    const { obligationId, studentId, status } = req.query;
+    if (obligationId != null && !UUID_RE_NOTICE.test(String(obligationId))) return bad(reply, 'obligationId must be a uuid');
+    if (studentId != null && !UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
+    const { limit, offset } = pageParams(req.query, { defaultLimit: 200, maxLimit: 500 });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const params = [obligationId ?? null, status ?? null, limit, offset];
+      let where = `fi.tenant_id = app.current_tenant()::uuid
+        AND ($1::uuid IS NULL OR fi.obligation_id=$1) AND ($2::text IS NULL OR fi.status=$2)`;
+      if (req.user.role === 'parent') {
+        const kids = (await c.query(`SELECT student_id FROM family.child_link WHERE user_id=$1`, [req.user.id])).rows.map((r) => r.student_id);
+        params.push(kids.length ? kids : ['00000000-0000-0000-0000-000000000000']);
+        where += ` AND o.student_id = ANY($${params.length}::uuid[])`;
+      } else if (studentId != null) {
+        params.push(studentId);
+        where += ` AND o.student_id = $${params.length}`;
+      } else if (!canReach(req, [...FEE_LEDGER_ROLES])) {
+        return reply.code(403).send({ error: 'Installments are for school staff. Families see their own under My fees.' });
+      }
+      const r = await c.query(
+        `SELECT fi.id, fi.obligation_id, fi.seq, fi.due_on, fi.amount_cents, fi.status, fi.payment_id,
+                o.label AS obligation_label, o.term, o.student_id, s.name AS student_name, s.grade, s.section
+           FROM app.fee_installments fi
+           JOIN app.fee_obligations o ON o.id = fi.obligation_id
+           JOIN app.students s ON s.id = o.student_id
+          WHERE ${where}
+          ORDER BY fi.due_on NULLS LAST, fi.seq LIMIT $3 OFFSET $4`, params);
+      return { installments: r.rows, limit, offset, hasMore: r.rows.length === limit };
+    });
+  });
+
+  // ============ concessions / waivers (FEE-DAT-4 / FEE-API-3) ============
+  // D4: a concession may be REQUESTED by the family or the class teacher (design §6.5) — it is only
+  // DECIDED by finance/owner/principal (the decide door below is unchanged). A parent is scoped to
+  // their own child.
+  app.post('/fees/concessions', { preHandler: require('owner','principal','finance','finance_head','finance_clerk','parent','teacher') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!b.studentId || !UUID_RE_NOTICE.test(String(b.studentId))) return bad(reply, 'studentId must be a uuid');
+    if (!['concession','scholarship','sibling','staff','waiver'].includes(b.kind)) return bad(reply, 'kind must be concession|scholarship|sibling|staff|waiver');
+    if (b.percent == null && b.amountCents == null) return bad(reply, 'provide percent or amountCents');
+    if (b.percent != null && (!Number.isFinite(Number(b.percent)) || Number(b.percent) < 0 || Number(b.percent) > 100)) return bad(reply, 'percent must be 0..100');
+    if (b.amountCents != null && (!Number.isInteger(b.amountCents) || b.amountCents < 0)) return bad(reply, 'amountCents must be a non-negative integer');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.concessions'))) return;
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE tenant_id=$1 AND user_id=$2 AND student_id=$3`,
+          [req.user.tenant_id, req.user.id, b.studentId]).catch(() => ({ rows: [] }))).rows[0];
+        if (!own) return bad(reply, 'You can only request a concession for your own child', 403);
+      }
+      const r = await c.query(
+        `INSERT INTO app.fee_concessions (tenant_id, student_id, obligation_id, fee_head_id, kind, percent, amount_cents, reason, status, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9) RETURNING *`,
+        [req.user.tenant_id, b.studentId, b.obligationId ?? null, b.feeHeadId ?? null, b.kind,
+         b.percent ?? null, b.amountCents ?? null, typeof b.reason === 'string' ? b.reason.slice(0, 300) : null, req.user.id]);
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `concession.requested — ${b.kind} for student ${b.studentId}`, ref: r.rows[0].id });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Requested fee concession', recordType: 'FeeConcession', recordRef: r.rows[0].id, reason: b.reason ?? b.kind, policyRef: 'Fees §4.2', outcome: 'requested' });
+      return { concession: r.rows[0] };
+    });
+  });
+
+  app.get('/fees/concessions', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent','teacher') }, async (req, reply) => {
+    const { status } = req.query;
+    const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 300 });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // D4: a requester (parent/teacher) sees only the concessions they raised; staff see the ledger.
+      const selfOnly = req.user.role === 'parent' || req.user.role === 'teacher';
+      if (selfOnly) {
+        const r = await c.query(
+          `SELECT fc.*, s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term
+             FROM app.fee_concessions fc
+             JOIN app.students s ON s.id = fc.student_id
+             LEFT JOIN app.fee_obligations o ON o.id = fc.obligation_id
+            WHERE fc.requested_by=$1 AND ($2::text IS NULL OR fc.status=$2)
+            ORDER BY fc.created_at DESC LIMIT $3 OFFSET $4`, [req.user.id, status ?? null, limit, offset]);
+        return { concessions: r.rows, limit, offset, hasMore: r.rows.length === limit, scoped: 'own_requests' };
+      }
+      if (!canReach(req, [...FEE_LEDGER_ROLES])) return reply.code(403).send({ error: 'Fee concessions are for school staff.' });
+      const r = await c.query(
+        `SELECT fc.*, s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term
+           FROM app.fee_concessions fc
+           JOIN app.students s ON s.id = fc.student_id
+           LEFT JOIN app.fee_obligations o ON o.id = fc.obligation_id
+          WHERE ($1::text IS NULL OR fc.status=$1)
+          ORDER BY fc.created_at DESC LIMIT $2 OFFSET $3`, [status ?? null, limit, offset]);
+      return { concessions: r.rows, limit, offset, hasMore: r.rows.length === limit };
+    });
+  });
+
+  app.post('/fees/concessions/:id/decide', { preHandler: [require('owner','principal','finance','finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const decision = req.body?.decision;
+    if (!['approve','reject'].includes(decision)) return bad(reply, 'decision must be approve|reject');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const con = (await c.query(`SELECT * FROM app.fee_concessions WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!con) return bad(reply, 'concession not found', 404);
+      if (con.status !== 'requested') return bad(reply, `concession already ${con.status}`, 409);
+      if (con.requested_by && con.requested_by === req.user.id && req.user.role !== 'owner') {
+        return reply.code(403).send({ error: 'A concession cannot be approved by its requester', code: 'SOD_REQUIRED' });
+      }
+      if (decision === 'reject') {
+        const r = await c.query(`UPDATE app.fee_concessions SET status='rejected', approved_by=$2, approved_at=now() WHERE id=$1 RETURNING *`, [con.id, req.user.id]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Rejected fee concession', recordType: 'FeeConcession', recordRef: con.id, reason: 'rejected', policyRef: 'Fees §4.2', outcome: 'rejected' });
+        return { concession: r.rows[0] };
+      }
+      // approve: apply to the obligation when one is named. The reduction may never exceed the unpaid remainder.
+      if (con.obligation_id) {
+        const o = (await c.query(`SELECT id, amount_cents, paid_cents, concession_cents, waived_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [con.obligation_id])).rows[0];
+        if (o) {
+          const base = BigInt(o.amount_cents) - BigInt(o.concession_cents) - BigInt(o.waived_cents);
+          let reduction = con.amount_cents != null ? BigInt(con.amount_cents) : (base * BigInt(Math.round(Number(con.percent) * 100)) / 10000n);
+          const unpaid = base - BigInt(o.paid_cents);
+          if (reduction > unpaid) reduction = unpaid < 0n ? 0n : unpaid;
+          const col = con.kind === 'waiver' ? 'waived_cents' : 'concession_cents';
+          await c.query(`UPDATE app.fee_obligations SET ${col} = ${col} + $2 WHERE id=$1`, [o.id, reduction.toString()]);
+        }
+      }
+      const r = await c.query(`UPDATE app.fee_concessions SET status='approved', approved_by=$2, approved_at=now() WHERE id=$1 RETURNING *`, [con.id, req.user.id]);
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `concession.decided — ${con.kind} approved`, ref: con.id });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Approved fee concession', recordType: 'FeeConcession', recordRef: con.id, reason: con.kind, policyRef: 'Fees §4.2', outcome: 'approved — obligation reduced' });
+      return { concession: r.rows[0] };
     });
   });
 
@@ -1144,7 +2179,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   };
   const WO_FLOW = ['reported','assigned','accepted','en-route','on-site','repairing','verification','resolved','closed','cancelled'];
 
-  app.get('/work-orders', { preHandler: require('principal','owner','itadmin','finance','coordinator','facilities','technician','transport','teacher') }, async (req, reply) => {
+  app.get('/work-orders', { preHandler: require('principal','owner','itadmin','finance','finance_head','finance_clerk','coordinator','facilities','technician','transport','teacher') }, async (req, reply) => {
     const { status, priority, assetId } = req.query;
     if (assetId != null && !UUID_RE_NOTICE.test(String(assetId))) return bad(reply, 'assetId must be a uuid');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -1205,7 +2240,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   });
 
   // RTE-11: the tenant-wide asset inventory was readable by every role; work-order mutations are staff-gated.
-  app.get('/assets', { preHandler: roleGatedMe('owner','principal','itadmin','finance','coordinator','facilities','technician','transport') }, async (req) => {
+  app.get('/assets', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','facilities','technician','transport') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`SELECT * FROM app.assets ORDER BY code LIMIT 500`);
       return { assets: r.rows };
@@ -1214,7 +2249,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
 
   // ============ cases ============
   const STAFF_CASE_ROLES = new Set(['owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'finance']);
-  app.get('/cases', { preHandler: roleGatedMe('owner','principal','itadmin','coordinator','teacher','finance') }, async (req, reply) => {
+  app.get('/cases', { preHandler: roleGatedMe('owner','principal','itadmin','coordinator','teacher','finance','finance_head','finance_clerk') }, async (req, reply) => {
     if (!canReach(req, [...STAFF_CASE_ROLES])) return reply.code(403).send({ error: 'The full school case log is staff-only. Parents can see their own complaints at /my-cases.' });
     const { status } = req.query;
     const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 200 });
@@ -1321,13 +2356,524 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   });
 
   // ============ actions (approvals) ============
-  app.get('/actions', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req) => {
-    const { status } = req.query;
+  app.get('/actions', { preHandler: require('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','teacher','admissions','transport','facilities','technician') }, async (req) => {
+    const { status, owner_role, kind, overdue } = req.query;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // OPP-API-7: the owner/principal console filters its own queue. `overdue` returns open actions past
+      // their deadline (the SLA worker's subject); `owner_role`/`kind` narrow the oversight view.
+      const r = await c.query(
+        `SELECT * FROM app.actions
+          WHERE ($1::text IS NULL OR status=$1)
+            AND ($2::text IS NULL OR owner_role=$2)
+            AND ($3::text IS NULL OR kind=$3)
+            AND ($4::boolean IS NOT TRUE OR (status='open' AND deadline IS NOT NULL AND deadline < now()))
+          ORDER BY created_at DESC LIMIT 200`,
+        [status ?? null, owner_role ?? null, kind ?? null, overdue === 'true']);
+      return { actions: r.rows };
+    });
+  });
+
+  /* OPP-OVR-2: delegation of approval authority. A role-holder (or the owner on their behalf) names a
+     deputy for a bounded window. The decide handler honours an active row and stamps the decision as
+     delegated. Finance and owner-owned actions are never delegable (SoD). */
+  app.get('/delegations', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
-        `SELECT * FROM app.actions WHERE ($1::text IS NULL OR status=$1) ORDER BY created_at DESC LIMIT 200`,
-        [status ?? null]);
-      return { actions: r.rows };
+        `SELECT d.*, uf.name AS from_name, ut.name AS to_name
+           FROM app.action_delegations d
+           LEFT JOIN app.users uf ON uf.id = d.from_user_id
+           LEFT JOIN app.users ut ON ut.id = d.to_user_id
+          WHERE d.tenant_id=$1 ORDER BY d.ends_at DESC LIMIT 100`, [req.user.tenant_id]);
+      return { delegations: r.rows };
+    });
+  });
+  // OPP-RBAC-6: a roster read the DELEGATING roles can actually reach (people.admin/users is
+  // owner/itadmin only, so the principal's deputy picker was empty). Excludes owner/finance (never
+  // delegable) and non-staff roles.
+  app.get('/delegations/roster', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, name, role FROM app.users
+          WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student','owner','finance','finance_head','finance_clerk')
+          ORDER BY name LIMIT 500`, [req.user.tenant_id]);
+      return { users: r.rows };
+    });
+  });
+  app.post('/delegations', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req, reply) => {
+    const { fromUserId, toUserId, fromRole, toRole, scopeRole, startsAt, endsAt, reason } = req.body ?? {};
+    if (!toUserId || !fromRole || !toRole || !endsAt) return bad(reply, 'toUserId, fromRole, toRole and endsAt are required');
+    // OVR-7: the WHOLE finance tier and the owner are non-delegable — not just the literal 'finance'.
+    const FINANCE_TIER = ['finance', 'finance_head', 'finance_clerk'];
+    if (fromRole === 'owner' || FINANCE_TIER.includes(fromRole) || FINANCE_TIER.includes(scopeRole))
+      return bad(reply, 'owner and finance approval authority cannot be delegated (segregation of duties)', 403);
+    if (toRole === 'owner' || FINANCE_TIER.includes(toRole))
+      return bad(reply, 'approval authority cannot be delegated to an owner or finance role (segregation of duties)', 403);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const from = fromUserId
+        ? (await c.query(`SELECT id, role FROM app.users WHERE id=$1 AND tenant_id=$2`, [fromUserId, req.user.tenant_id])).rows[0]
+        : { id: req.user.id, role: req.user.role };
+      const to = (await c.query(`SELECT id, role FROM app.users WHERE id=$1 AND tenant_id=$2`, [toUserId, req.user.tenant_id])).rows[0];
+      if (!from || !to) return bad(reply, 'from or to user not found', 404);
+      // OVR-7 (delegation forgery): the stored role is the DB-resolved role, so the declared
+      // `fromRole` must match it — otherwise a caller could name another user (e.g. the principal)
+      // as the delegator while declaring a harmless role, minting authority they do not hold.
+      if (String(from.role) !== String(fromRole))
+        return bad(reply, 'fromRole must match the delegating user\'s actual role', 403);
+      // Only the owner may delegate on another user's behalf; everyone else delegates only their own.
+      if (from.id !== req.user.id && req.user.role !== 'owner')
+        return bad(reply, 'only the owner may delegate another user\'s approval authority', 403);
+      // A delegation must name a genuinely different deputy.
+      if (to.id === from.id) return bad(reply, 'a delegation must name a different deputy', 400);
+      const starts = startsAt ? new Date(startsAt) : new Date();
+      const ends = new Date(endsAt);
+      if (Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime()) || ends <= starts)
+        return bad(reply, 'endsAt must be a valid time after the start');
+      if (ends <= new Date()) return bad(reply, 'endsAt must be in the future');
+      const r = await c.query(
+        `INSERT INTO app.action_delegations
+           (tenant_id, from_user_id, from_role, to_user_id, to_role, scope_role, starts_at, ends_at, reason, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [req.user.tenant_id, from.id, from.role, to.id, to.role, scopeRole ?? null, starts.toISOString(), ends.toISOString(), reason ?? null, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Approval authority delegated: ${from.role} → ${to.role}`, recordType: 'Delegation', recordRef: r.rows[0].id, reason: reason ?? 'vacation cover', policyRef: 'Approvals §1.4 (delegation)', risk: 'medium', outcome: `until ${ends.toISOString()}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'governance', label: `Approval authority delegated ${from.role} → ${to.role}` }, 'approval.delegated.v1', { from: from.id, to: to.id, endsAt: ends.toISOString() });
+      return { delegation: r.rows[0] };
+    });
+  });
+
+  /* OPP-OVR-1: a first-class OWNER-owned action queue. Board decisions, high-risk exceptions and
+     SoD escalations are raised with `owner_role='owner'`, so the owner has a distinct queue instead of
+     existing only as an override. Only the owner can raise and decide these. */
+  app.post('/owner/actions', { preHandler: require('owner') }, async (req, reply) => {
+    const { title, detail, why, priority, policyRef, kind } = req.body ?? {};
+    if (!title) return bad(reply, 'title is required');
+    const k = ['approval','incident','case','exception','recommendation','reminder'].includes(String(kind)) ? String(kind) : 'exception';
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const a = await c.query(
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_plugin, payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8,'owner',$9,false,NULL,$10::jsonb) RETURNING *`,
+        [req.user.tenant_id, `owner.decision.${randomUUID().slice(0, 8)}`, k, title, detail ?? null, why ?? null,
+         ['critical','high','normal','low'].includes(String(priority)) ? String(priority) : 'high',
+         req.user.name, policyRef ?? 'Owner authority §1',
+         JSON.stringify({ proposed_by: req.user.id, proposed_by_role: req.user.role, owner_owned: true })]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Owner decision raised: ${title}`, recordType: 'Action', recordRef: a.rows[0].code, reason: 'owner-owned queue', policyRef: policyRef ?? 'Owner authority §1', risk: 'medium', outcome: 'awaiting owner decision' });
+      return { action: a.rows[0] };
+    });
+  });
+
+  /* ── OPP: owner/principal oversight product (board pack, brief, announcements, compliance, certs) ──────
+     All read over the live tables under RLS; writes ride the kernel approval spine where consequential. */
+
+  // OPP-PRD-1 · the board pack / cross-domain roll-up. One call, every desk, computed from real rows.
+  app.get('/reports/board-pack', { preHandler: require('owner','principal','coordinator','finance','finance_head','itadmin') }, async (req) => {
+    const cached = boardPackCache.get(req.user.tenant_id);
+    if (cached && Date.now() - cached.at < BOARD_PACK_TTL_MS) return { ...cached.data, cached: true };
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const istToday = `('now' AT TIME ZONE 'Asia/Kolkata')::date`;
+      // Sequential: one pg client cannot run concurrent queries (pg@9 deprecation, and parameter
+      // binding collides across overlapping statements).
+      const att = await c.query(`SELECT count(*) FILTER (WHERE status='present')::int present,
+                        count(*) FILTER (WHERE status='absent')::int absent,
+                        count(*)::int marked
+                   FROM app.attendance WHERE tenant_id=$1 AND school_date=${istToday}`, [req.user.tenant_id]);
+      const fees = await c.query(`SELECT COALESCE(sum(amount_cents),0)::bigint billed, COALESCE(sum(paid_cents),0)::bigint collected,
+                        COALESCE(sum(amount_cents - paid_cents),0)::bigint outstanding,
+                        count(*) FILTER (WHERE status IN ('pending','partial'))::int open_obligations
+                   FROM app.fee_obligations WHERE tenant_id=$1`, [req.user.tenant_id]);
+      const cases = await c.query(`SELECT count(*) FILTER (WHERE status='open')::int open, count(*)::int total FROM app.cases WHERE tenant_id=$1`, [req.user.tenant_id]);
+      const funnel = await c.query(`SELECT count(*)::int leads FROM plugin_admissions.lead WHERE tenant_id=$1 AND stage NOT IN ('enrolled','lost')`, [req.user.tenant_id]);
+      const staff = await c.query(`SELECT count(*)::int staff FROM app.users WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student')`, [req.user.tenant_id]);
+      const safety = await c.query(`SELECT count(*) FILTER (WHERE status='open')::int open_safety FROM safety.box WHERE tenant_id=$1`, [req.user.tenant_id]);
+      const students = (await c.query(`SELECT count(*)::int n FROM app.students WHERE tenant_id=$1 AND status='active'`, [req.user.tenant_id])).rows[0].n;
+      const data = {
+        as_of: new Date().toISOString(),
+        students,
+        attendance_today: att.rows[0],
+        fees: { ...fees.rows[0], billed: Number(fees.rows[0].billed), collected: Number(fees.rows[0].collected), outstanding: Number(fees.rows[0].outstanding) },
+        cases: cases.rows[0],
+        admissions_open_leads: funnel.rows[0].leads,
+        staff_count: staff.rows[0].staff,
+        safety_open: safety.rows[0].open_safety,
+      };
+      boardPackCache.set(req.user.tenant_id, { at: Date.now(), data });
+      return data;
+    });
+  });
+
+  // OPP-PRD-1/DAT-2 · generate + persist an immutable snapshot (append-only; content-hashed).
+  app.post('/reports/board-pack/snapshot', { preHandler: require('owner','principal','itadmin') }, async (req, reply) => {
+    const kind = String(req.body?.kind ?? 'board_pack');
+    if (!['board_pack','inspection_pack','fee_health','safety_summary'].includes(kind)) return bad(reply, 'unknown snapshot kind');
+    const period = String(req.body?.period ?? new Date().toISOString().slice(0, 7));
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const istToday = `('now' AT TIME ZONE 'Asia/Kolkata')::date`;
+      const att = (await c.query(`SELECT count(*) FILTER (WHERE status='present')::int present, count(*) FILTER (WHERE status='absent')::int absent, count(*)::int marked FROM app.attendance WHERE tenant_id=$1 AND school_date=${istToday}`, [req.user.tenant_id])).rows[0];
+      const fees = (await c.query(`SELECT COALESCE(sum(amount_cents),0)::bigint billed, COALESCE(sum(paid_cents),0)::bigint collected, COALESCE(sum(amount_cents-paid_cents),0)::bigint outstanding FROM app.fee_obligations WHERE tenant_id=$1`, [req.user.tenant_id])).rows[0];
+      const payload = { kind, period, attendance: att, fees: { billed: Number(fees.billed), collected: Number(fees.collected), outstanding: Number(fees.outstanding) }, generated_by: req.user.name };
+      if (kind === 'inspection_pack') {
+        // OPP-PRD-6: the one-click inspection bundle also carries safety, cases and compliance facts.
+        const cases = (await c.query(`SELECT count(*) FILTER (WHERE status='open')::int open, count(*)::int total FROM app.cases WHERE tenant_id=$1`, [req.user.tenant_id])).rows[0];
+        const safety = (await c.query(`SELECT count(*) FILTER (WHERE status<>'closed')::int open, count(*)::int total FROM safety.box WHERE tenant_id=$1`, [req.user.tenant_id])).rows[0];
+        const compliance = (await c.query(`SELECT count(*) FILTER (WHERE status='filed')::int filed, count(*)::int total FROM app.compliance_items WHERE tenant_id=$1`, [req.user.tenant_id])).rows[0];
+        payload.cases = cases; payload.safety = safety; payload.compliance = compliance;
+      }
+      const hash = createHash('sha256').update(canonicalJson(payload)).digest('hex');
+      const r = await c.query(
+        `INSERT INTO app.report_snapshots (tenant_id, kind, period, payload, content_hash, generated_by)
+         VALUES ($1,$2,$3,$4::jsonb,$5,$6)
+         ON CONFLICT (tenant_id, kind, period, content_hash) DO NOTHING RETURNING *`,
+        [req.user.tenant_id, kind, period, JSON.stringify(payload), hash, req.user.id]);
+      if (!r.rows[0]) return { snapshot: null, content_hash: hash, already: true };
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Generated ${kind} snapshot`, recordType: 'ReportSnapshot', recordRef: r.rows[0].id, reason: 'board/inspection pack', policyRef: 'Governance §2', risk: 'low', outcome: `period ${period}` });
+      return { snapshot: r.rows[0] };
+    });
+  });
+  app.get('/reports/snapshots', { preHandler: require('owner','principal','coordinator','finance','finance_head','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT id, kind, period, content_hash, generated_by, created_at FROM app.report_snapshots WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.user.tenant_id]);
+      return { snapshots: r.rows };
+    });
+  });
+  // OPP-DAT-10: retrieve a stored snapshot (the artifact the board/inspection pack is made of).
+  app.get('/reports/snapshots/:id', { preHandler: [require('owner','principal','coordinator','finance','finance_head','itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT * FROM app.report_snapshots WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id]);
+      if (!r.rows[0]) return bad(reply, 'not found', 404);
+      const snap = r.rows[0];
+      // Re-derive the hash from the stored payload and refuse if it does not match — a snapshot is a fact.
+      const recomputed = createHash('sha256').update(canonicalJson(snap.payload)).digest('hex');
+      return { snapshot: snap, hash_ok: recomputed === snap.content_hash, recomputed_hash: recomputed };
+    });
+  });
+
+  // OPP-PRD-2 · the principal's brief.
+  app.get('/brief/principal', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT payload, brief_date, created_at FROM app.principal_briefs WHERE tenant_id=$1 ORDER BY brief_date DESC LIMIT 1`, [req.user.tenant_id]);
+      return { brief: r.rows[0]?.payload ?? null, brief_date: r.rows[0]?.brief_date ?? null };
+    });
+  });
+
+  // OPP-API-1 · one live oversight aggregate, computed over the real tables under RLS.
+  const oversightHome = async (c, tenantId) => {
+    const istToday = `('now' AT TIME ZONE 'Asia/Kolkata')::date`;
+    const queue = (await c.query(`SELECT owner_role, count(*)::int n FROM app.actions WHERE tenant_id=$1 AND status='open' GROUP BY owner_role`, [tenantId])).rows;
+    const fees = (await c.query(`SELECT COALESCE(sum(amount_cents),0)::bigint billed, COALESCE(sum(paid_cents),0)::bigint collected, COALESCE(sum(amount_cents-paid_cents),0)::bigint outstanding, count(*) FILTER (WHERE status IN ('pending','partial'))::int open_obligations FROM app.fee_obligations WHERE tenant_id=$1`, [tenantId])).rows[0];
+    const students = (await c.query(`SELECT count(*)::int n FROM app.students WHERE tenant_id=$1 AND status='active'`, [tenantId])).rows[0].n;
+    const attendance = (await c.query(`SELECT count(*) FILTER (WHERE status='present')::int present, count(*) FILTER (WHERE status='absent')::int absent FROM app.attendance WHERE tenant_id=$1 AND school_date=${istToday}`, [tenantId])).rows[0];
+    const compliance = (await c.query(`SELECT count(*) FILTER (WHERE status<>'filed')::int open, count(*) FILTER (WHERE status<>'filed' AND due_on <= ${istToday})::int overdue FROM app.compliance_items WHERE tenant_id=$1`, [tenantId])).rows[0];
+    const safety = (await c.query(`SELECT count(*) FILTER (WHERE status<>'closed')::int open FROM safety.box WHERE tenant_id=$1`, [tenantId])).rows[0].open;
+    const brief = (await c.query(`SELECT payload, brief_date FROM app.principal_briefs WHERE tenant_id=$1 ORDER BY brief_date DESC LIMIT 1`, [tenantId])).rows[0] ?? null;
+    return {
+      as_of: new Date().toISOString(),
+      students,
+      queue,
+      queue_total: queue.reduce((s, r) => s + r.n, 0),
+      fees: { billed: Number(fees.billed), collected: Number(fees.collected), outstanding: Number(fees.outstanding), open_obligations: fees.open_obligations },
+      attendance_today: attendance,
+      compliance,
+      safety_open: safety,
+      brief: brief?.payload ?? null,
+      brief_date: brief?.brief_date ?? null,
+    };
+  };
+  app.get('/owner/home', { preHandler: require('owner','principal','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, (c) => oversightHome(c, req.user.tenant_id));
+  });
+  app.get('/principal/home', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, (c) => oversightHome(c, req.user.tenant_id));
+  });
+
+  // OPP-PRD-3 · the announcement composer. Compose → approve (kernel action) → queue.
+  app.get('/announcements', { preHandler: require('owner','principal','coordinator','finance','finance_head','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT * FROM app.announcements WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.user.tenant_id]);
+      return { announcements: r.rows };
+    });
+  });
+  const announceReach = async (c, tenantId, kind, ref, channel) => {
+    if (String(channel).toLowerCase() === 'in-app') return resolveNoticeUserIds(c, tenantId, { audienceKind: kind, audienceRef: ref });
+    return resolveNoticeRecipients(c, tenantId, { audienceKind: kind, audienceRef: ref, routeCode: kind === 'route' ? ref : undefined, channel });
+  };
+  app.post('/announcements', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req, reply) => {
+    const { title, body, audienceKind, audienceRef, channel } = req.body ?? {};
+    if (!title || !body) return bad(reply, 'title and body are required');
+    const kind = String(audienceKind ?? 'all_guardians');
+    if (!['all_guardians','class','route','staff','custom'].includes(kind)) return bad(reply, 'unknown audience');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // Resolve the audience NOW so the approver sees the true reach (and the executor queues exactly it).
+      const recipients = await announceReach(c, req.user.tenant_id, kind, audienceRef, channel ?? 'In-app');
+      const a = await c.query(
+        `INSERT INTO app.announcements (tenant_id, title, body, audience_kind, audience_ref, channel, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'draft',$7) RETURNING *`,
+        [req.user.tenant_id, title, body, kind, audienceRef ?? null, channel ?? 'In-app', req.user.id]);
+      // OVR-10: composing raises a principal-owned approval action, so approval rides the kernel
+      // spine (proposer ≠ approver) instead of being a private door decision.
+      const act = await c.query(
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_plugin, payload)
+         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Principal','principal','Communication §2',false,NULL,$6::jsonb) RETURNING id`,
+        [req.user.tenant_id, `announcements.approve.${a.rows[0].id}`,
+         `Approve announcement: ${title}`,
+         `Audience ${kind} — ${recipients.length} recipient(s).`,
+         'A whole-school announcement is a consequential communication — it is approved before it is queued.',
+         JSON.stringify({ announcementId: a.rows[0].id, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
+      await c.query(`UPDATE app.announcements SET action_id=$2 WHERE id=$1`, [a.rows[0].id, act.rows[0].id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Announcement drafted: ${title}`, recordType: 'Announcement', recordRef: a.rows[0].id, reason: 'announcement composer', policyRef: 'Communication §2', risk: 'low', outcome: `${recipients.length} recipient(s) resolved; action ${act.rows[0].id} raised` });
+      return { announcement: { ...a.rows[0], action_id: act.rows[0].id }, recipients: recipients.length };
+    });
+  });
+  app.post('/announcements/:id/approve', { preHandler: require('owner','principal') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const ann = (await c.query(`SELECT * FROM app.announcements WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!ann) return bad(reply, 'not found', 404);
+      if (ann.status !== 'draft') return bad(reply, `announcement already ${ann.status}`, 409);
+      // OVR-10: approval decides the raised kernel action — proposer ≠ approver (owner override).
+      if (ann.action_id) {
+        const act = (await c.query(`SELECT * FROM app.actions WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [ann.action_id, req.user.tenant_id])).rows[0];
+        if (!act) return bad(reply, 'the approval action is missing — re-compose the announcement', 409);
+        if (act.status !== 'open') return bad(reply, `the approval action is already ${act.status}`, 409);
+        const proposedBy = act.payload && typeof act.payload === 'object' ? act.payload.proposed_by : null;
+        if (proposedBy && proposedBy === req.user.id && req.user.role !== 'owner')
+          return bad(reply, 'self-approval is not permitted (segregation of duties)', 403);
+        await c.query(`UPDATE app.actions SET status='approved', decided_by=$2, decided_at=now(), decision_note=$3 WHERE id=$1`,
+          [act.id, req.user.id, 'announcement approved']);
+      }
+      const inApp = String(ann.channel).toLowerCase() === 'in-app';
+      const recipients = await announceReach(c, req.user.tenant_id, ann.audience_kind, ann.audience_ref, ann.channel);
+      if (recipients.length === 0) return bad(reply, 'no reachable recipients resolved for this audience — nothing to send', 409);
+      let commId = null;
+      if (inApp) {
+        // In-app announcements are app.notifications rows (per user), delivered immediately inside SchoolOS.
+        for (const uid of recipients) {
+          await c.query(
+            `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref) VALUES ($1,$2,'school',$3,$4,$5)`,
+            [req.user.tenant_id, uid, ann.title, ann.body, `/announcements/${ann.id}`]);
+          // DAT-8: per-recipient receipt — in-app is delivered immediately.
+          await c.query(
+            `INSERT INTO app.announcement_receipts (tenant_id, announcement_id, user_id, channel, status, detail)
+             VALUES ($1,$2,$3,'In-app','delivered','delivered in-app')`, [req.user.tenant_id, ann.id, uid]);
+        }
+      } else {
+        const comm = await c.query(
+          `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, approved_by)
+           VALUES ($1,$2::jsonb,$3,'ANNOUNCEMENT',$4,'queued','Communication §2',$5) RETURNING *`,
+          [req.user.tenant_id, JSON.stringify(recipients), ann.channel, ann.body, req.user.id]);
+        commId = comm.rows[0].id;
+        // DAT-8: outbound receipts start QUEUED — the dispatcher owns delivery and the honest verdict.
+        // The recipient is a phone; keep only a masked tail so the receipt table is not a second PII store.
+        for (const phone of recipients) {
+          await c.query(
+            `INSERT INTO app.announcement_receipts (tenant_id, announcement_id, user_id, channel, status, detail)
+             VALUES ($1,$2,NULL,$3,'queued',$4)`,
+            [req.user.tenant_id, ann.id, ann.channel, `to ****${String(phone).slice(-4)}`]);
+        }
+      }
+      const r = await c.query(
+        `UPDATE app.announcements SET status='queued', comm_id=$2, recipients=$3, approved_by=$4, approved_at=now() WHERE id=$1 RETURNING *`,
+        [ann.id, commId, recipients.length, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Announcement approved and ${inApp ? 'delivered in-app' : 'queued'}: ${ann.title}`, recordType: 'Announcement', recordRef: ann.id, reason: 'announcement composer', policyRef: 'Communication §2', risk: 'medium', outcome: `${recipients.length} recipient(s)` });
+      await emitEvent(c, req.user.tenant_id, { type: 'comms', label: `Announcement "${ann.title}" approved and ${inApp ? 'delivered in-app' : 'QUEUED'} to ${recipients.length} recipient(s)`, ref: commId });
+      return { announcement: r.rows[0] };
+    });
+  });
+  // OPP-DAT-8 · delivery receipts for an announcement.
+  app.get('/announcements/:id/receipts', { preHandler: [require('owner','principal','coordinator','finance','finance_head','itadmin'), uuidParams('id')] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT status, count(*)::int n FROM app.announcement_receipts WHERE tenant_id=$1 AND announcement_id=$2 GROUP BY status ORDER BY status`,
+        [req.user.tenant_id, req.params.id])).rows;
+      const total = rows.reduce((s, r) => s + r.n, 0);
+      return { receipts: rows, total };
+    });
+  });
+
+  // OPP-PRD-5 · the compliance calendar.
+  app.get('/compliance', { preHandler: require('owner','principal','coordinator','finance','finance_head','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT * FROM app.compliance_items WHERE tenant_id=$1 ORDER BY due_on ASC LIMIT 200`, [req.user.tenant_id]);
+      return { items: r.rows };
+    });
+  });
+  app.post('/compliance', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req, reply) => {
+    const { kind, title, dueOn, ownerRole } = req.body ?? {};
+    if (!title || !dueOn) return bad(reply, 'title and dueOn are required');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dueOn))) return bad(reply, 'dueOn must be YYYY-MM-DD');
+    const k = String(kind ?? 'other');
+    if (!['board_return','inspection','fire_drill','dpdp_audit','certification','other'].includes(k)) return bad(reply, 'unknown compliance kind');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `INSERT INTO app.compliance_items (tenant_id, kind, title, due_on, owner_role, created_by)
+         VALUES ($1,$2,$3,$4::date,$5,$6) ON CONFLICT (tenant_id, kind, title, due_on) DO NOTHING RETURNING *`,
+        [req.user.tenant_id, k, title, dueOn, ownerRole ?? 'principal', req.user.id]);
+      if (!r.rows[0]) return { item: null, already: true };
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Compliance item added: ${title}`, recordType: 'Compliance', recordRef: r.rows[0].id, reason: 'compliance calendar', policyRef: 'Governance §3', risk: 'low', outcome: `due ${dueOn}` });
+      return { item: r.rows[0] };
+    });
+  });
+  app.post('/compliance/:id/file', { preHandler: require('owner','principal','itadmin') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `UPDATE app.compliance_items SET status='filed', evidence_ref=$3, filed_by=$4, filed_at=now()
+          WHERE id=$1 AND tenant_id=$2 AND status <> 'filed' RETURNING *`,
+        [req.params.id, req.user.tenant_id, req.body?.evidenceRef ?? null, req.user.id]);
+      if (!r.rows[0]) return bad(reply, 'not found or already filed', 404);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Compliance filed: ${r.rows[0].title}`, recordType: 'Compliance', recordRef: r.rows[0].id, reason: 'compliance calendar', policyRef: 'Governance §3', risk: 'low', outcome: req.body?.evidenceRef ?? 'filed' });
+      return { item: r.rows[0] };
+    });
+  });
+
+  // OPP-PRD-7 · certificate signing (TC / bonafide / character).
+  /* OVR-9/DAT-9: issuing a certificate renders a content-addressed artifact into the private file
+     store (app.files.sha256 is the content digest) and marks the row issued. Shared by the direct
+     sign door and the kernel decide executor, so both paths produce the same artifact. */
+  const issueCertificate = async (c, req, cert) => {
+    const rendered = [
+      'CERTIFICATE',
+      `Kind: ${cert.kind}`,
+      `Serial: ${cert.serial}`,
+      `Student: ${cert.student_id}`,
+      `Issued by: ${req.user.name} (${req.user.role})`,
+      `Issued at: ${new Date().toISOString()}`,
+      '',
+      cert.body ?? '',
+    ].join('\n');
+    const file = await putFile(c, req.user.tenant_id, req.user.id, {
+      filename: `${cert.serial}.txt`, mime: 'text/plain',
+      buf: Buffer.from(rendered, 'utf8'), scope: 'student', refId: cert.student_id,
+    });
+    const r = await c.query(
+      `UPDATE app.certificates SET status='issued', signed_by=$2, signed_at=now(), artifact_ref=$3 WHERE id=$1 RETURNING *`,
+      [cert.id, req.user.id, file.id]);
+    await emitEvent(c, req.user.tenant_id, { type: 'governance', label: `Certificate ${cert.serial} signed` }, 'certificate.signed.v1', { certificateId: cert.id, kind: cert.kind, artifactRef: file.id });
+    return r.rows[0];
+  };
+  app.get('/certificates', { preHandler: require('owner','principal','coordinator','finance','finance_head','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT * FROM app.certificates WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 200`, [req.user.tenant_id]);
+      return { certificates: r.rows };
+    });
+  });
+  app.post('/certificates', { preHandler: require('owner','principal','itadmin','coordinator') }, async (req, reply) => {
+    const { kind, studentId, body } = req.body ?? {};
+    if (!studentId) return bad(reply, 'studentId is required');
+    const k = String(kind ?? 'bonafide');
+    if (!['transfer','bonafide','character','study','other'].includes(k)) return bad(reply, 'unknown certificate kind');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const stu = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND tenant_id=$2`, [studentId, req.user.tenant_id])).rows[0];
+      if (!stu) return bad(reply, 'student not found', 404);
+      const serial = `CERT-${k.slice(0, 3).toUpperCase()}-${new Date().getFullYear()}-${randomUUID().slice(0, 6).toUpperCase()}`;
+      const cert = await c.query(
+        `INSERT INTO app.certificates (tenant_id, kind, student_id, serial, body, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,'pending_approval',$6) RETURNING *`,
+        [req.user.tenant_id, k, studentId, serial, body ?? null, req.user.id]);
+      // Signing is consequential → a principal-owned kernel action (proposer ≠ approver).
+      const act = await c.query(
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_plugin, payload)
+         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Principal','principal','Certificates §1',false,'certificates',$6::jsonb) RETURNING id`,
+        [req.user.tenant_id, `certificates.sign.${cert.rows[0].id}`,
+         `Sign ${k} certificate for ${stu.name}`,
+         `Serial ${serial}. Approve to issue the signed certificate.`,
+         'A signed certificate is a school attestation — the principal authorises it before issue.',
+         JSON.stringify({ certificateId: cert.rows[0].id, studentId, kind: k, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
+      await c.query(`UPDATE app.certificates SET action_id=$2 WHERE id=$1`, [cert.rows[0].id, act.rows[0].id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Certificate requested: ${k} for ${stu.name}`, recordType: 'Certificate', recordRef: cert.rows[0].id, reason: 'certificate request', policyRef: 'Certificates §1', risk: 'low', outcome: `action ${act.rows[0].id} raised for principal` });
+      return { certificate: { ...cert.rows[0], action_id: act.rows[0].id } };
+    });
+  });
+  app.post('/certificates/:id/sign', { preHandler: require('owner','principal') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cert = (await c.query(`SELECT * FROM app.certificates WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!cert) return bad(reply, 'not found', 404);
+      if (cert.status !== 'pending_approval') return bad(reply, `certificate already ${cert.status}`, 409);
+      if (!cert.action_id) return bad(reply, 'this certificate has no signing action — re-request it', 409);
+      // OVR-9: signing decides the raised action rather than bypassing it, so the action can never
+      // be left open and the proposer cannot sign their own request (owner override excepted).
+      const act = (await c.query(`SELECT * FROM app.actions WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [cert.action_id, req.user.tenant_id])).rows[0];
+      if (!act) return bad(reply, 'the signing action is missing — re-request the certificate', 409);
+      if (act.status !== 'open') return bad(reply, `the signing action is already ${act.status}`, 409);
+      const proposedBy = act.payload && typeof act.payload === 'object' ? act.payload.proposed_by : null;
+      if (proposedBy && proposedBy === req.user.id && req.user.role !== 'owner')
+        return bad(reply, 'self-approval is not permitted (segregation of duties)', 403);
+      await c.query(`UPDATE app.actions SET status='approved', decided_by=$2, decided_at=now(), decision_note=$3 WHERE id=$1`,
+        [act.id, req.user.id, 'certificate signed']);
+      const issued = await issueCertificate(c, req, cert);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Certificate signed: ${cert.kind} ${cert.serial}`, recordType: 'Certificate', recordRef: cert.id, reason: 'principal signature', policyRef: 'Certificates §1', risk: 'medium', outcome: 'issued' });
+      return { certificate: issued };
+    });
+  });
+  // OPP-DAT-9 · the rendered certificate artifact (private-store download by id).
+  app.get('/certificates/:id/artifact', { preHandler: [require('owner','principal','coordinator','finance','finance_head','itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cert = (await c.query(`SELECT id, artifact_ref FROM app.certificates WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
+      if (!cert) return bad(reply, 'not found', 404);
+      if (!cert.artifact_ref) return bad(reply, 'no artifact has been generated for this certificate yet', 409);
+      const file = (await c.query(`SELECT id, filename, mime, storage_path, sha256 FROM app.files WHERE id=$1 AND tenant_id=$2`, [cert.artifact_ref, req.user.tenant_id])).rows[0];
+      if (!file) return bad(reply, 'artifact not found', 404);
+      return { artifact: { id: file.id, filename: file.filename, mime: file.mime, sha256: file.sha256 } };
+    });
+  });
+
+  // OPP-PRD-12 · the school constitution policy store (versioned, audited — no longer read-only).
+  const POLICY_ROLES = ['owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'finance', 'finance_head', 'finance_clerk'];
+  app.get('/policy-documents', { preHandler: require(...POLICY_ROLES) }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, ref, title, category, body, version, updated_at FROM app.policy_documents
+          WHERE tenant_id=$1 ORDER BY category, ref`, [req.user.tenant_id]);
+      return { policies: r.rows };
+    });
+  });
+  app.post('/policy-documents', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const { ref, title, category, body } = req.body ?? {};
+    if (!ref || !title || !body) return bad(reply, 'ref, title and body are required');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `INSERT INTO app.policy_documents (tenant_id, ref, title, category, body, version, updated_by, updated_at)
+         VALUES ($1,$2,$3,$4,$5,1,$6,now())
+         ON CONFLICT (tenant_id, ref) DO UPDATE
+           SET title=EXCLUDED.title, category=EXCLUDED.category, body=EXCLUDED.body,
+               version=app.policy_documents.version+1, updated_by=EXCLUDED.updated_by, updated_at=now()
+         RETURNING *`,
+        [req.user.tenant_id, String(ref).slice(0, 120), String(title).slice(0, 200), String(category ?? 'school').slice(0, 60), String(body).slice(0, 20000), req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Policy saved: ${title}`, recordType: 'Policy', recordRef: r.rows[0].ref, reason: 'constitution edit', policyRef: 'Governance §1', risk: 'medium', outcome: `version ${r.rows[0].version}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'governance', label: `Policy updated: ${title} (v${r.rows[0].version})`, ref: r.rows[0].ref });
+      return { policy: r.rows[0] };
+    });
+  });
+
+  // OPP-PRD-11 · staff appraisals (per staff, per cycle; draft → shared → acknowledged).
+  app.get('/staff/appraisals', { preHandler: require('owner', 'principal', 'itadmin') }, async (req) => {
+    const cycle = req.query.cycle ? String(req.query.cycle) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT a.id, a.staff_user_id, u.name AS staff_name, u.role AS staff_role, a.cycle,
+                a.rating, a.strengths, a.improvements, a.status, a.updated_at
+           FROM app.staff_appraisals a
+           JOIN app.users u ON u.id = a.staff_user_id AND u.tenant_id = a.tenant_id
+          WHERE a.tenant_id=$1 AND ($2::text IS NULL OR a.cycle=$2)
+          ORDER BY u.name`, [req.user.tenant_id, cycle])).rows;
+      const staff = (await c.query(
+        `SELECT id, name, role FROM app.users
+          WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student','owner') ORDER BY name`, [req.user.tenant_id])).rows;
+      return { appraisals: rows, staff };
+    });
+  });
+  app.post('/staff/appraisals', { preHandler: require('owner', 'principal') }, async (req, reply) => {
+    const { staffUserId, cycle, rating, strengths, improvements, status } = req.body ?? {};
+    if (!staffUserId || !cycle) return bad(reply, 'staffUserId and cycle are required');
+    if (rating != null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) return bad(reply, 'rating must be 1..5');
+    const st = ['draft', 'shared', 'acknowledged'].includes(status) ? status : 'draft';
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `INSERT INTO app.staff_appraisals (tenant_id, staff_user_id, cycle, rating, strengths, improvements, reviewer_id, status, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+         ON CONFLICT (tenant_id, staff_user_id, cycle) DO UPDATE
+           SET rating=EXCLUDED.rating, strengths=EXCLUDED.strengths, improvements=EXCLUDED.improvements,
+               reviewer_id=EXCLUDED.reviewer_id, status=EXCLUDED.status, updated_at=now()
+         RETURNING *`,
+        [req.user.tenant_id, staffUserId, String(cycle).slice(0, 40), rating ?? null,
+         strengths ? String(strengths).slice(0, 4000) : null, improvements ? String(improvements).slice(0, 4000) : null, req.user.id, st]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Appraisal saved (${st})`, recordType: 'Appraisal', recordRef: r.rows[0].id, reason: 'staff appraisal', policyRef: 'People §2', risk: 'medium', outcome: `cycle ${cycle} · rating ${rating ?? '—'}` });
+      return { appraisal: r.rows[0] };
     });
   });
 
@@ -1339,9 +2885,15 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // (2) the action code students.create.<leadId> is UNIQUE per tenant, so a lead
   // cannot raise twice; (3) the (source='admissions', source_ref=leadId) lookup
   // makes a replay return the existing record instead of duplicating it.
+  // B-4: a free-text `class_applied` ("Grade 6", "Class 6", "6") must not become a student
+  // row whose grade is the literal string "Grade 6". The parser normalises the common
+  // spellings to the bare grade and only then defaults the section.
   const parseClassApplied = (s) => {
-    const m = /^(\S+)-([A-Za-z0-9]+)$/.exec(String(s ?? '').trim());
-    return m ? { grade: m[1], section: m[2].toUpperCase() } : { grade: String(s ?? '').trim() || 'unassigned', section: 'A' };
+    const raw = String(s ?? '').trim();
+    const m = /^(\S+)-([A-Za-z0-9]+)$/.exec(raw);
+    if (m) return { grade: m[1], section: m[2].toUpperCase() };
+    const g = raw.replace(/^(grade|class)\s+/i, '').trim();
+    return { grade: g || 'unassigned', section: 'A' };
   };
   const executeStudentCreation = async (c, req, a, p) => {
     const lead = (await c.query(
@@ -1377,9 +2929,28 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     }
     if (!s.rows[0]) throw Object.assign(new Error('could not allocate an admission number for this conversion'), { statusCode: 409 });
     const student = s.rows[0];
+    // F1: link the new student to their student-role user when the name match is unambiguous.
+    await linkStudentUser(c, req.user.tenant_id, student.id, student.name);
+    let parentLinked = false;
     if (lead.guardian_name && lead.guardian_phone) {
       await c.query(`INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary)
                      VALUES ($1,$2,$3,$4,'guardian',true)`, [req.user.tenant_id, student.id, lead.guardian_name, lead.guardian_phone]);
+      // E-7: bind an EXISTING parent account to the new student so the family sees the child
+      // immediately. The match is structural — the account's stored E.164 phone equals the
+      // lead's guardian phone — never name-equality (the P1-4 anti-pattern the roster doors
+      // already reject). No matching account means nothing to link: the parent is provisioned
+      // through people.admin (which accepts a studentId), not guessed here.
+      const parent = (await c.query(
+        `SELECT id FROM app.users
+          WHERE tenant_id=$1 AND role='parent' AND active=true AND phone=$2
+          ORDER BY created_at ASC LIMIT 1`, [req.user.tenant_id, lead.guardian_phone])).rows[0];
+      if (parent) {
+        await c.query(
+          `INSERT INTO family.child_link (tenant_id, user_id, student_id, relation, is_primary)
+           VALUES ($1,$2,$3,'guardian',true) ON CONFLICT (tenant_id, user_id, student_id) DO NOTHING`,
+          [req.user.tenant_id, parent.id, student.id]);
+        parentLinked = true;
+      }
     }
     await c.query(
       `INSERT INTO app.enrollment_history (tenant_id, student_id, from_grade, from_section, to_grade, to_section, changed_by, reason)
@@ -1396,7 +2967,8 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       actor: req.user.name,
       actorRole: req.user.role,
       action: `Student created from admissions lead ${a.code} — ${student.name} (${grade}-${section}), admission no ${student.admission_no}`
-        + (lead.guardian_name && lead.guardian_phone ? ', primary guardian recorded' : ', no guardian on the lead'),
+        + (lead.guardian_name && lead.guardian_phone ? ', primary guardian recorded' : ', no guardian on the lead')
+        + (parentLinked ? ', parent account linked (family.child_link)' : ''),
       recordType: 'Student',
       recordRef: student.id,
       policyRef: 'Admissions §3 — lead conversion',
@@ -1404,7 +2976,171 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     return { type: 'student', id: student.id, name: student.name, admissionNo: student.admission_no, grade, section };
   };
 
-  app.post('/actions/:id/decide', { preHandler: require('owner','principal','itadmin','finance','coordinator','teacher','admissions','transport','facilities','technician') }, async (req, reply) => {
+  /* OVR-5 · the decide-executor registry. Each entry is a typed side-effect keyed by a `when`
+     predicate; adding an action kind is ONE entry here (with its own test) rather than another branch
+     in a growing if/else. `run` returns the `execution` descriptor, or undefined to leave it alone. */
+  const runMessageExecutor = async (c, req, a, p) => {
+    // PRD-17: QUEUE it. The dispatcher owns delivery and records it honestly; this door must not
+    // pre-empt or claim that verdict.
+    const audienceLabel = String(p.audience ?? 'guardians');
+    const recipients = await resolveNoticeRecipients(c, req.user.tenant_id, p);
+    if (recipients.length === 0) {
+      await emitEvent(c, req.user.tenant_id, {
+        type: 'comms', severity: 'warn',
+        label: `Parent notice approved but NOT sent — no contactable recipients could be resolved for "${audienceLabel}" (${p.template ?? 'message'}, approved by ${req.user.name}). Record it as unsent and act at the desk.`,
+      });
+      return { type: 'communication', id: null, status: 'unaddressed', recipients: 0, audience: audienceLabel };
+    }
+    if (recipients.length > 500) {
+      // RTE-1: this runs AFTER the status flip. Throw so `withUser` rolls the whole tx back and the
+      // error handler turns the statusCode into a 413 — a `return bad()` would persist the approval.
+      throw Object.assign(new Error('This notice has more than 500 recipients. Split the audience into smaller notices before approving it.'), { statusCode: 413 });
+    }
+    const comm = await c.query(
+      `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, approved_by)
+       VALUES ($1, $2::jsonb, $3, $4, $5, 'queued', $6, $7) RETURNING *`,
+      [req.user.tenant_id, JSON.stringify(recipients), p.channel ?? 'WhatsApp', p.template ?? null,
+       p.draft ?? a.detail, a.policy_ref, req.user.id]);
+    await emitEvent(c, req.user.tenant_id, { type: 'comms', label: `Parent notice approved and QUEUED to ${recipients.length} guardian${recipients.length === 1 ? '' : 's'} — ${audienceLabel} (${p.template ?? 'message'}, approved by ${req.user.name})`, ref: comm.rows[0].id });
+    return { type: 'communication', id: comm.rows[0].id, status: 'queued', recipients: recipients.length, audience: audienceLabel };
+  };
+  const runTaskExecutor = async (c, req, a, p) => {
+    const n = await c.query(
+      `INSERT INTO app.notifications (tenant_id, "group", title, body, ref) VALUES ($1,'needs-you',$2,$3,$4) RETURNING id`,
+      [req.user.tenant_id, p.title ?? a.title, p.body ?? a.detail, a.code]);
+    return { type: 'notification', id: n.rows[0].id };
+  };
+  const runChildLeaveApproved = async (c, req, a, p) => {
+    const fr = (await c.query(
+      `SELECT id, child_id, payload, status FROM family.request WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+      [p.requestId, req.user.tenant_id])).rows[0];
+    if (!fr || fr.status === 'resolved' || fr.status === 'closed') return undefined;
+    await c.query(`SELECT set_config('schoolos.family_request_transition', 'on', true)`);
+    await c.query(`UPDATE family.request SET status='resolved' WHERE id=$1`, [fr.id]);
+    await c.query(
+      `INSERT INTO family.request_event (tenant_id, request_id, from_status, to_status, note, actor_id)
+       VALUES ($1,$2,$3,'resolved','leave approved — attendance marked',$4)`,
+      [req.user.tenant_id, fr.id, fr.status, req.user.id]);
+    const dates = Array.isArray(fr.payload?.dates) ? fr.payload.dates
+      : String(fr.payload?.dates ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+    let days = 0;
+    if (fr.child_id) {
+      for (const d of dates) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) continue;
+        const u = await c.query(
+          `INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
+           VALUES ($1,$2,$3::date,'leave',$4)
+           ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='leave', marked_by=EXCLUDED.marked_by`,
+          [req.user.tenant_id, fr.child_id, d, req.user.id]);
+        days += u.rowCount;
+      }
+    }
+    return { type: 'child_leave', id: fr.id, status: 'resolved', days };
+  };
+  const runChildLeaveDismissed = async (c, req, a, p) => {
+    const fr = (await c.query(
+      `SELECT id, status FROM family.request WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+      [p.requestId, req.user.tenant_id])).rows[0];
+    if (!fr || fr.status === 'resolved' || fr.status === 'closed') return undefined;
+    await c.query(`SELECT set_config('schoolos.family_request_transition', 'on', true)`);
+    await c.query(`UPDATE family.request SET status='closed' WHERE id=$1`, [fr.id]);
+    await c.query(
+      `INSERT INTO family.request_event (tenant_id, request_id, from_status, to_status, note, actor_id)
+       VALUES ($1,$2,$3,'closed','leave not approved',$4)`,
+      [req.user.tenant_id, fr.id, fr.status, req.user.id]);
+    return { type: 'child_leave', id: fr.id, status: 'closed' };
+  };
+  const runCertificateExecutor = async (c, req, a, p) => {
+    // OPP-PRD-7/OVR-9: deciding the principal-owned signing action issues the certificate and renders
+    // its artifact — the SAME helper the direct sign door uses.
+    const cert = (await c.query(
+      `SELECT * FROM app.certificates WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+      [p.certificateId, req.user.tenant_id])).rows[0];
+    if (!cert || cert.status !== 'pending_approval') return undefined;
+    const issued = await issueCertificate(c, req, cert);
+    return { type: 'certificate', id: issued.id, status: 'issued' };
+  };
+  const runStudentCreationExecutor = async (c, req, a, p) => executeStudentCreation(c, req, a, p);
+  const runTeacherLeaveOutcome = async (c, req, a, p, decision, note) => {
+    const approved = decision === 'approved';
+    const n = await c.query(
+      `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref)
+       VALUES ($1,$2,'needs-you',$3,$4,$5) RETURNING id`,
+      [req.user.tenant_id, p.teacherId,
+       approved ? 'Your leave was approved' : 'Your leave was not approved',
+       `Your staff leave request was ${approved ? 'approved' : 'declined'}${note ? ` — ${String(note).slice(0, 200)}` : ''}.`,
+       a.code]);
+    let execution = { type: 'leave_outcome_notification', id: n.rows[0].id, decision };
+    if (approved && p.leaveRequestId) {
+      try {
+        const lr = (await c.query(
+          `SELECT id, teacher_id, from_date, to_date FROM teacher.leave_request WHERE id=$1 AND tenant_id=$2`,
+          [p.leaveRequestId, req.user.tenant_id])).rows[0];
+        if (lr) {
+          const hasPacket = (await c.query(`SELECT to_regclass('teacher.handover_packet') AS t`)).rows[0].t;
+          if (hasPacket) {
+            const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const days = [];
+            const end = new Date(`${lr.to_date}T00:00:00Z`);
+            for (let d = new Date(`${lr.from_date}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+              const wd = WD[d.getUTCDay()];
+              if (!days.includes(wd)) days.push(wd);
+            }
+            const teacher = (await c.query(`SELECT name FROM app.users WHERE id=$1`, [lr.teacher_id])).rows[0];
+            const hasSlots = (await c.query(`SELECT to_regclass('app.timetable_slots') AS t`)).rows[0].t;
+            const classes = [];
+            if (hasSlots && teacher) {
+              const hasPeriods = (await c.query(`SELECT to_regclass('app.timetable_periods') AS t`)).rows[0].t;
+              const slots = (await c.query(
+                `SELECT s.subject, s.room, s.day_of_week${hasPeriods ? ', p.seq, p.start_time, p.end_time' : ''}
+                 FROM app.timetable_slots s${hasPeriods ? ' LEFT JOIN app.timetable_periods p ON p.id = s.period_id' : ''}
+                 WHERE s.tenant_id=$1 AND s.teacher_name=$2 AND s.day_of_week = ANY($3::text[])
+                 ORDER BY ${hasPeriods ? 'p.sort_idx' : 's.subject'}`,
+                [req.user.tenant_id, teacher.name, days])).rows;
+              const hasLesson = (await c.query(`SELECT to_regclass('teacher.lesson') AS t`)).rows[0].t;
+              for (const s of slots) {
+                let lastTopic = null;
+                if (hasLesson) {
+                  lastTopic = (await c.query(
+                    `SELECT topic FROM teacher.lesson WHERE teacher_id=$1 AND subject=$2 ORDER BY lesson_date DESC, created_at DESC LIMIT 1`,
+                    [lr.teacher_id, s.subject])).rows[0]?.topic ?? null;
+                }
+                classes.push({
+                  class_grade: null,
+                  period: s.seq != null ? `P${s.seq}` : (s.start_time ?? '—'),
+                  subject: s.subject,
+                  room: s.room ?? '—',
+                  note: lastTopic ? `Last topic: ${lastTopic}. Continue from there; leave independent practice.` : 'No lesson plan on file — cover the next topic from the curriculum.',
+                });
+              }
+            }
+            await c.query(
+              `INSERT INTO teacher.handover_packet (tenant_id, leave_request_id, teacher_id, classes)
+               VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (leave_request_id) DO NOTHING`,
+              [req.user.tenant_id, lr.id, lr.teacher_id, JSON.stringify(classes)]);
+            await c.query(
+              `INSERT INTO app.notifications (tenant_id, "group", title, body, ref)
+               VALUES ($1,'needs-you',$2,$3,$4)`,
+              [req.user.tenant_id, `Cover needed: ${teacher?.name ?? 'a teacher'}`,
+               `Leave approved — ${classes.length} period${classes.length === 1 ? '' : 's'} need cover. A handover note is ready.`, a.code]);
+            execution = { type: 'leave_handover', id: lr.id, periods: classes.length };
+          }
+        }
+      } catch { /* best-effort packet; approval stands */ }
+    }
+    return execution;
+  };
+  const EXECUTORS = [
+    { name: 'message', when: (a, p, d) => d === 'approved' && p.kind === 'message', run: runMessageExecutor },
+    { name: 'task', when: (a, p, d) => d === 'approved' && p.kind === 'task', run: runTaskExecutor },
+    { name: 'parent.leave.approved', when: (a, p, d) => d === 'approved' && a.code.startsWith('parent.leave.') && p.requestId, run: runChildLeaveApproved },
+    { name: 'parent.leave.dismissed', when: (a, p, d) => d === 'dismissed' && a.code.startsWith('parent.leave.') && p.requestId, run: runChildLeaveDismissed },
+    { name: 'certificates.sign', when: (a, p, d) => d === 'approved' && a.code.startsWith('certificates.sign.') && p.certificateId, run: runCertificateExecutor },
+    { name: 'students.create', when: (a, p, d) => d === 'approved' && a.code.startsWith('students.create.') && p.leadId != null, run: runStudentCreationExecutor },
+    { name: 'teacher.leave.outcome', when: (a, p) => a.code.startsWith('teacher.leave.') && p.teacherId, run: runTeacherLeaveOutcome },
+  ];
+
+  app.post('/actions/:id/decide', { preHandler: require('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','teacher','admissions','transport','facilities','technician') }, async (req, reply) => {
     const { decision, note } = req.body ?? {};
     if (!['approved','dismissed'].includes(decision)) return bad(reply, "decision must be 'approved' or 'dismissed'");
     // P2-3 (cycle 5): non-uuid :id hit the SELECT with 22P02 → raw 500; format-guard
@@ -1431,9 +3167,30 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // finance-owned actions, contradicting the adjacent comment. The finance exclusion is meant for the
       // principal only (the principal must not rubber-stamp the finance desk's own actions); the owner is
       // the unconditional override.
-      const ownerOk = a.owner_role === req.user.role
+      // OPP-OVR-1: the principal's broad non-finance authority deliberately EXCLUDES owner-owned actions —
+      // those are the owner's alone.
+      // OVR-8: the finance exclusion is the whole finance TIER, not the literal 'finance' string —
+      // the reconciliation desk raises owner_role='finance_head', which the old check let the
+      // principal decide. The owner override is unaffected.
+      const FINANCE_TIER = ['finance', 'finance_head', 'finance_clerk'];
+      let ownerOk = a.owner_role === req.user.role
         || req.user.role === 'owner'
-        || (req.user.role === 'principal' && a.owner_role !== 'finance');
+        || (req.user.role === 'principal' && !FINANCE_TIER.includes(a.owner_role) && a.owner_role !== 'owner');
+      /* OPP-OVR-2: bounded delegation. A role may hand its approval authority to a named deputy for a
+         window (vacation cover). Delegation is deliberately NARROWER than the role: it never confers the
+         owner override, and it never applies to finance-owned actions (SoD). A delegate's decision is
+         stamped as delegated in the audit row below. */
+      let delegated = null;
+      if (!ownerOk) {
+        const d = (await c.query(
+          `SELECT id, from_role, to_role, scope_role FROM app.action_delegations
+            WHERE tenant_id=$1 AND to_user_id=$2 AND starts_at <= now() AND ends_at > now()
+              AND (scope_role IS NULL OR scope_role = $3)
+              AND from_role = $3
+            ORDER BY ends_at DESC LIMIT 1`,
+          [req.user.tenant_id, req.user.id, a.owner_role])).rows[0];
+        if (d && !FINANCE_TIER.includes(a.owner_role) && a.owner_role !== 'owner') { ownerOk = true; delegated = d; }
+      }
       if (!ownerOk) return bad(reply, `only the owning authority (${a.owner_role}) may decide this action`, 403);
       // T105d (§7.3 P1-9): the self-approval guard only had teeth when the payload
       // carried proposed_by. For UNATTRIBUTED raises, block approval only where the
@@ -1446,73 +3203,44 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // role is a genuinely second authority approving a lower desk's raise.
       // Dismissal stays open to the owning authority (rejection is not self-dealing).
       const proposedBy = a.payload && typeof a.payload === 'object' ? (a.payload.proposed_by ?? null) : null;
-      const exploitableUnattributed = a.payload && typeof a.payload === 'object' && proposedBy == null
-        && ((a.source_event === 'admission.offer.accepted' && a.payload.leadId != null)
-          || (a.payload.kind === 'message' && a.payload.template === 'TRANSPORT_DELAY' && a.payload.proposed_by == null));
-      if (decision === 'approved' && exploitableUnattributed && req.user.role === a.owner_role && req.user.role !== 'owner') {
+      const systemRaised = a.payload && typeof a.payload === 'object' && a.payload.raised_by_system === true;
+      // OVR-4: generalised — ANY unattributed raise (no named proposer and not a system/worker
+      // raise) cannot be self-approved by its owning desk; the owner remains the backstop. Every
+      // human raise site stamps `proposed_by`; a system sweep stamps `raised_by_system:true`.
+      const unattributed = proposedBy == null && !systemRaised;
+      if (decision === 'approved' && unattributed && req.user.role === a.owner_role && req.user.role !== 'owner') {
         return bad(reply, 'Segregation of duties — this proposal was raised without an attributable proposer, so the owning desk cannot approve it. Ask the school owner to decide.', 403);
       }
-      if (a.payload && typeof a.payload === 'object' && a.payload.proposed_by === req.user.id && decision === 'approved')
+      // OPP-OVR-1: owner-owned actions are exempt — there is no authority above the owner to propose to
+      // them, so the owner may decide an action they raised. Every other desk keeps proposer≠approver.
+      if (a.owner_role !== 'owner' && a.payload && typeof a.payload === 'object' && a.payload.proposed_by === req.user.id && decision === 'approved')
         return bad(reply, 'self-approval is not permitted (segregation of duties)', 403);
       await c.query(`UPDATE app.actions SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,
         [a.id, decision, req.user.id, note ?? null]);
       let execution = null;
-      if (decision === 'approved') {
-        const p = a.payload ?? {};
-        if (p.kind === 'message') {
-          // PRD-17: QUEUE it. The dispatcher owns delivery and records it honestly (a sandbox carrier in
-          // production becomes 'failed' with a reason — see src/plugins/_shared/delivery-honesty.js), so
-          // this door must not pre-empt that verdict. It also must not claim one: the previous version
-          // wrote 'delivered' + sent_at + delivered_at here, with no rail and no queue entry, and the
-          // dispatcher only ever claims `status='queued'`, so the row could never have been sent later.
-          const audienceLabel = String(p.audience ?? 'guardians');
-          const recipients = await resolveNoticeRecipients(c, req.user.tenant_id, p);
-          if (recipients.length === 0) {
-            // Nothing queued, nothing claimed: no comms row, and every record says so. The approval itself
-            // still succeeds — the decision was the approver's to make, and refusing it here would leave
-            // the action open with no way to explain why.
-            execution = { type: 'communication', id: null, status: 'unaddressed', recipients: 0, audience: audienceLabel };
-            await emitEvent(c, req.user.tenant_id, {
-              type: 'comms', severity: 'warn',
-              label: `Parent notice approved but NOT sent — no contactable recipients could be resolved for "${audienceLabel}" (${p.template ?? 'message'}, approved by ${req.user.name}). Record it as unsent and act at the desk.`,
-            });
-          } else {
-            if (recipients.length > 500) {
-              // RTE-1: this guard runs AFTER the status was flipped to 'approved'. `withUser` COMMITS on a
-              // normal return, so `return bad(...)` persisted the approval with no notice queued and blocked
-              // the retry. Throw instead: the transaction rolls back and the error handler turns the
-              // statusCode into the same 413.
-              throw Object.assign(new Error('This notice has more than 500 recipients. Split the audience into smaller notices before approving it.'), { statusCode: 413 });
-            }
-            const comm = await c.query(
-              `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, approved_by)
-               VALUES ($1, $2::jsonb, $3, $4, $5, 'queued', $6, $7) RETURNING *`,
-              [req.user.tenant_id, JSON.stringify(recipients), p.channel ?? 'WhatsApp', p.template ?? null,
-               p.draft ?? a.detail, a.policy_ref, req.user.id]);
-            execution = { type: 'communication', id: comm.rows[0].id, status: 'queued', recipients: recipients.length, audience: audienceLabel };
-            await emitEvent(c, req.user.tenant_id, { type: 'comms', label: `Parent notice approved and QUEUED to ${recipients.length} guardian${recipients.length === 1 ? '' : 's'} — ${audienceLabel} (${p.template ?? 'message'}, approved by ${req.user.name})`, ref: comm.rows[0].id });
-          }
-        }
-        if (p.kind === 'task') {
-          const n = await c.query(
-            `INSERT INTO app.notifications (tenant_id, "group", title, body, ref) VALUES ($1,'needs-you',$2,$3,$4) RETURNING id`,
-            [req.user.tenant_id, p.title ?? a.title, p.body ?? a.detail, a.code]);
-          execution = { type: 'notification', id: n.rows[0].id };
-        }
-        if (a.code.startsWith('students.create.') && p.leadId != null) {
-          // Wave 2 · L1-2.3: the admissions→student executor. Any executor error
-          // throws inside withUser → the whole tx (status flip included) rolls
-          // back atomically; known executor conditions surface as honest 4xx.
-          try {
-            execution = await executeStudentCreation(c, req, a, p);
-          } catch (e) {
-            // RTE-1: the same commit-on-return trap. The status flip above must roll back with the failed
-            // executor, so rethrow — `withUser` rolls back and the error handler maps `e.statusCode`.
-            throw e;
-          }
+      const p = a.payload ?? {};
+      for (const ex of EXECUTORS) {
+        if (ex.when(a, p, decision)) {
+          const r = await ex.run(c, req, a, p, decision, note);
+          if (r !== undefined) execution = r;
         }
       }
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `${decision === 'approved' ? 'Approved' : 'Dismissed'} action: ${a.title}`, recordType: 'Action', recordRef: a.code, reason: note ?? 'decided in Action Center', policyRef: a.policy_ref, aiInvolved: a.ai_involved, risk: 'medium', outcome: execution ? `executed: ${execution.type} ${execution.id ?? execution.status}` : 'no execution' });
+      // C5: lineage on the decide path. The raise sites link event→action; without this the lineage
+      // spine went sparse the moment a decision happened. Best-effort via a SAVEPOINT so a lineage
+      // failure can never abort the decision transaction (a bare try/catch left it aborted → 25P02).
+      // `relation` must be one of the table's CHECK values ('raised','triggered','notified','resolved').
+      try {
+        await c.query('SAVEPOINT lineage');
+        const decisionEvent = await emitEvent(c, req.user.tenant_id,
+          { type: 'governance', label: `Action ${decision}: ${a.title}`, ref: a.code },
+          'action.decided.v1',
+          { actionId: a.id, code: a.code, decision, ownerRole: a.owner_role, delegated: delegated?.id ?? null });
+        await linkLineage(c, req.user.tenant_id, { eventId: decisionEvent.id, actionId: a.id, relation: 'resolved', policyRef: a.policy_ref });
+        await c.query('RELEASE SAVEPOINT lineage');
+      } catch {
+        await c.query('ROLLBACK TO SAVEPOINT lineage').catch(() => {});
+      }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `${decision === 'approved' ? 'Approved' : 'Dismissed'} action: ${a.title}${delegated ? ' (delegated)' : ''}`, recordType: 'Action', recordRef: a.code, reason: note ?? (delegated ? `decided under delegation from ${delegated.from_role}` : 'decided in Action Center'), policyRef: a.policy_ref, aiInvolved: a.ai_involved, risk: 'medium', outcome: execution ? `executed: ${execution.type} ${execution.id ?? execution.status}` : 'no execution' });
       return { ok: true, decision, execution };
     });
   });
@@ -1542,27 +3270,60 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     return { ok: true, refundId: body?.id ?? null, status: body?.status ?? 'processed' };
   };
 
-  app.post('/payments/:id/refund', { preHandler: [require('owner', 'finance'), uuidParams('id')] }, async (req, reply) => {
+  app.post('/payments/:id/refund', { preHandler: [require('owner', 'finance', 'finance_head', 'finance_clerk'), uuidParams('id')] }, async (req, reply) => {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id))) return bad(reply, 'payment id must be a uuid');
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const p = (await c.query(`SELECT * FROM app.payments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
-      if (!p) return bad(reply, 'payment not found', 404);
-      if (p.status === 'refunded') return bad(reply, 'payment already refunded', 409);
-      if (p.status !== 'confirmed') return bad(reply, `only confirmed payments can be refunded (this one is ${p.status})`, 409);
-      // RTE-2: read and validate the obligation BEFORE the gateway call. This guard used to run AFTER
-      // it, so an inconsistent ledger let real money leave the gateway while the door returned 409 with
-      // the ledger untouched (and no refund recorded). A refund must be provably representable in the
-      // ledger before it is sent. No mutation has happened yet, so a plain `return bad` is safe here.
-      // Never floor an inconsistent ledger to zero: that masks a prior duplicate/partial settlement and
-      // understates the school's receivable. A refund is safe only when this payment is still represented
-      // in the obligation's paid total; reconciliation must handle anything else.
-      const o = p.obligation_id
-        ? (await c.query(`SELECT id, amount_cents, paid_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [p.obligation_id])).rows[0]
-        : null;
-      if (o && BigInt(o.paid_cents) < BigInt(p.amount_cents)) {
-        return bad(reply, 'payment ledger is inconsistent; reconcile the obligation before refunding', 409);
+      if (!p) return moneyError(reply, 'NOT_FOUND', 'payment not found');
+      if (p.status === 'refunded') return moneyError(reply, 'CONFLICT', 'payment already refunded');
+      if (p.status !== 'confirmed') return moneyError(reply, 'PAYMENT_NOT_CONFIRMED', `only confirmed payments can be refunded (this one is ${p.status})`);
+      const refundable = BigInt(p.amount_cents) - BigInt(p.refunded_cents ?? 0);
+      // FEE-API-4: partial refunds. Default is the full remaining amount; a caller may refund less.
+      let refundCents = refundable;
+      if (req.body?.refundCents != null) {
+        if (!Number.isInteger(req.body.refundCents) || req.body.refundCents <= 0) return moneyError(reply, 'VALIDATION_FAILED', 'refundCents must be a positive integer (paise)');
+        refundCents = BigInt(req.body.refundCents);
+        if (refundCents > refundable) return moneyError(reply, 'CONFLICT', 'refund exceeds the refundable amount');
       }
+      // FEE-SEC-1 / FEE-SEC-4: separation of duties + a mandatory reason for material reversals.
+      // FEE-SEC-9: the threshold is a per-tenant setting, not the hardcoded constant.
+      const settings = await feeSettings(c, req.user.tenant_id);
+      const isFullRefund = refundCents >= refundable;
+      const material = isFullRefund && BigInt(p.amount_cents) >= BigInt(settings.refund_approval_threshold_cents);
+      if (material) {
+        if (req.user.role === 'finance_clerk') return reply.code(403).send({ error: 'This refund needs a checker (finance head, principal or owner) — a maker cannot approve their own reversal', code: 'SOD_REQUIRED' });
+        if (p.settled_by && p.settled_by === req.user.id && req.user.role !== 'owner') return reply.code(403).send({ error: 'A refund cannot be approved by the person who settled the payment', code: 'SOD_REQUIRED' });
+        if (!reason) return moneyError(reply, 'VALIDATION_FAILED', 'a reason is required for a refund at or above the approval threshold');
+      }
+      // RTE-2: read and validate the obligations BEFORE the gateway call. This guard used to run AFTER it, so
+      // an inconsistent ledger let real money leave the gateway while the door returned 409 with the ledger
+      // untouched. A refund must be provably representable in the ledger before it is sent. Never floor an
+      // inconsistent ledger to zero: a refund is safe only when this payment is still represented in the
+      // obligation(s) it allocated to. FEE-PRD-10: pay-many payments reverse their allocations.
+      const allocRows = (await c.query(
+        `SELECT obligation_id, amount_cents FROM app.payment_allocations WHERE tenant_id=$1 AND payment_id=$2`,
+        [req.user.tenant_id, p.id])).rows;
+      const targetAllocs = allocRows.length
+        ? allocRows
+        : (p.obligation_id ? [{ obligation_id: p.obligation_id, amount_cents: p.amount_cents }] : []);
+      const locked = new Map();
+      for (const a of targetAllocs) {
+        const row = (await c.query(`SELECT id, amount_cents, paid_cents, net_amount_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [a.obligation_id])).rows[0];
+        if (row) locked.set(a.obligation_id, row);
+      }
+      const reversals = [];
+      let toReverse = refundCents;
+      for (const a of targetAllocs) {
+        if (toReverse <= 0n) break;
+        const row = locked.get(a.obligation_id);
+        if (!row) continue;
+        const take = BigInt(a.amount_cents) < toReverse ? BigInt(a.amount_cents) : toReverse;
+        if (BigInt(row.paid_cents) < take) return moneyError(reply, 'LEDGER_INCONSISTENT', 'payment ledger is inconsistent; reconcile the obligation before refunding');
+        reversals.push({ id: row.id, take, row });
+        toReverse -= take;
+      }
+      if (toReverse > 0n) return moneyError(reply, 'LEDGER_INCONSISTENT', 'payment ledger is inconsistent; reconcile the obligation before refunding');
       // Gateway leg (razorpay): a refused refund must not touch the ledger.
       let gateway = { mode: p.method === 'razorpay' ? 'gateway' : 'manual' };
       if (p.method === 'razorpay') {
@@ -1573,56 +3334,80 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         if (!configured || !op) {
           gateway = { mode: 'manual', note: !configured ? 'gateway keys not configured — refund recorded manually, attach proof' : 'no razorpay payment id on the order log — refund recorded manually' };
         } else {
-          const r = await rzpRefund(keyId, keySecret, op.razorpay_payment_id, p.amount_cents);
-          if (!r.ok) return bad(reply, `gateway refused the refund (HTTP ${r.http}) — ledger untouched`, 409);
+          const r = await rzpRefund(keyId, keySecret, op.razorpay_payment_id, refundCents);
+          if (!r.ok) return moneyError(reply, 'GATEWAY_REFUSED', `gateway refused the refund (HTTP ${r.http}) — ledger untouched`);
           gateway = { mode: 'gateway', refundId: r.refundId, status: r.status };
         }
       }
-      // Ledger reversal (full refund this sprint): payment → 'refunded' finally
-      // used; obligation paid_cents reversed with floor 0 and status recomputed.
-      if (o) {
-        const newPaid = BigInt(o.paid_cents) - BigInt(p.amount_cents);
-        const newStatus = newPaid <= 0n ? 'open' : (newPaid < BigInt(o.amount_cents) ? 'partial' : 'paid');
-        await c.query(`UPDATE app.fee_obligations SET paid_cents=$2, status=$3 WHERE id=$1 AND tenant_id=$4`, [o.id, newPaid.toString(), newStatus, req.user.tenant_id]);
+      // Ledger reversal: reverse exactly the refunded amount across the payment's allocations; a partial
+      // refund leaves the payment 'confirmed' with a larger refunded_cents, a full refund flips it to 'refunded'.
+      for (const rv of reversals) {
+        const newPaid = BigInt(rv.row.paid_cents) - rv.take;
+        const net = BigInt(rv.row.net_amount_cents ?? rv.row.amount_cents);
+        const newStatus = newPaid <= 0n ? 'open' : (newPaid < net ? 'partial' : 'paid');
+        await c.query(`UPDATE app.fee_obligations SET paid_cents=$2, status=$3 WHERE id=$1 AND tenant_id=$4`, [rv.id, newPaid.toString(), newStatus, req.user.tenant_id]);
       }
+      const newRefunded = BigInt(p.refunded_cents ?? 0) + refundCents;
+      const fullyRefunded = newRefunded >= BigInt(p.amount_cents);
       // FEX-15: record the amount given back in the same statement that flips the status. The column is
       // CHECK-constrained (`refunded_cents <= amount_cents`), so a refund can never overdraw the payment.
       const upd = await c.query(
-        `UPDATE app.payments SET status='refunded', refunded_at=now(), refund_reason=$2, refund_gateway_ref=$3,
-                refunded_cents=amount_cents
+        `UPDATE app.payments SET status=$5, refunded_at=now(), refund_reason=$2, refund_gateway_ref=$3,
+                refunded_cents=$6
          WHERE id=$1 AND tenant_id=$4 RETURNING id, status, refunded_at, refunded_cents`,
-        [p.id, reason || null, gateway.refundId ?? gateway.note ?? null, req.user.tenant_id]);
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Refunded payment', recordType: 'Payment', recordRef: p.id, reason: reason || 'owner/finance refund', policyRef: 'Fees §4.2', risk: 'high', outcome: `status refunded via ${gateway.mode}${gateway.refundId ? ` (${gateway.refundId})` : ''} — ${o ? 'obligation paid_cents reversed' : 'no linked obligation — payment status only (no ledger entry to reverse)'}` });
-      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.refunded — ₹${Number(p.amount_cents) / 100} (${gateway.mode})`, ref: p.id });
-      return { payment: upd.rows[0], gateway };
+        [p.id, reason || null, gateway.refundId ?? gateway.note ?? null, req.user.tenant_id,
+         fullyRefunded ? 'refunded' : 'confirmed', newRefunded.toString()]);
+      if (fullyRefunded) {
+        await c.query(`UPDATE app.fee_receipts SET voided_at=now() WHERE tenant_id=$1 AND payment_id=$2 AND voided_at IS NULL`, [req.user.tenant_id, p.id]);
+      }
+      await recordPaymentEvent(c, req.user.tenant_id, { paymentId: p.id, kind: 'refunded', actor: req.user.name, actorRole: req.user.role, source: gateway.mode, amountCents: refundCents, payload: { reason, refundGatewayRef: gateway.refundId ?? null, partial: !fullyRefunded } });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Refunded payment', recordType: 'Payment', recordRef: p.id, reason: reason || 'owner/finance refund', policyRef: 'Fees §4.2', risk: 'high', outcome: `₹${Number(refundCents) / 100} ${fullyRefunded ? 'fully' : 'partially'} refunded via ${gateway.mode}${gateway.refundId ? ` (${gateway.refundId})` : ''} — ${reversals.length ? `${reversals.length} obligation allocation(s) reversed` : 'no linked obligation — payment status only (no ledger entry to reverse)'}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `payment.refunded — ₹${Number(refundCents) / 100} (${gateway.mode})`, ref: p.id });
+      return { payment: upd.rows[0], gateway, refundedCents: Number(refundCents) };
     });
   });
 
-  app.post('/payments/reconcile', { preHandler: require('owner', 'finance') }, async (req) => {
-    // Settlement reconciliation sweep: three discrepancy classes between the
-    // kernel ledger and the rail's own order_log. Each finding is emitted as an
-    // event so the Action Center/ops see it; the report is the cron payload.
+  app.post('/payments/reconcile', { preHandler: require('owner', 'finance', 'finance_head', 'finance_clerk') }, async (req, reply) => {
+    // Settlement reconciliation sweep: four discrepancy classes between the kernel ledger and the rail's own
+    // order_log. The CLASSES live in src/fees/reconcile.js and are shared with the all-tenant worker
+    // (FEE-DEL-5). Each finding is emitted as an event, written to the append-only payment trail, audited, and
+    // raises ONE owned Action Center card (FEE-SEC-5) so a human is assigned the mismatch.
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const ghost = (await c.query(
-        `SELECT p.id, p.amount_cents, p.receipt_no, ol.status AS rail_status, ol.razorpay_order_id
-         FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
-         WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed' AND ol.status <> 'captured'
-         ORDER BY p.confirmed_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
-      const missing = (await c.query(
-        `SELECT p.id, p.status AS ledger_status, p.amount_cents, ol.razorpay_order_id, ol.razorpay_payment_id
-         FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
-         WHERE p.tenant_id=$1 AND p.method='razorpay' AND ol.status = 'captured' AND p.status NOT IN ('confirmed','refunded')
-         ORDER BY ol.created_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
-      const orphan = (await c.query(
-        `SELECT p.id, p.amount_cents, p.receipt_no, p.gateway_ref
-         FROM app.payments p
-         WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed'
-           AND NOT EXISTS (SELECT 1 FROM plugin_razorpay.order_log ol WHERE ol.payment_id = p.id)
-         ORDER BY p.confirmed_at DESC LIMIT 50`, [req.user.tenant_id])).rows;
-      for (const g of ghost) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed locally, rail says ${g.rail_status} (order ${g.razorpay_order_id})`, ref: g.id });
-      for (const m of missing) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — rail captured, ledger still ${m.ledger_status} (order ${m.razorpay_order_id})`, ref: m.id });
-      for (const w of orphan) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed with no rail order log entry`, ref: w.id });
-      return { checked: { confirmedRazorpay: ghost.length + missing.length + orphan.length }, discrepancies: { ghostLocalConfirmed: ghost, missingLocalConfirmation: missing, orphanNoRailLog: orphan }, total: ghost.length + missing.length + orphan.length };
+      if (!(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.reconciliation'))) return;
+      const settings = await feeSettings(c, req.user.tenant_id);
+      const report = await findDiscrepancies(c.query.bind(c), req.user.tenant_id, {
+        limit: 50, toleranceCents: settings.reconciliation_tolerance_cents });
+      const { ghost, missing, orphan, mismatch } = report;
+      const markDisputed = async (id) => c.query(`UPDATE app.payments SET reconciliation_status='disputed' WHERE id=$1 AND tenant_id=$2`, [id, req.user.tenant_id]);
+      for (const g of ghost) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed locally, rail says ${g.rail_status} (order ${g.razorpay_order_id})`, ref: g.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: g.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'ghost', railStatus: g.rail_status } }); await markDisputed(g.id); }
+      for (const m of missing) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — rail captured, ledger still ${m.ledger_status} (order ${m.razorpay_order_id})`, ref: m.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: m.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'missing', ledgerStatus: m.ledger_status } }); await markDisputed(m.id); }
+      for (const w of orphan) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed with no rail order log entry`, ref: w.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: w.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'orphan' } }); await markDisputed(w.id); }
+      for (const x of mismatch) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — amount mismatch: ledger ₹${Number(x.ledger_cents) / 100} vs rail ₹${Number(x.rail_cents) / 100} (order ${x.razorpay_order_id})`, ref: x.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: x.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'amount_mismatch', ledgerCents: String(x.ledger_cents), railCents: String(x.rail_cents) } }); await markDisputed(x.id); }
+      const actionsRaised = await raiseDiscrepancyActions(c.query.bind(c), req.user.tenant_id, report);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Ran payment reconciliation sweep', recordType: 'Fees', recordRef: IST_TODAY(), reason: 'ledger vs rail settlement comparison', policyRef: 'Fees §4.2', risk: 'medium', outcome: `${report.total} discrepancy(ies): ghost ${ghost.length} · missing ${missing.length} · orphan ${orphan.length} · amount-mismatch ${mismatch.length} · ${actionsRaised} action(s) assigned to finance_head` });
+      return { checked: { confirmedRazorpay: report.total }, discrepancies: { ghostLocalConfirmed: ghost, missingLocalConfirmation: missing, orphanNoRailLog: orphan, amountMismatch: mismatch }, total: report.total, actionsRaised };
+    });
+  });
+
+  // FEE-SEC-5 decide door: an operator reviews a flagged payment and clears it. Sets reconciliation_status
+  // back to 'matched', resolves the owned Action card, and audits — the discrepancy lifecycle is now closed.
+  app.post('/payments/:id/mark-matched', { preHandler: [require('owner', 'finance', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 300) : '';
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const p = (await c.query(`SELECT id, reconciliation_status FROM app.payments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!p) return bad(reply, 'payment not found', 404);
+      if (p.reconciliation_status === 'matched') return { payment: p, already: true };
+      const upd = await c.query(
+        `UPDATE app.payments SET reconciliation_status='matched' WHERE id=$1 AND tenant_id=$2
+         RETURNING id, reconciliation_status`, [p.id, req.user.tenant_id]);
+      await c.query(
+        `UPDATE app.actions SET status='resolved', decided_by=$2, decided_at=now(), decision_note=$3
+          WHERE tenant_id=$1 AND status='open' AND code LIKE $4`,
+        [req.user.tenant_id, req.user.id, note || 'marked matched after operator review', `fee.recon.%.${p.id}`]);
+      await recordPaymentEvent(c, req.user.tenant_id, { paymentId: p.id, kind: 'reconciled', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { note } });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Marked payment matched', recordType: 'Payment', recordRef: p.id, reason: note || 'operator reconciled the discrepancy', policyRef: 'Fees §4.2', risk: 'medium', outcome: 'reconciliation_status=matched · discrepancy action resolved' });
+      await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation resolved — payment ${p.id} marked matched`, ref: p.id });
+      return { payment: upd.rows[0] };
     });
   });
 
@@ -1651,16 +3436,20 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     const qs = s.quiet_hours ?? {};
     return { start: qs.start ?? '21:00', end: qs.end ?? '08:00' };
   };
-  const DUNNING_SELECT = `
-    SELECT o.id, o.student_id, o.label, o.due_on, o.amount_cents, o.paid_cents,
-           s.name AS student_name, s.guardian_phone
-    FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
-    WHERE o.tenant_id = $1 AND o.status IN ('open','partial') AND o.due_on < $2::date AND o.amount_cents >= o.paid_cents
-      AND NOT EXISTS (SELECT 1 FROM app.communications cm
-                       WHERE cm.dedup_key = 'dunning:' || o.id::text AND cm.created_at > now() - interval '7 days')`;
+  // Dunning selection lives in ONE place (src/fees/dunning.js) shared with the day-worker script.
+  // before_due_days / escalation_days are opt-in via comms.whatsapp settings; the overdue 7-day window is
+  // always on. The overdue dedup key remains `dunning:<id>` (pinned by tests and by the 7-day NOT EXISTS).
+  const dunningPolicy = async (tenantId) => {
+    const provider = await enabledCapability(sysq, tenantId, 'comms.whatsapp.templates');
+    const s = provider?.settings ?? {};
+    const before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    const escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    return { before, escalate };
+  };
 
-  app.post('/fees/dunning/run', { preHandler: require('owner', 'finance') }, async (req) => {
+  app.post('/fees/dunning/run', { preHandler: require('owner', 'principal', 'finance', 'finance_head', 'finance_clerk') }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.dunning'))) return;
       const quiet = await dunningQuietHours(req.user.tenant_id);
       const q0 = parseHm(quiet.start), q1 = parseHm(quiet.end);
       const minute = IST_MINUTE_OF_DAY();
@@ -1668,25 +3457,64 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         const opensAt = minute < (q1 ?? 0) ? quiet.end : `${quiet.end} (next day IST)`;
         return { queued: 0, quietHours: quiet, note: `quiet hours in effect (IST) — sweep writes nothing until ${opensAt}` };
       }
-      const rows = (await c.query(`${DUNNING_SELECT} ORDER BY o.due_on LIMIT 200`, [req.user.tenant_id, IST_TODAY()])).rows;
-      let queued = 0; let skippedNoContact = 0;
-      for (const o of rows) {
-        if (!o.guardian_phone) { skippedNoContact += 1; continue; }
-        const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
+      const today = IST_TODAY();
+      const policy = await dunningPolicy(req.user.tenant_id);
+      let queued = 0; let skippedNoContact = 0; let beforeDueQueued = 0; let escalated = 0;
+
+      const queue = async (o, { kind, dedup, body, offsetDays }) => {
+        if (!o.guardian_phone) { skippedNoContact += 1; return 0; }
         const inserted = await c.query(
           `INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, status, policy_ref, dedup_key)
-           VALUES ($1,'guardian',$2::jsonb,'whatsapp','FEE_REMINDER',$3,'queued','Fees §4.2',$4)
+           VALUES ($1,'guardian',$2::jsonb,'whatsapp',$3,$4,'queued','Fees §4.2',$5)
            ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
           [req.user.tenant_id, JSON.stringify([o.guardian_phone]),
-           `Fee reminder: ${o.student_name} — ${o.label}, ₹${Number(due) / 100} was due on ${o.due_on}. Please pay via the parent portal or at the school office. If you have already paid, please share the receipt with the office — no action otherwise.`,
-           `dunning:${o.id}`]);
-        queued += inserted.rowCount;
+           kind === 'escalation' ? 'FEE_ESCALATION' : 'FEE_REMINDER', body, dedup]);
+        if (inserted.rowCount > 0) {
+          await c.query(
+            `INSERT INTO app.fee_dunning_log (tenant_id, obligation_id, kind, channel, offset_days, dedup_key)
+             VALUES ($1,$2,$3,'whatsapp',$4,$5) ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
+            [req.user.tenant_id, o.id, kind, offsetDays ?? null, dedup]);
+        }
+        return inserted.rowCount;
+      };
+
+      // overdue (always on) — also emits fee.due once, so the rail subscribers become live
+      for (const o of await selectOverdue(c.query.bind(c), req.user.tenant_id, today)) {
+        const n = await queue(o, { kind: 'overdue', dedup: overdueDedup(o.id), body: overdueBody(o) });
+        queued += n;
+        if (n > 0) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `fee.due — ${o.student_name} ${o.label} due ${o.due_on}`, ref: o.id }, 'fee.due', { obligationId: o.id, dueOn: o.due_on, overdue: true });
       }
-      if (queued > 0) {
-        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Ran fee dunning sweep', recordType: 'Fees', recordRef: IST_TODAY(), reason: 'overdue obligations', policyRef: 'Fees §4.2', outcome: `${queued} reminders queued (7-day dedup per obligation) · ${skippedNoContact} skipped without guardian contact` });
-        await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee dunning — ${queued} reminder(s) queued for overdue fees`, ref: IST_TODAY() });
+      // before-due (opt-in offsets) — also emits fee.due, the event the rails subscribe to
+      for (const offset of policy.before) {
+        for (const o of await selectBeforeDue(c.query.bind(c), req.user.tenant_id, today, offset)) {
+          const n = await queue(o, { kind: 'before_due', dedup: beforeDueDedup(o.id, offset), body: beforeDueBody(o), offsetDays: offset });
+          beforeDueQueued += n;
+          if (n > 0) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `fee.due — ${o.student_name} ${o.label} due ${o.due_on}`, ref: o.id }, 'fee.due', { obligationId: o.id, dueOn: o.due_on, offsetDays: offset });
+        }
       }
-      return { queued, skippedNoContact, quietHours: quiet, template: 'FEE_REMINDER' };
+      // escalation (opt-in ages) — raises a finance Action, not just a message
+      for (const days of policy.escalate) {
+        for (const o of await selectEscalation(c.query.bind(c), req.user.tenant_id, today, days)) {
+          const n = await queue(o, { kind: 'escalation', dedup: escalationDedup(o.id, days), body: escalationBody(o), offsetDays: days });
+          if (n > 0) {
+            escalated += 1;
+            await c.query(
+              `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, payload)
+               VALUES ($1,$2,'task',$3,$4,$5,'high','open','Finance','finance','Fees §4.2',false,$6::jsonb)`,
+              [req.user.tenant_id, `fee.overdue.${o.id}`,
+               `Overdue fee ${days}d+ — ${o.student_name} ${o.label}`,
+               `₹${Number(outstanding(o)) / 100} outstanding since ${o.due_on}.`,
+               'Fee escalation policy: an aged overdue obligation needs a human decision.',
+               JSON.stringify({ obligationId: o.id, daysOverdue: days, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
+          }
+        }
+      }
+      const total = queued + beforeDueQueued;
+      if (total > 0 || escalated > 0) {
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Ran fee dunning sweep', recordType: 'Fees', recordRef: today, reason: 'overdue / before-due / escalation obligations', policyRef: 'Fees §4.2', outcome: `${queued} overdue · ${beforeDueQueued} before-due queued (deduped) · ${escalated} escalated · ${skippedNoContact} skipped without guardian contact` });
+        if (total > 0) await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `Fee dunning — ${total} reminder(s) queued`, ref: today });
+      }
+      return { queued: total, overdueQueued: queued, beforeDueQueued, escalated, skippedNoContact, quietHours: quiet, template: 'FEE_REMINDER' };
     });
   });
 
@@ -1775,7 +3603,18 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       }
     }
     if (bp.notes !== undefined && (typeof bp.notes !== 'string' || bp.notes.length > 500)) return 'notes must be a string (≤500 chars)';
-    const allowed = ['board', 'rounding', 'components', 'gradingScale', 'notes'];
+    // F5: the assembly keys (the same shape the plugin-level board_policy uses). When present, the
+    // per-exam policy is APPLIED at report assembly and overrides the plugin default.
+    if (bp.scale !== undefined && !['cbse_10_point', 'gpa_4', 'percent'].includes(bp.scale)) return 'scale must be cbse_10_point|gpa_4|percent';
+    if (bp.pass_pct !== undefined && (typeof bp.pass_pct !== 'number' || !Number.isFinite(bp.pass_pct) || bp.pass_pct < 0 || bp.pass_pct > 100)) return 'pass_pct must be a number 0..100';
+    if (bp.divisions !== undefined) {
+      if (!Array.isArray(bp.divisions) || bp.divisions.length > 10) return 'divisions must be an array (≤10)';
+      for (const d of bp.divisions) {
+        if (!d || typeof d.label !== 'string' || !d.label.trim() || d.label.length > 20) return 'each division needs a label (≤20 chars)';
+        if (typeof d.min_pct !== 'number' || !Number.isFinite(d.min_pct) || d.min_pct < 0 || d.min_pct > 100) return 'each division needs min_pct 0..100';
+      }
+    }
+    const allowed = ['board', 'rounding', 'components', 'gradingScale', 'notes', 'scale', 'pass_pct', 'divisions'];
     for (const k of Object.keys(bp)) if (!allowed.includes(k)) return `unknown boardPolicy key "${k}" (allowed: ${allowed.join(', ')})`;
     return null;
   };
@@ -1788,8 +3627,11 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       const e = (await c.query(`SELECT id, name FROM plugin_exams.exam WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0];
       if (!e) return bad(reply, 'exam not found', 404);
       await c.query(`UPDATE plugin_exams.exam SET board_policy=$2::jsonb, updated_at=now() WHERE id=$1`, [e.id, JSON.stringify(req.body)]);
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Set exam board policy', recordType: 'Exam', recordRef: e.name, reason: `board ${req.body.board}`, outcome: 'stored — validation only, nothing consumes it yet' });
-      return { examId: e.id, boardPolicy: req.body, note: 'validation only — no downstream behavior reads this yet' };
+      // F5: a policy that declares a `scale` is APPLIED at report assembly (it overrides the plugin-level
+      // board_policy); the reference-only shape (no scale) is stored but assembly uses the plugin default.
+      const applied = ['cbse_10_point', 'gpa_4', 'percent'].includes(req.body?.scale);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Set exam board policy', recordType: 'Exam', recordRef: e.name, reason: `board ${req.body.board}`, outcome: applied ? 'stored — applied at report assembly (per-exam overrides the plugin default)' : 'stored — reference only (no `scale`; assembly uses the plugin default)' });
+      return { examId: e.id, boardPolicy: req.body, applied, note: applied ? 'applied at report assembly (per-exam overrides the plugin default)' : 'stored as reference — add a `scale` for it to be applied at assembly' };
     });
   });
 
@@ -1809,27 +3651,24 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   //   applied 1.5, assessment 2.0, offer 2.5 — later stages are closer to
   //   enrollment and more expensive to lose); stuck = >7 days in stage; stuck
   //   rows first, then score desc. enrolled/dropped never rank.
-  const FOLLOWUP_WEIGHTS = { inquiry: 1, 'school-visit': 1.2, applied: 1.5, assessment: 2, offer: 2.5 };
-  const maskPhoneLikeFunnel = (p) => {
-    if (!p) return null;
-    const d = String(p).replace(/\D/g, '').slice(-10);
-    return `${d.slice(0, 2)}xxxx${d.slice(-2)}`;
-  };
+  // D-2: the weights + filter were the OLD lattice (inquiry/school-visit/applied/assessment/
+  // offer) and excluded `enrolled/dropped`, so every live stage scored at weight 1.0 and the
+  // rejected/withdrawn side exits leaked into the queue. Both now come from the shared
+  // admissions-access module the plugin itself uses — one vocabulary, no drift.
   // RTE-3: this was gated on the broad `me`, so a parent or student read every open lead's
   // name/class/source/stage. `fullPii` masks two fields but authorizes nobody. It now mirrors the
-  // admissions funnel's own lead-list gate (owner/principal/itadmin/finance/coordinator/teacher) via
-  // `roleGatedMe`, which also publishes the real role set to the route registry so custom-role
-  // authoring cannot widen it (RBAC-1c).
-  app.get('/admissions/followups', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'finance', 'coordinator', 'teacher') }, async (req) => {
-    const fullPii = ['owner', 'principal', 'itadmin', 'coordinator'].includes(req.user.role);
+  // admissions funnel's own lead-list gate via `roleGatedMe`, which also publishes the real role
+  // set to the route registry so custom-role authoring cannot widen it (RBAC-1c).
+  app.get('/admissions/followups', { preHandler: roleGatedMe(...ADMISSIONS_ADMIN, 'teacher') }, async (req) => {
+    const fullPii = FULL_PII.includes(req.user.role);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const rows = (await c.query(
         `SELECT id, student_name, class_applied, source, stage, guardian_name, guardian_phone, updated_at,
                 GREATEST(0, extract(epoch FROM (now() - updated_at)) / 86400)::int AS days_in_stage
          FROM plugin_admissions.lead
-         WHERE tenant_id=$1 AND stage NOT IN ('enrolled','dropped')
+         WHERE tenant_id=$1 AND stage <> ALL($2::text[])
          -- RTE-13: the ranking ran over every open lead in JS; bound the input like every other list door.
-         ORDER BY updated_at ASC LIMIT 500`, [req.user.tenant_id])).rows;
+         ORDER BY updated_at ASC LIMIT 500`, [req.user.tenant_id, CLOSED_STAGES])).rows;
       const queue = rows.map((r) => {
         const days = Number(r.days_in_stage);
         const w = FOLLOWUP_WEIGHTS[r.stage] ?? 1;
@@ -1838,7 +3677,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
           stage: r.stage, daysInStage: days, stageWeight: w, score: Math.round(days * w * 10) / 10,
           stuck: days > 7,
           guardianName: fullPii ? r.guardian_name : null,
-          guardianPhone: fullPii ? r.guardian_phone : maskPhoneLikeFunnel(r.guardian_phone),
+          guardianPhone: fullPii ? r.guardian_phone : maskPhone(r.guardian_phone),
         };
       }).sort((a, b) => (a.stuck === b.stuck) ? b.score - a.score : (a.stuck ? -1 : 1));
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Listed admissions follow-up queue', recordType: 'AdmissionLead', recordRef: 'followups', reason: 'daily queue (docs/02 §daily-queue)', policyRef: 'deterministic ranking rule followups-1 — no model', risk: 'low', outcome: `${queue.length} open leads ranked, ${queue.filter((x) => x.stuck).length} stuck >7d` });
@@ -1856,7 +3695,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // view per term: billed vs collected vs outstanding vs voided, optional
   // academic-year filter — tenant-scoped, staff-gated (parents see their own
   // children's ledger, never school-wide aggregates).
-  app.get('/reports/fees/summary', { preHandler: require('owner', 'principal', 'coordinator', 'finance', 'itadmin') }, async (req, reply) => {
+  app.get('/reports/fees/summary', { preHandler: require('owner', 'principal', 'coordinator', 'finance', 'finance_head', 'finance_clerk', 'itadmin') }, async (req, reply) => {
     const ay = req.query?.academicYearId;
     if (ay != null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(ay))) return bad(reply, 'academicYearId must be a uuid');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -1871,10 +3710,23 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
          FROM app.fee_obligations o
          WHERE o.tenant_id=$1 AND ($2::uuid IS NULL OR o.academic_year_id=$2::uuid)
          GROUP BY o.term ORDER BY o.term`, [req.user.tenant_id, ay ?? null])).rows;
+      // FEE-DAT-1b: the same aggregate grouped by FEE HEAD, so the report speaks in charge categories
+      // rather than free-text labels. Un-headed (legacy) rows group under a null head and are labelled.
+      const byHead = (await c.query(
+        `SELECT h.id AS fee_head_id, COALESCE(h.name, 'Unassigned') AS fee_head_name,
+                count(*)::int AS obligations,
+                COALESCE(SUM(o.amount_cents), 0)::bigint AS billed_cents,
+                COALESCE(SUM(o.paid_cents), 0)::bigint AS collected_cents,
+                COALESCE(SUM(o.amount_cents - o.paid_cents) FILTER (WHERE o.status IN ('open','partial')), 0)::bigint AS outstanding_cents
+           FROM app.fee_obligations o
+           LEFT JOIN app.fee_heads h ON h.id = o.fee_head_id
+          WHERE o.tenant_id=$1 AND ($2::uuid IS NULL OR o.academic_year_id=$2::uuid)
+          GROUP BY h.id, h.name ORDER BY COALESCE(h.name, 'Unassigned')`, [req.user.tenant_id, ay ?? null])).rows;
       const sum = (k) => r.reduce((a, x) => a + Number(x[k]), 0);
       const billed = sum('billed_cents'), collected = sum('collected_cents');
       return {
         terms: r,
+        heads: byHead,
         totals: { obligations: sum('obligations'), billed_cents: billed, collected_cents: collected, outstanding_cents: sum('outstanding_cents'), voided: sum('voided'), fully_paid: sum('fully_paid') },
         collectionPct: billed > 0 ? Math.round((collected / billed) * 1000) / 10 : null,
         academicYearId: ay ?? null,
@@ -1921,7 +3773,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.get('/communications', { preHandler: require('owner','principal','coordinator','finance','itadmin','transport') }, async (req) => {
+  app.get('/communications', { preHandler: require('owner','principal','coordinator','finance','finance_head','finance_clerk','itadmin','transport') }, async (req) => {
     const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(`SELECT id, tenant_id, audience_kind, audience_json, channel, template, status, policy_ref, approved_by, sent_at, delivered_at, created_at FROM app.communications ORDER BY created_at DESC LIMIT $1 OFFSET $2`, [limit, offset]);
@@ -1929,7 +3781,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.get('/audit', { preHandler: require('owner','principal','itadmin','finance') }, async (req) => {
+  app.get('/audit', { preHandler: require('owner','principal','itadmin','finance','finance_head','finance_clerk') }, async (req) => {
     const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
@@ -2047,7 +3899,22 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       return bad(reply, 'invalid plugin id');
     }
   };
-  const isPrivileged = (role) => ['owner', 'itadmin'].includes(role);
+  // OPP-SEC-4: the plugin-settings WRITE door accepts owner/principal/itadmin, but the read redacted
+  // values to owner/itadmin — a principal could write settings it was not allowed to see. Symmetry:
+  // whoever may write the settings may read them.
+  const isPrivileged = (role) => ['owner', 'principal', 'itadmin'].includes(role);
+
+  // FEE-COM-2: the usage report behind every manifest's declared `billing.metered` counters. A tenant can
+  // see what its rails actually did; a declared-but-uncounted metric shows as zero rather than as a promise.
+  app.get('/usage', { preHandler: require('owner', 'itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const usage = (await c.query(
+        `SELECT plugin_id, metric, count, updated_at FROM app.plugin_usage ORDER BY plugin_id, metric`)).rows;
+      const declared = (await c.query(
+        `SELECT plugin_id, COALESCE(manifest->'billing'->'metered', '[]'::jsonb) AS metered FROM app.plugins ORDER BY plugin_id`)).rows;
+      return { usage, declared, plan: (await c.query(`SELECT plan FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0]?.plan ?? 'trial' };
+    });
+  });
 
   app.get('/plugins', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -2083,7 +3950,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.post('/plugins/:id/enable', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
+  app.post('/plugins/:id/enable', { preHandler: [require('owner','principal','itadmin'), pluginGuard] }, async (req, reply) => {
     /* PLG-4: the client supplies NO registry metadata. `version`, `class` and `manifest` used to come from the
        request body, so a caller could claim library — really class C — was class A with one permission; and
        because PLG-1 made the recorded grant the only grant, the audit record of consent was client-authored.
@@ -2157,17 +4024,20 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.post('/plugins/:id/disable', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
+  app.post('/plugins/:id/disable', { preHandler: [require('owner','principal','itadmin'), pluginGuard, app.requireStepUp] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTE-17: confirm the plugin exists BEFORE the drain. The 404 used to fire after the drain UPDATE,
       // so disabling an unknown id could still reassign that desk's open actions.
       const exists = await c.query(`SELECT 1 FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, req.params.id]);
       if (!exists.rows[0]) return bad(reply, 'plugin not registered', 404);
       // DRAIN PROTOCOL (docs/12 §12): disable may never abandon school work.
+      // OPP-DAT-1: reassign by the raising plugin (`source_plugin`, stamped at every plugin raise) OR the
+      // legacy `owner_role`/`owner` string match OR event provenance. Before `source_plugin` existed, the
+      // first two clauses never matched a plugin id and the drain handed back ZERO rows (PLG-6/A22).
       const drained = await c.query(
         `UPDATE app.actions SET owner='Principal desk (drain hand-back)', owner_role='principal'
          WHERE tenant_id=$1 AND status='open' AND (
-           owner_role=$2 OR owner=$2 OR EXISTS (
+           source_plugin=$2 OR owner_role=$2 OR owner=$2 OR EXISTS (
              SELECT 1 FROM app.events e
              WHERE e.tenant_id=app.actions.tenant_id
                AND e.id::text=app.actions.source_event
@@ -2186,7 +4056,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
-  app.post('/plugins/:id/settings', { preHandler: [require('owner','itadmin'), pluginGuard] }, async (req, reply) => {
+  app.post('/plugins/:id/settings', { preHandler: [require('owner','principal','itadmin'), pluginGuard] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const next = req.body ?? {};
       // DAT-6: this route is the de-facto SECRET-ROTATION path — it is where a school's

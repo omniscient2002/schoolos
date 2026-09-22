@@ -10,7 +10,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import {PageHead, Card, Stat, Badge, Button, Empty, Skeleton, SkeletonCard, Drawer, useToast, ClickThrough} from '../components/ui';
+import { apiFeesSummary } from '../services/liveApi';
+import {PageHead, Card, Stat, Badge, Button, Empty, Skeleton, SkeletonCard, Drawer, useToast, ClickThrough, SampleNote} from '../components/ui';
 import { LineChart, BarChart, Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import type { Insight } from '../types/domain';
@@ -157,6 +158,12 @@ export default function Insights() {
     return seed.insights;
   }, [session.roleId]);
 
+  /* FEE-PRD-8 / FEE-FE-1: the collection figure is a LIVE door (GET /reports/fees/summary), not the demo
+     seed. When the door is unavailable the stat shows "—", never a seed number labelled "live". */
+  const liveFees = useAsync(async () => {
+    try { return await apiFeesSummary(); } catch { return null; }
+  }, []);
+
   /* P0 empty-world: TERM_DAYS / attendance / students are all empty for a
      tenant with no records yet, so each stat reports what the dataset can
      actually support — `null` (rendered as "not yet") instead of a 0 that
@@ -202,18 +209,22 @@ export default function Insights() {
       <PageHead
         title="Insights"
         sub="Questions the data answers today — each with its metric, movement, and the records behind it."
-        actions={<Badge tone="ai" dot>Recomputed nightly · verified</Badge>}
+        actions={<Badge tone="outline">Illustrative in this build</Badge>}
       />
+
+      <SampleNote>Sample insights — the question cards, attendance and workload figures are illustrative in this build and are not read from your school&rsquo;s records. Only the collection rate comes from the live fee ledger.</SampleNote>
 
       {/* stats row */}
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
         <Stat
-          label="Collection rate — Term 2"
+          label="Collection rate — whole ledger"
           /* No obligations to divide by → "—", not a 0% that would read as a
              collection failure the school never had. */
-          value={stats.rate === null ? '—' : `${stats.rate}%`}
-          delta={stats.rate === null ? undefined : { value: `${stats.failed} failed payment${stats.failed === 1 ? '' : 's'}`, dir: stats.failed > 0 ? 'down' : 'up' }}
-          sub={stats.rate === null ? 'No fee obligations recorded for this term yet' : 'From live fee obligations'}
+          value={liveFees.data?.collectionPct == null ? '—' : `${liveFees.data.collectionPct}%`}
+          delta={liveFees.data?.collectionPct == null ? undefined : { value: `${liveFees.data.totals?.obligations ?? 0} obligations`, dir: 'flat' }}
+          sub={liveFees.error ? 'Fee summary is unavailable right now'
+            : liveFees.data?.collectionPct == null ? 'No fee obligations recorded yet'
+              : 'From the live fee ledger (GET /reports/fees/summary)'}
           onClick={() => navigate('/fees')}
         />
         <Stat
@@ -222,7 +233,7 @@ export default function Insights() {
           delta={!stats.hasAttendanceToday
             ? { value: stats.totalActive ? 'register not marked yet' : 'no students on record yet', dir: 'flat' as const }
             : { value: stats.flagged ? `${stats.flagged} section${stats.flagged > 1 ? 's' : ''} flagged` : 'all sections nominal', dir: stats.flagged ? 'down' as const : 'up' as const }}
-          sub={stats.hasAttendanceToday ? 'From live attendance records' : 'No attendance records yet'}
+          sub={stats.hasAttendanceToday ? 'Sample — attendance figures are illustrative in this build' : 'No attendance records yet'}
           onClick={() => navigate('/attendance')}
         />
         {stats.wl && (

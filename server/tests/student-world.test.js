@@ -20,8 +20,8 @@ before(async () => {
   const { buildApp } = await import('../src/app.js');
   app = await buildApp({ logger: false });
   // enable student.world through the real lifecycle door (registry row from migration 036)
-  const owner = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'owner@meridian.edu', password: 'schoolos-demo' }, headers: { 'content-type': 'application/json' } });
-  const en = await app.inject({ method: 'POST', url: '/plugins/student.world/enable', headers: { authorization: `Bearer ${owner.json().token}`, 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'C' } });
+  const owner = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'owner@meridian.edu', password: 'schoolos-demo' }, headers: { 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' } });
+  const en = await app.inject({ method: 'POST', url: '/plugins/student.world/enable', headers: { authorization: `Bearer ${owner.json().token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: { version: '1.0.0', class: 'C' } });
   assert.equal(en.statusCode, 200, `owner enable via door failed: ${en.body}`);
 });
 after(async () => { await app?.close(); });
@@ -29,13 +29,13 @@ after(async () => { await app?.close(); });
 const loginCache = new Map();
 const login = async (email) => {
   if (loginCache.has(email)) return loginCache.get(email); // /auth/login is rate-limited (20/min)
-  const r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'schoolos-demo' }, headers: { 'content-type': 'application/json' } });
+  const r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email, password: 'schoolos-demo' }, headers: { 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' } });
   assert.equal(r.statusCode, 200, `login ${email}: ${r.body}`);
   const out = r.json();
   loginCache.set(email, out);
   return out;
 };
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const HB = (t) => ({ authorization: `Bearer ${t}` }); // bodyless calls must not send a JSON content-type
 
 test('home: own data only — shape + roster-wide string scan (no other student, no guardian PII)', async () => {
@@ -107,7 +107,7 @@ test('mistakes: CRUD own-only — second student context cannot read or delete A
        AND lower(name) <> lower('Aarav Sharma') AND status='active' ORDER BY admission_no LIMIT 1`)).rows[0];
   assert.ok(other, 'a second roster student exists to impersonate');
   const { hashPassword } = await import('../src/auth.js');
-  const b = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'student-b@meridian.edu', password: 'whatever' }, headers: { 'content-type': 'application/json' } });
+  const b = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'student-b@meridian.edu', password: 'whatever' }, headers: { 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' } });
   if (b.statusCode !== 200) {
     await pool.query(
       `INSERT INTO app.users (tenant_id, email, name, role, password_hash, phone)

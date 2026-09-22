@@ -6,8 +6,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as seed from '../data/dataset';
-import { apiGet, apiPost } from '../services/liveApi';
+import { apiGet } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { useRoleOrGrant } from '../lib/access';
+import { RecordPaymentModal } from '../components/RecordPaymentModal';
 
 /* local async hook (duplicated per screen per APP-SPEC) */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -31,7 +33,7 @@ interface RealObligation {
 }
 import { useStore } from '../state/store';
 import {
-  Avatar, Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, Modal, PageHead, Section, SkeletonCard, Stat, Tabs, useToast,
+  Avatar, Badge, Button, Card, DataTable, Drawer, Empty, ErrorState, KeyValue, PageHead, Section, SkeletonCard, Stat, Tabs, useToast,
 } from '../components/ui';
 import { Sparkline } from '../components/Chart';
 import { AiHeader, EvidenceChain } from '../components/Ai';
@@ -45,6 +47,86 @@ const sectionLabel = (sectionId: string) => {
   return s ? `${s.grade}-${s.name} · ${campusShort(s.campus)}` : sectionId;
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/* The People directory lists LIVE students (server UUIDs), which are not in the demo seed. This
+   resolves those ids against GET /students/:id so opening a real student shows their record instead
+   of the old "Record not found". A non-student / foreign id still gets the honest empty. */
+function LiveStudentProfile({ id }: { id: string }) {
+  const navigate = useNavigate();
+  const { data, loading, error, retry } = useAsync(async () => {
+    return apiGet<{
+      student: Record<string, unknown>;
+      fees: Array<Record<string, unknown>>;
+      attendance: Array<{ school_date: string; status: string }>;
+      route: Record<string, unknown> | null;
+    }>(`/students/${id}`);
+  }, [id]);
+
+  if (loading) return <><PageHead title="Student" back={{ to: '/people', label: 'Directory' }} /><SkeletonCard /></>;
+  if (error || !data?.student) {
+    return (
+      <>
+        <PageHead title="Student" back={{ to: '/people', label: 'Directory' }} />
+        <ErrorState title="Could not load this student" sub={error ? friendly(error).replace('Error: ', '') : 'This record could not be found.'} onRetry={retry} />
+      </>
+    );
+  }
+
+  const s = data.student;
+  const str = (v: unknown, fallback = '—') => (v == null || v === '' ? fallback : String(v));
+  const att = data.attendance ?? [];
+  const present = att.filter(a => a.status === 'present' || a.status === 'late').length;
+  const attPct = att.length ? Math.round((present / att.length) * 100) : null;
+  const fees = data.fees ?? [];
+  const outstanding = fees.filter(f => f.status !== 'paid' && f.status !== 'void')
+    .reduce((a, f) => a + (Number(f.amount_cents ?? 0) - Number(f.paid_cents ?? 0)), 0) / 100;
+
+  return (
+    <>
+      <PageHead
+        title={str(s.name)}
+        sub={`${str(s.admission_no, 'no admission no.')} · Class ${str(s.grade)}-${str(s.section)}`}
+        back={{ to: '/people', label: 'Directory' }}
+      />
+      <div className="grid grid-2" style={{ alignItems: 'start' }}>
+        <Card head="Profile" pad>
+          <KeyValue items={[
+            { k: 'Admission no.', v: str(s.admission_no) },
+            { k: 'Class', v: `${str(s.grade)}-${str(s.section)}` },
+            { k: 'Guardian', v: str(s.guardian_name) },
+            { k: 'Guardian phone', v: str(s.guardian_phone, 'not shared') },
+            { k: 'Bus route', v: str(s.bus_route, 'day scholar') },
+            { k: 'Status', v: str(s.status, 'active') },
+          ]} />
+        </Card>
+        <Card head="Attendance" pad>
+          <KeyValue items={[
+            { k: 'Attendance rate', v: attPct == null ? 'no register yet' : `${attPct}%` },
+            { k: 'Days on record', v: String(att.length) },
+            { k: 'Outstanding fees', v: `₹${outstanding.toFixed(2)}` },
+          ]} />
+        </Card>
+      </div>
+      <Card head="Fee obligations" sub="Live rows from the fee ledger." style={{ marginTop: 'var(--s-4)' }}>
+        {fees.length === 0 ? <Empty title="No fee obligations on record" /> : (
+          <DataTable
+            columns={[
+              { key: 'label', label: 'Term', render: (f: Record<string, unknown>) => str(f.label ?? f.term) },
+              { key: 'amount_cents', label: 'Amount', align: 'right', render: (f: Record<string, unknown>) => `₹${(Number(f.amount_cents ?? 0) / 100).toFixed(2)}` },
+              { key: 'paid_cents', label: 'Paid', align: 'right', render: (f: Record<string, unknown>) => `₹${(Number(f.paid_cents ?? 0) / 100).toFixed(2)}` },
+              { key: 'status', label: 'Status', render: (f: Record<string, unknown>) => <Badge tone={f.status === 'paid' ? 'success' : f.status === 'void' ? 'neutral' : 'warning'}>{str(f.status)}</Badge> },
+            ]}
+            rows={fees}
+            rowKey={(f: Record<string, unknown>) => String(f.id)}
+          />
+        )}
+      </Card>
+      <Button variant="ghost" style={{ marginTop: 'var(--s-3)' }} onClick={() => navigate('/people')}>Back to Directory</Button>
+    </>
+  );
+}
+
 export default function PersonDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -52,6 +134,9 @@ export default function PersonDetail() {
   const person: Person | undefined = id ? seed.findPerson(id) : undefined;
 
   if (!person) {
+    /* A live roster student is a server UUID, not a seed id — resolve it live rather than claim
+       the record does not exist. Non-UUID / foreign ids fall through to the honest empty. */
+    if (id && UUID_RE.test(id)) return <LiveStudentProfile id={id} />;
     return (
       <>
         <PageHead title="Person" back={{ to: '/people', label: 'Directory' }} />
@@ -80,11 +165,10 @@ export default function PersonDetail() {
    ============================================================ */
 function StudentDetail({ person }: { person: Person }) {
   const navigate = useNavigate();
-  const { actorName, session } = useStore();
   const toast = useToast();
   const [tab, setTab] = useState('overview');
 
-  const [retrying, setRetrying] = useState<string | null>(null);
+  const [retrying] = useState<string | null>(null);
   const [slot, setSlot] = useState<AttendanceRecord | null>(null);
   const [payRow, setPayRow] = useState<RealObligation | null>(null);
 
@@ -92,7 +176,8 @@ function StudentDetail({ person }: { person: Person }) {
      per_xxx) are fixture rows that no server door can act on. Payment and
      attendance truth is derived accordingly. */
   const isRealStudent = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(person.id);
-  const canConfirm = ['finance', 'owner'].includes(session.roleId);
+  /* FEE-RBAC-2: mask-aware, matching the confirm door exactly. */
+  const canConfirm = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /fees/payments/:id/confirm']);
 
   const rate = useMemo(() => seed.studentAttendanceRate(person.id), [person.id]);
   const fees = useMemo(() => seed.studentFeeSummary(person.id), [person.id]);
@@ -149,25 +234,6 @@ function StudentDetail({ person }: { person: Person }) {
     : fees.overdue > 0 ? { tone: 'warning' as const, label: `${fmtMoneyShort(fees.overdue)} overdue` }
     : fees.due > 0 ? { tone: 'info' as const, label: `${fmtMoneyShort(fees.due)} due` }
     : { tone: 'success' as const, label: 'Fees clear' };
-
-  /* Record a payment through the real rails (initiate + confirm), finance/owner
-     only — same two doors as the Fees desk. Fixture (demo-directory) rows have
-     no server representation, so the button does not appear for them at all. */
-  const recordPayment = async (row: RealObligation, gatewayRef?: string) => {
-    setRetrying(row.id);
-    try {
-      const init = await apiPost<{ payment: { id: string } }>('/fees/payments', { obligationId: row.id, method: 'upi' });
-      const conf = await apiPost<{ payment: { receipt_no: string | null }, obligation: { status: string } }>(
-        `/fees/payments/${init.payment.id}/confirm`, gatewayRef?.trim() ? { gatewayRef: gatewayRef.trim() } : {});
-      toast({ title: `Payment recorded — receipt ${conf.payment.receipt_no ?? 'issued'}`, sub: `${fmtMoney(row.amount - row.paidAmount)} against ${person.name} · obligation now ${conf.obligation.status}.`, tone: 'success' });
-      setPayRow(null);
-      realFees.retry();
-    } catch (e) {
-      toast({ title: 'Could not record the payment', sub: friendly(e), tone: 'error' });
-    } finally {
-      setRetrying(null);
-    }
-  };
 
   const messageGuardian = () => {
     const primary = guardianRows.find(g => g.link.primary) ?? guardianRows[0];
@@ -505,24 +571,12 @@ function StudentDetail({ person }: { person: Person }) {
         )}
       </Drawer>
 
-      {/* record payment — real rails, finance/owner only */}
-      <Modal
-        open={!!payRow}
+      {/* record payment — the SAME shared component as the Fees desk (FEE-FE-3) */}
+      <RecordPaymentModal
+        row={payRow ? { id: payRow.id, studentName: person.name, term: payRow.term, category: payRow.category, amount: payRow.amount, paidAmount: payRow.paidAmount } : null}
         onClose={() => setPayRow(null)}
-        title="Record a payment"
-        sub={payRow ? `${person.name} · ${payRow.term} ${payRow.category} · outstanding ${fmtMoney(payRow.amount - payRow.paidAmount)}` : undefined}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setPayRow(null)} disabled={!!retrying}>Cancel</Button>
-            <Button variant="primary" loading={!!retrying} onClick={() => payRow && recordPayment(payRow)}>Record payment</Button>
-          </>
-        }
-      >
-        <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.65 }}>
-          This initiates the payment and records its settlement against the ledger (manual reconciliation).
-          Use it when the money has actually arrived. Every entry is audited with your name ({actorName}, {session.roleId}).
-        </p>
-      </Modal>
+        onDone={() => realFees.retry()}
+      />
     </div>
   );
 }

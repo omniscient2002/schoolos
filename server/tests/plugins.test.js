@@ -17,7 +17,7 @@ after(async () => { if (app) await app.close(); });
 describe('plugin registry', () => {
   test('owner can enable a plugin; it appears with status and permissions', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
-    const H = { authorization: `Bearer ${o.token}` };
+    const H = { authorization: `Bearer ${o.token}`, 'x-step-up-password': 'schoolos-demo' };
     const res = await app.inject({ method: 'POST', url: '/plugins/library/enable', payload: { version: '1.0.0', class: 'A', permissions: ['students.read'] }, headers: H });
     assert.equal(res.statusCode, 200);
     assert.equal(res.json().plugin.status, 'enabled');
@@ -35,7 +35,7 @@ describe('plugin registry', () => {
 
   test('disable hides the plugin but the audit trail remains', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
-    const H = { authorization: `Bearer ${o.token}` };
+    const H = { authorization: `Bearer ${o.token}`, 'x-step-up-password': 'schoolos-demo' };
     await app.inject({ method: 'POST', url: '/plugins/library/disable', payload: {}, headers: H });
     const list = await app.inject({ method: 'GET', url: '/plugins', headers: H });
     const lib = list.json().plugins.find(p => p.plugin_id === 'library');

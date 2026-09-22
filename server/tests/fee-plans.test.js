@@ -165,3 +165,21 @@ test('FP · idempotency key is database law: raw duplicate (tenant, student, ter
     'fee_obl_student_term_label_uidx must reject raw duplicates',
   );
 });
+
+test('FP · D3 · sibling auto-concession is applied at generation', async () => {
+  const g = 'D3';
+  await sql(`INSERT INTO app.students (tenant_id, admission_no, name, grade, section, status) VALUES
+    ($1,'D3-1','D3 Sibling A',$2,'A','active'), ($1,'D3-2','D3 Sibling B',$2,'A','active')`, [tenantA, g]);
+  const ids = (await sql(`SELECT id FROM app.students WHERE tenant_id=$1 AND grade=$2 ORDER BY admission_no`, [tenantA, g])).rows;
+  for (const s of ids) await sql(`INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary) VALUES ($1,$2,'D3 Parent','+919812345678','mother',true)`, [tenantA, s.id]);
+  const mk = await app.inject({ method: 'POST', url: '/fee-plans', headers: H(ownerToken),
+    payload: { name: 'D3 sibling plan', grades: [g], terms: [{ term: 'Term 2', label: 'D3 fee', amount_cents: 100000 }], autoConcession: { kind: 'sibling', percent: 10 } } });
+  assert.equal(mk.statusCode, 200, mk.body);
+  const planId = mk.json().feePlan.id;
+  const gen = await app.inject({ method: 'POST', url: `/fee-plans/${planId}/generate`, headers: H(ownerToken), payload: {} });
+  assert.equal(gen.statusCode, 200, gen.body);
+  assert.ok(gen.json().autoConcessions >= 2, 'both siblings get the auto-concession');
+  const rows = (await sql(`SELECT concession_cents, net_amount_cents FROM app.fee_obligations WHERE tenant_id=$1 AND student_id = ANY($2::uuid[])`, [tenantA, ids.map((r) => r.id)])).rows;
+  assert.equal(rows.length, 2);
+  for (const r of rows) { assert.equal(Number(r.concession_cents), 10000, 'concession is 10% of the fee'); assert.equal(Number(r.net_amount_cents), 90000); }
+});

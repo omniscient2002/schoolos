@@ -237,6 +237,32 @@ describe('SEC-1 — privilege must be explicit and reviewable', () => {
   // app.schema_migrations), which is a platform table with no tenant_id. Read-only; the app role gains
   // nothing. Net privilege granted by this change: ZERO.
   // ────────────────────────────────────────────────────────────────────────────────────────────────────
+  // 118 → 120 (2026-09-17, library v2, docs/LIBRARY-DESIGN.md): the library plugin's existing owner-path
+  // `settings()` read is unchanged, and the librarian notification-settings door adds TWO more explicit
+  // owner-path sites — a read and a write of the plugin's OWN `app.plugins.settings` row. The owner path is
+  // REQUIRED because `app.plugins` is the registry the app role does not own; the row is the plugin's own
+  // configuration, not tenant data, and the write is role-gated to `librarian`. Net tenant privilege: ZERO.
+  // 120 → 121 (2026-09-17, FEE-OPS-1): the fee-domain gauges on the owner/itadmin-gated `/metrics` door add
+  // ONE owner-path read (outstanding/collected/stale-initiated/disputed/dunning-queued). The owner path is
+  // REQUIRED for the same reason every other /metrics gauge requires it: these are CROSS-TENANT counts, and a
+  // withUser read would silently narrow them to the caller's school. Read-only; the app role gains nothing.
+  // Net privilege granted by this change: ZERO.
+  // 121 → 122 (2026-09-17, LIB-E1/E6): the library-domain gauges on the same `/metrics` door add ONE
+  // owner-path read carrying the tenant KPI gauges AND the fleet-wide alert gauges the rules file names
+  // (holds stalled, chronic overdue, stale fines). The owner path is REQUIRED for the fleet half for the
+  // same OPSX-3 reason as the fee gauges — a withUser read would narrow the alert signal to the caller's
+  // school and hide a stalled queue everywhere else. Read-only; the app role gains nothing.
+  // Net privilege granted by this change: ZERO.
+  // 122 → 124 (2026-09-21, SEC-1): step-up re-auth adds TWO owner-path reads of `app.users.password_hash`
+  // — `app.requireStepUp` (the guard) and `POST /me/step-up` (issuing the token). The owner path is
+  // REQUIRED because `password_hash` is column-scoped away from `schoolos_app` (migration 077), so the
+  // constrained client cannot read the credential to verify it. Read-only; no new privilege reaches the
+  // app role (it still cannot SELECT password_hash).
+  // 124 → 127 (2026-09-22, C3): student idle moved to the shared `auth.session_activity` store, adding
+  // THREE owner-path queries (SELECT last_seen, DELETE on expiry, upsert last_seen) in the authenticate
+  // hook. `auth.session_activity` is kernel-only (no grant to schoolos_app), so sysq is the only possible
+  // path; no new privilege reaches the app role.
+  // ────────────────────────────────────────────────────────────────────────────────────────────────────
   test('the privileged call-site count is PINNED (adding privilege requires a deliberate edit)', () => {
     let count = 0;
     for (const f of walk(join(SERVER_ROOT, 'src'))) {
@@ -245,7 +271,7 @@ describe('SEC-1 — privilege must be explicit and reviewable', () => {
         count += (line.split('//')[0].match(/(?<![\w$])sysq\(/g) ?? []).length;
       }
     }
-    const AUDITED = 118;
+    const AUDITED = 127;
     assert.equal(count, AUDITED,
       `owner-privileged query sites changed: ${count} vs ${AUDITED}. If you added one, justify it here; `
       + 'if you removed one, prefer it (least privilege). Never raise this number without a reason.');

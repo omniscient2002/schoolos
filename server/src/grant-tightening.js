@@ -44,8 +44,12 @@ export const APP_DATA_SCHEMAS = [
   'plugin_transport_gps', 'plugin_upi', 'plugin_visitors', 'ptm', 'safety', 'student', 'support', 'teacher',
 ];
 
-/** The single table whose app-role DELETE is used in code. See the header for the grep that establishes it. */
-export const DELETE_EXCEPTIONS = ['student.mistake_note'];
+/** The tables whose app-role DELETE is used in code. See the header for the grep that establishes the first.
+ *  `family.child_link` (SEC-5/DAT-3) is the second: the link-management door unbinds a guardian —
+ *  `src/plugins/family.view/index.js` `DELETE FROM family.child_link WHERE id=$1 AND tenant_id=$2`. It is an
+ *  authorization table, not a ledger, and a revoked binding must actually disappear (not linger as a row
+ *  that still grants read access). */
+export const DELETE_EXCEPTIONS = ['student.mistake_note', 'family.child_link'];
 
 export async function tightenAppRoleDeletes(client) {
   const revoked = [];

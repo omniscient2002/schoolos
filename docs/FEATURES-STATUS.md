@@ -10,16 +10,17 @@
 
 | Plane | Server (migration · doors · tests) | UI | Status |
 |---|---|---|---|
-| Owner / Principal | core registry + kernel · 009/010 · lifecycle doors | Action Center, Insights, Approvals | ✅ GA |
+| Owner | core registry + kernel · 009/010 · lifecycle doors, custom roles, plugins, metrics, migration, audit-verify | Action Center, Group console, Insights/Reports, Fees, Roles, Plugin settings, Audit, Migration | 🟡 Partial — oversight console GA; board pack / announcement composer / certificate signing / inspection pack absent (`docs/OWNER-PRINCIPAL-PERFECT-100.md`) |
+| Principal | core registry + kernel · coord.view · principal-owned approval spine | Today/Attention/Next, Action Center, Learning, Fees, AI usage, Automation, Audit, Safety | 🟡 Partial — approval spine GA; 7am brief / fee-health control / compliance calendar / counselor referral absent (`docs/OWNER-PRINCIPAL-PERFECT-100.md`) |
 | Coordinator | `coord.view` · 037 · 7 doors · 9 tests | 6 screens (Command Center, Substitutions, Workload, Curriculum, Escalations, Approval Center) | ✅ GA |
-| Teacher (classroom) | `teacher.classroom` · 031 · 8 doors · 11 tests | TeacherHome, Homework, SubmissionsInbox (routed) | ✅ GA |
-| Teacher (support) | `teacher.support` · 032 · 22 doors | teacher support screens | ✅ GA |
-| Teacher (AI copilot) | `teacher.copilot` · 033 · 8 doors · 13 tests | brief/mastery/curriculum doors consumed by teacher UI | ✅ GA |
-| Parent (family view) | `family.view` · 034 · 11 doors · 8 tests | FamilyHome, Consents, Requests (+ timeline, roster↔user bridge) | ✅ GA |
-| Parent (assistant) | `parent.assistant` · 035 · 4 doors · 9 tests | ParentCopilot (budgeted, deterministic) | ✅ GA |
-| Student | `student.world` · 036 · 14 doors · 11 tests | StudentHome2 + print center + wellbeing + noticeboard (no-phone paper-first) | ✅ GA |
-| Finance | `accounting.tally` 013, `payments.upi` 015 | fees, payments | ✅ GA |
-| Admissions | `admissions.funnel` 018/022 | funnel screens | ✅ GA |
+| Teacher (classroom) | `teacher.classroom` · 031 + 114 · 14 doors | TeacherHome, Homework, SubmissionsInbox, MyLeave, Lessons, Duties & workload, Teaching copilot | ✅ GA |
+| Teacher (support) | `teacher.support` · 032 · 24 doors | Student-support hub: concerns, doubts, interventions, parent meetings, safety box | ✅ GA |
+| Teacher (AI copilot) | `teacher.copilot` · 033 · 9 doors | Copilot (ask/draft), Mastery map, Curriculum, Progress story, Exam marks — all routed | ✅ GA |
+| Parent (family view) | `family.view` · 034 · 17 doors | FamilyHome, Consents, Requests, per-child flows (attendance+leave, exams, assignments, timeline, explain, PTM) | ✅ GA |
+| Parent (assistant) | `parent.assistant` · 035 · 4 doors | ParentCopilot (budgeted, deterministic) | ✅ GA |
+| Student | `student.world` · 036 · 19 doors | StudentHome2, learn lane (homework+submit, mistakes, flashcards, tasks, results), print center, wellbeing, noticeboard | ✅ GA |
+| Finance | `accounting.tally` 013, `payments.upi` 015, kernel fees 109–111 | fee desk, plans, payments, receipts (PDF), concessions, installments, reconciliation, dunning, delivery, student dues | ✅ GA — fees domain 100/100 (`docs/FEES-PERFECT-100.md`) |
+| Admissions | `admissions.funnel` 018/022/119/123 (v1.3) | funnel screens (capture/edit/schedule/docs/offer/health/SLA) | ✅ GA |
 | Transport | `transport.gps` 020 | routes/GPS | ✅ GA |
 | Facilities / Ops | `ops.timetable` 021, `ops.visitors` 024, work orders | operations desk | ✅ GA |
 | IT / Governance | `pack.dpdp` 023, `pack.cbse` 026, HR/clinic 029 | IT, governance, DPDP pack | ✅ GA |
@@ -41,6 +42,14 @@
 
 ## Known follow-ups
 
+- **Library v2 (docs/LIBRARY-DESIGN.md)** — shipped: dedicated `librarian` role, opt-in plugin, per-copy
+  tracking, reservations, fines ledger, purchase requests, due/overdue reminder sweep, and an aggregate
+  owner/principal operations dashboard. The old 4-role staff gate is gone: only the librarian runs the desk.
+  Enterprise pass (docs/LIBRARY-PERFECT-100.md §1a): reservation-expiry sweep, lost/damaged closure +
+  replacement charge, fine-waiver setting, scan config, reports/CSV, pagination envelope, per-account
+  borrower throttles (migration 111), cover images, acquisition vendor/budget tracking, library KPI gauges
+  + alert rules, backup/restore round-trip and DPDP erasure of library free text. Remaining: external
+  red-team pass; advanced-tier features (barcode images, ISBN lookup, CSV import, reading lists, e-resources).
 - Counselor/clinic confidentiality pin suite (B9) — planned.
 - Secret-scan as CI cron (E5) — script exists in §37 gate, cron wiring pending.
 - Red-team cycle 7 on classroom/coord/revocation — in flight.

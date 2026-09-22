@@ -24,10 +24,11 @@ import { hashPassword } from './auth.js';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DEFAULT_SECTIONS = Array.from({ length: 8 }, (_, i) => ({
-  grade: String(i + 1),
-  sections: ['A', 'B', 'C'],
-}));
+/* A new school starts with NO classes: the structure is the school's own to define (owner,
+   principal or IT admin) on the Classes & sections screen, and the setup checklist points there.
+   Fabricating "1–8 × A/B/C" put sections on the roster that nobody chose and every filter then
+   offered. A caller MAY still supply `sections` in the signup body; absent that, the list is empty. */
+const DEFAULT_SECTIONS = [];
 
 const slugify = (name) =>
   String(name ?? '').toLowerCase()
@@ -89,6 +90,12 @@ export function registerOnboarding(app) {
         `INSERT INTO app.tenants (slug, name, config, onboarded_at, onboarded_via)
          VALUES ($1,$2,$3::jsonb, now(), 'self-signup') RETURNING id, slug, name, config`,
         [slug, schoolName, JSON.stringify(config)])).rows[0];
+      /* M5 POLICY DECISION — no forced change on self-signup. Unlike an admin-provisioned account
+         (people.admin mints a CSPRNG temporary password and stamps `force_change=true` so the person
+         must replace a secret they did not choose), the owner here CHOSE their own password and it is
+         never shown to or stored by anyone else. A forced change would be ceremony with no security
+         benefit, so `force_change` is deliberately left at its default (false). The account still
+         carries `session_epoch`/MFA/idle protections like every other. */
       const u = (await client.query(
         `INSERT INTO app.users (tenant_id, email, name, role, password_hash, active)
          VALUES ($1,$2,$3,'owner',$4,true) RETURNING id, email, name, role, tenant_id, session_epoch`,
@@ -134,7 +141,8 @@ export function registerOnboarding(app) {
   app.post('/onboard/school', { preHandler: app.authenticate }, async (req, reply) => {
     if (req.user.role !== 'owner') return reply.code(403).send({ error: 'Only the school owner can change the school profile' });
     const b = req.body ?? {};
-    const allowed = ['schoolName', 'address', 'board', 'phone', 'campuses'];
+    /* No campuses: a school is ONE site. A second site is a second tenant, not a campus of this one. */
+    const allowed = ['schoolName', 'address', 'board', 'phone'];
     const patches = {};
     if (b.schoolName !== undefined) {
       const n = String(b.schoolName).trim();
@@ -144,11 +152,7 @@ export function registerOnboarding(app) {
     for (const k of ['address', 'board', 'phone']) {
       if (b[k] !== undefined) patches[`config.${k}`] = String(b[k]).trim().slice(0, k === 'address' ? 300 : 60);
     }
-    if (b.campuses !== undefined) {
-      if (!Array.isArray(b.campuses) || b.campuses.length > 12) return reply.code(400).send({ error: 'Campuses must be a list (max 12)' });
-      patches['config.campuses'] = b.campuses.map((x) => String(x).trim().slice(0, 60)).filter(Boolean);
-    }
-    if (!Object.keys(patches).length) return reply.code(400).send({ error: 'Nothing to update — send schoolName, address, board, phone or campuses' });
+    if (!Object.keys(patches).length) return reply.code(400).send({ error: 'Nothing to update — send schoolName, address, board or phone' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTE-19: lock the row for the JSONB read-modify-write. Without `FOR UPDATE` a concurrent profile
       // update loses one writer's `config` change.
@@ -162,7 +166,6 @@ export function registerOnboarding(app) {
       for (const key of ['address', 'board', 'phone']) {
         if (patches[`config.${key}`] !== undefined) { nextConfig[key] = patches[`config.${key}`]; }
       }
-      if (patches['config.campuses'] !== undefined) nextConfig.campuses = patches['config.campuses'];
       sets.push(`config=$${i++}`, `onboarded_via=COALESCE(onboarded_via,'self-signup')`);
       vals.push(JSON.stringify(nextConfig));
       await c.query(`UPDATE app.tenants SET ${sets.join(', ')} WHERE id=$${i}`, [...vals, req.user.tenant_id]);
@@ -193,6 +196,7 @@ export function registerOnboarding(app) {
         school: { name: t?.name, slug: t?.slug, onboardedAt: t?.onboarded_at, sections },
         counts,
         checklist: [
+          { id: 'classes', label: 'Define your classes and sections', done: sections.length > 0, href: '/classes' },
           { id: 'itadmin', label: 'Create your IT admin (they can add the rest of the staff)', done: counts.itadmins > 0, href: '/people-admin' },
           { id: 'students', label: 'Admit your first students', done: counts.students > 0, href: '/people-admin' },
           /* S0 fix C10: five modules are born enabled (DEFAULT_ON) — counting

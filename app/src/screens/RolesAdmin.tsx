@@ -51,8 +51,10 @@ const PRESETS: { pattern: string; label: string }[] = [
   { pattern: 'POST /fees/payments', label: 'Record payments' },
   { pattern: 'GET /plugins/ops.bi/*', label: 'BI read models' },
   { pattern: 'GET /plugins/people.admin/users', label: 'List accounts' },
-  /* library doors (D-43 librarian flow) — server/src/plugins/library/index.js */
-  { pattern: 'GET /plugins/library/books', label: 'Library catalog' },
+  /* library v2 doors (docs/LIBRARY-DESIGN.md) — the built-in `librarian` role is the normal path; a
+     custom role may still be granted these desk doors by the owner. */
+  { pattern: 'GET /plugins/library/desk/overview', label: 'Library desk' },
+  { pattern: 'GET /plugins/library/desk/books', label: 'Library catalog' },
   { pattern: 'POST /plugins/library/books', label: 'Add books' },
   { pattern: 'POST /plugins/library/loans', label: 'Issue books' },
   { pattern: 'POST /plugins/library/loans/*', label: 'Return books' },
@@ -60,18 +62,17 @@ const PRESETS: { pattern: string; label: string }[] = [
   { pattern: 'GET /plugins/library/overdue', label: 'Overdue list' },
 ];
 
-/* D-43 acceptance quick start: the "Librarian" custom role the owner asked to
-   see demonstrated end-to-end. base teacher (so the shell shows the Library
-   module and nothing management-only) + explicit library-scoped mask grants.
-   The kernel resolution (L3-4.2) binds role_key per request; L3 verifies the
-   enforcement (librarian token cannot read finance doors). */
+/* library v2 (docs/LIBRARY-DESIGN.md): the librarian is now a BUILT-IN role, so this preset is only a
+   convenience for granting a teacher-based account the desk doors as a custom role. The built-in
+   `librarian` role is the recommended path and is created from the People console. */
 const LIBRARIAN_START: { key: string; label: string; base_role: string; mask: RoleMask } = {
-  key: 'librarian',
-  label: 'Librarian',
+  key: 'library-desk',
+  label: 'Library desk (custom)',
   base_role: 'teacher',
   mask: {
     allow: [
-      'GET /plugins/library/books',
+      'GET /plugins/library/desk/overview',
+      'GET /plugins/library/desk/books',
       'POST /plugins/library/books',
       'POST /plugins/library/loans',
       'POST /plugins/library/loans/*',

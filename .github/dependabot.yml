@@ -1,0 +1,32 @@
+# Dependabot — keep the two npm packages, the GitHub Actions and the base images current.
+# One grouped weekly PR per ecosystem keeps the noise bounded while still surfacing
+# security updates; security advisories still open their own PRs immediately.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /server
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      server-dev:
+        dependency-type: development
+      server-prod:
+        dependency-type: production
+
+  - package-ecosystem: npm
+    directory: /app
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      app-dev:
+        dependency-type: development
+      app-prod:
+        dependency-type: production
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+
+  - package-ecosystem: docker
+    directory: /server
+    schedule: { interval: weekly, day: monday }

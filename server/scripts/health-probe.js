@@ -201,6 +201,81 @@ export const CHECKS = {
     }
     return { value: Math.max(0, Math.floor(Date.now() / 1000) - Number(epoch)) };
   },
+  /** FEE-OPS-2: payments the reconciliation sweep could not match to the rail (ghost/missing/orphan/
+   *  amount-mismatch). A non-zero reading means the money ledger and the gateway disagree — the one
+   *  class of money error a school must never discover from a parent. */
+  async fee_reconciliation_discrepancies(q) {
+    const present = await q(`SELECT 1 FROM information_schema.columns
+                              WHERE table_schema='app' AND table_name='payments' AND column_name='reconciliation_status'`);
+    if (!present.rows[0]) return { skipped: 'app.payments.reconciliation_status absent — migration 109 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM app.payments WHERE reconciliation_status='disputed'`);
+    return { value: r.rows[0].n };
+  },
+  /* FEE-OPS-3: the fee SLOs — the three latencies a collection operation is judged on. Each is a gauge in
+   * seconds; the rules below carry the thresholds. */
+  /** Settlement latency: the slowest initiation→confirmation in the last 24h. */
+  async fee_settlement_latency_seconds(q) {
+    const r = await q(`SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (confirmed_at - created_at))), 0)::int AS v
+                         FROM app.payments WHERE status IN ('confirmed','refunded')
+                           AND confirmed_at > now() - interval '24 hours'`);
+    return { value: r.rows[0].v };
+  },
+  /** Dunning queue age: how long the oldest fee reminder has sat undelivered. */
+  async fee_dunning_queue_age_seconds(q) {
+    const r = await q(`SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0)::int AS v
+                         FROM app.communications WHERE status='queued' AND template LIKE 'FEE%'`);
+    return { value: r.rows[0].v };
+  },
+  /** Reconciliation age: how long the oldest disputed payment has been waiting for a human. */
+  async fee_reconciliation_age_seconds(q) {
+    const r = await q(`SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(confirmed_at))), 0)::int AS v
+                         FROM app.payments WHERE reconciliation_status='disputed' AND confirmed_at IS NOT NULL`);
+    return { value: r.rows[0].v };
+  },
+  /* LIB-E1: the library domain's own failure modes. Each is a cross-tenant count of rows that should
+   * not exist if the desk and the day-worker are healthy. They are deliberately counts, not thresholds on
+   * ordinary activity (a school always has SOME overdue books); see the rule descriptions. */
+  /** Ready holds past their expiry: the expiry sweep did not run, so the queue is stalled. */
+  async library_holds_stalled(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables WHERE table_schema='library' AND table_name='reservation'`);
+    if (!present.rows[0]) return { skipped: 'library.reservation absent — migration 108 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM library.reservation
+                        WHERE status='ready' AND expires_at IS NOT NULL AND expires_at < now()`);
+    return { value: r.rows[0].n };
+  },
+  /** Loans more than 30 days overdue: an ordinary overdue count is normal; a chronic backlog is not. */
+  async library_overdue_chronic(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables WHERE table_schema='library' AND table_name='loan'`);
+    if (!present.rows[0]) return { skipped: 'library.loan absent — migration 108 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM library.loan
+                        WHERE status='issued'
+                          AND due_on < ('now'::timestamptz AT TIME ZONE 'UTC')::date - 30`);
+    return { value: r.rows[0].n };
+  },
+  /** Outstanding fines older than 180 days: the desk has stopped recovering the money. */
+  async library_fines_stale(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables WHERE table_schema='library' AND table_name='fine'`);
+    if (!present.rows[0]) return { skipped: 'library.fine absent — migration 108 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM library.fine
+                        WHERE status='outstanding' AND assessed_at < now() - interval '180 days'`);
+    return { value: r.rows[0].n };
+  },
+  /** Open wellbeing requests older than 7 days: the counselor plane is not being worked. */
+  async wellbeing_stalled(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables WHERE table_schema='student' AND table_name='wellbeing_request'`);
+    if (!present.rows[0]) return { skipped: 'student.wellbeing_request absent — migration 036 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM student.wellbeing_request
+                        WHERE status <> 'resolved' AND created_at < now() - interval '7 days'`);
+    return { value: r.rows[0].n };
+  },
+  /** Submissions waiting for review older than 7 days: the teacher inbox is backing up. */
+  async homework_backlog(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables WHERE table_schema='teacher' AND table_name='submission'`);
+    if (!present.rows[0]) return { skipped: 'teacher.submission absent — migration 031 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM teacher.submission
+                        WHERE status IN ('submitted','late') AND submitted_at < now() - interval '7 days'`);
+    return { value: r.rows[0].n };
+  },
   /** Files on disk that the registry does not record as applied: the DB is behind the code. */
   async migrations_pending(q) {
     const { readdirSync } = await import('node:fs');
@@ -209,6 +284,21 @@ export const CHECKS = {
     const r = await q(`SELECT name FROM app.schema_migrations`);
     const applied = new Set(r.rows.map((x) => x.name));
     return { value: onDisk.filter((f) => !applied.has(f)).length };
+  },
+  /** OPP-OVR-3: open decisions past their deadline — the approval spine is not being worked. */
+  async open_actions_overdue(q) {
+    const r = await q(`SELECT count(*)::int n FROM app.actions
+                        WHERE status='open' AND deadline IS NOT NULL AND deadline < now()`);
+    return { value: r.rows[0].n };
+  },
+  /** OPP-PRD-5: statutory compliance items not filed and past due — a governance deadline missed. */
+  async compliance_overdue(q) {
+    const present = await q(`SELECT 1 FROM information_schema.tables
+                              WHERE table_schema='app' AND table_name='compliance_items'`);
+    if (!present.rows[0]) return { skipped: 'app.compliance_items absent — migration 116 not applied' };
+    const r = await q(`SELECT count(*)::int n FROM app.compliance_items
+                        WHERE status <> 'filed' AND due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date`);
+    return { value: r.rows[0].n };
   },
 };
 

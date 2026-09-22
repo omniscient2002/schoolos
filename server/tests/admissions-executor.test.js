@@ -35,14 +35,16 @@ after(async () => { await app?.close(); });
 // drive enquiry → form → interaction → offer → enrolled; the last hop raises the
 // students.create.<leadId> kernel action and returns its id.
 const convertLead = async (studentName, phone) => {
+  // OVR-4: the funnel now stamps `proposed_by`, so the conversion is attributed to the principal
+  // (a different user from the owner who decides). The self-approval rule is then exercised honestly.
   const mk = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads', payload: {
     studentName, guardianName: `Guardian of ${studentName}`, guardianPhone: phone, classApplied: '5-A', source: 'walk-in',
-  }, headers: H(ownerToken) });
+  }, headers: H(principalToken) });
   assert.equal(mk.statusCode, 200, mk.body);
   const leadId = mk.json().leadId;
   assert.ok(leadId, `lead id missing in ${mk.body}`);
   for (const to of ['form', 'interaction', 'offer', 'enrolled']) {
-    const st = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${leadId}/stage`, payload: { to }, headers: H(ownerToken) });
+    const st = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${leadId}/stage`, payload: { to }, headers: H(principalToken) });
     assert.equal(st.statusCode, 200, `${to}: ${st.body}`);
   }
   const act = await sql(`SELECT id, code FROM app.actions WHERE code=$1 AND status='open'`, [`students.create.${leadId}`]);
@@ -114,10 +116,10 @@ test('AE · double-approve is a 409 (one decision per action, atomic)', async ()
   assert.equal(n, 1, 'no duplicate student from a re-decided action');
 });
 
-test('AE · segregation of duties: principal cannot approve the unattributed admissions raise; owner can', async () => {
+test('AE · segregation of duties: the principal cannot self-approve the conversion they raised; the owner can', async () => {
   const { actionId } = await convertLead('Chitra Executor', '+919000005003');
   const p = await app.inject({ method: 'POST', url: `/actions/${actionId}/decide`, payload: { decision: 'approved' }, headers: H(principalToken) });
-  assert.equal(p.statusCode, 403, 'principal (owning desk, unattributed raise) must not self-approve');
+  assert.equal(p.statusCode, 403, 'the proposer (principal) must not self-approve');
   const o = await app.inject({ method: 'POST', url: `/actions/${actionId}/decide`, payload: { decision: 'approved' }, headers: H(ownerToken) });
   assert.equal(o.statusCode, 200, 'owner remains the second authority');
 });

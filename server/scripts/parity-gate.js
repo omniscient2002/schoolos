@@ -43,7 +43,6 @@ const routeFiles = [join(SERVER_ROOT, 'src', 'app.js'), join(SERVER_ROOT, 'src',
     .filter((e) => e.isDirectory() && !e.name.startsWith('_') && statSync(join(SERVER_ROOT, 'src', 'plugins', e.name, 'index.js')).isFile())
     .map((e) => join(SERVER_ROOT, 'src', 'plugins', e.name, 'index.js'))];
 const doors = scanRoutes(routeFiles)
-  .filter((r) => r.method !== 'GET')
   .filter((r) => !r.path.endsWith('/webhook') && !['/health', '/ready', '/metrics'].includes(r.path))
   // normalize plugin routes declared with inline template conditionals, e.g.
   // `/users/:id/${suspend ? 'suspend' : 'activate'}` → `/users/:id/`
@@ -151,6 +150,26 @@ const API_ONLY_ALLOWLIST = [
   { re: /^POST \/transport\/events$/, why: 'called by the transport worker/kernel; the UI badge is read-only' },
   { re: /^POST \/payments\/([^/]+\/refund|reconcile)$/, why: 'owner/finance API; refunds run from the gateway/ops tooling' },
   { re: /^(POST|DELETE) \/(plugins\/|student\/|ptm\/|safety\/|teacher\/|interventions\/|parent\/leave-request|coord\/duty\/allocate)/, why: 'plugin runtime door reached from its own plugin screen (dynamic import); covered by plugin-conformance' },
+  { re: /^PUT \/plugins\/library\/desk\/settings\/notifications$/, why: 'backward-compat alias of /desk/settings (same saveDeskSettings handler); the sectioned desk screen saves via /desk/settings' },
+  { re: /^POST \/parent\/requests\/[^/]+\/transition$/, why: 'school/office ticket-transition door — the parent request center is read-only to parents by design; the office surface lands with the PU-2 flows' },
+  /* ── GET doors (TEST-2: the gate now scans reads too). Each reason names why no shipped screen
+     calls it: an owner/admin console read, an ops/export tool, a machine/callback path, or a plugin
+     read reached through a dynamic import that this static resolver cannot see. ───────────────── */
+  { re: /^GET \/(auth\/google\/(start|callback)|api-keys|webhooks|ai\/calls|workflow-rules|class-assignments|academic-years|fees\/entitlements|communications|audit\/verify|events\/lineage|usage)$/, why: 'owner/admin or machine read — surfaced by ops tooling or the ItAdmin console, not a per-role screen' },
+  { re: /^GET \/plugins\/(accounting\.tally|comms\.whatsapp|exams\.assessment|health\.clinic|hr\.leave|ops\.import|ops\.timetable|ops\.udise|ops\.visitors|pack\.cbse|pack\.dpdp|transport\.gps)\//, why: 'plugin read door reached from its own plugin screen (dynamic import) or an export/ops tool; covered by plugin-conformance' },
+  { re: /^GET \/plugins\/library\/(copies|scan)$/, why: 'librarian desk read reached through the dynamic library desk screen; covered by plugin-conformance' },
+  { re: /^GET \/plugins\/files\.store(\/|$)/, why: 'file registry read reached through the dynamic documents screen; covered by plugin-conformance' },
+  { re: /^GET \/plugins\/people\.admin\/students\/:id\/history$/, why: 'roster-history read reached through the dynamic people console; covered by plugin-conformance' },
+  { re: /^GET \/admissions\/followups$/, why: 'admissions funnel read reached through the dynamic admissions screen; covered by plugin-conformance' },
+  { re: /^(GET|POST|DELETE) \/parent\/links(\/|$)/, why: 'school-office guardian-link management API — the office console lands with the People roster work; the parent read-plane never calls it' },
+  { re: /^GET \/parent\/child\/:id\/academics$/, why: 'published-report read reached from the per-child flow hub (assignments/exams tabs read the same published reports); no dedicated academics tab yet' },
+  { re: /^GET \/teacher\/usage$/, why: 'the copilot budget ledger is shown inline on each ask/draft response; the standalone usage read is a governance/ops view' },
+  { re: /^GET \/safety\/box\/summary$/, why: 'weekly pattern summary is an oversight read (counts only); the safety-box screen shows the report list' },
+  /* owner/principal spine (migration 116) — its UI lane is in flight; these are the owner/principal
+     console reads/writes that lane wires. Named here so the shared gate stays honest in the interim. */
+  { re: /^(GET|POST) \/delegations$/, why: 'owner/principal delegation console (OPP-OVR-2) — UI lane in flight' },
+  { re: /^POST \/owner\/actions$/, why: 'owner/principal action raise (OPP spine) — UI lane in flight' },
+  { re: /^GET \/reports\/snapshots$/, why: 'board/inspection pack read (OPP-DAT-2) — UI lane in flight' },
 ];
 const allowReason = (door) => API_ONLY_ALLOWLIST.find((a) => a.re.test(`${door.method} ${door.path}`));
 const yellowAll = verdicts.filter((x) => x.verdict !== 'wired');

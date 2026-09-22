@@ -1,4 +1,4 @@
--- 057_fee_plan_templates.sql — Wave 2 · L1-2.2: fee-plan templates + the
+-- 059 · fee-plan templates — Wave 2 · L1-2.2: fee-plan templates + the
 -- idempotent-generation key on fee_obligations.
 -- A template scopes a grade-set × term-list; /fee-plans/:id/generate fans it out
 -- to every ACTIVE student in scope. (tenant_id, student_id, term, label) is the

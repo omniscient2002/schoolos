@@ -23,7 +23,7 @@ Sources: `server/src/app.js`, `server/src/db.js`, `server/src/auth.js`, `server/
 | The school building's front doors | The screens (`app/src/**`) and the few public API doors (login, OTP, Google sign-in, health) |
 | Reception desk with a visitor log | The API server (`server/src/app.js` — Fastify) checking every request |
 | Your staff ID card | A signed JWT token (`app/auth/login`, `src/app.js:77`) — it carries *who you are*, *your role*, *which school*, and a revocation ID (`jti`) |
-| The rule board: who may do what | Role checks: `require(...)` (`src/routes.js:12-18`) and per-plugin `requireRole` (`app.js:228-235`) over 13 roles (`src/auth.js:66`) |
+| The rule board: who may do what | Role checks: `require(...)` (`src/routes.js:12-18`) and per-plugin `requireRole` (`app.js:228-235`) over 16 roles (`src/auth.js` re-exports `role-catalog.js`) |
 | Locks on every filing cabinet drawer | **Row Level Security (RLS)** in Postgres — every row knows which school it belongs to (`schoolos.tenant_id`, `migrations/001_init.sql:352-361`) |
 | Filing cabinets | Postgres tables across 20+ schemas (`app`, `teacher`, `family`, `plugin_*` — 80 tables verified live) |
 | The school's boundary wall | **Tenant isolation**: one database serves many schools, but the wall is enforced *inside the database* per row |
@@ -77,7 +77,7 @@ Chain verified against `POST /students` (`src/routes.js:81-96`):
 10. **Event**: `emitEvent(... type: 'people' ...)` → `app.events` + `app.outbox` topic `event.people` (`routes.js:91`, `audit.js:35-39`). Consumer today: the outbox relay logs it. **NOT IMPLEMENTED**: parent-invitation generation from the event.
 11. **Parent account auto-creation**: **NOT IMPLEMENTED** (no auto-provisioning; parents are seeded or created with users).
 12. **Dashboards/reports change**: the student now appears in `GET /students` (roster, phones hidden from non-staff roles, `routes.js:53`), `GET /attendance` roster (`routes.js:111-118`), parent doors *only if* a `child_link` row exists, fee assignment (`fee_plans`/`fee_obligations` are per-student with `UNIQUE (tenant_id, student_id, term)`), transport assignment (`app.students.bus_route`), exams marks entry (`plugin_exams.mark`), homework submissions (class gate name-match, `teacher.classroom:131-137`), and visitor pickup (guardian lookup, `ops.visitors:81`).
-13. **Transport/library**: transport — yes via `bus_route` + `app.routes`/`route_stops`; **library is NOT IMPLEMENTED** (a Library screen exists in the demo store only — `App.tsx` KernelGate — no library tables).
+13. **Transport/library**: transport — yes via `bus_route` + `app.routes`/`route_stops`; **library is implemented** — library v2 (docs/LIBRARY-DESIGN.md) adds per-copy tracking, reservations, a fines ledger and purchase requests on `library.book`/`copy`/`loan`/`reservation`/`fine`/`acquisition_request`, staffed by the dedicated `librarian` role, opt-in per school.
 
 **Journey summary**: one INSERT → one audit row → one event+outbox row → the student is now a joinable node for attendance, fees, exams, homework, transport, visitors and parent scoping — each of which discovers him through *his own* relationship table, never through a global search.
 
@@ -104,7 +104,7 @@ The teacher dashboard and any attendance-percentage views are **calculated at re
 
 ```
 app.tenants (the school; id = tenant_id stamped on every row)
- ├─ app.users (13 roles; UNIQUE(tenant_id,email); pg_role, active flag)
+ ├─ app.users (16 roles; UNIQUE(tenant_id,email); pg_role, active flag)
  ├─ app.students (admission_no UNIQUE per tenant; grade, section, status='active', bus_route)
  │   ├─ app.attendance (UNIQUE tenant+student+school_date)         ← history by design
  │   ├─ app.fee_plans (UNIQUE tenant+student+term) → app.fee_obligations → app.payments
@@ -195,7 +195,7 @@ Imagine the database holds 10,000 students from 50 schools. A row of `app.studen
 **Authentication — "who are you?"** (`src/app.js:34-49`): verify signature → require `jti` (a token without one is rejected outright — every session is revocable) → check the revocation list → load the user row and require `active`. Failures are deliberately indistinguishable where they could leak information (`unauthorized` vs `session ended — sign in again` vs `account disabled` are the only three shapes).
 
 **Authorization — "are you allowed?"** — three stacked checks:
-1. **Role gate** at the door: `require(...)` lists the exact roles (`routes.js:12-18`); plugin doors use the same via kernel `require`. The 13 roles: owner, principal, coordinator, counselor, finance, admissions, transport, facilities, technician, teacher, itadmin, parent, student (`auth.js:66`).
+1. **Role gate** at the door: `require(...)` lists the exact roles (`routes.js:12-18`); plugin doors use the same via kernel `require`. The 16 roles: owner, principal, coordinator, counselor, finance, finance_head, finance_clerk, admissions, transport, facilities, technician, teacher, itadmin, parent, student, librarian (`src/role-catalog.js`, re-exported by `auth.js`).
 2. **Ownership/SoD checks** in the handler: e.g. principal may not approve a coordinator-owned action (403 'Segregation of duties — ask the owner to decide this', `routes.js:442-445`); nobody approves their own proposal (`:448-449`); a concern filer may not route their own concern (`teacher.support:178`); a teacher may only review submissions for homework they created (`:179`); parents may only decide consents/requests for their own children.
 3. **RLS** in the database — the final wall that makes even a buggy handler safe at tenant level.
 
@@ -231,7 +231,7 @@ Imagine the database holds 10,000 students from 50 schools. A row of `app.studen
 
 # 12. Event-driven data movement
 
-`emitEvent` always writes **two rows atomically** (`src/audit.js:29-41`): an `app.events` row (the human-readable spine: type/label/severity/ref) and an `app.outbox` row (the machine envelope: topic, payload, event_id, schema_version, correlation/causation ids). **Real topics** (measured, 40+): `homework.v1`, `submission.v1`, `concern.filed.v1|routed.v1|closed.v1`, `safety.report.filed.v1`, `doubt.*.v1`, `ptm.booked.v1`, `family.consent.v1|request.v1`, `child.leave.requested.v1`, `student.print.v1|wellbeing.v1`, `sub.assign.v1`, `duty.assigned.v1`, `payment.link.created`, gateway `payment.captured`, `exam.marks.updated.v1|exam.published.v1`, `admission.enquiry.captured|stage.transitioned|offer.accepted`, `consent.recorded.v1`, `sar.opened.v1|fulfilled.v1`, `visitor.*.v1`, `gps.position`, `substitution.assigned`, `attendance.autofilled`, `cbse.obligation.due.v1`, `clinic.*.v1` — plus build-out topics: `platform.tenant.onboarded.v1|platform.school.updated.v1`, `people.user.created|people.student.transferred|people.import.completed`, `library.book.added|loan.issued|loan.returned|book.retired`, `files.stored.v1`, `razorpay.order.created` (gateway `payment.captured/failed` on the razorpay webhook).
+`emitEvent` always writes **two rows atomically** (`src/audit.js:29-41`): an `app.events` row (the human-readable spine: type/label/severity/ref) and an `app.outbox` row (the machine envelope: topic, payload, event_id, schema_version, correlation/causation ids). **Real topics** (measured, 40+): `homework.v1`, `submission.v1`, `concern.filed.v1|routed.v1|closed.v1`, `safety.report.filed.v1`, `doubt.*.v1`, `ptm.booked.v1`, `family.consent.v1|request.v1`, `child.leave.requested.v1`, `student.print.v1|wellbeing.v1`, `sub.assign.v1`, `duty.assigned.v1`, `payment.link.created`, gateway `payment.captured`, `exam.marks.updated.v1|exam.published.v1`, `admission.enquiry.captured|stage.transitioned|offer.accepted`, `consent.recorded.v1`, `sar.opened.v1|fulfilled.v1`, `visitor.*.v1`, `gps.position`, `substitution.assigned`, `attendance.autofilled`, `cbse.obligation.due.v1`, `clinic.*.v1` — plus build-out topics: `platform.tenant.onboarded.v1|platform.school.updated.v1`, `people.user.created|people.student.transferred|people.import.completed`, `library.book.added|updated|retired`, `library.copy.added|copy.status`, `library.loan.issued|returned|renewed`, `library.reservation.created|ready`, `library.fine.settled`, `library.acquisition.requested|voted|decided`, `files.stored.v1`, `razorpay.order.created` (gateway `payment.captured/failed` on the razorpay webhook).
 
 **Who listens**: the outbox worker (logs) — and *code-level* consumers: `ops.timetable` consumes `hr.leave` facts via its `absence_feed` setting; `accounting.tally` reads kernel payment facts. **What the listener changes**: today nothing beyond the relay log. `GET /events` exposes the spine to staff, and `app.event_action_link` stores lineage (event → action → downstream event) — the wiring for "this approval happened because that event raised it" exists; correlation ids are reserved but **not yet populated by callers** (UNKNOWN-future → declared-but-unused).
 
@@ -436,7 +436,7 @@ Records that reference Rahul (all keyed by `student_id` or `family.child_link.st
 # 29. Master data-flow diagram (actual architecture)
 
 ```text
-                 USERS (13 roles)                       EXTERNAL
+                 USERS (16 roles)                       EXTERNAL
    owner principal coordinator finance admissions   ┌──────────────┐
    transport facilities technician teacher itadmin  │ Google OAuth │
    parent student                                   │ UPI gateway  │
@@ -592,7 +592,9 @@ The migration wizard (`app.migration_sources`, `/migration/sources*`, `/migratio
 | Ops worker | outbox poll | relay | scripts/outbox-worker.js | outbox attempts/processed | durable log |
 | Admin | /plugins/:id/enable/disable/settings | registry | routes.js | app.plugins | drain protocol, audit |
 | Owner/IT | /plugins/people.admin/* (build-out) | accounts, class moves, CSV roster | people.admin doors | app.users, app.enrollment_history, app.students | events+audit, People console UI |
-| Staff | /plugins/library/* (build-out) | books, loans, fines | library doors | library.book, library.loan | events, overdue chase, student "My books" |
+| Librarian | /library/desk + /library (catalog) | catalog, copies, circulation, holds, fines, requests, members | librarian-only desk doors | library.book/copy/loan/reservation/fine/acquisition_* | events, due/overdue reminders, borrower "My books" |
+| Owner/Principal | /library/insights | aggregate operations only | `GET /plugins/library/ops/overview` | (reads aggregates) | KPIs, demand, aging |
+| Student/Staff | /library | search, reserve, my loans/fines, suggest a book | borrower doors (any non-parent) | library.reservation, library.acquisition_* | in-app + rail notifications |
 | Staff | /plugins/files.store/* (build-out) | document bytes (5MB, whitelisted) | files.store doors | app.files + storage dir | scoped audited downloads |
 | Gateway | /plugins/payments.razorpay/webhook (build-out) | settlement facts | raw-bytes HMAC | plugin_razorpay.order_log/+webhook_log | facts only (kernel confirm settles) |
 | Any staff | /plugins/payments.razorpay/orders (build-out) | gateway order | Razorpay REST + FOR UPDATE | order_log + app.payments('initiated') | event razorpay.order.created |

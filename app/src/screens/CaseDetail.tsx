@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
-import { Badge, Button, Card, Dropdown, Empty, KeyValue, Modal, PageHead, Progress, Section, useToast } from '../components/ui';
+import { Badge, Button, Card, Dropdown, Empty, KeyValue, Modal, PageHead, Progress, Section, useToast, SampleNote } from '../components/ui';
+import { useSession, sessionSchoolName } from '../App';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort, fmtDateTime, fmtRelative } from '../lib/format';
@@ -58,6 +59,7 @@ const TRIAGE_TRACE: AiTrace = {
 export default function CaseDetail() {
   const { id } = useParams<{ id: string }>();
   const { domain, dispatch, actorName, session } = useStore();
+  const live = useSession();
   const toast = useToast();
   const navigate = useNavigate();
   const now = useNow();
@@ -101,7 +103,7 @@ export default function CaseDetail() {
       '',
       'If you would like to discuss this, reply here and we will call you back.',
       '',
-      `— ${k.owner}, ${CAMPUS_LABEL[k.campus]} Campus, Meridian International Academy`].join('\n');
+      `— ${k.owner}, ${CAMPUS_LABEL[k.campus]} Campus, ${sessionSchoolName(live)}`].join('\n');
   };
 
   const openReply = () => {
@@ -194,6 +196,8 @@ export default function CaseDetail() {
           </>
         }
       />
+
+      <SampleNote>Sample case — this thread, its SLA clock and the AI triage are illustrative in this build, not read from your case records.</SampleNote>
 
       <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 18 }}>
         <Badge tone="outline">{c.kind}</Badge>

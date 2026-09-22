@@ -6,6 +6,7 @@ export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { randomUUID } from 'node:crypto';
 import { checkEventBudget } from '../../governance.js';
+import { meterPlugin } from '../../plugin-usage.js'; // J7: the manifest declares positions_ingested
 
 const ADEVA = { lat: 12.9352, lng: 77.6245 };   // demo campus anchor (Koramangala, Bengaluru)
 const STREETS = ['80 Feet Rd', '5th Block', 'Jyoti Nivas', 'W Catalyst', 'Sector 12 bridge', 'HSR loop'];
@@ -40,6 +41,8 @@ export function register(app, kernel) {
         `INSERT INTO app.transport_events (tenant_id, route_id, kind, delay_mins, note)
          VALUES ($1,$2,$3,$4,$5)`,
         [req.user.tenant_id, route.id, delayMins != null ? 'gps_delay' : 'gps_ping', delayMins, b.note ?? null]);
+      // J7: the manifest declares `positions_ingested` metered; count it.
+      await meterPlugin(c, req.user.tenant_id, ID, 'positions_ingested');
       const riders = (await c.query(`SELECT count(*)::int AS n FROM app.students WHERE bus_route=$1`, [route.code])).rows[0].n;
       const ev = await emitEvent(c, req.user.tenant_id,
         { type: 'transport', label: `GPS ping — Bus ${route.code} (${b.lat.toFixed(4)}, ${b.lng.toFixed(4)})${delayMins ? ` · +${delayMins} min` : ''}${riders ? ` · ${riders} riders` : ''}`, severity: delayMins >= 10 ? 'warn' : 'info', ref: route.code },
@@ -49,14 +52,14 @@ export function register(app, kernel) {
       let action = null;
       if (delayMins != null && delayMins >= 10) {
         const a = await c.query(
-          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-           VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','Transport §3.1',false,$6,$7::jsonb) RETURNING *`,
+          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+           VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','Transport §3.1',false,$6,$7::jsonb,'transport.gps') RETURNING *`,
           [req.user.tenant_id, `act_${randomUUID().slice(0, 8)}`,
            `Notify ${riders} guardians — Bus ${route.code} +${delayMins} min`,
            `GPS ingestion raised this notice (template TRANSPORT_DELAY). Audience resolved from ${route.code} roster.`,
            'Transport §3.1 — delay ≥ 10 min triggers guardian notice; approval before send.',
            ev.id,
-           JSON.stringify({ kind: 'message', audience: `${/^route\b/i.test(String(route.code)) ? route.code : `Route ${route.code}`} guardians`, routeCode: route.code, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${route.code} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk` })]);
+           JSON.stringify({ kind: 'message', audience: `${/^route\b/i.test(String(route.code)) ? route.code : `Route ${route.code}`} guardians`, routeCode: route.code, audienceCount: riders, channel: 'WhatsApp', template: 'TRANSPORT_DELAY', draft: `Bus ${route.code} is running approximately ${delayMins} minutes late today. Expected delay at each stop accordingly. — Transport Desk`, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
         action = a.rows[0];
         await c.query(
           `INSERT INTO app.event_action_link (tenant_id, event_id, action_id, relation, policy_ref)

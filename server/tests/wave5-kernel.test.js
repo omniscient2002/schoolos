@@ -1,6 +1,6 @@
 // Wave-5 kernel doors (L1-5.1 + L1-5.2, D-36 GO / D-38):
 //   GET /admissions/followups  — deterministic lead ranking (followups-1), PII
-//   masked like the funnel door, enrolled/dropped never rank.
+//   masked like the funnel door, terminal stages never rank.
 //   GET /reports/fees/summary  — whole-collection aggregate (billed/collected/
 //   outstanding/voided per term) that ops.bi's overdue-only aging lacks.
 import { test, before, after } from 'node:test';
@@ -29,17 +29,19 @@ before(async () => {
   financeToken = (await loginAs(app, 'finance@meridian.edu')).token;
   teacherToken = (await loginAs(app, 'teacher@meridian.edu')).token;
   tenantA = (await sql(`SELECT id FROM app.tenants WHERE slug='meridian'`)).rows[0].id;
-  // seed leads across stages/ages (distinct enough that the rule order is total)
-  const lead = async (name, stage, daysAgo) => (await sql(
+  // seed leads across stages/ages (distinct enough that the rule order is total).
+  // Each lead gets its OWN guardian phone: the dedupe unique index is on
+  // (tenant, guardian_phone, class, session) and would reject shared phones.
+  const lead = async (name, stage, daysAgo, phone) => (await sql(
     `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, stage, updated_at)
-     VALUES ($1,$2,'Guardian '||$2,'+919000123456','6','walk-in',$3, now() - ($4 || ' days')::interval) RETURNING id`,
-    [tenantA, name, stage, String(daysAgo)])).rows[0].id;
-  await lead('TC Stuck Offer', 'offer', 9);          // stuck, weight 2.5 → score 22.5 (top)
-  await lead('TC Stuck Inquiry', 'inquiry', 12);     // stuck, weight 1.0 → score 12
-  await lead('TC Fresh Assessment', 'assessment', 3); // not stuck, score 6
-  await lead('TC Fresh Visit', 'school-visit', 4);   // not stuck, score 4.8
-  await lead('TC Enrolled', 'enrolled', 30);         // excluded
-  await lead('TC Dropped', 'dropped', 30);           // excluded
+     VALUES ($1,$2,'Guardian '||$2,$5,'6','walk-in',$3, now() - ($4 || ' days')::interval) RETURNING id`,
+    [tenantA, name, stage, String(daysAgo), phone])).rows[0].id;
+  await lead('TC Stuck Offer', 'offer', 9, '+919000123456');          // stuck, weight 2.5 → score 22.5 (top)
+  await lead('TC Stuck Enquiry', 'enquiry', 12, '+919000123457');     // stuck, weight 1.0 → score 12
+  await lead('TC Fresh Form', 'form', 4, '+919000123458');            // not stuck, weight 1.2 → score 4.8
+  await lead('TC Fresh Interaction', 'interaction', 3, '+919000123459'); // not stuck, weight 1.5 → score 4.5
+  await lead('TC Enrolled', 'enrolled', 30, '+919000123460');         // excluded
+  await lead('TC Rejected', 'rejected', 30, '+919000123461');         // excluded
   // seed fee obligations for the summary
   ayId = (await sql(
     `INSERT INTO app.academic_years (tenant_id, name, starts_on, ends_on, is_current)
@@ -66,12 +68,12 @@ test('FU · deterministic ranking: stuck-first then score desc; terminal stages 
   assert.equal(j.ruleVersion, 'followups-1');
   assert.match(j.rule, /no model/);
   const q = j.queue;
-  assert.equal(q.length, 4, 'enrolled/dropped never rank');
+  assert.equal(q.length, 4, 'terminal stages (enrolled/rejected/withdrawn) never rank');
   assert.equal(q[0].studentName, 'TC Stuck Offer');
   assert.equal(q[0].score, 22.5);
-  assert.equal(q[1].studentName, 'TC Stuck Inquiry');
-  assert.equal(q[2].studentName, 'TC Fresh Assessment');
-  assert.equal(q[3].studentName, 'TC Fresh Visit');
+  assert.equal(q[1].studentName, 'TC Stuck Enquiry');
+  assert.equal(q[2].studentName, 'TC Fresh Form');
+  assert.equal(q[3].studentName, 'TC Fresh Interaction');
   assert.ok(q.slice(0, 2).every(x => x.stuck) && q.slice(2).every(x => !x.stuck));
 });
 

@@ -11,9 +11,9 @@
    ledger (owner-only, confirm modal) where the obligation rows are.
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
-import { useStore } from '../../state/store';
-import { apiFeePlans, apiCreateFeePlan, apiGenerateFeePlan, type FeePlan, type FeePlanTerm } from '../../services/liveApi';
+import { apiFeePlans, apiCreateFeePlan, apiGenerateFeePlan, apiVoidBillingRun, apiFeeHeads, type FeePlan, type FeePlanTerm } from '../../services/liveApi';
 import { friendly } from '../../lib/friendlyErrors';
+import { useRoleOrGrant } from '../../lib/access';
 import {
   PageHead, Card, Badge, Button, Empty, Modal, Stat, useToast, SkeletonCard, ErrorState,
 } from '../../components/ui';
@@ -47,27 +47,34 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 const emptyTerm = (): FeePlanTerm & { amountRupees: string; dueOn: string } => ({ term: 'Term 1', label: '', amount_cents: 0, amountRupees: '', dueOn: '' });
 
 export default function FeePlans() {
-  const { session } = useStore();
   const toast = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [genPlan, setGenPlan] = useState<FeePlan | null>(null);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<string | null>(null); /* D7: the run just generated, voidable */
 
-  /* Payment/plan authority mirrors the desk: plans + generation are the
-     finance desk (finance/owner/principal). The server enforces the same. */
-  const canManage = ['finance', 'owner', 'principal'].includes(session.roleId);
+  /* FEE-RBAC-2: plan authority mirrors the DOORS — a built-in role in the gate OR the caller's own
+     custom-role mask explicitly ALLOWing the create/generate doors. */
+  const canManage = useRoleOrGrant(['finance', 'owner', 'principal'], ['POST /fee-plans', 'POST /fee-plans/:id/generate']);
 
   const [form, setForm] = useState({
     name: '',
     category: 'Tuition',
+    feeHeadId: '',
     grades: [] as string[],
     terms: [emptyTerm()],
+    installmentCount: 0,
   });
 
   const plans = useAsync(async () => {
     const res = await apiFeePlans();
     return res.feePlans ?? [];
+  }, []);
+
+  const heads = useAsync(async () => {
+    const res = await apiFeeHeads();
+    return res.feeHeads ?? [];
   }, []);
 
   const doorMissing = useMemo(
@@ -101,11 +108,17 @@ export default function FeePlans() {
       const terms: FeePlanTerm[] = form.terms
         .filter(t => t.term.trim() && t.label.trim() && t.amount_cents > 0)
         .map((t, i) => ({ term: t.term.trim() || `Term ${i + 1}`, label: t.label.trim(), amount_cents: t.amount_cents, ...(t.dueOn ? { due_on: t.dueOn } : {}) }));
+      // FEE-DAT-5b: an installment schedule splits the obligation at generation. Equal parts, no amounts.
+      const installments = form.installmentCount > 1
+        ? Array.from({ length: form.installmentCount }, () => ({}))
+        : undefined;
       const res = await apiCreateFeePlan({
         name: form.name.trim(),
         category: form.category.trim() || undefined,
         grades: form.grades,
         terms,
+        feeHeadId: form.feeHeadId || undefined,
+        installments,
       });
       toast({
         title: `Plan “${res.feePlan?.name ?? form.name.trim()}” created`,
@@ -113,7 +126,7 @@ export default function FeePlans() {
         tone: 'success',
       });
       setCreateOpen(false);
-      setForm({ name: '', category: 'Tuition', grades: [], terms: [emptyTerm()] });
+      setForm({ name: '', category: 'Tuition', feeHeadId: '', grades: [], terms: [emptyTerm()], installmentCount: 0 });
       plans.retry();
     } catch (e) {
       toast({ title: 'Could not create the plan', sub: friendly(e), tone: 'error' });
@@ -132,6 +145,7 @@ export default function FeePlans() {
         tone: 'success',
       });
       setGenPlan(null);
+      setLastRun(res.billingRunId ?? null);
       plans.retry();
     } catch (e) {
       toast({ title: 'Generation failed', sub: friendly(e), tone: 'error' });
@@ -140,15 +154,35 @@ export default function FeePlans() {
     }
   };
 
+  const voidRun = async () => {
+    if (!lastRun) return;
+    setGenerating('void');
+    try {
+      const r = await apiVoidBillingRun(lastRun);
+      toast({ title: 'Billing run voided', sub: `${r.voidedObligations} obligation(s) voided`, tone: 'success' });
+      setLastRun(null);
+      plans.retry();
+    } catch (e) {
+      toast({ title: 'Could not void the run', sub: friendly(e), tone: 'error' });
+    } finally { setGenerating(null); }
+  };
+
   /* ---------------- render ---------------- */
   return (
     <div className="u-col" style={{ gap: 14 }}>
       <PageHead
         title="Fee plans"
         sub="Templates that generate ledger obligations — pick grades, terms and amounts, then generate. Charges appear in the Fees ledger, never from this screen directly."
-        actions={canManage
-          ? <Button variant="primary" icon={<Icon.Plus size={14} />} onClick={() => setCreateOpen(true)}>New plan</Button>
-          : <Button variant="primary" disabled title="Fee plans are managed by finance, the principal or the owner — your role can view them.">New plan</Button>}
+        actions={
+          <>
+            {canManage && lastRun && (
+              <Button variant="secondary" icon={<Icon.Refresh size={14} />} loading={generating === 'void'} onClick={voidRun} title="Void the billing run just generated (only if no payments are against it)">Void last run</Button>
+            )}
+            {canManage
+              ? <Button variant="primary" icon={<Icon.Plus size={14} />} onClick={() => setCreateOpen(true)}>New plan</Button>
+              : <Button variant="primary" disabled title="Fee plans are managed by finance, the principal or the owner — your role can view them.">New plan</Button>}
+          </>
+        }
       />
 
       {plans.loading ? (
@@ -240,6 +274,20 @@ export default function FeePlans() {
         <div className="field">
           <label htmlFor="fp-cat">Category</label>
           <input id="fp-cat" className="input" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} placeholder="Tuition / Transport / Lab…" />
+        </div>
+        <div className="field">
+          <label htmlFor="fp-head">Fee head <span className="u-faint">(optional — groups this charge in reports)</span></label>
+          <select id="fp-head" className="input" value={form.feeHeadId} onChange={e => setForm(f => ({ ...f, feeHeadId: e.target.value }))}>
+            <option value="">— No head —</option>
+            {(heads.data ?? []).filter(h => h.active).map(h => <option key={h.id} value={h.id}>{h.name}{h.category ? ` · ${h.category}` : ''}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="fp-inst">Installment schedule <span className="u-faint">(optional — splits the obligation into equal parts)</span></label>
+          <select id="fp-inst" className="input" value={form.installmentCount} onChange={e => setForm(f => ({ ...f, installmentCount: Number(e.target.value) }))}>
+            <option value={0}>One payment (no schedule)</option>
+            {[2, 3, 4, 6, 12].map(n => <option key={n} value={n}>{n} installments</option>)}
+          </select>
         </div>
         <div className="field">
           <label>Grades in scope ({form.grades.length} selected)</label>

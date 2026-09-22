@@ -18,14 +18,15 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable,
+  PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Drawer,
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
 import { apiRequest } from '../../services/liveApi';
-import { useStore } from '../../state/store';
 import { useSession } from '../../App';
+import { canSurface } from '../../lib/effective';
+import { useRoleOrGrant } from '../../lib/access';
 
 /* staff surface: teacher/office/coordinator/principal (the plan: "teacher/office
    see print queue"). Owner + IT admin mirror the house DESK set (VisitorsBoard);
@@ -53,6 +54,7 @@ interface PrintJob {
   kind: string;
   status: string;
   requestedAt: string | null;
+  payload: unknown;
 }
 
 /* FEX-6: staff doors ride the ONE transport (`liveApi.apiRequest`) — same bearer, same 401 session-reset,
@@ -84,15 +86,57 @@ function parseJobs(raw: unknown): PrintJob[] {
       kind: firstStr(r.kind, r.type) ?? 'checklist',
       status: (firstStr(r.status) ?? 'queued').toLowerCase(),
       requestedAt: firstStr(r.requested_at, r.requestedAt, r.created_at, r.at),
+      payload: r.payload,
     };
   });
 }
 
+/* PRD-8: render the stored payload so the office can print a REAL sheet, not just
+   see that a request exists. The payload is free-form JSON (built by the student
+   surface); this renders the shapes it actually emits — title/heading, items[]/lines[],
+   text/body/note, and finally a flat key/value fallback. Nothing is invented. */
+function SheetBody({ kind, payload }: { kind: string; payload: unknown }) {
+  const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+  const title = firstStr(p.title, p.heading);
+  const items = Array.isArray(p.items) ? p.items : Array.isArray(p.lines) ? p.lines : null;
+  const text = firstStr(p.text, p.body, p.note);
+  const scalarEntries = Object.entries(p).filter(([k, v]) => !['items', 'lines', 'text', 'body', 'note', 'title', 'heading'].includes(k) && v != null && typeof v !== 'object');
+  return (
+    <div className="u-col" style={{ gap: 12 }}>
+      <div style={{ fontWeight: 640, fontSize: 'var(--text-lg)' }}>{title ?? (KIND_LABEL[kind] ?? kind)}</div>
+      {items && (
+        <ul style={{ margin: 0, paddingLeft: 18 }} className="u-col" >
+          {items.map((it, i) => (
+            <li key={i} className="u-small" style={{ lineHeight: 1.7 }}>{typeof it === 'string' ? it : JSON.stringify(it)}</li>
+          ))}
+        </ul>
+      )}
+      {text && <p className="u-small" style={{ lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap' }}>{text}</p>}
+      {scalarEntries.length > 0 && (
+        <div className="u-col" style={{ gap: 4 }}>
+          {scalarEntries.map(([k, v]) => (
+            <div key={k} className="u-small u-between" style={{ gap: 10 }}>
+              <span className="u-muted" style={{ textTransform: 'capitalize' }}>{k.replace(/_/g, ' ')}</span>
+              <span style={{ fontWeight: 550, textAlign: 'right' }}>{String(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!title && !items && !text && scalarEntries.length === 0 && (
+        <p className="u-small u-muted" style={{ margin: 0 }}>This request carries no printable detail — print the {KIND_LABEL[kind] ?? kind} from the student's record.</p>
+      )}
+    </div>
+  );
+}
+
 export default function PrintQueue() {
   const toast = useToast();
-  const { session } = useStore();
   const live = useSession();
-  const allowed = STAFF_ROLES.includes(live.role) || STAFF_ROLES.includes(session.roleId);
+  /* FEX-4/FEX-7: custom roles reach this desk through their own mask, not by matching a built-in
+     role string. The server's capability answer wins; the built-in list + mask grant is the
+     fallback only when the server has not spoken (demo preview / no payload). */
+  const staffGranted = useRoleOrGrant(STAFF_ROLES, ['GET /student/print/queue', 'POST /student/print/:id/done']);
+  const allowed = live.effective ? canSurface(live.effective, '/print-queue') : staffGranted;
 
   const [jobs, setJobs] = useState<PrintJob[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,6 +144,7 @@ export default function PrintQueue() {
   const [tick, setTick] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [kind, setKind] = useState('all');
+  const [sheet, setSheet] = useState<PrintJob | null>(null);
 
   useEffect(() => {
     if (!allowed) return;
@@ -240,22 +285,41 @@ export default function PrintQueue() {
             },
             {
               key: 'actions', label: 'Actions', align: 'right',
-              render: j => j.status === 'printed'
-                ? <span className="u-faint u-small">Done</span>
-                : (
-                  <Button
-                    size="sm" variant="primary" icon={<Icon.Check size={13} />}
-                    disabled={busyId === j.id}
-                    aria-label={`Mark printed — ${j.studentName}, ${KIND_LABEL[j.kind] ?? j.kind}`}
-                    onClick={() => markPrinted(j)}
-                  >
-                    {busyId === j.id ? 'Marking…' : 'Mark printed'}
+              render: j => (
+                <span className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
+                  <Button size="sm" variant="ghost" icon={<Icon.Eye size={13} />}
+                    aria-label={`View sheet — ${j.studentName}, ${KIND_LABEL[j.kind] ?? j.kind}`}
+                    onClick={() => setSheet(j)}>
+                    View sheet
                   </Button>
-                ),
+                  {j.status === 'printed'
+                    ? <span className="u-faint u-small">Done</span>
+                    : (
+                      <Button
+                        size="sm" variant="primary" icon={<Icon.Check size={13} />}
+                        disabled={busyId === j.id}
+                        aria-label={`Mark printed — ${j.studentName}, ${KIND_LABEL[j.kind] ?? j.kind}`}
+                        onClick={() => markPrinted(j)}
+                      >
+                        {busyId === j.id ? 'Marking…' : 'Mark printed'}
+                      </Button>
+                    )}
+                </span>
+              ),
             },
           ]}
         />
       )}
+
+      {/* PRD-8: the printable sheet behind a request */}
+      <Drawer
+        open={sheet !== null}
+        onClose={() => setSheet(null)}
+        title={sheet ? `${sheet.studentName} — ${KIND_LABEL[sheet.kind] ?? sheet.kind}` : 'Print sheet'}
+        sub={sheet?.requestedAt ? `Requested ${fmtRelative(sheet.requestedAt)}` : undefined}
+      >
+        {sheet && <SheetBody kind={sheet.kind} payload={sheet.payload} />}
+      </Drawer>
 
       <div style={{ height: 20 }} />
       <div className="u-small u-muted">

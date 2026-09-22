@@ -96,8 +96,19 @@ await client.query(`TRUNCATE app.tenants CASCADE`);
     await client.query(`DELETE FROM app.capability_contracts WHERE tenant_id IS NOT NULL`);
   }
 }
+/* The demo school's class structure lives in `config.setup.sections` — the SAME list every class
+   picker and transfer reads (owner/principal/IT admin edit it on the Classes & sections screen).
+   Meridian runs grades 6–10 with sections A/B/C, matching the students seeded below. */
+const meridianConfig = {
+  /* No campuses — a school is one site. A second site is a separate tenant. */
+  setup: {
+    source: 'seed',
+    sections: ['6', '7', '8', '9', '10'].map((grade) => ({ grade, sections: ['A', 'B', 'C'] })),
+  },
+};
 const t = (await client.query(
-  `INSERT INTO app.tenants (slug, name, config) VALUES ('meridian', 'Meridian International Academy', '{"campuses":["north","south"]}'::jsonb) RETURNING id`
+  `INSERT INTO app.tenants (slug, name, config) VALUES ('meridian', 'Meridian International Academy', $1::jsonb) RETURNING id`,
+  [JSON.stringify(meridianConfig)]
 )).rows[0];
 const T = t.id;
 
@@ -169,11 +180,8 @@ for (const s of students) {
     [T, s.id, gname, phone]);
 }
 
-// ---- fee plans & obligations ----
+// ---- fee obligations (the legacy app.fee_plans table was dropped in migration 109) ----
 for (const s of students) {
-  await client.query(
-    `INSERT INTO app.fee_plans (tenant_id, student_id, term, total_cents, installments) VALUES ($1,$2,'Term 2',6350000,3)`,
-    [T, s.id]);
   const parts = [
     ['Installment 1 — July', 2250000, '2026-07-05'],
     ['Term 2 installment — September', 1850000, '2026-10-05'],
@@ -344,7 +352,7 @@ await client.query(
 // TRUNCATE above, so re-apply. The migration files are the single source of truth
 // and are idempotent by design (conflict guards + NOT EXISTS); the audit entries
 // they write chain onto the genesis row just inserted.
-for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql', '014_exams_assessment_registration.sql', '015_payments_upi.sql', '016_redteam3_cleanup.sql', '017_forged_window_cleanup.sql', '018_admissions_funnel.sql', '019_redteam4_residue_purge.sql', '020_transport_gps.sql', '021_ops_timetable.sql', '022_admissions_india_semantics.sql', '023_dpdp_pack.sql', '024_ops_visitors.sql', '025_exams_assessment_runtime.sql', '026_pack_cbse_runtime.sql', '027_cycle5_remediation.sql', '028_ui_lane_visitors.sql', '029_hr_clinic_runtime.sql', '030_cycle6_hardening.sql', '031_teacher_classroom.sql', '032_teacher_support_runtime.sql', '033_teacheros_ai_runtime.sql', '034_parent_family.sql', '035_parent_assistant.sql', '036_student_world.sql', '037_coord_view.sql', '043_comms_dispatch.sql', '044_razorpay.sql', '045_capability_seed.sql', '046_enrollment_history.sql', '047_library.sql', '048_files.sql']) {
+for (const mig of ['009_school_plugin_catalog.sql', '010_wave1_plugin_runtime.sql', '011_comms_whatsapp.sql', '013_accounting_tally.sql', '014_exams_assessment_registration.sql', '015_payments_upi.sql', '016_redteam3_cleanup.sql', '017_forged_window_cleanup.sql', '018_admissions_funnel.sql', '019_redteam4_residue_purge.sql', '020_transport_gps.sql', '021_ops_timetable.sql', '022_admissions_india_semantics.sql', '023_dpdp_pack.sql', '024_ops_visitors.sql', '025_exams_assessment_runtime.sql', '026_pack_cbse_runtime.sql', '027_cycle5_remediation.sql', '028_ui_lane_visitors.sql', '029_hr_clinic_runtime.sql', '030_cycle6_hardening.sql', '031_teacher_classroom.sql', '032_teacher_support_runtime.sql', '033_teacheros_ai_runtime.sql', '034_parent_family.sql', '035_parent_assistant.sql', '036_student_world.sql', '037_coord_view.sql', '043_comms_dispatch.sql', '044_razorpay.sql', '045_capability_seed.sql', '046_enrollment_history.sql', '047_library.sql', '048_files.sql', '083_class_assignments.sql', '132_student_user_link.sql']) {
   const catalogSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations', mig), 'utf8');
   await client.query(catalogSql);
 }

@@ -7,7 +7,7 @@ export default {
   trust: 'T1',
   description: 'Period grid, class-section slots, daily substitutions (deterministic suggester), and attendance period-autofill primitives consumed by attendance/exams/comms. Substitution assignment is audited; ranking is a rule, never a model.',
   permissions: ['students.read', 'attendance.write', 'events.emit', 'audit.request'],
-  events: { subscribe: [], publish: ['substitution.assigned', 'attendance.autofilled'] },
+  events: { subscribe: [], publish: ['timetable.published', 'substitution.assigned', 'attendance.autofilled'] },
   slots: ['settings', 'reports'],
   routes: [],
   widgets: [],

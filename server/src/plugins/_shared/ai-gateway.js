@@ -1,4 +1,9 @@
 // AI gateway (L2-5.1, Wave 5) — the ONE seam every plugin's AI call goes through.
+// C10/H6 · STATUS (honest): no shipped plugin invokes this gateway today. The copilots
+// (teacher.copilot, parent.assistant, coord.view) are DETERMINISTIC (no model); the only callers are the
+// kernel's `/ai/call` and `/ai/eval`. The per-plugin `app.plugins.ai_budget` is therefore seeded but
+// reserved — it becomes live the moment a plugin routes a call through `createAiGateway`. Recorded here
+// rather than left to read as an implemented per-plugin cap.
 // Contract:
 //   · LEDGER: every call attempt writes app.ai_calls (outcome ok | error | budget)
 //     — including eval-harness runs — so cost and failure are never invisible.

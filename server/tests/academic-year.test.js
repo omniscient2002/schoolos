@@ -59,10 +59,12 @@ test('AY · create + list: owner creates a year, calendar lists it, nothing curr
   assert.equal(list.json().currentAcademicYearId, null);
 });
 
-test('AY · academic_year_id stamped on fee_plans, fee_obligations and plugin_exams.exam', async () => {
+test('AY · academic_year_id stamped on the fee-plan templates, fee_obligations and plugin_exams.exam', async () => {
+  // FEES-109: the dead legacy `app.fee_plans` table was dropped; the live plan table is
+  // `app.fee_plan_templates`, which carries academic_year_id (migration 058).
   const r = await sql(`SELECT table_schema, table_name FROM information_schema.columns
                        WHERE column_name='academic_year_id'
-                         AND (table_schema, table_name) IN (('app','fee_plans'),('app','fee_obligations'),('plugin_exams','exam'))`);
+                         AND (table_schema, table_name) IN (('app','fee_plan_templates'),('app','fee_obligations'),('plugin_exams','exam'))`);
   assert.equal(r.rows.length, 3, `expected stamp on all three tables, got: ${JSON.stringify(r.rows)}`);
 });
 

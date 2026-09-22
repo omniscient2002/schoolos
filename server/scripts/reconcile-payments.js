@@ -12,6 +12,7 @@
 import { pathToFileURL } from 'node:url';
 import { sysq, tx } from '../src/db.js';
 import { emitEvent } from '../src/audit.js';
+import { findDiscrepancies, raiseDiscrepancyActions, CLASSES } from '../src/fees/reconcile.js';
 
 // Reconciliation is an all-tenant maintenance job; `sysq` is the explicit
 // privileged path, rather than an unreviewable owner Client created here.
@@ -22,30 +23,40 @@ const emit = async (tenantId, label, ref) => tx(async (c) => {
     { emittedBy: 'worker:reconcile-payments', subject: `payment:${ref}` });
 });
 
-/** Sweep every tenant for ledger↔rail discrepancies. Returns `{ tenants, total }`. */
-export async function runReconciliation() {
-  const report = { tenants: [], total: 0 };
+/** Sweep every tenant for ledger↔rail discrepancies. Returns `{ tenants, total }`.
+ *
+ * FEE-DEL-5: the four classes and their SQL come from `src/fees/reconcile.js` — the SAME definition the
+ * HTTP door uses, so worker and door always report identical findings. FEE-SEC-5: every finding also raises
+ * an owned Action Center card (finance_head) and marks the payment disputed, so a worker sweep is never a
+ * silent log line. `toleranceCents` mirrors the tenant's reconciliation setting; the worker applies 0 unless
+ * the caller passes a resolver.
+ */
+export async function runReconciliation({ toleranceFor } = {}) {
+  const report = { tenants: [], total: 0, actionsRaised: 0 };
   const tenants = (await q(`SELECT id, slug FROM app.tenants ORDER BY slug`)).rows;
   for (const t of tenants) {
-    const ghost = (await q(
-      `SELECT p.id, p.amount_cents, ol.status AS rail_status, ol.razorpay_order_id
-       FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
-       WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed' AND ol.status <> 'captured'`, [t.id])).rows;
-    const missing = (await q(
-      `SELECT p.id, p.status AS ledger_status, ol.razorpay_order_id
-       FROM app.payments p JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
-       WHERE p.tenant_id=$1 AND p.method='razorpay' AND ol.status='captured' AND p.status NOT IN ('confirmed','refunded')`, [t.id])).rows;
-    const orphan = (await q(
-      `SELECT p.id FROM app.payments p
-       WHERE p.tenant_id=$1 AND p.method='razorpay' AND p.status='confirmed'
-         AND NOT EXISTS (SELECT 1 FROM plugin_razorpay.order_log ol WHERE ol.payment_id = p.id)`, [t.id])).rows;
-    const n = ghost.length + missing.length + orphan.length;
-    if (n === 0) continue;
-    for (const g of ghost) await emit(t.id, `reconciliation.discrepancy — confirmed locally, rail says ${g.rail_status} (order ${g.razorpay_order_id})`, g.id);
-    for (const m of missing) await emit(t.id, `reconciliation.discrepancy — rail captured, ledger still ${m.ledger_status} (order ${m.razorpay_order_id})`, m.id);
-    for (const w of orphan) await emit(t.id, `reconciliation.discrepancy — confirmed with no rail order log entry`, w.id);
-    report.tenants.push({ slug: t.slug, ghostLocalConfirmed: ghost.length, missingLocalConfirmation: missing.length, orphanNoRailLog: orphan.length });
-    report.total += n;
+    const toleranceCents = typeof toleranceFor === 'function' ? await toleranceFor(t.id) : 0;
+    const found = await findDiscrepancies(q, t.id, { toleranceCents });
+    if (found.total === 0) continue;
+    for (const klass of CLASSES) {
+      for (const p of (found[klass === 'amount_mismatch' ? 'mismatch' : klass] ?? [])) {
+        await q(`UPDATE app.payments SET reconciliation_status='disputed' WHERE id=$1 AND tenant_id=$2`, [p.id, t.id]);
+        const label = klass === 'amount_mismatch'
+          ? `reconciliation.discrepancy — amount mismatch: ledger ₹${Number(p.ledger_cents) / 100} vs rail ₹${Number(p.rail_cents) / 100} (order ${p.razorpay_order_id})`
+          : klass === 'ghost'
+            ? `reconciliation.discrepancy — confirmed locally, rail says ${p.rail_status} (order ${p.razorpay_order_id})`
+            : klass === 'missing'
+              ? `reconciliation.discrepancy — rail captured, ledger still ${p.ledger_status} (order ${p.razorpay_order_id})`
+              : `reconciliation.discrepancy — confirmed with no rail order log entry`;
+        await emit(t.id, label, p.id);
+      }
+    }
+    const raised = await raiseDiscrepancyActions(q, t.id, found);
+    report.actionsRaised += raised;
+    report.tenants.push({
+      slug: t.slug, ghostLocalConfirmed: found.ghost.length, missingLocalConfirmation: found.missing.length,
+      orphanNoRailLog: found.orphan.length, amountMismatch: found.mismatch.length, actionsRaised: raised });
+    report.total += found.total;
   }
   return report;
 }

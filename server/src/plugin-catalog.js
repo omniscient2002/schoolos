@@ -13,22 +13,22 @@ const CATALOG = [
   { plugin_id: 'ops.udise', version: '1.0.0', class: 'B', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
   { plugin_id: 'ops.import', version: '1.0.0', class: 'B', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
   { plugin_id: 'ops.bi', version: '1.0.0', class: 'B', permissions: ["students.read", "fees.read", "events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
-  { plugin_id: 'admissions.funnel', version: '1.2.1', class: 'C', permissions: ["events.emit", "audit.request"], entitlement: {"plan": "module", "billing": "included"} },
+  { plugin_id: 'admissions.funnel', version: '1.3.0', class: 'C', permissions: ["events.emit", "audit.request", "actions.raise", "comms.send"], entitlement: {"plan": "module", "billing": "included"} },
   { plugin_id: 'comms.whatsapp', version: '1.0.0', class: 'B', permissions: ["students.read", "attendance.read", "fees.read", "comms.send", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
   { plugin_id: 'coord.view', version: '1.0.0', class: 'C', permissions: ["users.read", "students.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'exams.assessment', version: '1.0.1', class: 'D', permissions: ["students.read", "attendance.read", "events.emit", "audit.request"], entitlement: {"plan": "pack", "billing": "seat-based"} },
-  { plugin_id: 'family.view', version: '1.0.0', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
+  { plugin_id: 'exams.assessment', version: '1.0.1', class: 'D', permissions: ["actions.raise", "attendance.read", "events.emit", "audit.request", "students.read"], entitlement: {"plan": "pack", "billing": "seat-based"} },
+  { plugin_id: 'family.view', version: '1.0.0', class: 'C', permissions: ["actions.raise", "students.read", "events.emit", "audit.request"], entitlement: {} },
   { plugin_id: 'files.store', version: '1.0.0', class: 'B', permissions: ["files.write", "students.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'health.clinic', version: '1.0.1', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'hr.leave', version: '1.0.1', class: 'C', permissions: ["users.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'library', version: '1.0.0', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
+  { plugin_id: 'health.clinic', version: '1.0.0', class: 'C', permissions: ["actions.raise", "students.read", "events.emit", "audit.request"], entitlement: {} },
+  { plugin_id: 'hr.leave', version: '1.0.0', class: 'C', permissions: ["users.read", "events.emit", "audit.request"], entitlement: {} },
+  { plugin_id: 'library', version: '2.0.0', class: 'C', permissions: ["students.read", "users.read", "events.emit", "audit.request"], entitlement: {} },
   { plugin_id: 'ops.timetable', version: '1.0.0', class: 'C', permissions: ["students.read", "attendance.write", "events.emit", "audit.request"], entitlement: {"plan": "operations", "billing": "pack"} },
-  { plugin_id: 'ops.visitors', version: '1.0.2', class: 'C', permissions: [], entitlement: {} },
-  { plugin_id: 'pack.cbse', version: '1.0.0', class: 'C', permissions: ["students.read", "attendance.read", "memory.write", "audit.request"], entitlement: {"plan": "compliance-pack", "billing": "per-board-year"} },
-  { plugin_id: 'pack.dpdp', version: '1.1.1', class: 'C', permissions: ["students.read", "actions.raise", "memory.write", "audit.request"], entitlement: {"plan": "compliance-pack", "billing": "per-board-year"} },
+  { plugin_id: 'ops.visitors', version: '1.0.2', class: 'C', permissions: ["students.read", "events.emit", "comms.send", "audit.request"], entitlement: {} },
+  { plugin_id: 'pack.cbse', version: '1.0.0', class: 'C', permissions: ["actions.raise", "students.read", "attendance.read", "events.emit", "audit.request"], entitlement: {"plan": "compliance-pack", "billing": "per-board-year"} },
+  { plugin_id: 'pack.dpdp', version: '1.1.1', class: 'C', permissions: ["actions.raise", "students.read", "events.emit", "audit.request"], entitlement: {"plan": "compliance-pack", "billing": "per-board-year"} },
   { plugin_id: 'parent.assistant', version: '1.0.0', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
   { plugin_id: 'payments.razorpay', version: '1.0.0', class: 'B', permissions: ["fees.read", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
-  { plugin_id: 'payments.upi', version: '1.0.0', class: 'B', permissions: ["fees.read", "events.emit", "actions.raise", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
+  { plugin_id: 'payments.upi', version: '1.0.0', class: 'B', permissions: ["fees.read", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
   // PRD-4/PLG-3: the three credential rails were the ONLY shipped plugins missing from this catalog, so
   // they had no per-tenant registry row at all: the plugin manager could not show them, nobody could
   // configure them, and `/me/reset-request`'s channel gate ("no email rail configured → 503") could never
@@ -40,18 +40,25 @@ const CATALOG = [
   { plugin_id: 'rails.whatsapp', version: '1.0.0', class: 'B', permissions: ["comms.send", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
   { plugin_id: 'people.admin', version: '1.0.0', class: 'B', permissions: ["users.write", "students.write", "events.emit", "audit.request"], entitlement: {} },
   { plugin_id: 'student.world', version: '1.0.0', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'teacher.classroom', version: '1.0.0', class: 'C', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {} },
+  { plugin_id: 'teacher.classroom', version: '1.0.0', class: 'C', permissions: ["actions.raise", "students.read", "events.emit", "audit.request"], entitlement: {} },
   { plugin_id: 'teacher.copilot', version: '0.1.0', class: 'C', permissions: ["students.read", "users.read", "audit.request"], entitlement: {} },
-  { plugin_id: 'teacher.support', version: '1.0.0', class: 'C', permissions: ["students.read", "users.read", "events.emit", "audit.request"], entitlement: {} },
-  { plugin_id: 'transport.gps', version: '1.0.0', class: 'B', permissions: ["students.read", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
+  { plugin_id: 'teacher.support', version: '1.0.0', class: 'C', permissions: ["actions.raise", "students.read", "users.read", "events.emit", "comms.send", "audit.request"], entitlement: {} },
+  { plugin_id: 'transport.gps', version: '1.0.0', class: 'B', permissions: ["actions.raise", "students.read", "events.emit", "audit.request"], entitlement: {"plan": "rails", "billing": "usage-metered"} },
 ];
 
 /* Core school-operation modules are ON at birth: a new owner must be able to
-   create staff, run the visitor desk, the library, the timetable and store
-   files on day one — 'switched off with no switch' must never block a school's
-   first hour. Credential rails (WhatsApp/SMS/UPI/Razorpay) stay OFF until the
-   owner configures them — enabling stays an audited owner action (docs/12). */
-const DEFAULT_ON = new Set(['people.admin', 'ops.visitors', 'library', 'ops.timetable', 'files.store']);
+   create staff, run the visitor desk, the timetable and store files on day one.
+   The LIBRARY is deliberately NOT in this set (library v2, docs/LIBRARY-DESIGN.md):
+   it is opt-in, and it stays locked until a librarian account exists, so it must
+   never be switched on at birth for a school that has no librarian. Credential
+   rails (WhatsApp/SMS/UPI/Razorpay) also stay OFF until the owner configures
+   them — enabling stays an audited owner action (docs/12). */
+const DEFAULT_ON = new Set(['people.admin', 'ops.visitors', 'ops.timetable', 'files.store']);
+
+/* H7: exported so `tests/plugin-catalog-drift.test.js` can pin this seeding constant against the
+   on-disk manifests. At signup these permissions BECOME the grant (PLG-1), so a stale catalog row
+   under-grants a plugin — the drift this test exists to prevent. */
+export const PLUGIN_CATALOG = CATALOG;
 
 /* PLG-4 (found by independent review of the 078 change): every row this module inserted carried
    `{"id":...,"version":...}` as its manifest, so the plugin manager had NO settings schema to render — its
@@ -152,6 +159,18 @@ async function ensurePluginCatalog(client, tenantId) {
         [tenantId, row.plugin_id, JSON.stringify(want)]);
     }
   }
+
+  /* Default admissions follow-up rule (migration 123 ships it for tenants that existed at
+     migration time; signup/self-heal tenants get it here). It is deliberately an outbox
+     fan-out, not a comms send — a captured enquiry becomes visible on the follow-up pipeline
+     without auto-messaging a guardian. Idempotent by name. */
+  await client.query(
+    `INSERT INTO app.workflow_rules (tenant_id, name, topic, condition, action, enabled, created_by)
+     SELECT $1, 'Admissions: enquiry → follow-up pipeline', 'admission.enquiry.captured', NULL,
+            '{"kind":"outbox","topic":"admission.followup.scheduled"}'::jsonb, true, NULL
+      WHERE NOT EXISTS (SELECT 1 FROM app.workflow_rules r
+                         WHERE r.tenant_id=$1 AND r.name='Admissions: enquiry → follow-up pipeline')`,
+    [tenantId]);
 }
 
 export { CATALOG, DEFAULT_ON, ensurePluginCatalog };

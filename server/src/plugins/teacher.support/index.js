@@ -124,8 +124,8 @@ export function register(app, kernel) {
       const s = await settingsFor(c, req.user.tenant_id);
       if (s.escalate_on_critical !== false && (b.category === 'safety' || (b.urgency ?? 'normal') === 'critical')) {
         escalateActionId = (await c.query(
-          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-           VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','M9.2 · TEACHEROS-PLAN §4 (concern escalation)',false,$6,$7::jsonb)
+          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+           VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','M9.2 · TEACHEROS-PLAN §4 (concern escalation)',false,$6,$7::jsonb,'teacher.support')
            RETURNING id`,
           [req.user.tenant_id, `concern.escalate.${row.id}`,
            `Review ${b.category} concern${studentName ? ` — ${studentName}` : ''} (filed ${IST_NOW().toISOString().slice(0, 10)})`,
@@ -196,17 +196,16 @@ export function register(app, kernel) {
         `INSERT INTO teacher.concern_status_event (tenant_id, concern_id, from_status, to_status, note, actor_id)
          VALUES ($1,$2,'open','routed',$3,$4)`,
         [req.user.tenant_id, con.id, `routed to ${b.routedRole} (${staff.name})`, req.user.id]);
-      // the designee's queue notice: notification + the named concern.routed.v1
-      // comms template (staff-lane record; a routing receipt, not a guardian send)
+      // the designee's queue notice: an in-app notification (the staff-lane receipt). It is
+      // NOT a comms send — a routing receipt has no guardian audience, and app.communications
+      // is the outbound-carrier ledger (channel ∈ sms/email/whatsapp/phone, 088). The previous
+      // `channel='in_app'` row violated that CHECK and made every concern route a 500 (found by
+      // the PERFECT-100 hardening pin; the routing path had no test).
       await c.query(
         `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref)
          VALUES ($1,$2,'needs-you',$3,$4,$5)`,
         [req.user.tenant_id, staff.id, `Support queue: new ${con.category} concern`,
          `A ${con.category} concern was routed to you as ${b.routedRole}. Open your support queue to pick it up.`, con.id]);
-      await c.query(
-        `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, dedup_key)
-         VALUES ($1,'[]'::jsonb,'in_app','concern.routed.v2','routing receipt — see notifications','queued','M9.2 · concern.routed.v1',$2)`,
-        [req.user.tenant_id, con.id]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'teacher', label: `Concern routed to ${b.routedRole}`, ref: con.id },
         'concern.routed.v1', { concernId: con.id, routedRole: b.routedRole, routedTo: staff.id, template: 'concern.routed.v1' });
@@ -293,8 +292,8 @@ export function register(app, kernel) {
       const s = await settingsFor(c, req.user.tenant_id);
       if (severity === 'serious' && s.page_on_serious !== false) {
         pageActionId = (await c.query(
-          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-           VALUES ($1,$2,'approval',$3,$4,$5,'critical','open','Principal','principal','M9.1 · serious safety report — immediate principal page',false,$6,$7::jsonb)
+          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+           VALUES ($1,$2,'approval',$3,$4,$5,'critical','open','Principal','principal','M9.1 · serious safety report — immediate principal page',false,$6,$7::jsonb,'teacher.support')
            RETURNING id`,
           [req.user.tenant_id, `safety.page.${row.id}`,
            `SAFETY PAGE — serious report, Class ${b.classGrade} (${b.category})`,
@@ -350,6 +349,16 @@ export function register(app, kernel) {
           reporter: r.reporter_anonymous ? null : { id: r.reporter_user_id, name: r.reporter_name },
         })),
       };
+    });
+  });
+
+  // assignable designees — the reader set (never teachers), for the assign control
+  app.get('/safety/box/assignees', { preHandler: [require(...SAFEGUARD_AUTHORITY), lifecycleGate] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT id, name, role FROM app.users
+         WHERE tenant_id=$1 AND active AND role = ANY($2::text[]) ORDER BY name`, [req.user.tenant_id, BOX_READERS])).rows;
+      return { assignees: rows };
     });
   });
 
@@ -611,10 +620,12 @@ export function register(app, kernel) {
     });
   });
 
-  // lifecycle transition — append-only event rows, state machine enforced
-  app.post('/interventions/:id/transition', { preHandler: [require(...STAFF), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+  // lifecycle transition — append-only event rows, state machine enforced.
+  // `forcedTo` lets the frozen `POST /interventions/:id/reassess` alias share this exact
+  // handler (API-6) instead of drifting into a second implementation.
+  const interventionTransition = (forcedTo) => async (req, reply) => {
     const b = req.body ?? {};
-    const to = b.to;
+    const to = forcedTo ?? b.to;
     if (!INTERVENTION_FLOW.includes(to)) return bad(reply, `Move the plan to one of: ${INTERVENTION_FLOW.join(', ')}`);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const p = (await c.query(`SELECT id, status, owner_id FROM intervention.plan WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
@@ -646,7 +657,10 @@ export function register(app, kernel) {
         outcome: `${p.status} → ${to} — history row appended` });
       return { ok: true, planId: p.id, status: to };
     });
-  });
+  };
+  app.post('/interventions/:id/transition', { preHandler: [require(...STAFF), uuidParams('id'), lifecycleGate] }, interventionTransition(null));
+  // frozen §4 alias: reassess is the named transition into the `reassessed` state.
+  app.post('/interventions/:id/reassess', { preHandler: [require(...STAFF), uuidParams('id'), lifecycleGate] }, interventionTransition('reassessed'));
 
   // ═══════════════ PTM (M13.2) + strictly private teacher notes ═══════════════
 

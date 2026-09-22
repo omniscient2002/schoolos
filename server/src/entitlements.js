@@ -69,3 +69,53 @@ export function notEntitled(pluginId, plan) {
 export function uncoveredPlugins(catalogIds) {
   return catalogIds.filter((id) => !(id in PLUGIN_PLAN));
 }
+
+/* ── FEE-COM-1: the fee-management feature matrix ───────────────────────────────────────────────────────
+   Rails are plan-gated above, but the KERNEL fee capabilities (heads, installments, concessions, dunning,
+   reconciliation, pay-many) had no tier at all — every tenant got the whole desk. This matrix is the fee
+   tier: which plan includes which capability, and what an unentitled tenant should be told. It is authored
+   here, beside the plugin matrix, so the two commercial decisions live in one reviewable place.
+   `trial` is everything (080: unassigned means everything today). */
+export const FEE_FEATURES = Object.freeze({
+  'fees.collection': { label: 'Desk collection', plans: ['trial', 'core', 'operations', 'campus', 'compliance', 'rails'] },
+  'fees.heads': { label: 'Fee heads & categories', plans: ['trial', 'operations', 'campus', 'compliance', 'rails'] },
+  'fees.concessions': { label: 'Concessions & waivers', plans: ['trial', 'operations', 'campus', 'compliance', 'rails'] },
+  'fees.installments': { label: 'Installment plans', plans: ['trial', 'campus', 'compliance', 'rails'] },
+  'fees.multi_obligation': { label: 'Pay across obligations', plans: ['trial', 'campus', 'compliance', 'rails'] },
+  'fees.dunning': { label: 'Dunning & reminders', plans: ['trial', 'rails'] },
+  'fees.reconciliation': { label: 'Gateway reconciliation', plans: ['trial', 'rails'] },
+});
+
+export function feeFeatureIncluded(plan, feature) {
+  const def = FEE_FEATURES[feature];
+  if (!def) return true; // an unknown feature is not gated — never deny by omission
+  if (plan === 'trial') return true;
+  return def.plans.includes(plan);
+}
+
+/** The first paid plan that includes a feature — what an unentitled tenant must upgrade to. */
+export function feeRequiredPlan(feature) {
+  const def = FEE_FEATURES[feature];
+  return def ? (def.plans.find((p) => p !== 'trial') ?? null) : null;
+}
+
+/** The availability report a settings/entitlement surface renders. */
+export function feeEntitlements(plan) {
+  const out = {};
+  for (const feature of Object.keys(FEE_FEATURES)) {
+    out[feature] = { available: feeFeatureIncluded(plan, feature), requiredPlan: feeRequiredPlan(feature) };
+  }
+  return out;
+}
+
+/** The 402 refusal shape for a fee feature gap. */
+export function feeNotEntitled(feature, plan) {
+  const label = FEE_FEATURES[feature]?.label ?? feature;
+  return {
+    code: 'NOT_ENTITLED',
+    feature,
+    plan,
+    requiredPlan: feeRequiredPlan(feature),
+    error: `Your school's plan (${plan}) does not include ${label}. Nothing was changed — ask the school owner about adding it.`,
+  };
+}

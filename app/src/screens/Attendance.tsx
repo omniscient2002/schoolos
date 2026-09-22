@@ -13,7 +13,7 @@ import { apiAttendance, apiMarkAttendance } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
-  Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, PageHead, Section, Skeleton, Stat, Tabs, useToast,
+  Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, PageHead, SampleNote, Section, Skeleton, Stat, Tabs, useToast,
 } from '../components/ui';
 import { LineChart } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -357,6 +357,8 @@ export default function Attendance() {
           </>
         }
       />
+
+      {!serverMode && <SampleNote>Sample attendance — this register is the demo world in this build, not read from your school&rsquo;s records.</SampleNote>}
 
       {/* ---- section picker ---- */}
       <div className="u-flex u-wrap" style={{ gap: 10, marginBottom: 16, alignItems: 'center' }}>

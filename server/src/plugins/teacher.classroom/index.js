@@ -99,9 +99,159 @@ const safeAttachmentRef = (raw) => {
   return { ok: true, value: s };
 };
 
+// ── /teacher/home helpers (P1 command center aggregate) ──────────────────────
+// The timetable grid (021) is section-agnostic — it carries teacher_name but no class
+// column — so a period is shown against the teacher's OWN class from app.class_assignments
+// (083, form-teacher model). When the school has not assigned a class the label is empty,
+// which the UI renders as "subject · " rather than inventing a section.
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const istNow = () => new Date(Date.now() + 5.5 * 3600 * 1000); // Asia/Kolkata wall clock
+const pad2 = (n) => String(n).padStart(2, '0');
+const istHHMM = (d) => `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+const minutesBetween = (fromHHMM, toHHMM) =>
+  Math.round((new Date(`1970-01-01T${toHHMM}:00Z`) - new Date(`1970-01-01T${fromHHMM}:00Z`)) / 60000);
+const periodNo = (p) => Number.parseInt(String(p.seq ?? ''), 10) || 0;
+
+async function tableExists(c, schema, table) {
+  return !!(await c.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2 LIMIT 1`,
+    [schema, table])).rows.length;
+}
+
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
   const lifecycleGate = makeLifecycleGate(sysq, ID);
+
+  // ── P1 · command center aggregate (frozen §4: GET /teacher/home) ─────────────
+  // NOW / NEXT / NEEDS-ATTENTION / AT-A-GLANCE / suggestions, assembled only from
+  // authorized sources. Sibling planes (timetable, class assignments, duty, concerns)
+  // are probed and degrade to empty — never a 500 (house pattern).
+  app.get('/teacher/home', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const ist = istNow();
+      const dow = WEEKDAYS[ist.getUTCDay()];
+      const nowT = istHHMM(ist);
+
+      let ownClasses = [];
+      if (await tableExists(c, 'app', 'class_assignments')) {
+        ownClasses = (await c.query(
+          `SELECT grade, section FROM app.class_assignments
+           WHERE tenant_id=$1 AND teacher_id=$2 AND active ORDER BY grade, section`,
+          [req.user.tenant_id, req.user.id])).rows;
+      }
+      const classLabel = ownClasses.length ? `${ownClasses[0].grade}-${ownClasses[0].section}` : '';
+
+      let periods = [];
+      let totalPeriods = 0;
+      if (await tableExists(c, 'app', 'timetable_slots')) {
+        const hasPeriods = await tableExists(c, 'app', 'timetable_periods');
+        periods = (await c.query(
+          `SELECT s.id, s.subject, s.room${hasPeriods ? ', p.seq, p.label, p.start_time, p.end_time, p.is_break' : ''}
+           FROM app.timetable_slots s${hasPeriods ? ' JOIN app.timetable_periods p ON p.id=s.period_id' : ''}
+           WHERE s.tenant_id=$1 AND s.day_of_week=$2 AND s.teacher_name=$3
+           ORDER BY ${hasPeriods ? 'p.sort_idx' : 's.subject'}`, [req.user.tenant_id, dow, req.user.name])).rows;
+        if (hasPeriods) {
+          totalPeriods = (await c.query(
+            `SELECT count(*)::int AS n FROM app.timetable_periods WHERE tenant_id=$1 AND is_break=false`,
+            [req.user.tenant_id])).rows[0].n;
+        }
+      }
+      const teaching = periods.filter((p) => !p.is_break && p.start_time);
+      const current = teaching.find((p) => p.start_time <= nowT && nowT < p.end_time) ?? null;
+      const upcoming = teaching.filter((p) => p.start_time > nowT);
+      const now = current ? {
+        id: current.id, period: periodNo(current), start: current.start_time, end: current.end_time,
+        classGrade: classLabel, subject: current.subject, room: current.room ?? '',
+        endsInMins: Math.max(1, minutesBetween(nowT, current.end_time)),
+      } : null;
+
+      let duties = [];
+      if (await tableExists(c, 'duty', 'assignment')) {
+        duties = (await c.query(
+          `SELECT id, kind, period FROM duty.assignment
+           WHERE tenant_id=$1 AND teacher_id=$2 AND duty_date=(now() AT TIME ZONE 'Asia/Kolkata')::date
+           ORDER BY period NULLS FIRST`, [req.user.tenant_id, req.user.id])).rows;
+      }
+
+      const hwRows = (await c.query(
+        `SELECT h.id, h.due_at,
+           (SELECT count(*)::int FROM teacher.submission s
+             WHERE s.homework_id=h.id AND s.status IN ('submitted','late')) AS pending
+         FROM teacher.homework h WHERE h.created_by=$1 AND h.status='open'`, [req.user.id])).rows;
+      let pendingSubs = 0;
+      let earliestDue = null;
+      for (const h of hwRows) {
+        pendingSubs += h.pending;
+        if (h.pending > 0 && (!earliestDue || new Date(h.due_at) < new Date(earliestDue))) earliestDue = h.due_at;
+      }
+
+      let openConcerns = 0;
+      if (await tableExists(c, 'teacher', 'concern')) {
+        openConcerns = (await c.query(
+          `SELECT count(*)::int AS n FROM teacher.concern WHERE filed_by=$1 AND status <> 'closed'`,
+          [req.user.id])).rows[0].n;
+      }
+      const pendingLeave = (await c.query(
+        `SELECT count(*)::int AS n FROM teacher.leave_request WHERE teacher_id=$1 AND status='pending'`,
+        [req.user.id])).rows[0].n;
+
+      const next = [
+        ...upcoming.map((p) => ({
+          id: p.id, kind: 'class',
+          title: `P${periodNo(p)} ${p.subject} — ${classLabel} · Room ${p.room ?? '—'}`,
+          start: p.start_time, end: p.end_time, detail: p.label ?? `Period ${periodNo(p)}`,
+        })),
+        ...duties.map((d) => ({
+          id: d.id, kind: 'duty',
+          title: `${String(d.kind).charAt(0).toUpperCase()}${String(d.kind).slice(1)} duty${d.period ? ` · ${d.period}` : ''}`,
+          start: '—', detail: 'Duty roster',
+        })),
+      ].slice(0, 4);
+
+      const needsAttention = [];
+      if (pendingSubs > 0) needsAttention.push({
+        id: 'subs', kind: 'submission', rank: 0,
+        title: `${pendingSubs} submission${pendingSubs === 1 ? '' : 's'} waiting for review`,
+        detail: `Across ${hwRows.length} open homework${earliestDue ? ` · earliest due ${String(earliestDue).slice(0, 10)}` : ''}`,
+        deadline: earliestDue ?? undefined, to: '/teacher/submissions',
+      });
+      if (openConcerns > 0) needsAttention.push({
+        id: 'concerns', kind: 'concern', rank: 1,
+        title: `${openConcerns} open concern${openConcerns === 1 ? '' : 's'} you filed`,
+        detail: 'Follow up on the support queue', to: '/teacher/concerns',
+      });
+      if (pendingLeave > 0) needsAttention.push({
+        id: 'leave', kind: 'approval', rank: 2,
+        title: `${pendingLeave} leave request${pendingLeave === 1 ? '' : 's'} awaiting a decision`,
+        detail: 'The coordinator reviews these', to: '/teacher/leave', state: 'pending',
+      });
+
+      const deadlines = hwRows.filter((h) => new Date(h.due_at) <= new Date(Date.now() + 24 * 3600 * 1000)).length;
+      const glance = {
+        periods: teaching.length,
+        free: Math.max(0, totalPeriods - teaching.length),
+        duties: duties.length,
+        deadlines,
+      };
+
+      const suggestions = [];
+      if (pendingSubs > 0) suggestions.push({
+        id: 's-subs', rank: 0, title: 'Review the homework inbox',
+        estimate: `about ${Math.max(2, Math.ceil(pendingSubs / 3))} minutes`,
+        reason: `${pendingSubs} submission${pendingSubs === 1 ? '' : 's'} waiting`, to: '/teacher/submissions',
+      });
+      if (deadlines > 0) suggestions.push({
+        id: 's-due', rank: 1, title: 'Check homework due today',
+        estimate: 'about 5 minutes', reason: `${deadlines} homework due within a day`, to: '/teacher/homework',
+      });
+      if (upcoming.length > 0) suggestions.push({
+        id: 's-next', rank: 2, title: 'Prepare for your next class',
+        estimate: 'about 10 minutes', reason: `${upcoming[0].subject} at ${upcoming[0].start_time}`, to: '/teacher/homework',
+      });
+
+      return { now, next, needsAttention, glance, suggestions };
+    });
+  });
 
   // ── teacher posts homework (audited) ───────────────────────────────────────
   app.post('/plugins/teacher.classroom/homework', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req, reply) => {
@@ -131,14 +281,15 @@ export function register(app, kernel) {
 
   // ── teacher lists OWN homework (privacy pin: created_by = self) ────────────
   app.get('/plugins/teacher.classroom/homework', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    const cls = req.query?.class ? String(req.query.class).slice(0, 20) : null;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // `mine=1` is the explicit contract; the pin is unconditional — created_by = self
       const rows = (await c.query(
         `SELECT h.id, h.class_grade, h.subject, h.title, h.detail, h.attachment_ref, h.due_at, h.status, h.created_at,
            (SELECT count(*)::int FROM teacher.submission s WHERE s.homework_id = h.id) AS submission_count
          FROM teacher.homework h
-         WHERE h.created_by = $1
-         ORDER BY h.due_at ASC LIMIT 100`, [req.user.id])).rows;
+         WHERE h.created_by = $1 AND ($2::text IS NULL OR h.class_grade = $2)
+         ORDER BY h.due_at ASC LIMIT 100`, [req.user.id, cls])).rows;
       return { homework: rows, scope: 'mine' };
     });
   });
@@ -271,11 +422,19 @@ export function register(app, kernel) {
   });
 
   // ── teacher inbox (state filter; own homework only) ────────────────────────
+  // UI contract (SubmissionsInbox, frozen): rows carry `id`, `homework_id`,
+  // `homework_title`, `class_grade`, `student_id`, `student_name`, `content_type`,
+  // `content_ref`, `submitted_at`, `status`, `grade`, `feedback`, `reviewed_at`.
+  // `submission_id` is retained for the existing pins. `state=all` (or no state) is
+  // the default view; `homework=` narrows to one assignment.
   app.get('/plugins/teacher.classroom/submissions', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req, reply) => {
-    const state = req.query?.state ?? 'pending';
-    if (!['pending', 'reviewed', 'late', 'missing'].includes(state))
-      return bad(reply, 'Pick a view: pending, reviewed, late or missing');
-      return withUser(req.user.tenant_id, req.user.role, async (c) => {
+    const state = req.query?.state ? String(req.query.state) : 'all';
+    if (!['all', 'pending', 'reviewed', 'late', 'missing'].includes(state))
+      return bad(reply, 'Pick a view: all, pending, reviewed, late or missing');
+    const homeworkId = req.query?.homework ? String(req.query.homework) : null;
+    if (homeworkId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(homeworkId))
+      return bad(reply, 'That homework filter is not a valid id');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
       let rows;
       if (state === 'missing') {
         // roster students of the class whose due date passed with no submission on file.
@@ -294,32 +453,220 @@ export function register(app, kernel) {
         // structural fix for both directions is a real `students.user_id` link (see resolveStudent),
         // not a cleverer query: no amount of SQL recovers which section-sibling signed in.
         rows = (await c.query(
-          `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
+          `SELECT h.id AS homework_id, h.title AS homework_title, h.subject, h.class_grade, h.due_at,
              st.id AS student_id, st.name AS student_name
            FROM teacher.homework h
            JOIN app.students st ON st.grade = h.class_grade AND st.tenant_id = h.tenant_id
            WHERE h.created_by = $1 AND h.status='open' AND h.due_at < now()
+             AND ($2::uuid IS NULL OR h.id = $2::uuid)
              AND NOT EXISTS (
                SELECT 1 FROM teacher.submission s
                LEFT JOIN app.students ss ON ss.id = s.student_id AND ss.tenant_id = s.tenant_id
                WHERE s.homework_id = h.id
                  AND (s.student_id = st.id
                       OR (ss.grade = st.grade AND lower(ss.name) = lower(st.name))))
-           ORDER BY h.due_at ASC, st.name ASC LIMIT 200`, [req.user.id])).rows;
+           ORDER BY h.due_at ASC, st.name ASC LIMIT 200`, [req.user.id, homeworkId])).rows;
+        rows = rows.map((r) => ({
+          id: `missing:${r.homework_id}:${r.student_id}`,
+          submission_id: null,
+          homework_id: r.homework_id, homework_title: r.homework_title, class_grade: r.class_grade,
+          student_id: r.student_id, student_name: r.student_name,
+          content_type: 'text', content_ref: null, submitted_at: null, status: 'missing',
+          grade: null, feedback: null, reviewed_at: null,
+        }));
       } else {
         const where = state === 'pending' ? `s.status IN ('submitted','late')`
           : state === 'reviewed' ? `s.status IN ('reviewed','graded')`
-          : `s.status = 'late'`;
+          : state === 'late' ? `s.status = 'late'`
+          : `TRUE`;
         rows = (await c.query(
-          `SELECT h.id AS homework_id, h.title, h.subject, h.class_grade, h.due_at,
-             s.id AS submission_id, s.student_id, s.status, s.submitted_at, st.name AS student_name
+          `SELECT s.id, s.id AS submission_id, s.homework_id, h.title AS homework_title, h.class_grade,
+             s.student_id, s.content_type, s.content AS content_ref, s.status, s.grade, s.feedback,
+             s.submitted_at, s.reviewed_at, st.name AS student_name
            FROM teacher.homework h
            JOIN teacher.submission s ON s.homework_id = h.id
            LEFT JOIN app.students st ON st.id = s.student_id AND st.tenant_id = s.tenant_id
            WHERE h.created_by = $1 AND ${where}
-           ORDER BY h.due_at ASC, s.submitted_at DESC LIMIT 200`, [req.user.id])).rows;
+             AND ($2::uuid IS NULL OR h.id = $2::uuid)
+           ORDER BY h.due_at ASC, s.submitted_at DESC LIMIT 200`, [req.user.id, homeworkId])).rows;
       }
       return { state, submissions: rows };
+    });
+  });
+
+  // ── teacher roster (the class lists a teacher may act on) ──────────────────
+  // Scoped to the grades the teacher is assigned (app.class_assignments, 083). When the
+  // school has no assignment for the teacher the door returns an empty list rather than
+  // the whole school — least privilege, and the UI says so honestly.
+  app.get('/plugins/teacher.classroom/roster', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    const cls = req.query?.class ? String(req.query.class).slice(0, 20) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const grades = [];
+      if (await tableExists(c, 'app', 'class_assignments')) {
+        const own = (await c.query(
+          `SELECT DISTINCT grade FROM app.class_assignments WHERE tenant_id=$1 AND teacher_id=$2 AND active`,
+          [req.user.tenant_id, req.user.id])).rows;
+        for (const g of own) grades.push(String(g.grade));
+      }
+      const rows = grades.length ? (await c.query(
+        `SELECT id, name, grade, section, admission_no FROM app.students
+         WHERE tenant_id=$1 AND status='active' AND grade = ANY($2::text[])
+           AND ($3::text IS NULL OR grade=$3)
+         ORDER BY grade, section, name LIMIT 300`,
+        [req.user.tenant_id, grades, cls])).rows : [];
+      return { scope: 'my_classes', classes: grades, students: rows };
+    });
+  });
+
+  // ── lessons lifecycle (PRD-2 / DAT-4) ──────────────────────────────────────
+  // Planned → prepared → teaching → completed → reflected. A reflection updates the
+  // lesson and (when a curriculum topic is named) the coverage is ticked separately by
+  // the curriculum door — this plane never authors the curriculum tree (A1).
+  const LESSON_STATUSES = ['planned', 'prepared', 'teaching', 'completed', 'reflected'];
+  const asStringArray = (v) => Array.isArray(v) ? v.map((x) => String(x).slice(0, 300)).filter(Boolean).slice(0, 30) : [];
+
+  app.post('/plugins/teacher.classroom/lessons', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!b.class_grade || !String(b.class_grade).trim()) return bad(reply, 'Choose the class for this lesson');
+    if (!b.subject || !String(b.subject).trim()) return bad(reply, 'Choose the subject');
+    if (!b.topic || !String(b.topic).trim()) return bad(reply, 'Give the lesson a topic');
+    const date = b.lesson_date ?? b.date ?? null;
+    if (date != null && !isDate(date)) return bad(reply, 'Lesson date must be YYYY-MM-DD');
+    const period = b.period == null || b.period === '' ? null : Number(b.period);
+    if (period != null && (!Number.isInteger(period) || period < 0 || period > 20)) return bad(reply, 'Period must be a number from 0 to 20');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO teacher.lesson (tenant_id, teacher_id, class_grade, subject, lesson_date, period, topic, objectives, resources)
+         VALUES ($1,$2,$3,$4,COALESCE($5::date,(now() AT TIME ZONE 'Asia/Kolkata')::date),$6,$7,$8::jsonb,$9::jsonb)
+         RETURNING id, class_grade, subject, lesson_date, period, topic, objectives, resources, status, created_at`,
+        [req.user.tenant_id, req.user.id, String(b.class_grade).slice(0, 20), String(b.subject).slice(0, 60),
+         date, period, String(b.topic).slice(0, 200), JSON.stringify(asStringArray(b.objectives)), JSON.stringify(asStringArray(b.resources))])).rows[0];
+      await emitEvent(c, req.user.tenant_id, { type: 'classroom', label: `Lesson planned: ${row.subject} — ${row.topic}`, ref: row.id },
+        'lesson.planned.v1', { lessonId: row.id, classGrade: row.class_grade, subject: row.subject, topic: row.topic });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Lesson planned', recordType: 'Lesson', recordRef: row.id,
+        reason: `${row.subject} · ${row.class_grade}`, policyRef: 'TEACHEROS-PLAN §P3 (lessons lifecycle)', risk: 'low',
+        outcome: `status ${row.status}` });
+      return { ok: true, lessonId: row.id, lesson: row };
+    });
+  });
+
+  app.get('/plugins/teacher.classroom/lessons', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    const date = isDate(req.query?.date) ? String(req.query.date) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rows = (await c.query(
+        `SELECT id, class_grade, subject, to_char(lesson_date,'YYYY-MM-DD') AS lesson_date, period, topic,
+                objectives, resources, reflection, status, created_at
+         FROM teacher.lesson
+         WHERE teacher_id=$1 AND ($2::date IS NULL OR lesson_date=$2::date)
+         ORDER BY lesson_date DESC, period NULLS LAST, created_at DESC LIMIT 100`, [req.user.id, date])).rows;
+      return { date, lessons: rows };
+    });
+  });
+
+  app.post('/plugins/teacher.classroom/lessons/:id/reflect', { preHandler: [require(...TEACHER), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!b.worked && !b.reinforce && !b.next) return bad(reply, 'Add at least one reflection line — what worked, what to reinforce, what is next');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const lesson = (await c.query(`SELECT id, topic, subject FROM teacher.lesson WHERE id=$1 AND teacher_id=$2`,
+        [req.params.id, req.user.id])).rows[0];
+      if (!lesson) return bad(reply, 'We couldn\'t find that lesson', 404);
+      const reflection = {
+        worked: b.worked ? String(b.worked).slice(0, 500) : null,
+        reinforce: b.reinforce ? String(b.reinforce).slice(0, 500) : null,
+        next: b.next ? String(b.next).slice(0, 500) : null,
+        at: new Date().toISOString(),
+      };
+      const row = (await c.query(
+        `UPDATE teacher.lesson SET reflection=$3::jsonb, status='reflected', updated_at=now()
+         WHERE id=$1 AND teacher_id=$2 RETURNING id, status, reflection`,
+        [lesson.id, req.user.id, JSON.stringify(reflection)])).rows[0];
+      await emitEvent(c, req.user.tenant_id, { type: 'classroom', label: `Lesson reflected: ${lesson.subject} — ${lesson.topic}`, ref: lesson.id },
+        'lesson.reflected.v1', { lessonId: lesson.id });
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Lesson reflected', recordType: 'Lesson', recordRef: lesson.id,
+        reason: lesson.topic, policyRef: 'TEACHEROS-PLAN §P3 (10–20s reflection)', risk: 'low',
+        outcome: 'status reflected' });
+      return { ok: true, lessonId: lesson.id, status: row.status, reflection: row.reflection };
+    });
+  });
+
+  // ── duty roster + my workload (PRD-3) ──────────────────────────────────────
+  // Aggregates only, framed for fairness — never a score or a rank (plan §P8).
+  app.get('/duty/roster', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    const window = ['today', 'week', 'month'].includes(req.query?.window) ? String(req.query.window) : 'week';
+    const span = window === 'today' ? '1 day' : window === 'month' ? '31 days' : '7 days';
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!(await tableExists(c, 'duty', 'assignment'))) return { window, duties: [], note: 'The duty roster is not connected in this database yet.' };
+      const rows = (await c.query(
+        `SELECT id, kind, to_char(duty_date,'YYYY-MM-DD') AS duty_date, to_char(duty_date,'YYYY-MM-DD') AS date,
+                period, note, note AS place, COALESCE(period, '—') AS period_label, COALESCE(period, '—') AS time,
+                CASE WHEN kind='substitution' THEN 'substitution' ELSE 'roster' END AS source
+         FROM duty.assignment
+         WHERE tenant_id=$1 AND teacher_id=$2
+           AND duty_date >= (now() AT TIME ZONE 'Asia/Kolkata')::date
+           AND duty_date <  (now() AT TIME ZONE 'Asia/Kolkata')::date + $3::interval
+         ORDER BY duty_date, period NULLS FIRST`, [req.user.tenant_id, req.user.id, span])).rows;
+      return { window, duties: rows };
+    });
+  });
+
+  app.get('/workload/mine', { preHandler: [require(...TEACHER), lifecycleGate] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const dow = WEEKDAYS[istNow().getUTCDay()];
+      let teaching = 0;
+      if (await tableExists(c, 'app', 'timetable_slots')) {
+        teaching = (await c.query(
+          `SELECT count(*)::int AS n FROM app.timetable_slots WHERE tenant_id=$1 AND teacher_name=$2 AND day_of_week=$3`,
+          [req.user.tenant_id, req.user.name, dow])).rows[0].n;
+      }
+      let duties = 0, substitutions = 0, invigilation = 0, meetings = 0;
+      if (await tableExists(c, 'duty', 'assignment')) {
+        const d = (await c.query(
+          `SELECT
+             count(*) FILTER (WHERE kind NOT IN ('substitution','invigilation','event'))::int AS duties,
+             count(*) FILTER (WHERE kind = 'substitution')::int AS substitutions,
+             count(*) FILTER (WHERE kind = 'invigilation')::int AS invigilation,
+             count(*) FILTER (WHERE kind = 'event')::int AS meetings
+           FROM duty.assignment WHERE tenant_id=$1 AND teacher_id=$2
+             AND duty_date >= date_trunc('week', (now() AT TIME ZONE 'Asia/Kolkata')::date)`,
+          [req.user.tenant_id, req.user.id])).rows[0];
+        duties = d.duties; substitutions = d.substitutions; invigilation = d.invigilation; meetings = d.meetings;
+      }
+      let pendingReviews = 0;
+      if (await tableExists(c, 'teacher', 'submission')) {
+        pendingReviews = (await c.query(
+          `SELECT count(*)::int AS n FROM teacher.submission s JOIN teacher.homework h ON h.id=s.homework_id
+           WHERE h.created_by=$1 AND s.status IN ('submitted','late')`, [req.user.id])).rows[0].n;
+      }
+      let ptmBookings = 0;
+      if (await tableExists(c, 'ptm', 'slot')) {
+        ptmBookings = (await c.query(
+          `SELECT count(*)::int AS n FROM ptm.slot WHERE tenant_id=$1 AND teacher_id=$2 AND status='booked'`,
+          [req.user.tenant_id, req.user.id])).rows[0].n;
+      }
+      // Fair band is a fixed, published range (extra load = substitutions + invigilation).
+      // It exists for fairness and burnout prevention — never a ranking (P8).
+      const extra = substitutions + invigilation;
+      const FAIR_MIN = 4, FAIR_MAX = 10;
+      return {
+        workload: {
+          periods: teaching,
+          teaching_periods: teaching,
+          duties,
+          substitutions,
+          invigilation,
+          meetings,
+          ptm_count: ptmBookings,
+          pending_reviews: pendingReviews,
+          grading_estimate_mins: pendingReviews * 5,
+          fair_band: { min: FAIR_MIN, max: FAIR_MAX },
+          week_label: 'This week',
+          total_commitments: teaching + duties + substitutions + invigilation + meetings + pendingReviews + ptmBookings,
+          overload: extra > FAIR_MAX,
+          note: 'This is for your protection, not your rating. If your extra load rises above the fair band the coordinator is asked to rebalance.',
+        },
+      };
     });
   });
 
@@ -337,8 +684,8 @@ export function register(app, kernel) {
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, status`,
         [req.user.tenant_id, req.user.id, b.kind, b.from_date, b.to_date, String(b.reason).slice(0, 1000)])).rows[0];
       const actionId = (await c.query(
-        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Coordinator','coordinator','TEACHEROS-PLAN · staff leave via kernel approval',false,$6,$7::jsonb)
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+         VALUES ($1,$2,'approval',$3,$4,$5,'normal','open','Coordinator','coordinator','TEACHEROS-PLAN · staff leave via kernel approval',false,$6,$7::jsonb,'teacher.classroom')
          RETURNING id`,
         [req.user.tenant_id, `teacher.leave.${row.id}`,
          `Staff leave: ${req.user.name} (${b.kind}, ${b.from_date} → ${b.to_date})`,
@@ -352,7 +699,14 @@ export function register(app, kernel) {
         actor: req.user.name, action: 'Staff leave requested', recordType: 'TeacherLeaveRequest', recordRef: row.id,
         reason: b.kind, policyRef: 'TEACHEROS-PLAN · staff leave · kernel approval', risk: 'low',
         outcome: `kernel action ${actionId} raised` });
-      return { ok: true, requestId: row.id, actionId, note: 'The coordinator will review this. Track it in My leave.' };
+      return { ok: true, requestId: row.id, actionId,
+        // UI contract (MyLeave): the freshly filed request in the shape the screen reads
+        request: {
+          id: row.id, kind: b.kind, from_date: b.from_date, to_date: b.to_date,
+          reason: String(b.reason).slice(0, 1000), status: 'requested',
+          approver_name: null, decided_at: null, note: null,
+        },
+        note: 'The coordinator will review this. Track it in My leave.' };
     });
   });
 
@@ -402,12 +756,35 @@ export function register(app, kernel) {
         });
       }
       const fresh = (await c.query(
-        `SELECT id, kind, from_date, to_date, reason, status, decided_at, note FROM teacher.leave_request
-         WHERE teacher_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.user.id])).rows;
-      return { leave: fresh.map((r) => ({
-        ...r,
-        decisionNote: rows.find((x) => x.id === r.id)?.decision_note ?? null,
-      })) };
+        `SELECT r.id, r.kind, r.from_date, r.to_date, r.reason, r.status, r.decided_at, r.note,
+           a.decision_note, au.name AS approver_name,
+           hp.substitute_name, hp.packet_at, hp.classes AS handover_classes
+         FROM teacher.leave_request r
+         LEFT JOIN app.actions a ON a.code = 'teacher.leave.' || r.id::text
+         LEFT JOIN app.users au ON au.id = a.decided_by
+         LEFT JOIN teacher.handover_packet hp ON hp.leave_request_id = r.id
+         WHERE r.teacher_id=$1 ORDER BY r.created_at DESC LIMIT 50`, [req.user.id])).rows;
+      // UI contract (MyLeave): `requests` in the screen's vocabulary (pending → requested);
+      // `leave` keeps the raw DB rows for the existing pins. DEL-3: an approved request with a
+      // generated packet carries `handover` (substitute + the affected periods).
+      const requests = fresh.map((r) => ({
+        id: r.id, kind: r.kind, from_date: r.from_date, to_date: r.to_date, reason: r.reason,
+        status: r.status === 'pending' ? 'requested' : r.status,
+        approver_name: r.approver_name ?? null,
+        decided_at: r.decided_at ?? null,
+        note: r.note ?? r.decision_note ?? null,
+        handover: r.packet_at
+          ? { substitute_name: r.substitute_name ?? 'Cover to be assigned', packet_at: r.packet_at, classes: r.handover_classes ?? [] }
+          : null,
+      }));
+      return {
+        requests,
+        balances: [],
+        leave: fresh.map((r) => ({
+          ...r,
+          decisionNote: r.decision_note ?? null,
+        })),
+      };
     });
   });
 }

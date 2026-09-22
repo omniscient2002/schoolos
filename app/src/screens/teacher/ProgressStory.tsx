@@ -11,18 +11,16 @@
    Door: GET /progress/story/:studentId — PROPOSED (frozen with
    TS-3 before W2; see fixtures header).
    ============================================================ */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Badge, Button, Card, Empty, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
 import { useAsync } from './teacherKit';
 import {
-  ClassPicker, FilterRow, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
+  FilterRow, InsightsPageHead, InsightsRoleGate, InsightsSkeleton,
 } from './InsightsShared';
-import { STORY_KIND_LABEL, getProgressStory, rosterFor, type StoryStep } from '../../services/teacherFixtures';
-
-const CLASSES = ['8-B', '8-A', '7-A'];
+import { STORY_KIND_LABEL, getProgressStory, listMyStudents, type RosterStudent, type StoryStep } from '../../services/teacherApi';
 
 const KIND_STYLE: Record<StoryStep['kind'], { color: string; icon: React.ReactNode }> = {
   introduced: { color: 'var(--info)', icon: <Icon.Learning size={13} /> },
@@ -71,16 +69,13 @@ function StepRow({ step, first, last }: { step: StoryStep; first: boolean; last:
 export default function ProgressStory() {
   const navigate = useNavigate();
   const toast = useToast();
-  const [classGrade, setClassGrade] = useState('8-B');
-  const roster = useMemo(() => rosterFor(classGrade), [classGrade]);
-  const [studentId, setStudentId] = useState(roster[0]?.id ?? 'stu_1');
-
-  useEffect(() => {
-    if (!roster.some(r => r.id === studentId)) setStudentId(roster[0]?.id ?? 'stu_1');
-  }, [roster, studentId]);
-
+  const [roster, setRoster] = useState<RosterStudent[]>([]);
+  const [studentId, setStudentId] = useState('');
+  useEffect(() => { listMyStudents().then(d => setRoster(d.students)).catch(() => setRoster([])); }, []);
+  useEffect(() => { if (!studentId && roster[0]) setStudentId(roster[0].id); }, [roster, studentId]);
   const current = roster.find(r => r.id === studentId) ?? roster[0];
-  const state = useAsync(() => getProgressStory(current?.id ?? 'stu_1'), [current?.id]);
+  const classGrade = current?.grade ?? '';
+  const state = useAsync(() => (current?.id ? getProgressStory(current.id) : Promise.resolve(null)), [current?.id]);
   const data = state.data?.data ?? null;
 
   return (
@@ -91,14 +86,14 @@ export default function ProgressStory() {
       />
 
       <FilterRow>
-        <ClassPicker label="Class" value={classGrade} options={CLASSES} onChange={setClassGrade} />
         <div className="field" style={{ marginBottom: 0 }}>
           <label htmlFor="ps-student">Student</label>
           <select
             id="ps-student" className="input" style={{ width: 'auto', minWidth: 200 }}
             value={current?.id ?? ''} onChange={e => setStudentId(e.target.value)}
           >
-            {roster.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            {roster.length === 0 && <option value="">No students in your classes</option>}
+            {roster.map(r => <option key={r.id} value={r.id}>{r.name} · {r.grade}{r.section ? `-${r.section}` : ''}</option>)}
           </select>
         </div>
         <div>

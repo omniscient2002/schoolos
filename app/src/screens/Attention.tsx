@@ -11,7 +11,7 @@ import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { apiActions, apiDecideAction } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
-import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, ClickThrough} from '../components/ui';
+import {PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonCard, useToast, ClickThrough, SampleNote} from '../components/ui';
 import { EvidenceChain, SuggestedActions } from '../components/Ai';
 import { Slot } from '../plugins/Slot';
 import type { WorkOrderRecord } from '../types/domain';
@@ -130,7 +130,7 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
       detail: 'Failed payments await retry or guardian assistance.',
       why: 'A single combined message historically recovers ~60% within 48h — but bulk messaging requires your approval (Communication §2.1).',
       priority: 'high',
-      chips: ['Fees records · live', 'Gateway settlement · live'],
+      chips: ['Fees records · sample', 'Gateway settlement · sample'],
       evidence: [
         { label: 'Failed ledger rows', detail: `${failed.length} obligation${failed.length === 1 ? '' : 's'} in 'failed' state` },
       ],
@@ -415,6 +415,8 @@ export default function Attention() {
         sub={`${items.length} ranked item${items.length === 1 ? '' : 's'} — recommended actions merged with signals derived from today's records. Ranked at ${data ? fmtTime(data.rankedAt) : '…'}.`}
         actions={<Button variant="secondary" size="sm" icon={<Icon.Refresh size={13} />} onClick={retry}>Re-rank</Button>}
       />
+
+      <SampleNote>Recommended actions come from the live action queue; the derived signals (unmarked registers, delays, expiries) are illustrative in this build and are not read from your school&rsquo;s records.</SampleNote>
 
       <div style={{ marginBottom: 14 }}><Slot name="attention" /></div>
 

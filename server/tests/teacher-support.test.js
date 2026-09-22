@@ -64,3 +64,61 @@ describe('FEX-16 · teacher.support doubt + intervention lifecycle', () => {
     assert.equal(events, 2, 'creation + one transition = two append-only history rows');
   });
 });
+
+/* ── PERFECT-100 hardening pins (SEC-1, API-6, TEST-1) ──────────────────────── */
+
+describe('PERFECT-100 · teacher.support hardening pins', () => {
+  test('concern filed → routed → outcome appends history; the event table refuses UPDATE (SEC-1)', async () => {
+    const teacher = await loginAs(app, 'teacher@meridian.edu');
+    const principalId = (await sql(`SELECT id FROM app.users WHERE email='principal@meridian.edu'`)).rows[0].id;
+    const filed = await app.inject({ method: 'POST', url: '/teacher/concern', headers: H(teacher.token),
+      payload: { category: 'academic', urgency: 'normal', detail: 'Reading fluency slipping this term' } });
+    assert.equal(filed.statusCode, 200, filed.body);
+    const id = filed.json().concernId;
+    // the coordinator (≠ filer) routes to the principal
+    const routed = await app.inject({ method: 'POST', url: `/teacher/concern/${id}/route`, headers: H(coordinator.token),
+      payload: { routedRole: 'principal', routedTo: principalId } });
+    assert.equal(routed.statusCode, 200, routed.body);
+    const principal = await loginAs(app, 'principal@meridian.edu');
+    const out = await app.inject({ method: 'POST', url: `/teacher/concern/${id}/outcome`, headers: H(principal.token),
+      payload: { outcome: 'resolved', note: 'Guided reading started' } });
+    assert.equal(out.statusCode, 200, out.body);
+    const ev = await app.inject({ method: 'GET', url: `/teacher/concern/${id}/events`, headers: H(coordinator.token) });
+    assert.equal(ev.statusCode, 200, ev.body);
+    assert.equal(ev.json().events.length, 3, 'open + routed + closed = three append-only history rows');
+    // SEC-1: the app role holds no UPDATE on the history table, and a direct UPDATE is refused.
+    const grant = (await sql(`SELECT has_table_privilege('schoolos_app','teacher.concern_status_event','UPDATE') AS u`)).rows[0].u;
+    assert.equal(grant, false, 'concern_status_event is append-only (no UPDATE grant)');
+    await assert.rejects(
+      sql(`SET ROLE schoolos_app; UPDATE teacher.concern_status_event SET note='rewritten' WHERE concern_id='${id}'`),
+      /permission denied|42501/);
+  });
+
+  test('safety box close closes a report; anonymous reports keep no reporter identity', async () => {
+    const principal = await loginAs(app, 'principal@meridian.edu');
+    const filed = await app.inject({ method: 'POST', url: '/safety/box', headers: H(student.token),
+      payload: { category: 'bullying', severity: 'medium', classGrade: '8', detail: 'Repeated name-calling in the corridor' } });
+    assert.equal(filed.statusCode, 200, filed.body);
+    const id = filed.json().reportId;
+    const row = (await sql(`SELECT reporter_user_id, reporter_anonymous FROM safety.box WHERE id=$1`, [id])).rows[0];
+    assert.equal(row.reporter_anonymous, true);
+    assert.equal(row.reporter_user_id, null, 'anonymous filing stores no reporter identity');
+    const closed = await app.inject({ method: 'POST', url: `/safety/box/${id}/close`, headers: H(principal.token), payload: { note: 'counselled both students' } });
+    assert.equal(closed.statusCode, 200, closed.body);
+    const again = await app.inject({ method: 'POST', url: `/safety/box/${id}/close`, headers: H(principal.token), payload: {} });
+    assert.equal(again.statusCode, 409, 'a closed report cannot be closed twice');
+  });
+
+  test('intervention reassess alias reaches the reassessed state (API-6)', async () => {
+    const studentId = (await sql(`SELECT id FROM app.students WHERE tenant_id=$1 AND status='active' LIMIT 1`, [tenantId])).rows[0].id;
+    const create = await app.inject({ method: 'POST', url: '/interventions', headers: H(coordinator.token),
+      payload: { studentId, objective: 'Improve reading fluency', activity: 'Daily guided reading' } });
+    assert.equal(create.statusCode, 200, create.body);
+    const id = create.json().planId;
+    assert.equal((await app.inject({ method: 'POST', url: `/interventions/${id}/transition`, headers: H(coordinator.token), payload: { to: 'planned' } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: `/interventions/${id}/transition`, headers: H(coordinator.token), payload: { to: 'in_progress' } })).statusCode, 200);
+    const re = await app.inject({ method: 'POST', url: `/interventions/${id}/reassess`, headers: H(coordinator.token), payload: { note: 'progress seen' } });
+    assert.equal(re.statusCode, 200, re.body);
+    assert.equal(re.json().status, 'reassessed');
+  });
+});

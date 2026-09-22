@@ -50,7 +50,7 @@ const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 const HONEST_UNKNOWN = 'I don\'t have that information yet — please ask the class teacher';
 
 export function register(app, kernel) {
-  const { withUser, requestAudit, require, sysq } = kernel;
+  const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
   const lifecycleGate = makeLifecycleGate(sysq, ID);
 
   // ── shared helpers (034 myChildren pattern) ─────────────────────────────────
@@ -227,8 +227,18 @@ export function register(app, kernel) {
       if (data.open_requests.length === 0) sentences.push('You have no open requests with the school office.');
       else sentences.push(`You have ${data.open_requests.length} open request${data.open_requests.length === 1 ? '' : 's'} with the school office: ${data.open_requests.map((r) => `"${r.title}" (${r.status})`).join(', ')}.`);
       sentences.push('This brief is a deterministic summary of your family\'s school records — nothing was invented.');
+      // PU-1 read contract: the week card reads top-level attendance_pct / headline /
+      // reports_published. Derive them from the SAME rows (never invented).
+      const withAtt = data.children.filter((ch) => ch.attendance.last30_pct != null);
+      const attendancePct = withAtt.length
+        ? Math.round(withAtt.reduce((a, ch) => a + ch.attendance.last30_pct, 0) / withAtt.length)
+        : null;
+      const reportsPublished = data.children.reduce((a, ch) => a + (ch.reports_published ? ch.reports_published.length : 0), 0);
       const payload = {
         when,
+        headline: sentences[0] ?? null,
+        attendance_pct: attendancePct,
+        reports_published: reportsPublished,
         generated_for: new Date().toISOString(),
         children: data.children.map((ch) => ({
           child_id: ch.child_id, name: ch.name, grade: ch.grade, section: ch.section,
@@ -255,6 +265,10 @@ export function register(app, kernel) {
         recordRef: when, reason: 'parent assistant brief',
         policyRef: 'PARENTOS-PLAN · deterministic-only assistant · DPDP Act 2023', risk: 'low',
         outcome: `factual aggregation for ${data.children.length} linked child${data.children.length === 1 ? '' : 'ren'} · no LLM` });
+      // API-12: the declared parent.brief.v1 contract is emitted when a brief is served.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'family', label: `Parent ${when} brief generated`, ref: when },
+        'parent.brief.v1', { when, children: data.children.length, deterministic: true });
       return safePayload(payload);
     });
   });
@@ -351,8 +365,15 @@ export function register(app, kernel) {
         policyRef: 'P-copilot budget classes · deterministic-only · DPDP Act 2023',
         aiInvolved: false, risk: 'low',
         outcome: `keyword-routed to ${sources.map((x) => x.kind).join(', ')} · composed from own-child records · budget ${used + 1}/${MONTHLY_CAP} this month` });
+      // API-12: the declared parent.copilot.v1 contract is emitted on every ask.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'family', label: 'Parent copilot ask answered', ref: 'ask' },
+        'parent.copilot.v1', { verb: 'ask', intent, empty: answer === HONEST_UNKNOWN });
       return safePayload({ ok: true, question, intent, answer, sources, label: 'deterministic_answer',
-        deterministic: true, budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } });
+        deterministic: true, empty: answer === HONEST_UNKNOWN,
+        empty_reason: answer === HONEST_UNKNOWN ? 'Nothing in your children\'s records answers this yet — please ask the class teacher.' : null,
+        budget_left: Math.max(0, MONTHLY_CAP - (used + 1)),
+        budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } });
     });
   });
 
@@ -418,8 +439,13 @@ export function register(app, kernel) {
         policyRef: 'P-copilot budget classes · deterministic-only · drafts are never auto-sent',
         aiInvolved: false, risk: 'low',
         outcome: `deterministic template (labelled ai_draft) · no model call · budget ${used + 1}/${MONTHLY_CAP} this month` });
+      // API-12: the declared parent.copilot.v1 contract is emitted on every draft.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'family', label: `Parent copilot draft generated (${kind})`, ref: kind },
+        'parent.copilot.v1', { verb: 'draft', kind, deterministic: true });
       return safePayload({ ok: true, kind, title, draft, label: 'ai_draft', deterministic: true,
         child_id: child?.id ?? null,
+        budget_left: Math.max(0, MONTHLY_CAP - (used + 1)),
         budget: { used: used + 1, cap: MONTHLY_CAP, budgetClass: BUDGET_CLASS } });
     });
   });

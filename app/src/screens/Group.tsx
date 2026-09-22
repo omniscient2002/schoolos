@@ -59,7 +59,7 @@ export default function Group() {
         <Empty
           icon={<Icon.Lock size={26} />}
           title="The group console is restricted"
-          sub="Cross-campus data is only for Owner, Principal and Finance. Switch the demo role (top right) to explore it."
+          sub="The group console is for Owner, Principal and Finance. Sign in with one of those roles to open it."
         />
       </>
     );
@@ -115,9 +115,10 @@ export default function Group() {
       </div>
 
       <Section title="Campus comparison" sub="Attendance, collection, caseload and compliance in one table.">
-        {hasGroupMetrics && (
-          <SampleNote>Sample campus figures — no cross-campus data plane is connected in this build, so attendance, collection and the trend lines below are illustrative, not read from each campus&rsquo;s ledger.</SampleNote>
-        )}
+        {/* FE-8: the sample note was conditional on `hasGroupMetrics`, so a real tenant (campus ids the demo
+            table does not know) saw hardcoded/demo campus figures with no label. Always label: there is no
+            cross-campus data plane in this build, whichever ids the tenant carries. */}
+        <SampleNote>Sample campus figures — no cross-campus data plane is connected in this build, so attendance, collection and the trend lines below are illustrative, not read from each campus&rsquo;s ledger.</SampleNote>
         <Card>
           <DataTable<Campus>
             columns={[

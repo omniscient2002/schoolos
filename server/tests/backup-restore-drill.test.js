@@ -74,6 +74,16 @@ describe('FEX-13 · a backup restores and the erasure replay survives the restor
     const before = (await owner(`SELECT count(*)::int n FROM app.guardians WHERE tenant_id=$1 AND phone=$2`, [tenantId, PHONE])).rows[0].n;
     assert.equal(before, 1, 'fixture: the phone is present before the drill');
 
+    // LIB-E4: the library tables must round-trip too. A loan + its fine is the pair the drill asserts.
+    const bk = (await owner(`INSERT INTO library.book (tenant_id, code, copies_total, title)
+      VALUES ($1,'DRILL-BK','1','Drill Book') RETURNING id`, [tenantId])).rows[0];
+    const cp = (await owner(`INSERT INTO library.copy (tenant_id, book_id, copy_code, status)
+      VALUES ($1,$2,'DRILL-CP','issued') RETURNING id`, [tenantId, bk.id])).rows[0];
+    const ln = (await owner(`INSERT INTO library.loan (tenant_id, book_id, copy_id, student_id, borrower_type, status, due_on)
+      VALUES ($1,$2,$3,$4,'student','issued', current_date + 7) RETURNING id`, [tenantId, bk.id, cp.id, student.id])).rows[0];
+    await owner(`INSERT INTO library.fine (tenant_id, loan_id, borrower_type, borrower_student_id, cause, amount_cents)
+      VALUES ($1,$2,'student',$3,'overdue',500)`, [tenantId, ln.id, student.id]);
+
     // 2. genuine backup
     const dump = join(tmp, 'drill.dump');
     execFileSync('pg_dump', ['--format=custom', '--no-password', '-f', dump, TEST_URL], { stdio: 'pipe' });
@@ -93,6 +103,22 @@ describe('FEX-13 · a backup restores and the erasure replay survives the restor
       finally { await c.end(); }
     };
     assert.equal(await restoredHasPhone(), 1, 'the restored copy still holds the phone, as a pre-erasure backup would');
+
+    // LIB-E4: the library rows survived the restore intact — book, copy, loan and fine.
+    const restoredLib = async () => {
+      const c = new pg.Client({ connectionString: RESTORE_URL });
+      await c.connect();
+      try {
+        return (await c.query(`SELECT
+            (SELECT count(*)::int FROM library.book WHERE tenant_id=$1 AND code='DRILL-BK') AS books,
+            (SELECT count(*)::int FROM library.copy WHERE tenant_id=$1 AND copy_code='DRILL-CP') AS copies,
+            (SELECT count(*)::int FROM library.loan WHERE tenant_id=$1 AND id=$2) AS loans,
+            (SELECT count(*)::int FROM library.fine WHERE tenant_id=$1 AND loan_id=$2) AS fines`,
+          [tenantId, ln.id])).rows[0];
+      } finally { await c.end(); }
+    };
+    assert.deepEqual(await restoredLib(), { books: 1, copies: 1, loans: 1, fines: 1 },
+      'library.book/copy/loan/fine must round-trip the backup and restore');
 
     // 4. run the SHIPPED replay against the restored copy
     const out = execFileSync('node', ['scripts/replay-erasure-journal.js'], {

@@ -55,7 +55,7 @@ The `/live` route then signs in against the real API, marks attendance (triggeri
 ## Tests
 
 ```bash
-npm test        # spins up schoolos_test db, runs 25 integration tests (api · plugins · governance · security)
+npm test        # spins up a test db, runs the full integration suite (api · plugins · governance · security · fees · library · domains). K4: the file count is generated into docs/VERIFICATION.md — do not trust a hand-typed number here.
 ```
 Covers: auth (bad creds, JWT, 401s), role scoping (teacher≠payments, parent≠attendance), **RLS isolation (second tenant sees zero rows)**, fee idempotency/no-overpay, WO state machine ordering, transport §3.1 policy raising approval-required actions, audit append-only + per-tenant hash-chain integrity.
 

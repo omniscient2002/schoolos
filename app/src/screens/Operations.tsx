@@ -200,7 +200,7 @@ export default function Operations() {
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Open cases" value={live.openCases} sub={`${live.casesInProgress} in progress now`} onClick={() => navigate('/cases')} />
         <Stat label="Incidents in progress" value={live.incidentsInProgress} sub={`${live.openIncidents} unresolved overall`} onClick={() => navigate('/incidents')} />
-        <Stat label="Collection rate" value={fees.loading ? '—' : fmtPct(collectionPct, 1)} sub="All obligations · this campus" onClick={() => navigate('/fees')} />
+        <Stat label="Collection rate" value={fees.loading ? '—' : fmtPct(collectionPct, 1)} sub="Sample obligations · this campus" onClick={() => navigate('/fees')} />
         <Stat label="Documents expiring" value={live.docsExpiring} sub="Within 30 days · renewal tasks open" onClick={() => navigate('/documents')} />
       </div>
 
@@ -225,7 +225,7 @@ export default function Operations() {
             title="Evidence chain"
             steps={[
               { label: 'Route 7 · Bus 14 status', detail: 'Delayed +13 min · 38 students · incident inc_1 resolved, repair scheduled Saturday', source: 'Transport GPS · Route 7', refType: 'transport' },
-              { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Fees records · recomputed', refType: 'fees' },
+              { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Sample fees record · this build', refType: 'fees' },
               { label: 'Case queue', detail: `${live.openCases} open cases on ${campusName} · 1 on a 24h SLA (Bus 14 complaint)`, source: 'Cases · live queue', refType: 'case' },
               { label: 'Compliance watch', detail: 'Fire Safety Certificate (North) expires in 21 days · vendor quote pending', source: 'Document registry', refType: 'document' }]}
           />
@@ -340,7 +340,7 @@ export default function Operations() {
 
       <div style={{ height: 24 }} />
       <div className="u-xs u-faint" style={{ textAlign: 'center' }}>
-        {fees.loading ? 'Computing collection…' : `${fmtMoneyShort((fees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} received on this campus · compiled from live fee records`}
+        {fees.loading ? 'Computing collection…' : `${fmtMoneyShort((fees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} received on this campus · sample figure in this build`}
       </div>
     </div>
   );

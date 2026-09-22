@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 
 let app;
 let sql;
@@ -47,7 +47,7 @@ describe('pack.dpdp (DPDP compliance pack · migration 023 · contract dpdp.cons
   test('2 · enable (owner) → coordinator captures consent → immutable artifact + consent.recorded.v1', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
     const en = await app.inject({ method: 'POST', url: '/plugins/pack.dpdp/enable',
-      headers: { ...H(o.token), 'content-type': 'application/json' }, payload: { version: '1.0.0', class: 'C' } });
+      headers: { ...H(o.token), 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' }, payload: { version: '1.0.0', class: 'C' } });
     assert.equal(en.statusCode, 200);
     const co = await loginAs(app, 'coordinator@meridian.edu');
     const r = await app.inject({ method: 'POST', url: '/plugins/pack.dpdp/consent',

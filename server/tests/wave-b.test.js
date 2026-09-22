@@ -14,7 +14,7 @@ import { setupTestDb, loginAs } from './helpers.js';
 
 let app;
 let pool;
-let owner, coordinator, teacher, parent, student; // tokens cached (login limiter: 20/min)
+let owner, coordinator, teacher, parent, student, itadmin; // tokens cached (login limiter: 20/min)
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 
 before(async () => {
@@ -27,6 +27,7 @@ before(async () => {
   teacher = await loginAs(app, 'teacher@meridian.edu');
   parent = await loginAs(app, 'parent@meridian.edu');
   student = await loginAs(app, 'student@meridian.edu');
+  itadmin = await loginAs(app, 'itadmin@meridian.edu');
   const tenantId = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
   // enable through the real lifecycle door (registry rows authored by migrations 046-048)
   for (const [id, cls] of [['people.admin', 'B'], ['library', 'C'], ['files.store', 'B']]) {
@@ -70,6 +71,22 @@ test('people.admin: owner creation is forbidden and the attempt is audited', asy
   const audit = (await pool.query(
     `SELECT outcome FROM app.audit_log WHERE action ILIKE '%owner provisioning%' AND outcome ILIKE '%refused%' ORDER BY created_at DESC LIMIT 1`)).rows[0];
   assert.ok(audit, 'refused owner-creation attempt is in the ledger');
+});
+
+test('people.admin: only the owner may create a principal account (itadmin refused + audited)', async () => {
+  // FIX-ITADMIN: itadmin is the onboarding authority but may NOT mint a principal.
+  const denied = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(itadmin.token),
+    payload: { email: 'new.principal@meridian.edu', name: 'Principal Attempt', role: 'principal' } });
+  assert.equal(denied.statusCode, 403, denied.body);
+  const audit = (await pool.query(
+    `SELECT risk, outcome FROM app.audit_log WHERE action ILIKE '%principal provisioning%' AND outcome ILIKE '%refused%' ORDER BY created_at DESC LIMIT 1`)).rows[0];
+  assert.ok(audit, 'refused principal-creation attempt is in the ledger');
+  assert.equal(audit.risk, 'high', 'the refusal is recorded as high risk');
+
+  // the owner may still create a principal
+  const ok = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token),
+    payload: { email: 'owner.made.principal@meridian.edu', name: 'Owner Made Principal', role: 'principal' } });
+  assert.equal(ok.statusCode, 200, ok.body);
 });
 
 test('people.admin: suspend → 200, door audit asserted via SQL (login-shape assertion skipped)', async () => {
@@ -152,31 +169,47 @@ test('people.admin: CSV import — valid rows inserted, bad rows land in failed[
   assert.ok(indup, 'in-file duplicate admission is caught');
 });
 
+test('people.admin: itadmin can bulk-import students (onboarding authority)', async () => {
+  // FIX-ITADMIN: itadmin is the roster/onboarding authority — bulk import is in scope.
+  const csv = [
+    'name,grade,section,admission_no,guardian_name,guardian_phone',
+    'Itadmin Import,9,A,WB-ITA-0001,Guardian IA,+919000000009',
+  ].join('\n');
+  const r = await app.inject({ method: 'POST', url: '/plugins/people.admin/import/students', headers: H(itadmin.token), payload: { csv } });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().imported, 1, 'itadmin import commits the valid row');
+});
+
 // ── library ─────────────────────────────────────────────────────────────────────
-test('library: add book (1 copy) → issue → second issue 409 "no copies available" → return computes fine', async () => {
+test('library: librarian adds a book (1 copy) → issue → second issue 409 "no copies available" → return computes fine', async () => {
+  // library v2: the desk is the dedicated `librarian` role, and staff borrowing is a first-class path.
+  const made = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token),
+    payload: { name: 'Wave B Librarian', email: 'wb.librarian@meridian.edu', role: 'librarian', password: 'wb-lib-pass-1' } });
+  assert.equal(made.statusCode, 200, `appoint a librarian: ${made.body}`);
+  const librarian = await loginAs(app, 'wb.librarian@meridian.edu', 'wb-lib-pass-1');
   const { aaravId } = globalThis.__wb;
-  const add = await app.inject({ method: 'POST', url: '/plugins/library/books', headers: H(coordinator.token),
+  const add = await app.inject({ method: 'POST', url: '/plugins/library/books', headers: H(librarian.token),
     payload: { code: 'WB-BOOK-1', title: 'Wave B Test Book', author: 'A. Author', category: 'test', copies_total: 1 } });
   assert.equal(add.statusCode, 200, add.body);
   const bookId = add.json().bookId;
 
   const due = new Date(Date.now() - 3 * 864e5).toISOString().slice(0, 10); // 3 days ago → 3 days overdue
-  const issue = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(coordinator.token),
+  const issue = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(librarian.token),
     payload: { bookId, studentId: aaravId, dueOn: due } });
   assert.equal(issue.statusCode, 200, issue.body);
   const loanId = issue.json().loanId;
 
-  const second = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(coordinator.token),
+  const second = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(librarian.token),
     payload: { bookId, studentId: aaravId, dueOn: due } });
   assert.equal(second.statusCode, 409, second.body);
   assert.equal(second.json().error, 'no copies available');
 
   // overdue chase list sees it while open
-  const od = await app.inject({ method: 'GET', url: '/plugins/library/overdue', headers: H(coordinator.token) });
+  const od = await app.inject({ method: 'GET', url: '/plugins/library/overdue', headers: H(librarian.token) });
   assert.equal(od.statusCode, 200, od.body);
   assert.ok(od.json().loans.some((o) => o.id === loanId && o.daysOverdue >= 3), 'open overdue loan is on the chase list');
 
-  const ret = await app.inject({ method: 'POST', url: `/plugins/library/loans/${loanId}/return`, headers: H(coordinator.token), payload: {} });
+  const ret = await app.inject({ method: 'POST', url: `/plugins/library/loans/${loanId}/return`, headers: H(librarian.token), payload: {} });
   assert.equal(ret.statusCode, 200, ret.body);
   assert.equal(ret.json().fineCents, 1500, 'fine = 3 days × 500 paise (settings default)');
   const loan = (await pool.query(`SELECT status, fine_cents, returned_at FROM library.loan WHERE id=$1`, [loanId])).rows[0];
@@ -184,9 +217,9 @@ test('library: add book (1 copy) → issue → second issue 409 "no copies avail
   assert.equal(loan.fine_cents, 1500);
   assert.ok(loan.returned_at, 'returned_at stamped once');
 
-  // the freed copy can be issued again (availability is derived, never stored)
+  // the freed copy can be issued again (availability is derived from the copy, never stored)
   const future = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-  const reissue = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(coordinator.token),
+  const reissue = await app.inject({ method: 'POST', url: '/plugins/library/loans', headers: H(librarian.token),
     payload: { bookId, studentId: aaravId, dueOn: future } });
   assert.equal(reissue.statusCode, 200, reissue.body);
 

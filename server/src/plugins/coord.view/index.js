@@ -29,7 +29,10 @@ import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 const ID = 'coord.view';
 export { default as manifest } from './manifest.js';
 
-const AUTHORITY = ['coordinator', 'principal'];            // every coord door
+// OPP-RBAC-2: the owner is the ultimate academic authority and must be able to READ the coordinator plane
+// it arbitrates. The decide door still enforces owner_role='coordinator' + proposer≠approver, so this is
+// reach, not a bypass.
+const AUTHORITY = ['coordinator', 'principal', 'owner'];    // every coord door
 const DUTY_KINDS = ['duty', 'invigilation', 'event', 'exam'];
 const EXTRA_LOAD_LIMIT = 8;   // fairness threshold: substitutions+invigilation+duties/month
 const COPILOT_MONTHLY_CAP = 200;                           // A2 budget class coordinator_tier
@@ -276,6 +279,10 @@ export function register(app, kernel) {
         .filter((m) => m.weeks_behind > 0)
         .map(({ class_grade, subject, covered_pct, expected_pct, weeks_behind }) =>
           ({ class_grade, subject, covered_pct, expected_pct, weeks_behind }));
+      // API-14: the declared coord.home.v1 contract is emitted when the command center is read.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'coordination', label: `Coordinator home viewed — ${istDate()}`, ref: 'coord.home' },
+        'coord.home.v1', { date: istDate(), gaps: gaps.length, approvals: approvals.length, openIssues: issues.length });
       return {
         date: istDate(),
         staffing_today: staffing,
@@ -347,6 +354,11 @@ export function register(app, kernel) {
         `UPDATE app.actions SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,
         [a.id, status, req.user.id, b.note ? String(b.note).slice(0, 500) : null]);
       let emitted = null;
+      // API-14: every coordinator decision emits the general coord.decision.v1 contract;
+      // an approved substitution also emits its specific sub.assign.v1 hand-off.
+      await emitEvent(c, req.user.tenant_id,
+        { type: 'coordination', label: `Coordinator decision ${b.decision} — ${a.title}`, ref: a.id },
+        'coord.decision.v1', { actionId: a.id, code: a.code, decision: b.decision, decidedBy: req.user.id });
       if (b.decision === 'approved') {
         await emitEvent(c, req.user.tenant_id,
           { type: 'coordination', label: `Substitution approved — ${a.title}`, ref: a.id },

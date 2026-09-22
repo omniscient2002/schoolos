@@ -288,13 +288,24 @@ describe('L1 security sprint (054)', () => {
       const ownerDecides = await app.inject({ method: 'POST', url: `/actions/${act.id}/decide`, payload: { decision: 'approved' }, headers: H(o.token) });
       assert.equal(ownerDecides.statusCode, 200, ownerDecides.body);
     });
-    test('d-control) a lower desk\'s unattributed notice is still approvable by the principal (health.clinic shape)', async () => {
+    test('d-control) a lower desk\'s attributed notice is still approvable by the principal (health.clinic shape)', async () => {
+      // OVR-4: the real clinic raise now stamps a proposer; a principal approving a coordinator's
+      // notice is a genuine second authority, so it must still work.
+      const proposer = (await sql(`SELECT id FROM app.users WHERE tenant_id=$1 AND role='coordinator' LIMIT 1`, [T])).rows[0];
       const act = (await sql(`INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
         VALUES ($1,'act_l1_clinic','approval','Guardian notice: sent home','clinic notice','duty of care','normal','open',NULL,'principal','Comms §1.2',false,'l1-visit-ref',$2::jsonb) RETURNING id`, [T,
-        JSON.stringify({ kind: 'message', visitId: 'l1-visit-ref', audience: 'guardians', channel: 'WhatsApp', template: 'CLINIC_SENT_HOME' })])).rows[0];
+        JSON.stringify({ kind: 'message', visitId: 'l1-visit-ref', audience: 'guardians', channel: 'WhatsApp', template: 'CLINIC_SENT_HOME', proposed_by: proposer.id, proposed_by_role: 'coordinator' })])).rows[0];
       const pr = await loginAs(app, 'principal@meridian.edu');
       const ok = await app.inject({ method: 'POST', url: `/actions/${act.id}/decide`, payload: { decision: 'approved' }, headers: H(pr.token) });
       assert.equal(ok.statusCode, 200, `clinic guardian-notice flow must keep working: ${ok.body}`);
+    });
+    test('d-general) ANY unattributed raise is refused to its owning desk (OVR-4)', async () => {
+      const act = (await sql(`INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, payload)
+        VALUES ($1,'act_l1_unattributed','approval','Unattributed notice','no proposer','sod','normal','open',NULL,'principal','Test §1',false,$2::jsonb) RETURNING id`, [T,
+        JSON.stringify({ kind: 'message', audience: 'guardians', template: 'X' })])).rows[0];
+      const pr = await loginAs(app, 'principal@meridian.edu');
+      const denied = await app.inject({ method: 'POST', url: `/actions/${act.id}/decide`, payload: { decision: 'approved' }, headers: H(pr.token) });
+      assert.equal(denied.statusCode, 403, 'an unattributed raise cannot be self-approved by the owning desk');
     });
   });
 

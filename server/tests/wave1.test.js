@@ -50,7 +50,9 @@ describe('wave-1 plugin runtimes', () => {
     const g = grid.json();
     assert.ok(g.periods.length >= 8, 'period grid seeded');
     assert.ok(g.slots.length > 0, 'slots seeded');
-    assert.equal(g.note.includes('section-agnostic'), true);
+    // M4: the grid is no longer described as section-agnostic — slots now carry grade/section and a
+    // class-section slice overlays the school-wide grid.
+    assert.equal(g.note.includes('class-section'), true);
 
     // deterministic suggester: same-subject free teachers first, suggestions never execute
     const teacher = g.slots.find(s => s.day_of_week === 'Monday')?.teacher_name;
@@ -154,6 +156,9 @@ describe('wave-1 plugin runtimes', () => {
     // an unsettled obligation from seed (seed uses status 'open')
     const o = (await sql(`SELECT id FROM app.fee_obligations WHERE status IN ('open','partial') AND paid_cents < amount_cents LIMIT 1`)).rows[0];
     assert.ok(o, 'an open obligation exists');
+    // A4: the rail needs a configured school VPA (no fabricated `schoolos@<name>`).
+    const owner = await loginAs(app, 'owner@meridian.edu');
+    await app.inject({ method: 'POST', url: '/plugins/payments.upi/settings', headers: { ...H(owner.token), 'content-type': 'application/json' }, payload: { gateway: 'razorpay', default_vpa: 'meridian@icici' } });
     const link = await app.inject({ method: 'POST', url: '/plugins/payments.upi/links', payload: { obligationId: o.id }, headers: FH });
     assert.equal(link.statusCode, 200);
     const { paymentId, linkId } = link.json();

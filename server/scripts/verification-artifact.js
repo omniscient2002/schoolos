@@ -117,8 +117,25 @@ const declared = count(() => {
 });
 
 // Live-database facts (46 tables / 103 policies / 1 DELETE grant) come from the dev DB when reachable.
+// B4/J6: these were reported UNMEASURED whenever the generator ran without DATABASE_URL exported in its
+// own environment (a bare `npm run verify-artifact`, or a CI step that inherited no DB env). The
+// generator must not depend on the caller having exported the URL — it reads the same `server/.env` the
+// rest of the app uses, so the ledger/RLS rows are measured on every run, not just inside CI.
+function databaseUrl() {
+  // An EXPLICIT empty value means "do not touch a database" (the generator's own test sets it) — honour
+  // that rather than falling through to .env. Only an UNSET variable triggers the .env fallback.
+  if (process.env.DATABASE_URL !== undefined) return process.env.DATABASE_URL || null;
+  try {
+    const envPath = join(ROOT, '.env');
+    if (existsSync(envPath)) {
+      const line = readFileSync(envPath, 'utf8').split('\n').find((l) => l.startsWith('DATABASE_URL='));
+      if (line) return line.slice('DATABASE_URL='.length).trim().replace(/^["']|["']$/g, '');
+    }
+  } catch { /* fall through to UNMEASURED */ }
+  return null;
+}
 function psql(sql) {
-  const url = process.env.DATABASE_URL;
+  const url = databaseUrl();
   if (!url) return null;
   try {
     const out = execFileSync('psql', [url, '-Atc', sql], { encoding: 'utf8' }).trim();
@@ -131,6 +148,14 @@ const dbFacts = {
   deleteGrants: psql(`select count(*) from information_schema.role_table_grants
                       where grantee='schoolos_app' and privilege_type='DELETE'`),
   migrationLedger: psql(`select count(*) from app.schema_migrations`),
+  // F7/J3: a table can ENABLE RLS without FORCE, which lets the table OWNER bypass its own policy.
+  // Measuring both closes the "is FORCE actually applied?" question the artifact previously left open.
+  rlsEnabled: psql(`select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
+                    where n.nspname in ('app','auth','family','plugin_exams','plugin_hr','plugin_clinic','plugin_visitors','plugin_dpdp')
+                      and c.relkind='r' and c.relrowsecurity`),
+  rlsForced: psql(`select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
+                   where n.nspname in ('app','auth','family','plugin_exams','plugin_hr','plugin_clinic','plugin_visitors','plugin_dpdp')
+                     and c.relkind='r' and c.relforcerowsecurity`),
 };
 
 // ── 4. Fingerprint the tree (no git — coop law) ─────────────────────────────
@@ -222,6 +247,8 @@ ${failedSuites.length ? `### Failing/cancelled suite blocks (${failedSuites.leng
 | Migration ledger rows (live DB) | ${unmeasured(dbFacts.migrationLedger)} | \`app.schema_migrations\` |
 | \`app\` tables (live DB) | ${unmeasured(dbFacts.appTables)} | \`information_schema\` |
 | RLS policies (live DB) | ${unmeasured(dbFacts.policies)} | \`pg_policies\` |
+| Tables with RLS enabled (live DB) | ${unmeasured(dbFacts.rlsEnabled)} | \`pg_class.relrowsecurity\` |
+| Tables with RLS FORCED (live DB) | ${unmeasured(dbFacts.rlsForced)} | \`pg_class.relforcerowsecurity\` |
 | Tables the app role may DELETE (live DB) | ${unmeasured(dbFacts.deleteGrants)} | \`information_schema.role_table_grants\` |
 
 ## How to read this

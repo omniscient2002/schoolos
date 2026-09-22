@@ -24,8 +24,9 @@ import { Icon } from '../../components/Icon';
 import { fmtDateShort } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
 import { getNoticeboard, type StudentNoticeboardData } from '../../services/studentApi';
-import { useStore } from '../../state/store';
 import { useSession } from '../../App';
+import { canSurface } from '../../lib/effective';
+import { useRoleOrGrant } from '../../lib/access';
 
 /* staff surface: teacher/office/coordinator/principal (plan: "teacher/office see
    … noticeboard"); the server decides — this is a UI mirror, not authority. */
@@ -57,9 +58,11 @@ const NO_PRINT_CSS = `
 
 export default function Noticeboard() {
   const toast = useToast();
-  const { session } = useStore();
   const live = useSession();
-  const allowed = STAFF_ROLES.includes(live.role) || STAFF_ROLES.includes(session.roleId);
+  /* FEX-4/FEX-7: the sheet is served by `GET /student/noticeboard` (student + staff); a mask-granted
+     custom role reaches it through the grant, not a built-in role string. */
+  const staffGranted = useRoleOrGrant(STAFF_ROLES, ['GET /student/noticeboard']);
+  const allowed = live.effective ? canSurface(live.effective, '/noticeboard') : staffGranted;
 
   const [data, setData] = useState<StudentNoticeboardData | null>(null);
   const [loading, setLoading] = useState(true);

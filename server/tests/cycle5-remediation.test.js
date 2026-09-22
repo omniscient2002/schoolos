@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 
 let app;
 let sql;
@@ -100,9 +100,10 @@ describe('cycle-5 remediation (P1-1 · P1-2 · P2-1 · P2-2 · P2-3)', () => {
 
   test('P1-2 · admissions: dedupe race degrades to 409 with leadId (partial unique backstop)', async () => {
     const co = await loginAs(app, 'coordinator@meridian.edu');
-    // direct INSERT simulates the race window (module catches 23505 → 409)
-    await sql(`INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_phone, class_applied, notes)
-               SELECT id, 'Race Winner', '+919822200333', '6', jsonb_build_object('admission_year','2026-27')
+    // direct INSERT simulates the race window (module catches 23505 → 409).
+    // v1.3: the dedupe key is the real admission_year column, not notes JSONB.
+    await sql(`INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_phone, class_applied, admission_year)
+               SELECT id, 'Race Winner', '+919822200333', '6', '2026-27'
                FROM app.tenants LIMIT 1`);
     const race = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads',
       payload: { studentName: 'Race Loser', guardianPhone: '98222 00333', classApplied: '6' }, headers: H(co.token) });

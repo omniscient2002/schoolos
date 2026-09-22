@@ -133,12 +133,12 @@ export function register(app, kernel) {
           obligation = { actionId: existing.id, reused: true };
         } else if (!existing) {
           const act = await sysq(
-            `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-             VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','CBSE pack obligations',false,'cbse.obligation.due.v1',$6::jsonb) RETURNING id`,
+            `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+             VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','CBSE pack obligations',false,'cbse.obligation.due.v1',$6::jsonb,'pack.cbse') RETURNING id`,
             [req.user.tenant_id, code, `CBSE obligation: assessment weightage invalid (${e.name})`,
               `Rule R1 FAIL: weightage sums to ${total}, not 100. Bring the assessment plan into board compliance.`,
               'The pack raises obligations, never relaxes safeguards; publication of a non-compliant assessment must not proceed.',
-              JSON.stringify({ examId: e.id, rule: 'R1', weightage: w, validationDigest: digest })]);
+              JSON.stringify({ examId: e.id, rule: 'R1', weightage: w, validationDigest: digest, proposed_by: req.user.id, proposed_by_role: req.user.role })]);
           obligation = { actionId: act.rows[0].id, raised: true };
         }
         await emitEvent(c, req.user.tenant_id,

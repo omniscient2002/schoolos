@@ -9,7 +9,7 @@ import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import {
   PageHead, Section, Card, Stat, Badge, DataTable, Button, useToast,
-  Modal, Empty, ErrorState, Skeleton, KeyValue,
+  Modal, Empty, ErrorState, Skeleton, KeyValue, SampleNote,
 } from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
 import { BarChart } from '../components/Chart';
@@ -225,6 +225,8 @@ export default function Documents() {
           </>
         }
       />
+
+      <SampleNote>Sample document registry — records, expiry figures and the inspection pack are illustrative in this build; uploads are not stored on school servers.</SampleNote>
 
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>

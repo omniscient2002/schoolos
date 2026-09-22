@@ -26,7 +26,7 @@ describe('event spine & governance (docs/12)', () => {
     // PLG-10: `/transport/events` refuses (409) until an enabled transport.gps provider exists, so the
     // envelope assertions only describe a live deployment once the module is switched on.
     const owner = await loginAs(app, 'owner@meridian.edu');
-    await app.inject({ method: 'POST', url: '/plugins/transport.gps/enable', payload: {}, headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' } });
+    await app.inject({ method: 'POST', url: '/plugins/transport.gps/enable', payload: {}, headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' } });
     const p = await loginAs(app);
     const res = await app.inject({ method: 'POST', url: '/transport/events', payload: { routeCode: 'Route 7', kind: 'gps_delay', delayMins: 12 }, headers: { authorization: `Bearer ${p.token}` } });
     assert.equal(res.statusCode, 200);
@@ -49,7 +49,7 @@ describe('event spine & governance (docs/12)', () => {
 
   test('event budgets trip the circuit breaker (docs/12 §10)', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
-    const H = { authorization: `Bearer ${o.token}`, 'content-type': 'application/json' };
+    const H = { authorization: `Bearer ${o.token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' };
     // PLG-10: the door now emits/quota-checks under the REAL module id `transport.gps`. The old fixture enabled
     // a non-existent module `transport` through the enable door (which, before PLG-4, fabricated its row); now
     // that the door requires a module, the fixture uses the id the runtime and catalog actually share.
@@ -57,7 +57,7 @@ describe('event spine & governance (docs/12)', () => {
     // age out earlier test events so the per-minute window starts clean
     await sql(`UPDATE app.events SET created_at = now() - interval '5 minutes' WHERE emitted_by='plugin:transport.gps'`);
     await sql(`UPDATE app.plugins SET event_budget='{"events_per_min":2}'::jsonb WHERE plugin_id='transport.gps'`);
-    const mk = () => app.inject({ method: 'POST', url: '/transport/events', payload: { routeCode: 'Route 4', kind: 'gps_delay', delayMins: 3 }, headers: { authorization: `Bearer ${o.token}` } });
+    const mk = () => app.inject({ method: 'POST', url: '/transport/events', payload: { routeCode: 'Route 4', kind: 'gps_delay', delayMins: 3 }, headers: { authorization: `Bearer ${o.token}`, 'x-step-up-password': 'schoolos-demo' } });
     assert.equal((await mk()).statusCode, 200);
     assert.equal((await mk()).statusCode, 200);
     const third = await mk();
@@ -87,7 +87,7 @@ describe('event spine & governance (docs/12)', () => {
 
   test('drain protocol: disable hands open actions back, never abandons (docs/12 §12)', async () => {
     const o = await loginAs(app, 'owner@meridian.edu');
-    const H = { authorization: `Bearer ${o.token}`, 'content-type': 'application/json' };
+    const H = { authorization: `Bearer ${o.token}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' };
     await app.inject({ method: 'POST', url: '/plugins/library/enable', payload: { version: '1.0.0', class: 'A' }, headers: H });
     const t = (await sql(`SELECT id FROM app.tenants LIMIT 1`)).rows[0].id;
     await sql(`INSERT INTO app.actions (tenant_id, code, kind, title, status, owner, owner_role, policy_ref)

@@ -1,4 +1,4 @@
--- 065 · scoped API keys + outbound webhooks (L2-4.1, Wave 4 — claimed by L2, blocks.md).
+-- 069 · scoped API keys + outbound webhooks (L2-4.1, Wave 4 — claimed by L2, blocks.md).
 -- API keys: machine identities for read-only integrations. The RAW key is shown
 -- once at creation; only sha256(key) is stored. Scopes gate read doors
 -- (default-deny; the kernel hook resolves req.apiScopes). 'api' role is NOT in

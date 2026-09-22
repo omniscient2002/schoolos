@@ -36,10 +36,10 @@ describe('PLG-4 · enable metadata comes from the manifest', () => {
     assert.equal(r.statusCode, 200, brief(r));
     const p = r.json().plugin;
     assert.equal(p.class, 'C', 'the manifest says class C; the body said A and must not win');
-    assert.equal(p.version, '1.0.0', 'the manifest version, not the body\'s 9.9.9');
+    assert.equal(p.version, '2.0.0', 'the manifest version, not the body\'s 9.9.9');
     assert.equal(p.manifest.id, 'library');
     assert.equal(p.manifest.evil, undefined, 'the body manifest must not be stored');
-    assert.deepEqual([...p.permissions].sort(), ['audit.request', 'events.emit', 'students.read'],
+    assert.deepEqual([...p.permissions].sort(), ['audit.request', 'events.emit', 'students.read', 'users.read'],
       'the stored grant is the manifest declaration, not the body permission');
   });
 

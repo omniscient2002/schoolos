@@ -18,6 +18,7 @@
 //   as a cron job: node scripts/dunning-reminders.js    (exits 1 when reminders were queued, else 0)
 import { pathToFileURL } from 'node:url';
 import { sysq } from '../src/db.js';
+import { selectOverdue, selectBeforeDue, selectEscalation, overdueBody, beforeDueBody, escalationBody, overdueDedup, beforeDueDedup, escalationDedup } from '../src/fees/dunning.js';
 
 // This is an all-tenant maintenance sweep, so it deliberately uses the named
 // privileged helper. Keeping the choice in db.js makes the owner path explicit
@@ -57,26 +58,29 @@ export async function runDunning({ q = defaultQ, quiet = null } = {}) {
       report.quiet = true;
       continue;
     }
-    const rows = (await q(
-      `SELECT o.id, o.label, o.due_on, o.amount_cents, o.paid_cents, s.name AS student_name, s.guardian_phone
-       FROM app.fee_obligations o JOIN app.students s ON s.id = o.student_id
-       WHERE o.tenant_id=$1 AND o.status IN ('open','partial') AND o.due_on < $2::date AND o.amount_cents > o.paid_cents
-         AND NOT EXISTS (SELECT 1 FROM app.communications cm
-                          WHERE cm.dedup_key = 'dunning:' || o.id::text AND cm.created_at > now() - interval '7 days')
-       ORDER BY o.due_on LIMIT 200`, [t.id, IST_TODAY()])).rows;
-    let queued = 0; let skippedNoContact = 0;
-    for (const o of rows) {
-      if (!o.guardian_phone) { skippedNoContact += 1; continue; }
-      const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
+    const today = IST_TODAY();
+    const before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    const escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    const queue = async (o, { kind, dedup, body, offsetDays }) => {
+      if (!o.guardian_phone) { skippedNoContact += 1; return 0; }
       const inserted = await q(
         `INSERT INTO app.communications (tenant_id, audience_kind, audience_json, channel, template, body, status, policy_ref, dedup_key)
-         VALUES ($1,'guardian',$2::jsonb,'whatsapp','FEE_REMINDER',$3,'queued','Fees §4.2',$4)
+         VALUES ($1,'guardian',$2::jsonb,'whatsapp',$3,$4,'queued','Fees §4.2',$5)
          ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
         [t.id, JSON.stringify([o.guardian_phone]),
-         `Fee reminder: ${o.student_name} — ${o.label}, ₹${Number(due) / 100} was due on ${o.due_on}. Please pay via the parent portal or at the school office. If you have already paid, please share the receipt with the office — no action otherwise.`,
-         `dunning:${o.id}`]);
-      queued += inserted.rowCount;
-    }
+         kind === 'escalation' ? 'FEE_ESCALATION' : 'FEE_REMINDER', body, dedup]);
+      if (inserted.rowCount > 0) {
+        await q(
+          `INSERT INTO app.fee_dunning_log (tenant_id, obligation_id, kind, channel, offset_days, dedup_key)
+           VALUES ($1,$2,$3,'whatsapp',$4,$5) ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
+          [t.id, o.id, kind, offsetDays ?? null, dedup]);
+      }
+      return inserted.rowCount;
+    };
+    let queued = 0; let skippedNoContact = 0;
+    for (const o of await selectOverdue(q, t.id, today)) queued += await queue(o, { kind: 'overdue', dedup: overdueDedup(o.id), body: overdueBody(o) });
+    for (const offset of before) for (const o of await selectBeforeDue(q, t.id, today, offset)) queued += await queue(o, { kind: 'before_due', dedup: beforeDueDedup(o.id, offset), body: beforeDueBody(o), offsetDays: offset });
+    for (const days of escalate) for (const o of await selectEscalation(q, t.id, today, days)) queued += await queue(o, { kind: 'escalation', dedup: escalationDedup(o.id, days), body: escalationBody(o), offsetDays: days });
     report.tenants.push({ slug: t.slug, queued, skippedNoContact });
     report.queuedTotal += queued;
   }

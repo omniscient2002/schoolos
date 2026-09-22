@@ -97,6 +97,8 @@ export default function StudentLearning() {
 
       {/* ---------- practice ---------- */}
       {tab === 'practice' && (
+        <div className="u-col" style={{ gap: 14 }}>
+        <SampleNote>Sample practice — these skills and questions are illustrative and not read from your school records. The live practice lane is not connected in this build.</SampleNote>
         <div className="grid grid-2">
           {SKILLS.map(s => (
             <Card key={s.id} pad>
@@ -116,11 +118,13 @@ export default function StudentLearning() {
             </Card>
           ))}
         </div>
+        </div>
       )}
 
       {/* ---------- assignments ---------- */}
       {tab === 'assignments' && (
         <div className="u-col" style={{ gap: 10 }}>
+          <SampleNote>Sample assignments — these are illustrative and not read from your school records. Your live homework appears on My Day.</SampleNote>
           {ASSIGNMENTS.map(a => (
             <Card key={a.id} pad onClick={() => setOpenAssignment(a)} className="u-between">
               <div className="u-flex" style={{ gap: 10, minWidth: 0 }}>

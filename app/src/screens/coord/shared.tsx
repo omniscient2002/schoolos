@@ -9,13 +9,17 @@ import { useEffect, useState } from 'react';
 import { useSession } from '../../App';
 import { Empty } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { useRoleOrGrant } from '../../lib/access';
 
 /** server AUTHORITY set (coord.view index.js) — the UI mirrors it, the server decides */
 export const COORD_AUTHORITY = ['coordinator', 'principal'];
 
 export function useCoordAccess() {
   const live = useSession();
-  return { allowed: COORD_AUTHORITY.includes(live.role), role: live.role };
+  /* FEX-4/FEX-7: a mask-granted custom role reaches the coordinator desk through its grant, not by
+     matching a built-in role string. The server's coord.view doors re-decide regardless. */
+  const allowed = useRoleOrGrant(COORD_AUTHORITY, ['GET /coord/home']);
+  return { allowed, role: live.role };
 }
 
 export function CoordDenied({ what }: { what: string }) {

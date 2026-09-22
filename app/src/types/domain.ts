@@ -9,8 +9,8 @@ export interface Campus { id: CampusId; name: string; shortName: string; student
 
 /* RBAC-2: `counselor` is the 13th role, matching server/src/auth.js ROLES. The client already authorised
    it in WellbeingQueue's STAFF_ROLES while the server could not issue it — the role existed only as a
-   string in a screen's access list. */
-export type RoleId = 'principal' | 'teacher' | 'coordinator' | 'counselor' | 'finance' | 'admissions' | 'transport' | 'parent' | 'student' | 'owner' | 'itadmin' | 'facilities' | 'technician';
+   string in a screen's access list. `librarian` is the 14th (library v2, docs/LIBRARY-DESIGN.md). */
+export type RoleId = 'principal' | 'teacher' | 'coordinator' | 'counselor' | 'finance' | 'finance_head' | 'finance_clerk' | 'admissions' | 'transport' | 'parent' | 'student' | 'owner' | 'itadmin' | 'facilities' | 'technician' | 'librarian';
 
 export interface DemoAccount { id: RoleId; name: string; title: string; campus: CampusId | 'all'; email: string; }
 
@@ -61,7 +61,8 @@ export interface Section { id: string; grade: number; name: string; campus: Camp
 export interface TimeSlot { id: string; day: number; period: number; start: string; end: string; subject: string; teacherId: string; sectionId: string; room: string; }
 
 /* ---------- Admissions ---------- */
-export type LeadStage = 'inquiry' | 'contacted' | 'visit' | 'interview' | 'offer' | 'accepted' | 'enrolled' | 'rejected' | 'withdrawn';
+/* India-admissions lattice — mirrors server _shared/admissions-access.js. */
+export type LeadStage = 'enquiry' | 'form' | 'interaction' | 'offer' | 'waitlisted' | 'enrolled' | 'rejected' | 'withdrawn';
 export interface Lead {
   id: string; name: string; grade: number; campus: CampusId; stage: LeadStage;
   source: string; guardian: string; phone: string; createdOn: Date; lastTouch: Date;

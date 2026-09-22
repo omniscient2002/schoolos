@@ -3,10 +3,11 @@
    table, recent AI decisions with "Why" traces, the shield log,
    model routing and AI cost & usage.
    ============================================================ */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { useStore } from '../state/store';
+import { apiGet } from '../services/liveApi';
 import { Badge, Button, Card, DataTable, PageHead, Section, Stat, useToast , SampleNote} from '../components/ui';
 import { AiTraceCard } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
@@ -27,6 +28,27 @@ export default function AiGovernance() {
 
   const [openTrace, setOpenTrace] = useState<string | null>(null);
   const [postureFilter, setPostureFilter] = useState<Posture | 'all'>('all');
+
+  /* FE-10: the "AI actions this month 1284 / 1102 / 174 / 8" tiles were hardcoded constants rendered as
+     measured fact. The real per-call ledger is `GET /ai/calls` (owner/principal/itadmin). Counts are now
+     computed from that door; when it is unavailable the tiles render "—" rather than a fabricated number. */
+  const [aiCalls, setAiCalls] = useState<Array<{ outcome?: string; sandbox?: boolean; created_at?: string }> | null>(null);
+  const [aiCallsUnavailable, setAiCallsUnavailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ calls: Array<{ outcome?: string; sandbox?: boolean; created_at?: string }> }>('/ai/calls')
+      .then(r => { if (live) { setAiCalls(r.calls ?? []); setAiCallsUnavailable(false); } })
+      .catch(() => { if (live) { setAiCalls(null); setAiCallsUnavailable(true); } });
+    return () => { live = false; };
+  }, []);
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const monthCalls = (aiCalls ?? []).filter(c => c.created_at && new Date(c.created_at) >= monthStart);
+  const aiStats = aiCalls == null ? null : {
+    total: monthCalls.length,
+    ok: monthCalls.filter(c => c.outcome === 'ok').length,
+    errored: monthCalls.filter(c => c.outcome === 'error').length,
+    budgetStopped: monthCalls.filter(c => c.outcome === 'budget').length,
+  };
 
   const aiPolicies = useMemo(() => seed.policies.filter(p => p.category === 'AI Governance'), []);
   const dist = useMemo(() => {
@@ -69,7 +91,7 @@ export default function AiGovernance() {
 
   return (
     <>
-      <SampleNote>Sample governance data — shield events and AI action counts are illustrative in this build; no AI decision log is connected.</SampleNote>
+      <SampleNote>Sample governance data — the policy table and shield log are illustrative in this build; the AI call counters below read the live `GET /ai/calls` ledger when it is available.</SampleNote>
       <PageHead
         title="AI rules & control"
         sub="Where the AI may act on its own, where it must wait for a human, and where it never goes."
@@ -77,10 +99,10 @@ export default function AiGovernance() {
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
-        <Stat label="AI actions this month" value={fmtNum(1284)} sub="Across all campuses and roles" />
-        <Stat label="Auto-executed" value={fmtNum(1102)} sub="86% — inside policy whitelists" />
-        <Stat label="Approval-required" value="174" sub="Waiting on a named human approver" />
-        <Stat label="Human-only blocks" value="8" sub="Shield stopped the proposal entirely" />
+        <Stat label="AI calls this month" value={aiStats ? fmtNum(aiStats.total) : '—'} sub={aiCallsUnavailable ? 'Ledger unavailable for this session' : 'From the live AI call ledger'} />
+        <Stat label="Completed" value={aiStats ? fmtNum(aiStats.ok) : '—'} sub={aiStats && aiStats.total ? `${Math.round((aiStats.ok / aiStats.total) * 100)}% of calls succeeded` : 'No calls recorded yet'} />
+        <Stat label="Errors" value={aiStats ? fmtNum(aiStats.errored) : '—'} sub="Provider or processing errors" />
+        <Stat label="Budget-stopped" value={aiStats ? fmtNum(aiStats.budgetStopped) : '—'} sub="Refused before the provider (budget)" />
       </div>
 
       {/* ---------- human-control boundary ---------- */}

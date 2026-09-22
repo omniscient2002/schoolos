@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let app;
@@ -392,4 +392,35 @@ describe('teacher.copilot v0 — governance: role gates, lifecycle gate, RLS', (
     const bad = await app.inject({ method: 'GET', url: '/mastery/student/not-a-uuid?subject=Mathematics', headers: H(teacherToken) });
     assert.equal(bad.statusCode, 400);
   });
+});
+
+/* ── PRD-9: the progress story door (previously PROPOSED, now built) ─────────── */
+
+test('progress story: a real student returns chronological evidence steps', async () => {
+  const { pool } = await import('../src/db.js');
+  const tenantId = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='teacher@meridian.edu'`)).rows[0].tenant_id;
+  const student = (await pool.query(`SELECT id, name FROM app.students WHERE tenant_id=$1 AND status='active' LIMIT 1`, [tenantId])).rows[0];
+  const teacher = await loginAs(app, 'teacher@meridian.edu');
+  const r = await app.inject({ method: 'GET', url: `/progress/story/${student.id}`, headers: { authorization: `Bearer ${teacher.token}` } });
+  assert.equal(r.statusCode, 200, r.body);
+  const body = r.json();
+  assert.equal(body.studentId, student.id);
+  assert.ok(Array.isArray(body.steps));
+  const bad = await app.inject({ method: 'GET', url: '/progress/story/not-a-uuid', headers: { authorization: `Bearer ${teacher.token}` } });
+  assert.equal(bad.statusCode, 400, 'non-uuid id is a 400 before any uuid cast');
+});
+
+/* ── PRD-11: class analytics composite (aggregates, never rankings) ──────────── */
+
+test('class analytics returns aggregate mastery/homework/attendance with no ranking', async () => {
+  const teacher = await loginAs(app, 'teacher@meridian.edu');
+  const r = await app.inject({ method: 'GET', url: '/analytics/class/8?subject=Mathematics', headers: { authorization: `Bearer ${teacher.token}` } });
+  assert.equal(r.statusCode, 200, r.body);
+  const b = r.json();
+  assert.equal(b.grade, '8');
+  assert.ok(b.mastery && typeof b.mastery.strong === 'number');
+  assert.ok(b.homework && 'completion_pct' in b.homework);
+  assert.ok(b.attendance && 'pct' in b.attendance);
+  assert.ok(!('rank' in b) && !('students_list' in b), 'aggregates only, no ranking or per-student list');
+  assert.equal((await app.inject({ method: 'GET', url: '/analytics/class/8?subject=BasketWeaving', headers: { authorization: `Bearer ${teacher.token}` } })).statusCode, 400);
 });

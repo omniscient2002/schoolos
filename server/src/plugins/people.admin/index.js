@@ -43,7 +43,7 @@ export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
 
   const ADMIN = ['owner', 'itadmin'];                                 // identity authority
-  const ROSTER = ['owner', 'principal', 'coordinator', 'admissions']; // roster authority
+  const ROSTER = ['owner', 'principal', 'coordinator', 'admissions', 'itadmin']; // roster authority
   const lifecycleGate = makeLifecycleGate(sysq, ID);
   const bad = (reply, msg, code = 400) => reply.code(code).send({ error: msg });
 
@@ -104,6 +104,16 @@ export function register(app, kernel) {
       });
       return bad(reply, 'The owner role cannot be created here — ownership is provisioned at tenant bootstrap', 403);
     }
+    if (role === 'principal' && req.user.role !== 'owner') {
+      // Mirror the owner-refusal contract: the ledger row must COMMIT before the 403 is sent.
+      await withUser(req.user.tenant_id, req.user.role, async (c) => {
+        await requestAudit(c, req.user.tenant_id, ID, {
+          actor: req.user.name, action: 'Attempted principal provisioning (refused)', recordType: 'User', recordRef: email,
+          reason: `role requested: principal by ${req.user.role}`, policyRef: 'Platform §2.4 (identity & access)', risk: 'high',
+          outcome: 'refused — only the school owner may create a principal account' });
+      });
+      return bad(reply, 'Only the school owner can create a principal account', 403);
+    }
     if (!ROLES_NO_OWNER.includes(role)) return bad(reply, `Role must be one of: ${ROLES_NO_OWNER.join(', ')}`);
     const suppliedPassword = typeof b.password === 'string' && b.password.length >= 8 ? b.password : null;
     if (b.password != null && !suppliedPassword) return bad(reply, 'Password must be at least 8 characters (or leave it out to generate a temporary one)');
@@ -138,6 +148,20 @@ export function register(app, kernel) {
           `INSERT INTO family.child_link (tenant_id, user_id, student_id, relation, is_primary)
            VALUES ($1,$2,$3,'guardian',true) ON CONFLICT (tenant_id, user_id, student_id) DO NOTHING`,
           [req.user.tenant_id, row.id, b.studentId]);
+        /* M1: mirror the binding into the canonical guardian contact table so the child has a
+           reachable guardian for absence/visitor/audience resolution — not just a linked account.
+           Only when the parent has a phone (app.guardians.phone is NOT NULL) and not already present. */
+        if (phone) {
+          const existing = (await c.query(
+            `SELECT 1 FROM app.guardians WHERE tenant_id=$1 AND student_id=$2 AND phone=$3 LIMIT 1`,
+            [req.user.tenant_id, b.studentId, phone])).rows[0];
+          if (!existing) {
+            await c.query(
+              `INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary)
+               VALUES ($1,$2,$3,$4,'guardian',true)`,
+              [req.user.tenant_id, b.studentId, name.slice(0, 120), phone]);
+          }
+        }
         linkedStudentId = b.studentId;
       }
       await emitEvent(c, req.user.tenant_id,
@@ -178,6 +202,10 @@ export function register(app, kernel) {
             [req.params.id, req.user.tenant_id])).rows[0];
           if (!u) return bad(reply, 'We couldn\'t find that account', 404);
           if (u.role === 'owner') return bad(reply, 'The owner account cannot be suspended or reactivated here', 403);
+          // OPP-SEC-3: the principal is the school's day-to-day authority; only the owner may stand it
+          // down, never a peer IT admin (mirrors the owner-protection rule).
+          if (u.role === 'principal' && req.user.role !== 'owner')
+            return bad(reply, 'The principal account can only be changed by the school owner', 403);
           if (u.active === !suspend) return bad(reply, suspend ? 'That account is already suspended' : 'That account is already active', 409);
           const upd = await c.query(`UPDATE app.users SET active=$2 WHERE id=$1 RETURNING active`, [u.id, !suspend]);
           await emitEvent(c, req.user.tenant_id,
@@ -200,6 +228,9 @@ export function register(app, kernel) {
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!u) return bad(reply, 'We couldn\'t find that account', 404);
       if (u.role === 'owner') return bad(reply, 'The owner password cannot be reset here', 403);
+      // OPP-SEC-3: only the owner may reset the principal's password.
+      if (u.role === 'principal' && req.user.role !== 'owner')
+        return bad(reply, 'The principal password can only be reset by the school owner', 403);
       const temp = tempPassword();
       await c.query(`UPDATE app.users SET password_hash=$2, force_change=true WHERE id=$1`, [u.id, hashPassword(temp)]);
       await emitEvent(c, req.user.tenant_id,
@@ -413,11 +444,14 @@ export function register(app, kernel) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [req.user.tenant_id, s.id, s.grade, s.section, toGrade, toSec, req.user.id, reason ?? 'promoted to the next class']);
       const upd = await c.query(`UPDATE app.students SET grade=$2, section=$3 WHERE id=$1 RETURNING grade, section`, [s.id, toGrade, toSec]);
+      // A8: carry the ACTIVE academic year on the promotion event (it used to be null with an "AY lands
+      // later" note; the academic-year entity shipped).
+      const ayRow = (await c.query(`SELECT id FROM app.academic_years WHERE tenant_id=$1 AND is_current ORDER BY created_at DESC LIMIT 1`, [req.user.tenant_id])).rows[0] ?? null;
       await emitEvent(c, req.user.tenant_id,
         { type: 'people', label: `Student promoted: ${s.name} — ${s.grade}-${s.section} → ${toGrade}-${toSec}`, ref: s.id },
         'people.student.promoted', {
           studentId: s.id, fromGrade: s.grade, fromSection: s.section, toGrade, toSection: toSec, reason,
-          academicYear: null, ayNote: 'next-AY scoping lands with the academic-year entity (L1)',
+          academicYear: ayRow?.id ?? null,
         });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Student promoted', recordType: 'Student', recordRef: s.id,
@@ -425,6 +459,50 @@ export function register(app, kernel) {
         outcome: `${s.grade}-${s.section} → ${upd.rows[0].grade}-${upd.rows[0].section} · history row written` });
       return { ok: true, student: { id: s.id, name: s.name, grade: upd.rows[0].grade, section: upd.rows[0].section },
         from: { grade: s.grade, section: s.section }, to: { grade: upd.rows[0].grade, section: upd.rows[0].section } };
+    });
+  });
+
+  // A8/F6 · bulk end-of-year promotion: advance every active student in a grade to the next one, with the
+  // SAME history invariant as the single door (a history row per student, committed with the flip). The
+  // active academic year rides each event. Owner / principal / coordinator.
+  app.post(`/plugins/${ID}/students/promote/bulk`, { preHandler: [require('owner', 'principal', 'coordinator'), lifecycleGate] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const fromGrade = typeof b.fromGrade === 'string' ? b.fromGrade.trim() : '';
+    if (!fromGrade) return bad(reply, 'fromGrade is required');
+    let toGrade = typeof b.toGrade === 'string' ? b.toGrade.trim() : null;
+    const toSection = typeof b.toSection === 'string' && b.toSection.trim() ? b.toSection.trim().toUpperCase() : null;
+    if (toSection != null && toSection.length > 16) return bad(reply, 'Keep the section under 16 characters');
+    const reason = b.reason ? String(b.reason).slice(0, 300) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (!toGrade) {
+        const nxt = nextGrade(fromGrade);
+        if (!nxt) return bad(reply, `"${fromGrade}" can't be advanced automatically — supply toGrade`);
+        if (nxt.terminal) return bad(reply, 'Grade 12 is the final class — use the office flow to mark students as alumni instead', 409);
+        toGrade = nxt.to;
+      }
+      const ay = (await c.query(`SELECT id, name FROM app.academic_years WHERE tenant_id=$1 AND is_current ORDER BY created_at DESC LIMIT 1`, [req.user.tenant_id])).rows[0] ?? null;
+      const students = (await c.query(
+        `SELECT id, name, grade, section FROM app.students
+          WHERE tenant_id=$1 AND status='active' AND grade=$2 ORDER BY admission_no FOR UPDATE`,
+        [req.user.tenant_id, fromGrade])).rows;
+      let promoted = 0;
+      for (const s of students) {
+        const sec = toSection ?? s.section;
+        await c.query(
+          `INSERT INTO app.enrollment_history (tenant_id, student_id, from_grade, from_section, to_grade, to_section, changed_by, reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [req.user.tenant_id, s.id, s.grade, s.section, toGrade, sec, req.user.id, reason ?? 'bulk end-of-year promotion']);
+        await c.query(`UPDATE app.students SET grade=$2, section=$3 WHERE id=$1`, [s.id, toGrade, sec]);
+        await emitEvent(c, req.user.tenant_id,
+          { type: 'people', label: `Student promoted: ${s.name} — ${s.grade}-${s.section} → ${toGrade}-${sec}`, ref: s.id },
+          'people.student.promoted', { studentId: s.id, fromGrade: s.grade, fromSection: s.section, toGrade, toSection: sec, reason, academicYear: ay?.id ?? null });
+        promoted++;
+      }
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.name, action: 'Bulk promotion', recordType: 'Student', recordRef: fromGrade,
+        reason: reason ?? 'end-of-year promotion', policyRef: 'Platform §2.4 · student lifecycle (L3-2.1)', risk: 'high',
+        outcome: `${promoted} student(s) ${fromGrade} → ${toGrade}${ay ? ` · AY ${ay.name}` : ''} · history rows written` });
+      return { ok: true, promoted, fromGrade, toGrade, academicYearId: ay?.id ?? null };
     });
   });
 

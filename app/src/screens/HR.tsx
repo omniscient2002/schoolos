@@ -120,8 +120,10 @@ export default function HR() {
   const act3 = useMemo(() => actionItems.data?.find(a => a.id === 'act_3'), [actionItems.data]);
 
   const pendingCount = leaves.filter(l => l.status === 'pending').length;
-  /* substitution watch: act_3 (Sarita Mishra) stays the headline until it is decided
-     in the shared store — deciding it here closes it in the Action Center too */
+  /* FE-5: this HR board is seed data — the leave list, the substitution action (`act_3`) and the audit
+     rows it writes live in this session only. There is no HR write door yet, so a decision here does NOT
+     reach the server Action Center or the immutable ledger; the copy says so rather than claiming shared
+     state. */
   const act3Open = domain.actions.find(a => a.id === 'act_3')?.status === 'open';
   const subsPending = leaves.filter(l => l.status === 'pending' && l.substituteNeeded).length + (act3Open ? 1 : 0);
 
@@ -201,7 +203,7 @@ export default function HR() {
       <PageHead
         title="HR — Staff"
         sub={canDecide
-          ? 'Leave, substitutions and staff certificates. Approvals here are audited and visible to the Principal.'
+          ? 'Leave, substitutions and staff certificates. Decisions here are workspace-local in this build — the shared approval ledger is not connected yet.'
           : 'Leave, substitutions and staff certificates. Decisions belong to the coordinator and principal roles.'}
         back={{ to: '/operations', label: 'Operations' }}
       />
@@ -347,7 +349,7 @@ export default function HR() {
               ))}
               {!canDecide && (
                 <div className="u-small u-muted">
-                  Assignments are made by the Academic Coordinator or Principal. Sign in as them (or switch the demo role, top right) to decide.
+                  Assignments are made by the Academic Coordinator or Principal. Sign in as them to decide.
                 </div>
               )}
               <Timeline
@@ -392,7 +394,8 @@ export default function HR() {
 
       <div style={{ height: 12 }} />
       <div className="u-small u-muted">
-        Approval queue state is shared: deciding an item here updates the Action Center and the audit trail ({domain.audit.length} entries so far).
+        This HR board is sample data in this build: decisions update this session only and are not written to
+        the server Action Center or the audit ledger (no HR write door exists yet).
       </div>
     </div>
   );

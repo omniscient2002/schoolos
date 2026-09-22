@@ -136,10 +136,38 @@ export function scopedKernel(kernel, pluginId, declared = []) {
     // The loaded module, not a caller-provided argument, is the provenance
     // authority.  A plugin must not be able to write another plugin's identity.
     baseAudit(client, tenantId, { ...entry, actorRole: `plugin:${pluginId}`, policyRef: entry?.policyRef ?? `Platform §3 (plugin governance) · ${pluginId}` }));
-  const emitEvent = requireFacility('emitEvent', 'events.emit', async (client, tenantId, event, topic, payload, opts = {}) =>
+  const emitEvent = requireFacility('emitEvent', 'events.emit', async (client, tenantId, event, topic, payload, opts = {}) => {
+    // C4/H5: enforce the plugin's event budget at the EMIT SEAM too, not only at the two doors that
+    // call checkEventBudget explicitly. Scoped to a plugin that has an EXPLICIT `events_per_min`
+    // configured, so default-budget plugins keep their behaviour (no surprise breaker trips) while a
+    // plugin an operator has bounded is bounded on every path. A refusal throws (429); the enclosing
+    // transaction rolls back, so there is no partial write.
+    // Skip the probe entirely for a client that has no query method (unit tests pass a bare object as the
+    // client — the seam's contract is kernel.emitEvent, not the budget probe).
+    if (typeof client?.query !== 'function') {
+      return kernel.emitEvent(client, tenantId, event, topic, payload, { ...opts, emittedBy: `plugin:${pluginId}` });
+    }
+    try {
+      await client.query('SAVEPOINT evbudget');
+      const b = await client.query(`SELECT event_budget FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, pluginId]);
+      const configured = b.rows[0]?.event_budget;
+      if (configured && Number.isFinite(Number(configured.events_per_min))) {
+        const { checkEventBudget } = await import('./governance.js');
+        const bytes = payload == null ? 0 : Buffer.byteLength(JSON.stringify(payload), 'utf8');
+        const gov = await checkEventBudget(client, tenantId, pluginId, bytes);
+        if (!gov.allowed) throw Object.assign(new Error(gov.code), { statusCode: 429, code: gov.code, ...gov });
+      }
+      await client.query('RELEASE SAVEPOINT evbudget');
+    } catch (e) {
+      // A DB error aborts the enclosing transaction, so undo only the budget probe (never leave the
+      // caller's tx aborted) and then either propagate the refusal or continue the event spine.
+      await client.query('ROLLBACK TO SAVEPOINT evbudget').catch(() => {});
+      if (e?.statusCode === 429) throw e;
+    }
     // Same rule for the event/outbox spine: emittedBy is always the mounted
     // plugin id, even when a plugin passes forged options.
-    kernel.emitEvent(client, tenantId, event, topic, payload, { ...opts, emittedBy: `plugin:${pluginId}` }));
+    return kernel.emitEvent(client, tenantId, event, topic, payload, { ...opts, emittedBy: `plugin:${pluginId}` });
+  });
   const auditLog = requireFacility('auditLog', 'audit.request', baseAudit);
   return { ...kernel, auditLog, requestAudit, emitEvent };
 }

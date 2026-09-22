@@ -12,7 +12,7 @@ import { setupTestDb, loginAs } from './helpers.js';
 
 let app;
 let pool;
-let owner, coordinator, parent, student; // tokens cached (login limiter: 20/min)
+let owner, coordinator, parent, student, itadmin; // tokens cached (login limiter: 20/min)
 const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
 
 before(async () => {
@@ -24,6 +24,7 @@ before(async () => {
   coordinator = await loginAs(app, 'coordinator@meridian.edu');
   parent = await loginAs(app, 'parent@meridian.edu');
   student = await loginAs(app, 'student@meridian.edu');
+  itadmin = await loginAs(app, 'itadmin@meridian.edu');
   const tenantId = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
   const en = await app.inject({ method: 'POST', url: '/plugins/people.admin/enable', headers: H(owner.token), payload: { version: '1.0.0', class: 'B' } });
   assert.equal(en.statusCode, 200, `enable people.admin: ${en.body}`);
@@ -201,4 +202,37 @@ test('lifecycle: parent/student get 403 on promote; promote of a withdrawn stude
   assert.match(out.json().error, /transferred/);
   const ghost = await app.inject({ method: 'POST', url: `/plugins/people.admin/students/${noneId}/promote`, headers: H(owner.token), payload: {} });
   assert.equal(ghost.statusCode, 404, ghost.body);
+});
+
+test('FIX-ITADMIN: itadmin may admit a student; parent/student are still refused', async () => {
+  const body = { name: 'Itadmin Admitted', grade: '4', section: 'B', guardianName: 'IA Guardian', guardianPhone: '+91 9800001234' };
+  const ok = await app.inject({ method: 'POST', url: '/students', headers: H(itadmin.token), payload: body });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.equal(ok.json().student.name, 'Itadmin Admitted');
+  const par = await app.inject({ method: 'POST', url: '/students', headers: H(parent.token), payload: { ...body, name: 'Parent Admitted' } });
+  assert.equal(par.statusCode, 403, 'a parent cannot admit a student');
+  const stu = await app.inject({ method: 'POST', url: '/students', headers: H(student.token), payload: { ...body, name: 'Student Admitted' } });
+  assert.equal(stu.statusCode, 403, 'a student cannot admit a student');
+});
+
+test('A8 · bulk end-of-year promotion advances a whole grade with history rows', async () => {
+  const { tenantId } = globalThis.__sl;
+  await pool.query(`INSERT INTO app.students (tenant_id, admission_no, name, grade, section, status) VALUES
+    ($1,'BULK-1','Bulk A','BulkG','A','active'), ($1,'BULK-2','Bulk B','BulkG','B','active')`, [tenantId]);
+  const r = await app.inject({ method: 'POST', url: '/plugins/people.admin/students/promote/bulk', headers: H(owner.token), payload: { fromGrade: 'BulkG', toGrade: 'BulkH' } });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().promoted, 2);
+  const rows = (await pool.query(`SELECT grade FROM app.students WHERE tenant_id=$1 AND admission_no IN ('BULK-1','BULK-2')`, [tenantId])).rows;
+  for (const row of rows) assert.equal(row.grade, 'BulkH');
+  const hist = (await pool.query(`SELECT count(*)::int n FROM app.enrollment_history WHERE tenant_id=$1 AND to_grade='BulkH'`, [tenantId])).rows[0].n;
+  assert.ok(hist >= 2, 'a history row per promoted student');
+});
+
+test('F1 · a roster student is linked to their student-role user (stable identity)', async () => {
+  const { tenantId } = globalThis.__sl;
+  const row = (await pool.query(
+    `SELECT s.user_id, u.role FROM app.students s JOIN app.users u ON u.id = s.user_id
+      WHERE s.tenant_id=$1 AND s.name='Aarav Sharma'`, [tenantId])).rows[0];
+  assert.ok(row && row.user_id, 'the seeded roster student is linked to a user');
+  assert.equal(row.role, 'student');
 });

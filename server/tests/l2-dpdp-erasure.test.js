@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 const PHONE_DIGITS = '9844400444';
 const PHONE_E164 = '+919844400444';
 // The control's phone shares nothing with any subject: no prefix, no suffix, no digit overlap.
@@ -67,10 +67,22 @@ const plantSubject = async () => {
     VALUES ($1,'guardian','["+91 98444 00444", {"phone":"+919844400444"}]','whatsapp','ABSENCE','old notice','sent')`, [t.id]);
   await sql(`INSERT INTO plugin_razorpay.webhook_log (tenant_id, event_id, event_type, payload)
     VALUES ($1,'evt_erase_1','payment.captured','{"contact":"+91 98444 00444","amount":50000}')`, [t.id]);
+  // LIB-E7: a library purchase request whose free-text note carries the subject's phone (the only place
+  // library data can hold contact PII), and a loan row that must SURVIVE erasure — the library's borrower
+  // reference is a tenant-aligned FK to the office lane, not a denormalised name.
+  const bk = await sql(`INSERT INTO library.book (tenant_id, code, copies_total, title)
+    VALUES ($1,'ERASE-BK-001','1','Erasure Book') RETURNING id`, [t.id]);
+  const cp = await sql(`INSERT INTO library.copy (tenant_id, book_id, copy_code, status)
+    VALUES ($1,$2,'ERASE-CP-001','issued') RETURNING id`, [t.id, bk.rows[0].id]);
+  const ln = await sql(`INSERT INTO library.loan (tenant_id, book_id, copy_id, student_id, borrower_type, status, due_on)
+    VALUES ($1,$2,$3,$4,'student','issued', current_date + 7) RETURNING id`,
+    [t.id, bk.rows[0].id, cp.rows[0].id, s.rows[0].id]);
+  await sql(`INSERT INTO library.acquisition_request (tenant_id, title, note, requested_by_student_id, normalized_key)
+    VALUES ($1,'Privacy Please','reach me on +91 98444 00444',$2,'privacy please|')`, [t.id, s.rows[0].id]);
   // A SECOND tenant, for the cross-tenant control: the same guardian phone lives in both schools, and
   // erasing a data principal in one must not reach the other.
   const t2 = (await sql(`INSERT INTO app.tenants (slug, name) VALUES ('erasure-other-school','Other School') RETURNING id`)).rows[0];
-  return { tenantId: t.id, studentId: s.rows[0].id, guardianId: g.rows[0].id, otherTenant: t2.id };
+  return { tenantId: t.id, studentId: s.rows[0].id, guardianId: g.rows[0].id, loanId: ln.rows[0].id, otherTenant: t2.id };
 };
 
 // One fresh data principal for an office-lane test: the matching student, plus the two controls. The
@@ -118,6 +130,7 @@ describe('L2-3.5 · DPDP erasure completion', () => {
     assert.ok(bundle.surfaces.loginOtpPurged >= 1);
     assert.ok(bundle.surfaces.visitorPhonesRedacted >= 1);
     assert.ok(bundle.surfaces.sarRefsSurrogated >= 1);
+    assert.ok(bundle.surfaces.libraryBorrowerRefsRedacted >= 1, 'the library free-text surface is swept (LIB-E7)');
     assert.ok(!JSON.stringify(bundle).includes(PHONE_DIGITS), 'bundle carries no raw phone');
 
     // grep-style assertions: no surface still carries the phone digits
@@ -131,11 +144,17 @@ describe('L2-3.5 · DPDP erasure completion', () => {
       `SELECT count(*)::int n FROM plugin_dpdp.sar WHERE tenant_id=$1 AND regexp_replace(subject_ref,'[^0-9]','','g') LIKE '%${PHONE_DIGITS}%'`,
       // The office lane is a surface too now: the denormalised copy on the student row.
       `SELECT count(*)::int n FROM app.students WHERE tenant_id=$1 AND regexp_replace(COALESCE(guardian_phone,''),'[^0-9]','','g') LIKE '%${PHONE_DIGITS}%'`,
+      // LIB-E7: the library's one contact-PII surface, the purchase-request free text.
+      `SELECT count(*)::int n FROM library.acquisition_request WHERE tenant_id=$1 AND regexp_replace(COALESCE(note,''),'[^0-9]','','g') LIKE '%${PHONE_DIGITS}%'`,
     ];
     for (const q of leaks) {
       const r = await sql(q, [planted.tenantId]);
       assert.equal(r.rows[0].n, 0, `PII leak: ${q}`);
     }
+    // LIB-E7: the academic record survives — the library's borrower reference is the FK, not PII.
+    const loan = (await sql(`SELECT id, student_id, status FROM library.loan WHERE id=$1`, [planted.loanId])).rows;
+    assert.equal(loan.length, 1, 'the library loan row survives erasure (academic record preserved)');
+    assert.equal(loan[0].student_id, planted.studentId, 'its borrower FK still resolves to the pupil');
     // the surrogate is present where joins must survive
     const g = await sql(`SELECT phone, name FROM app.guardians WHERE id=$1`, [planted.guardianId]);
     assert.match(g.rows[0].phone, /^[0-9a-f]{24}$/, 'guardian phone is the surrogate');

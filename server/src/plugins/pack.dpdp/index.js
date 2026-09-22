@@ -128,8 +128,8 @@ export function register(app, kernel) {
       // `dpdp.dsr.${kind}` 500'd on the SECOND SAR of a kind (subject #2 could never
       // raise erasure). Per-instance code, binding stays via sar.action_id.
       const act = await c.query(
-        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload)
-         VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','DPDP Act 2023 · SAR',false,'sar.opened.v1',$6::jsonb) RETURNING id`,
+        `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+         VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','DPDP Act 2023 · SAR',false,'sar.opened.v1',$6::jsonb,'pack.dpdp') RETURNING id`,
         [req.user.tenant_id, `dpdp.dsr.${kind}.${sarId}`,
           kind === 'export' ? `SAR export for ${String(subjectRef)}` : `SAR ERASURE for ${String(subjectRef)} — irreversible`,
           kind === 'export'
@@ -182,7 +182,7 @@ export function register(app, kernel) {
   });
 
   // ── execute an APPROVED SAR (kernel-gated; this door never approves) ─────────
-  app.post(`/plugins/${ID}/dsr/:id/execute`, { preHandler: [require(...DPO), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/dsr/:id/execute`, { preHandler: [require(...DPO), uuidParams('id'), lifecycleGate, app.requireStepUp] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const sar = (await c.query(`SELECT * FROM plugin_dpdp.sar WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -300,6 +300,22 @@ export function register(app, kernel) {
            WHERE tenant_id=$1 AND regexp_replace(subject_ref, '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')`,
           [req.user.tenant_id, norm, surrogate]);
 
+        // ── LIB-E7: library borrower references ──────────────────────────────
+        // The library domain stores borrower identity ONLY as tenant-aligned FKs to the office lane
+        // (`library.loan.borrower_student_id` / `borrower_user_id`), never a name or phone column — so
+        // there is no denormalised borrower PII here to tombstone, and the loan/fine rows survive as the
+        // academic record. The one place a data principal's contact details can land is the FREE TEXT of a
+        // purchase request ("suggest a book"), so that text is scrubbed with the same keyed surrogate. The
+        // journal records a count, never the erased value.
+        const libReq = (await c.query(
+          `SELECT id, note FROM library.acquisition_request
+            WHERE tenant_id=$1 AND regexp_replace(COALESCE(note,''), '[^0-9]', '', 'g') LIKE '%' || $2 || '%'`,
+          [req.user.tenant_id, digits])).rows;
+        for (const row of libReq) {
+          await c.query(`UPDATE library.acquisition_request SET note=$3, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+            [row.id, req.user.tenant_id, scrub(row.note)]);
+        }
+
         // Office lane: the denormalised guardian PII on app.students. The pack requests the
         // kernel-executed core-lane action — the SQL lives in src/core-lane-actions.js and
         // runs on THIS request's tenant-scoped client, so tenancy is proven by the RLS policy
@@ -322,7 +338,7 @@ export function register(app, kernel) {
             guardiansRedacted: gr.rowCount, commsRecipientsHashed: commsRows.length,
             webhookPayloadsScrubbed, pickupOtpPurged: po.rowCount, loginOtpPurged: lo.rowCount,
             visitorPhonesRedacted: vp.rowCount, sarRefsSurrogated: sr.rowCount,
-            studentsGuardianPiiRedacted: core.affected,
+            studentsGuardianPiiRedacted: core.affected, libraryBorrowerRefsRedacted: libReq.length,
           }), subjectKey]);
 
         bundle = { subjectRef: surrogate, erasedAt: new Date().toISOString(),
@@ -337,9 +353,10 @@ export function register(app, kernel) {
             visitorPhonesRedacted: vp.rowCount,
             sarRefsSurrogated: sr.rowCount,
             studentsGuardianPiiRedacted: core.affected,
+            libraryBorrowerRefsRedacted: libReq.length,
           },
           officeLane: { action: core.action, requestedBy: `plugin:${ID}`, executedBy: 'kernel', coreLaneAuditId: core.auditId },
-          scopeNote: 'identity redacted across consent ledger, admissions funnel, guardians, comms recipients, gateway payloads, OTP vaults and the SAR trail itself (keyed surrogate); decision trail preserved. Office lane: the denormalised guardian PII on the student row is erased by the kernel-executed core-lane action students.redactGuardianPii (guardian_phone → NULL, guardian_name → [erased:<id>]) — the pack holds no SQL against app.students. Login identities (app.users) remain office-lane (kernel referral); hash-chained audit rows redact via the post-run audit_redact rebase.' };
+          scopeNote: 'identity redacted across consent ledger, admissions funnel, guardians, comms recipients, gateway payloads, OTP vaults and the SAR trail itself (keyed surrogate); decision trail preserved. Office lane: the denormalised guardian PII on the student row is erased by the kernel-executed core-lane action students.redactGuardianPii (guardian_phone → NULL, guardian_name → [erased:<id>]) — the pack holds no SQL against app.students. Login identities (app.users) remain office-lane (kernel referral); hash-chained audit rows redact via the post-run audit_redact rebase. Library: the library holds borrower identity only as tenant-aligned FKs (no name/phone column), so the loan/fine rows survive as the academic record; free text on a purchase request is scrubbed with the keyed surrogate.' };
       }
       await c.query(`UPDATE plugin_dpdp.sar SET status='fulfilled', fulfilled_at=now(), bundle=$2::jsonb WHERE id=$1`,
         [sar.id, JSON.stringify(bundle)]);

@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { Icon } from './Icon';
 import { useStore } from '../state/store';
 import { useSession } from '../App';
+import { canSurface } from '../lib/effective';
 
 export function MobileTabbar() {
   const { pathname } = useLocation();
@@ -23,13 +24,16 @@ export function MobileTabbar() {
       : [{ to: '/today', label: 'Today', icon: 'Today' }, { to: '/attention', label: 'Attention', icon: 'Attention' }, { to: '/operations', label: 'Ops', icon: 'Operations' }, { to: '/people', label: 'People', icon: 'People' }];
   /* B3 (≤768px): Homework / Submissions / Maintenance / Fees are routed but had
      no mobile reach. Staff get a fifth "More" tab opening a small sheet with
-     them; server gates stay the authority. */
+     them; server gates stay the authority. RBAC-2: each destination is filtered
+     by the server's own capability answer, so a role that cannot reach a door is
+     never offered its tab (a missing payload still shows them — the server
+     enforces every door regardless). */
   const moreItems = [
     { to: '/teacher/homework', label: 'Homework', icon: 'Book' },
     { to: '/teacher/submissions', label: 'To review', icon: 'Clipboard' },
     { to: '/maintenance', label: 'Maintenance', icon: 'Wrench' },
     { to: '/fees', label: 'Fees', icon: 'Wallet' },
-  ];
+  ].filter(i => canSurface(live.effective, i.to));
   return (
     <nav className="mobile-tabbar" aria-label="Mobile navigation">
       {!isParent && !isStudent && moreOpen && (

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { setupTestDb, loginAs } from './helpers.js';
 
-const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json' });
+const H = (t) => ({ authorization: `Bearer ${t}`, 'content-type': 'application/json', 'x-step-up-password': 'schoolos-demo' });
 let app; let sql; let tenantId;
 let owner, finance, coordinator, parent, student;
 

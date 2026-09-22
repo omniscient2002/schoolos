@@ -53,6 +53,12 @@ export const config = {
   },
   rateLimitMax: int(process.env.RATE_LIMIT_MAX, 300),
   staticDir: process.env.STATIC_DIR ?? null, // optional: serve built frontend
+  // C2 · mandatory MFA for privileged roles. Comma-separated role names (e.g.
+  // `owner,principal,itadmin,finance_head`). EMPTY BY DEFAULT — no behaviour change unless an operator
+  // opts in. When set, a role in this list with no enrolled second factor is restricted to
+  // `/me/mfa/enroll`, `/me` and `/auth/logout` until it enrols. The decision to enforce is a tenant/
+  // deployment policy; the mechanism is here.
+  requireMfaRoles: (process.env.REQUIRE_MFA_ROLES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 };
 
 // ── T101 (STILL NOT GOOD §7 P0-2): dev doors fail CLOSED ─────────────────────

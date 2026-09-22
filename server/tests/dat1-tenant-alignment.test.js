@@ -228,6 +228,10 @@ describe('DAT-1 · ON DELETE actions were preserved, not widened', () => {
     assert.equal(declared.length, 6,
       `migration 081 should declare exactly six CASCADE relationships; parsed ${declared.length}. If the change `
       + 'is intentional, this constant must move with it and say why in the migration header.');
+    // 125 (2026-09-21, J4/DAT-1) tenant-aligned `plugin_admissions.lead_activity`'s lead FK to a composite
+    // and PRESERVED its original ON DELETE CASCADE (deleting a lead removes its activity rows). It is a
+    // deliberate seventh cascade, recorded with its migration anchor rather than silently widening 081.
+    declared.push('lead_activity_tenant_lead_fkey');
 
     const r = await sql(`SELECT con.conname, con.confdeltype
                            FROM pg_constraint con WHERE con.contype = 'f' AND con.conname LIKE '%_tenant_%_fkey'`);

@@ -5,6 +5,7 @@
 const ID = 'payments.razorpay';
 export { default as manifest } from './manifest.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { meterPlugin } from '../../plugin-usage.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { decryptSettings } from '../../settings-crypto.js';
 
@@ -90,9 +91,12 @@ export function register(app, kernel) {
   };
 
   // ══ Door: create a gateway order against an open fee obligation ═══════════════
-  app.post(`/plugins/${ID}/orders`, { preHandler: [require('finance', 'owner', 'principal'), lifecycleGate] }, async (req, reply) => {
+  app.post(`/plugins/${ID}/orders`, { preHandler: [require('finance', 'finance_head', 'finance_clerk', 'owner', 'principal'), lifecycleGate] }, async (req, reply) => {
     const { obligationId } = req.body ?? {};
     if (!obligationId || !UUID_RE.test(String(obligationId))) return bad(reply, 'Which fee is being paid? (a valid obligationId is missing)');
+    // FEE-SEC-8: a caller replay key makes order creation idempotent.
+    const idem = String(req.headers['idempotency-key'] ?? '').trim();
+    if (idem && (idem.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(idem))) return bad(reply, 'Idempotency-Key must be 1-128 letters, numbers, dots, underscores, colons or hyphens');
     const { keyId, keySecret, configured } = await resolveKeys(req.user.tenant_id);
     // graceful degradation: without keys the door must NEVER half-create gateway state
     if (!configured) return bad(reply, 'Razorpay not configured — add keys in plugin settings', 503);
@@ -107,17 +111,28 @@ export function register(app, kernel) {
          WHERE o.id=$1 AND o.tenant_id=$2 AND o.status <> 'void' FOR UPDATE`,
         [obligationId, req.user.tenant_id])).rows[0];
       if (!o) return bad(reply, 'We couldn\'t find that fee record', 404);
-      const due = BigInt(o.amount_cents) - BigInt(o.paid_cents);
+      const due = BigInt(o.net_amount_cents ?? o.amount_cents) - BigInt(o.paid_cents);
       if (due <= 0n) return bad(reply, 'This fee is already settled', 409);
+      if (idem) {
+        const prior = (await c.query(
+          `SELECT p.id, p.amount_cents, ol.razorpay_order_id
+             FROM app.payments p LEFT JOIN plugin_razorpay.order_log ol ON ol.payment_id = p.id
+            WHERE p.tenant_id=$1 AND p.idempotency_key=$2 ORDER BY ol.created_at DESC NULLS LAST LIMIT 1`,
+          [req.user.tenant_id, idem])).rows[0];
+        if (prior?.razorpay_order_id) {
+          ctx = { paymentId: prior.id, due: BigInt(prior.amount_cents), studentName: o.student_name, label: o.label, obligationId, already: true, orderId: prior.razorpay_order_id };
+          return ctx;
+        }
+      }
       // existing open attempt → 409 with its paymentId (recoverable), never a raw 23505 → 500
       const open = (await c.query(
         `SELECT id FROM app.payments WHERE tenant_id=$1 AND obligation_id=$2 AND status IN ('initiated','pending') LIMIT 1`,
         [req.user.tenant_id, obligationId])).rows[0];
       if (open) return bad(reply, 'A payment is already in progress for this fee', 409, { paymentId: open.id });
       const r = await c.query(
-        `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status)
-         VALUES ($1,$2,$3,$4,'razorpay','initiated') RETURNING id`,
-        [req.user.tenant_id, o.student_id, obligationId, due.toString()]);
+        `INSERT INTO app.payments (tenant_id, student_id, obligation_id, amount_cents, method, status, idempotency_key)
+         VALUES ($1,$2,$3,$4,'razorpay','initiated',$5) RETURNING id`,
+        [req.user.tenant_id, o.student_id, obligationId, due.toString(), idem || null]);
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Razorpay order initiated', recordType: 'Payment', recordRef: r.rows[0].id,
         reason: `obligation ${o.label}`, policyRef: 'Fees §4.2', risk: 'medium',
@@ -126,6 +141,7 @@ export function register(app, kernel) {
       return ctx;
     });
     if (!ctx) return reply; // a gate above answered (404/409) — response already sent
+    if (ctx.already) return { paymentId: ctx.paymentId, orderId: ctx.orderId, amountCents: ctx.due.toString(), currency: 'INR', keyId, status: 'created', studentName: ctx.studentName, obligationLabel: ctx.label, already: true };
 
     // ── Phase 2: gateway order via REST (Basic auth over key_id:key_secret) —
     // deliberately OUTSIDE any transaction so a slow gateway never holds locks.
@@ -166,9 +182,9 @@ export function register(app, kernel) {
         return out;
       }
       await c.query(
-        `INSERT INTO plugin_razorpay.order_log (tenant_id, payment_id, razorpay_order_id, razorpay_payment_id, status, payload)
-         VALUES ($1,$2,$3,NULL,$4,$5)`,
-        [req.user.tenant_id, ctx.paymentId, order.id, order.status ?? 'created', JSON.stringify(order).slice(0, 16384)]);
+        `INSERT INTO plugin_razorpay.order_log (tenant_id, payment_id, razorpay_order_id, razorpay_payment_id, status, amount_cents, payload)
+         VALUES ($1,$2,$3,NULL,$4,$5,$6)`,
+        [req.user.tenant_id, ctx.paymentId, order.id, order.status ?? 'created', ctx.due.toString(), JSON.stringify(order).slice(0, 16384)]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'fees', label: `razorpay.order.created — ${ctx.studentName} · ₹${Number(ctx.due) / 100} (${ctx.label})`, ref: order.id },
         'razorpay.order.created', { paymentId: ctx.paymentId, obligationId: ctx.obligationId, razorpayOrderId: order.id, amountCents: ctx.due.toString() });
@@ -176,6 +192,7 @@ export function register(app, kernel) {
         actor: req.user.name, action: 'Razorpay order created', recordType: 'Payment', recordRef: ctx.paymentId,
         reason: `obligation ${ctx.label}`, policyRef: 'Fees §4.2', risk: 'medium',
         outcome: `gateway order ${order.id} · ₹${Number(ctx.due) / 100} · settlement remains kernel-only` });
+      await meterPlugin(c, req.user.tenant_id, ID, 'orders_created');
       out = { paymentId: ctx.paymentId, orderId: order.id, amountCents: ctx.due.toString(), currency: order.currency ?? 'INR', keyId, status: order.status ?? 'created', studentName: ctx.studentName, obligationLabel: ctx.label };
       return out;
     });
@@ -304,6 +321,7 @@ export function register(app, kernel) {
         actor: 'gateway webhook', action: `Razorpay webhook ${type}`, recordType: 'Payment', recordRef: entityId ?? rzpOrderId ?? null,
         reason: `event ${eventId}`, policyRef: 'Fees §4.2', risk: 'low',
         outcome: 'fact recorded · HMAC verified over raw bytes · settlement untouched (kernel-only)' });
+      await meterPlugin(c, tenantId, ID, 'webhooks_received');
       return { ok: true, outcome: 'fact recorded; settlement is kernel-only (staff confirm)' };
     });
   });

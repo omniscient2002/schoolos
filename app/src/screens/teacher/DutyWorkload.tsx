@@ -19,8 +19,8 @@ import { useStore } from '../../state/store';
 import {
   listDutyRoster, myWorkload,
   type DutyAssignment,
-} from '../../services/teacherFixtures';
-import { AsyncGate, DeniedState, TEACHER_STAFF_ROLES, useAsync } from './teacherKit';
+} from '../../services/teacherApi';
+import { AsyncGate, DeniedState, useAsync, useTeacherAccess } from './teacherKit';
 
 const WINDOWS = [
   { id: 'today', label: 'Today' },
@@ -40,6 +40,7 @@ const DUTY_META: Record<DutyAssignment['kind'], { label: string; icon: keyof typ
 export default function DutyWorkload() {
   const toast = useToast();
   const { session, actorName } = useStore();
+  const allowed = useTeacherAccess('/teacher/leave');
   const [win, setWin] = useState<'today' | 'week' | 'month'>('week');
 
   const roster = useAsync(() => listDutyRoster(win), [win]);
@@ -59,7 +60,7 @@ export default function DutyWorkload() {
     }
   };
 
-  if (!TEACHER_STAFF_ROLES.includes(session.roleId)) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={session.roleId} />;
 
   return (
     <div>
@@ -183,12 +184,12 @@ export default function DutyWorkload() {
         </div>
       </Section>
 
-      <Section title="What happens if a duty clashes with my class" sub="The rule, in plain words">
+      <Section title="How the roster treats you" sub="The rules, in plain words">
         <Card pad>
           <div className="u-col u-small u-muted" style={{ gap: 6 }}>
-            <span>1. The roster never double-books you — a duty during a teaching period is treated as a timetable conflict.</span>
-            <span>2. If a substitution pushes your week above the fair band, the coordinator sees the imbalance and rebalances — you do not have to argue your case.</span>
-            <span>3. Duty swaps stay between you, the other teacher and the coordinator; the record updates so nobody is marked absent by mistake.</span>
+            <span>1. A duty slot is unique per teacher, date, kind and period, so the same duty is never assigned to you twice.</span>
+            <span>2. If substitutions push your extra load above the fair band, the coordinator sees the imbalance and rebalances — you do not have to argue your case.</span>
+            <span>3. Duty changes are recorded by the coordinator, so nobody is marked absent by mistake.</span>
           </div>
         </Card>
       </Section>

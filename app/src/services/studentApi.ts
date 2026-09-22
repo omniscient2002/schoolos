@@ -191,18 +191,48 @@ export async function getStudentHome(): Promise<StudentHomeData> {
 /* ---------- GET /student/homework → { digital:[], paper:[] } ---------- */
 export async function getStudentHomework(): Promise<StudentHomeworkData> {
   const raw = rec(await studentCall<unknown>('/student/homework'));
-  const item = (e: unknown, i: number): StudentHomeworkItem => {
-    if (typeof e === 'string') return { id: `hw-${i}`, title: e, subject: null, due: null, mode: 'digital' };
+  // The door splits the lists itself and does not repeat `mode` on each row, so the
+  // bucket IS the mode — trusting a per-row `mode` here made every paper item read
+  // as digital (the contract test caught it).
+  const item = (e: unknown, i: number, bucket: 'digital' | 'paper'): StudentHomeworkItem => {
+    if (typeof e === 'string') return { id: `hw-${i}`, title: e, subject: null, due: null, mode: bucket };
     const r = rec(e);
     return {
       id: firstStr(r.id) ?? `hw-${i}`,
       title: firstStr(r.title, r.task, r.what) ?? '(untitled homework)',
       subject: firstStr(r.subject),
-      due: firstStr(r.due, r.due_date),
-      mode: firstStr(r.mode) === 'paper' ? 'paper' : 'digital',
+      due: firstStr(r.due_at, r.due, r.due_date),
+      mode: firstStr(r.mode) === 'paper' ? 'paper' : bucket,
     };
   };
-  return { digital: list(raw.digital).map(item), paper: list(raw.paper).map(item) };
+  return {
+    digital: list(raw.digital).map((e, i) => item(e, i, 'digital')),
+    paper: list(raw.paper).map((e, i) => item(e, i, 'paper')),
+  };
+}
+
+/* ---------- POST /plugins/teacher.classroom/homework/:id/submit ----------
+   Digital homework only; paper items are marked received by the teacher.
+   The door is one-shot (UNIQUE homework_id + student_id): a repeat submit is
+   a 409 whose copy the transport flattens to a plain Error — rewrite it so the
+   child reads a sentence, not the server's internal phrasing. */
+export async function submitStudentHomework(homeworkId: string, input: { content_type: 'text' | 'link'; content: string }): Promise<{ ok: boolean; submissionId?: string; status?: string }> {
+  try {
+    const raw = rec(await studentCall<unknown>(`/plugins/teacher.classroom/homework/${encodeURIComponent(homeworkId)}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ content_type: input.content_type, content: input.content }),
+    }));
+    return {
+      ok: raw.ok !== false,
+      submissionId: firstStr(raw.submissionId, raw.submission_id) ?? undefined,
+      status: firstStr(raw.status) ?? undefined,
+    };
+  } catch (e) {
+    if (String(e).toLowerCase().includes('already submitted')) {
+      throw new Error('You already sent this homework — your teacher has it. Ask your teacher if you need to send it again.');
+    }
+    throw e;
+  }
 }
 
 /* ---------- GET /student/results → published reports + explain lines ---------- */
@@ -210,13 +240,22 @@ export async function getStudentResults(): Promise<StudentResultsData> {
   const raw = rec(await studentCall<unknown>('/student/results'));
   const reports: StudentResultReport[] = list(raw.reports ?? raw.results).map((e, i) => {
     const r = rec(e);
+    // API-11: the live door returns {exam, term, pct, grade, publishedAt, explain}. Accept
+    // both that shape and the older fixture shape so a published report always renders.
+    const pct = r.pct ?? r.total_pct;
+    const grade = firstStr(r.grade);
+    const summary = firstStr(r.summary, r.overall)
+      ?? (pct != null ? `${pct}%${grade ? ` · grade ${grade}` : ''}` : null);
+    const explainRaw = r.explain ?? r.explain_lines;
+    const explain = (Array.isArray(explainRaw) ? explainRaw : explainRaw ? [explainRaw] : [])
+      .map(x => firstStr(x) ?? '').filter(Boolean);
     return {
       id: firstStr(r.id) ?? `report-${i}`,
-      title: firstStr(r.title, r.name) ?? '(untitled report)',
+      title: firstStr(r.title, r.name, r.exam) ?? '(untitled report)',
       period: firstStr(r.period, r.term),
       publishedOn: firstStr(r.publishedOn, r.published_on, r.publishedAt),
-      summary: firstStr(r.summary, r.overall),
-      explain: list(r.explain ?? r.explain_lines).map(x => firstStr(x) ?? '').filter(Boolean),
+      summary,
+      explain,
     };
   });
   return { reports };
@@ -244,6 +283,10 @@ export async function addMistake(input: { subject: string; topic: string; whatWr
     method: 'POST',
     body: JSON.stringify({ subject: input.subject, topic: input.topic, what_wrong: input.whatWrong, correction: input.correction ?? null, lesson: input.lesson ?? null }),
   });
+  return { ok: true };
+}
+export async function deleteMistake(id: string): Promise<{ ok: boolean }> {
+  await studentCall<unknown>(`/student/mistakes/${encodeURIComponent(id)}`, { method: 'DELETE' });
   return { ok: true };
 }
 
@@ -305,6 +348,25 @@ export async function toggleTask(id: string, done: boolean): Promise<{ ok: boole
   return { ok: true };
 }
 
+/* ---------- POST /student/wellbeing (counselor plane; anonymous supported) ---------- */
+export type StudentWellbeingCategory = 'academic_pressure' | 'friendship' | 'bullying' | 'family' | 'health' | 'other';
+export const WELLBEING_CATEGORY_LABEL: Record<StudentWellbeingCategory, string> = {
+  academic_pressure: 'Schoolwork pressure',
+  friendship: 'Friendships',
+  bullying: 'Being treated badly',
+  family: 'Something at home',
+  health: 'Health',
+  other: 'Something else',
+};
+export interface StudentWellbeingResult { ok: boolean; anonymous: boolean; note: string }
+export async function submitWellbeing(input: { category: StudentWellbeingCategory; detail: string; anonymous?: boolean }): Promise<StudentWellbeingResult> {
+  const raw = rec(await studentCall<unknown>('/student/wellbeing', {
+    method: 'POST',
+    body: JSON.stringify({ category: input.category, detail: input.detail, anonymous: input.anonymous === true }),
+  }));
+  return { ok: raw.ok === true, anonymous: raw.anonymous === true, note: firstStr(raw.note) ?? '' };
+}
+
 /* ---------- POST /student/print · GET student's own jobs ---------- */
 export async function requestPrint(kind: StudentPrintKind, payload?: unknown): Promise<StudentPrintResult> {
   const raw = rec(await studentCall<unknown>('/student/print', {
@@ -352,9 +414,11 @@ export const PRINT_KIND_LABEL: Record<StudentPrintKind, string> = {
 /* ---------- GET /student/session (session isolation) ---------- */
 export async function getSession(): Promise<StudentSessionData> {
   const raw = rec(await studentCall<unknown>('/student/session'));
-  const idle = typeof raw.idle_timeout_minutes === 'number' && raw.idle_timeout_minutes > 0
-    ? raw.idle_timeout_minutes
-    : (Number(str(raw.idle_timeout_minutes)) || 0);
+  // API-10: the server contract field is `idle_minutes` (student.world:548); the client
+  // read `idle_timeout_minutes` and always fell back to the default. Accept both so the
+  // configured idle window reaches the kiosk countdown.
+  const idleRaw = raw.idle_minutes ?? raw.idle_timeout_minutes;
+  const idle = typeof idleRaw === 'number' && idleRaw > 0 ? idleRaw : (Number(str(idleRaw)) || 0);
   return {
     studentId: firstStr(raw.studentId, raw.student_id),
     name: firstStr(raw.name, raw.student_name),

@@ -16,14 +16,15 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useSession } from '../../App';
 import { useStore } from '../../state/store';
-import { Avatar, Badge, Button, Card, Empty, ErrorState, Skeleton, SkeletonCard, useToast } from '../../components/ui';
+import { Avatar, Badge, Button, Card, Empty, ErrorState, Modal, Skeleton, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { PrintButton } from '../../components/student/PrintButton';
 import { SessionSafety } from '../../components/student/SessionSafety';
 import {
-  getSession, getMyPrints, getStudentHome, toggleTask, PRINT_KIND_LABEL,
-  STUDENT_DEFAULT_IDLE_MINUTES,
+  getSession, getMyPrints, getStudentHome, toggleTask, PRINT_KIND_LABEL, submitWellbeing,
+  WELLBEING_CATEGORY_LABEL, STUDENT_DEFAULT_IDLE_MINUTES,
   type StudentAttentionItem, type StudentHomeData, type StudentPrintJob, type StudentSessionData,
+  type StudentWellbeingCategory,
 } from '../../services/studentApi';
 import { friendly } from '../../lib/friendlyErrors';
 import { fmtDate, weekday } from '../../lib/format';
@@ -68,6 +69,7 @@ const TILES: Tile[] = [
      (demo-blob surface, crash-prone outside the demo world) and no live
      student timetable route exists; today's classes render on this home. */
   { key: 'portfolio', label: 'Portfolio', icon: 'Award', to: '/student/portfolio' },
+  { key: 'help', label: 'Get help', icon: 'Heart' },
   { key: 'print', label: 'Print', icon: 'File', print: true },
 ];
 
@@ -91,6 +93,11 @@ export default function StudentHome2() {
   const [overrides, setOverrides] = useState<Record<string, boolean>>(readDone);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpCategory, setHelpCategory] = useState<StudentWellbeingCategory>('academic_pressure');
+  const [helpDetail, setHelpDetail] = useState('');
+  const [helpAnon, setHelpAnon] = useState(false);
+  const [helpSending, setHelpSending] = useState(false);
 
   const retry = () => setReloadKey(k => k + 1);
 
@@ -159,6 +166,21 @@ export default function StudentHome2() {
 
   const openSoon = (label: string) => {
     toast({ title: `${label} is coming soon`, sub: 'Your teacher has paper copies at school in the meantime.', tone: 'info' });
+  };
+
+  /* PRD-7: file a wellbeing request to the counselor plane (named by default; anonymous
+     stores no identity). This is the student's own private channel — never a broadcast. */
+  const sendHelp = async () => {
+    if (!helpDetail.trim()) return;
+    setHelpSending(true);
+    try {
+      const r = await submitWellbeing({ category: helpCategory, detail: helpDetail, anonymous: helpAnon });
+      setHelpOpen(false);
+      setHelpDetail('');
+      toast({ title: 'Sent to the counselor', sub: r.note || 'The counselor will follow up.', tone: 'success' });
+    } catch (e) {
+      toast({ title: 'Could not send', sub: friendly(e), tone: 'error' });
+    } finally { setHelpSending(false); }
   };
 
   return (
@@ -276,7 +298,7 @@ export default function StudentHome2() {
                     key={t.key}
                     className="wo-card"
                     style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}
-                    onClick={t.print ? scrollToPrint : () => openSoon(t.label)}
+                    onClick={t.print ? scrollToPrint : t.key === 'help' ? () => setHelpOpen(true) : () => openSoon(t.label)}
                     aria-label={t.soon ? `${t.label} — coming soon` : t.label}
                   >
                     {inner}
@@ -362,6 +384,41 @@ export default function StudentHome2() {
           </div>
         </div>
       )}
+
+      {/* ---------- get help (wellbeing filing → counselor plane) ---------- */}
+      <Modal
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        title="Get help"
+        sub="This goes to the school counselor only. Nothing is posted anywhere else."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setHelpOpen(false)}>Close</Button>
+            <Button variant="primary" loading={helpSending} disabled={!helpDetail.trim()} onClick={sendHelp}>Send to counselor</Button>
+          </>
+        }
+      >
+        <div className="u-col" style={{ gap: 12 }}>
+          <div className="field">
+            <label htmlFor="wb-cat">What is this about?</label>
+            <select id="wb-cat" className="input" value={helpCategory} onChange={e => setHelpCategory(e.target.value as StudentWellbeingCategory)}>
+              {(Object.keys(WELLBEING_CATEGORY_LABEL) as StudentWellbeingCategory[]).map(k =>
+                <option key={k} value={k}>{WELLBEING_CATEGORY_LABEL[k]}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="wb-detail">Tell the counselor a little</label>
+            <textarea id="wb-detail" className="textarea" rows={4} value={helpDetail}
+              placeholder="Write what you would like help with. Only the counselor reads this."
+              onChange={e => setHelpDetail(e.target.value)} />
+          </div>
+          <label className="checkbox" style={{ gap: 8 }}>
+            <input type="checkbox" checked={helpAnon} onChange={e => setHelpAnon(e.target.checked)} />
+            <span className="box" aria-hidden="true"><Icon.Check size={11} /></span>
+            <span className="u-small">Send without my name (the counselor cannot follow up with me)</span>
+          </label>
+        </div>
+      </Modal>
     </div>
   );
 }
