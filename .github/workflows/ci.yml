@@ -36,7 +36,7 @@ jobs:
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         # TST-14: CI ran Node 22 while the image and every dev/test cluster run Node 26 (Dockerfile
         # `node:26-alpine`; local `node --version` = v26). A suite that passes on a different major than
         # the one that ships is not testing the artifact. Pinned to 26 to match the runtime.
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 26, cache: npm, cache-dependency-path: app/package-lock.json }
       - run: npm ci
         working-directory: app
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 26 }
       - name: Validate compose interpolation
         run: APP_ROLE_PASSWORD=ci-app-role-password JWT_SECRET=ci-secret-0123456789abcdef0123456789abcdef CORS_ORIGINS=http://localhost:4173 docker compose -f docker-compose.yml config --quiet
@@ -154,7 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 26 }
       - name: Secret scan (E5 — fail closed)
         run: node scripts/secret-scan.mjs
