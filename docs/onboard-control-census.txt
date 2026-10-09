@@ -1,0 +1,121 @@
+/account/password btn:  7 in:  3 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   
+/action-center btn: 32 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Action CenterEverything awaiting a decision 
+/admissions    btn: 25 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Admissions funnelAdmissions office view — gu
+/ai-governance btn:  7 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   AI rules & controlWhere the AI may act on it
+/ai-usage      btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   AI usage & costModel spend for the group — e
+/announcements btn:  8 in:  1 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   AnnouncementsWrite once, choose the audience
+/appraisals    btn: 16 in:  1 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Staff appraisalsOne appraisal per staff memb
+/attendance    btn: 19 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   AttendanceFirst-period registers across your
+/attention     btn: 53 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Needs your attention9 ranked items — recomme
+/audit         btn: 14 in:  1 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   Audit trailWho did what, when, why and under
+/automation    btn: 16 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   AutomationConstitution-gated automations — t
+/board-pack    btn:  9 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Board packLive roll-up across every desk · a
+/calendar      btn: 19 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   CalendarSchool calendar across campuses — ex
+/cases         btn: 15 in:  1 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   CasesOne queue for every channel. Guardians 
+/certificates  btn:  8 in:  0 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   CertificatesTransfer, bonafide and character
+/classes       btn: 47 in: 17 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Classes & sectionsThe school's own structure
+/compliance    btn:  7 in:  2 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   Compliance calendarStatutory returns, inspec
+/constitution  btn: 16 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   School policiesThe rules every automation is
+/coord/approvals btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/coord/curriculum btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/coord/escalations btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/coord/home    btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/coord/substitutions btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/coord/workload btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Coordinator desk only
+/counselor/concerns btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Referral queueConcerns routed to this desk. 
+/data-health   btn:  9 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Data qualityThe state of the records every d
+/delegations   btn:  7 in:  2 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   Approval delegationsHand your approval autho
+/documents     btn: 11 in:  1 sel:  3  invisible:0  border-dropped: 0  shell-hidden:5   DocumentsCertificates, agreements and IDs on
+/facilities    btn: 10 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Maintenance1 open jobs — from the school rec
+/fees          btn:153 in:  1 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   FeesFind a student's fee dues and record a p
+/fees/plans    btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Fee plansTemplates that generate fee dues — 
+/group         btn:  7 in:  1 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Group consoleOne view across Meridian's thre
+/incidents     btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   IncidentsEverything that went wrong, from de
+/insights      btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   InsightsQuestions the data answers today — e
+/it            btn: 13 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   IT AdminPlatform posture for this school. Se
+/learning      btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   LearningAssignments, assessments, topic unde
+/library       btn: 26 in:  3 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   LibrarySearch the catalog, reserve a book, a
+/library/desk  btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/library/insights btn: 10 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Library — operationsCirculation, collection 
+/library/setup btn:  8 in:  4 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   Set up the libraryChoose how books are label
+/maintenance   btn: 10 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Maintenance1 open jobs — from the school rec
+/maintenance/assets btn: 11 in:  1 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   AssetsAsset registry — straight from the sch
+/maintenance/inspections btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   InspectionsRound checklists, findings and si
+/maintenance/intelligence btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Maintenance intelligenceFailure patterns, re
+/maintenance/inventory btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Spare-parts inventoryStock levels, consumpti
+/maintenance/map btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Campus asset mapAssets plotted by building a
+/maintenance/preventive btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Preventive maintenanceSchedules, upcoming se
+/maintenance/report btn: 14 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   MaintenanceReport an issueDescribe it in one
+/maintenance/technician btn: 11 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Technician workspace0 active · 1 reported · 
+/maintenance/vendors btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Vendor directoryContracts, deadlines and esc
+/maintenance/work-orders btn: 10 in:  1 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   Work-order board1 open · 0 emergency/critica
+/memory        btn: 11 in:  1 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   AI memoryWhat your assistant remembers — eve
+/migration     btn:  8 in:  1 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   MigrationThe real engine: connect a legacy s
+/next          btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   What's nextPersonal plan for Meera Krishnan 
+/noticeboard   btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   NoticeboardOne sheet, printed once a week, p
+/operations    btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   OperationsTransport, fees, facilities, docum
+/operations/hr btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   OperationsHR — StaffLeave, substitutions and
+/owner/home    btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Owner homeOne live view across every desk · 
+/parent        btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/chat   btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/complaints btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/consents btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/copilot btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/family btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/parent/fees   btn: 53 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   FeesYour family's live fee records — dues, p
+/parent/requests btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/people        btn: 60 in:  2 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   DirectoryStudents, teachers, staff and guard
+/people-admin  btn: 33 in:  2 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   People consoleCreate accounts, suspend or re
+/plugins       btn: 60 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Add-onsEvery extra feature is a simple on/of
+/plugins/settings btn: 35 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Add-on settingsEvery add-on with settings — 
+/principal-brief btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Morning briefGenerated automatically each mo
+/principal/home btn:  8 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Owner homeOne live view across every desk · 
+/print-queue   btn:  7 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   Print queueStudents have no phones — what th
+/rails         btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   System servicesWhat is connected, what is op
+/reception     btn: 11 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Front deskThe AI receptionist — answers from
+/reports       btn: 11 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   ReportsEvery figure comes from the live scho
+/roles         btn: 10 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Roles & permissionsCustom roles: pick a star
+/settings      btn: 22 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   SettingsSigned in as Meera Krishnan · OwnerE
+/student       btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/fees  btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/flashcards btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/home2 btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/homework btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/learning btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/mistakes btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/portfolio btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/results btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/student/tasks btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher       btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/analytics btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/teacher/concerns btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/teacher/copilot btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/curriculum btn:  6 in:  0 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   CurriculumThe school's plan, topic by topic.
+/teacher/doubts btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/teacher/duties btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/exam-marks btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Exam marksPick an exam, enter or paste marks
+/teacher/homework btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/interventions btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/teacher/leave btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/lessons btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/mastery btn:  8 in:  0 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   Topic understanding mapEvery label rests on 
+/teacher/progress-story btn:  7 in:  0 sel:  1  invisible:0  border-dropped: 0  shell-hidden:5   Progress storyHow a child got here — the seq
+/teacher/ptm   btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/teacher/safety btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Safety boxReports from students. Anonymous r
+/teacher/submissions btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available for your role
+/teacher/support btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Not available on this account
+/timetable     btn: 75 in:  0 sel:  2  invisible:0  border-dropped: 0  shell-hidden:5   TimetableThe shape of the school day and wha
+/today         btn:  6 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Good evening, Meera KrishnanWednesday · 30 S
+/transport     btn:  7 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   TransportLive route status, capacity and tod
+/visitors      btn: 14 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   VisitorsGate pass desk — badges at the gate.
+/wellbeing-queue btn:  9 in:  0 sel:  0  invisible:0  border-dropped: 0  shell-hidden:5   Wellbeing requestsWhat students have asked t
+
+════════ controls present in the DOM but not visible ════════
+  none
+
+════════ declared a border, computed to nothing (the G-5 signature) ════════
+  none
+
+════════ census ════════
+111 screens · 6358 interactive controls · 1452 buttons
+screens with zero buttons: none

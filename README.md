@@ -11,15 +11,16 @@ cd server && npm ci && npm run migrate && (npm start &)   # :8080
 # 2 — UI (React 19 + Vite)
 cd app && npm ci && npx vite build && npx vite preview --port 4310   # :4310
 
-# 3 — the factory quality bar (one command)
-node scripts/factory-check.mjs        # tsc · 25/25 server tests · auth lifecycle · responsive sweep
+# 3 — the factory quality bar
+cd server && node scripts/check.js && npm test   # pre-ship gate + full suite
+cd ../app && npx tsc -b                          # frontend typecheck (no frontend tests yet)
 ```
 
 **Sign in** — every role, one password: `principal@meridian.edu` / `schoolos-demo` (full cheat-sheet on the login card; phone OTP works via the listed numbers; Google SSO runs server-side). Every cold open validates the session against `GET /me` — no stale tokens, no mock brains.
 
 ## What is actually built
 
-- **62 screens / 63 routes** — Today, Attention, Ask, Next, People, Learning, Operations, Insights, Automation, Memory, Maintenance flagship (13 screens), AI Front Desk, Migration console — all roles (principal, teacher, coordinator, finance, admissions, transport, facilities, technician, IT admin, owner, parent, student).
+- **141 routes / 85 screens** (drift-prone counts — the live census is generated: `docs/PERMISSION-MATRIX.md` for doors) — Today, Attention, Ask, Next, People, Learning, Operations, Insights, Automation, Memory, Maintenance family, AI Front Desk, Migration console — all roles (principal, teacher, coordinator, finance, admissions, transport, facilities, technician, IT admin, owner, parent, student).
 - **Real authentication** — scrypt + JWT, email/password, phone OTP, Google SSO; every sign-in audited; RLS tenancy isolation on every kernel path.
 - **Server-owned dataset** — the demo domain is served by `GET /dataset` (function-stripped, date-revived); the frontend has zero mock modules.
 - **Plugin registry** — `GET /plugins`, enable/disable with a drain protocol, capability contracts, event lineage; docs/10–12 define the class model (A–E), trust ladder (T0–T4), and staged marketplace.

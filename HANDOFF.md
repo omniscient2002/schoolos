@@ -297,6 +297,20 @@ Frontend build flags: `VITE_API_BASE` (pinned at build; same-origin contract),
     `smoke.json`, or `.npm-cache/`.
 11. `Clear-Site-Data` rides `/auth/logout` and `/student/*` — do not "fix" 401-flapping
     by removing it; it's the shared-machine protection.
+12. Split-origin dev sessions are memory-only by design (FEX-3): the bearer lives in JS memory and the
+    HttpOnly cookie only rides same-origin, so any hard reload (`page.goto`, F5) in dev (`:4310` vs `:8080`)
+    drops the session → `POST /auth/renew 401` → login card. Navigate client-side (sidebar clicks) or sign
+    in again via the UI. Production (same-origin) persists via cookie. The `401` console line for
+    `/auth/renew` on cold open is the expected probe, not a failure. (FIX-1, browser-verified 2026-10-03.)
+13. `app/dist/` is a BUILD ARTIFACT: after any `app/src` change, `cd app && npm run build` + restart
+    `vite preview`, or walkers will exercise a stale bundle (FIX-6: served UI lacked Phone + Their-child
+    for days because dist predated the source).
+14. Never rewrite files with inline `python`/regex surgery — it silently truncated a 500-line screen once
+    (StudentHome2, Oct 2026; caught only by line-count + tsc). Use exact-match edits; verify with
+    `git diff --stat` + `tsc -b` after every structural edit.
+15. After ANY `server/src` route change, restart the API from `server/` (cwd matters — dotenv loads
+    `server/.env`; a boot from elsewhere dies on the Razorpay boot-guard) before browser-walking new
+    doors, or you will chase phantom 404s on live code.
 
 ## 11. Test harness
 

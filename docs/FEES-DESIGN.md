@@ -7,6 +7,8 @@
 >
 > **Status:** this document is the final design. Implementation status is tracked separately in
 > `docs/FEATURES-STATUS.md`; nothing here is aspirational with respect to the design itself.
+> Verified line-by-line against code on 2026-10-06 (§14 runbook, §15 readiness/gaps/map added;
+> stale gate, lifecycle, and surface claims corrected). §15.3 lists the remaining code-verified gaps.
 
 ---
 
@@ -44,11 +46,12 @@
 | Role | Fee authority |
 |---|---|
 | `owner` | Full ledger, plans, settlement, refund, void, reconcile, dunning, concessions approval, configuration |
-| `principal` | Full ledger read, plans, dunning, concessions approval above threshold; settlement only if policy delegates |
-| `finance_head` | Settlement, refunds (approver), reconciliation, dunning, plans, concessions approve ≤ threshold |
-| `finance_clerk` | Initiate, desk collection, refunds (proposer only), reconciliation review, dunning run |
-| `itadmin` | Configuration, secrets, export/accounting; no settlement |
-| `coordinator` | Full-ledger read, reports, aging |
+| `principal` | Full ledger read, plans, settlement (in the confirm gate), dunning, concessions approval; voids only via owner |
+| `finance_head` | Settlement, refunds (approver), reconciliation, dunning, plans, concessions approve, policy (`PUT /fees/settings` with owner) |
+| `finance_clerk` | Initiate, desk collection (initiate only — **cannot confirm**; confirmation is the checker step), refunds (proposer only), reconciliation review, dunning run |
+| `finance` | Full ledger read, plans, settlement (in the confirm gate), initiate, refunds; no policy writes |
+| `itadmin` | Configuration, secrets, export/accounting; no settlement; CAN run the RTE lottery import (intake lane) |
+| `coordinator` | Full-ledger read, reports, aging; plans read/create; RTE import |
 | `parent` | Own children's obligations, own payments, receipts, initiate payment, request concession |
 | `student` | Own dues read-only (v2 via `student_accounts` link) |
 | `admissions` / `transport` / `facilities` / `technician` / `teacher` / `counselor` / `librarian` | **No fee mandate.** No ledger read, no payment action. |
@@ -57,14 +60,18 @@
 ### 2.2 Separation of duties
 
 ```
-finance_clerk  → initiate, collect, propose refund/waiver
-finance_head   → confirm, approve refund/waiver, reconcile
-owner/principal→ approve above threshold, void, configure
+finance_clerk  → initiate, collect, propose refund/waiver (never confirm, never approve material refunds)
+finance_head   → confirm, approve refund/waiver, reconcile, policy (with owner)
+finance        → initiate, confirm, full-ledger read (no policy writes)
+owner/principal→ approve, void (owner only), configure
 ```
-- A single actor may never propose and approve the same reversal.
-- Refund/waiver above `approval_threshold_cents` requires a distinct approver; the attempt is refused with
-  `SOD_REQUIRED` and audited.
+- A single actor may never propose and approve the same reversal; the settler may not refund their own
+  settlement unless they are the owner (`SOD_REQUIRED`, audited).
+- Material full refunds (amount ≥ per-tenant `refund_approval_threshold_cents`, default ₹5,000) additionally
+  require a reason and refuse `finance_clerk` outright. Partial below-threshold refunds need no reason.
 - `owner` is the only role that may void an obligation, and only when it carries no payments.
+- Concession approval is pure separation-of-duties (requester ≠ approver, owner exempt) — there is no
+  percentage threshold in code; any `requested` concession needs a second authorized person.
 
 ### 2.3 Parent scoping
 
@@ -224,33 +231,33 @@ shared catalogue; list doors use a pagination envelope `{ items, limit, offset, 
 
 | Method & path | Gate | Behaviour | Idempotency |
 |---|---|---|---|
-| `GET /fee-plans` | owner, principal, finance_head, finance_clerk, coordinator, itadmin | list templates + generated counts + last run | read-only |
-| `POST /fee-plans` | owner, principal, finance_head | create template (head, grades, terms, installments) | `UNIQUE(tenant,name)` → 409 |
-| `POST /fee-plans/:id/generate` | owner, principal, finance_head | lock template; atomic fan-out to active students; apply sibling/staff concessions; one `billing_run_id` | unique key + `ON CONFLICT DO NOTHING` |
-| `POST /billing-runs/:id/void` | owner | void an entire un-paid run atomically | status short-circuit |
+| `GET /fee-plans` | owner, principal, finance, finance_head, finance_clerk, coordinator, itadmin | list templates + generated counts + last run | read-only |
+| `POST /fee-plans` | owner, principal, finance, finance_head, finance_clerk | create template (head, grades, terms, installments) | `UNIQUE(tenant,name)` → 409 |
+| `POST /fee-plans/:id/generate` | owner, principal, finance, finance_head, finance_clerk | lock template; atomic fan-out to active students; apply sibling/staff concessions; one `billing_run_id` | unique key + `ON CONFLICT DO NOTHING` |
+| `POST /billing-runs/:id/void` | owner, finance_head | void an entire un-paid run atomically | status short-circuit |
 | `GET /fees/obligations` | owner, principal, finance_*, coordinator, itadmin, parent, student(self) | parent/student structurally scoped; staff full ledger via mask-aware check | read-only |
 | `GET /fees/obligations/:id` | same as list | one obligation with allocations, installments, concessions | read-only |
 | `POST /fees/obligations/:id/void` | owner | refuse if `paid_cents>0` or active allocation; `status='void'` | already-void short-circuit |
 | `GET /payments` | owner, principal, finance_*, coordinator, itadmin; parent (own) | itemised payment list with filters (status, method, date, student, reconciliation) | read-only |
 | `GET /payments/:id` | same | payment + allocations + events + receipt | read-only |
-| `POST /fees/payments` | parent, finance_clerk, finance_head, owner, principal | validate; lock obligation; parent ownership; one-open check; insert `initiated`; allocate | `Idempotency-Key` header + partial unique |
-| `POST /fees/payments/:id/confirm` | finance_clerk, finance_head, owner | lock; verify ref against provider record; confirm + receipt; `paid_cents += amount`; emit comms | status short-circuit + one-open unique |
-| `POST /payments/:id/refund` | finance_clerk (propose), finance_head/owner (approve) | maker-checker; pre-validate ledger; gateway refund before mutation; reverse `paid_cents`; `refunded_cents += amount` | status short-circuit |
-| `POST /payments/reconcile` | finance_head, owner | 3-class + amount-mismatch sweep; write `payment_events`, audit, and Action cards | read-only |
-| `POST /fees/dunning/run` | finance_clerk, finance_head, owner | quiet-hours gate; before-due + overdue + escalation selection; queue comms with `fee_dunning_log` dedup | dedup key |
+| `POST /fees/payments` | parent, finance, finance_clerk, finance_head, owner, principal | validate; lock obligation; parent ownership; one-open check; insert `initiated`; allocate | `Idempotency-Key` header + partial unique |
+| `POST /fees/payments/:id/confirm` | finance, finance_head, owner (**clerk excluded by design** — initiation and confirmation are different hands) | lock; verify ref against provider record; confirm + receipt; `paid_cents += amount`; emit comms | status short-circuit + one-open unique |
+| `POST /payments/:id/refund` | finance, finance_clerk (propose), finance_head/owner (approve material) | maker-checker + threshold; pre-validate ledger; gateway refund before mutation; reverse `paid_cents`; `refunded_cents += amount` | status short-circuit |
+| `POST /payments/reconcile` | owner, finance, finance_head, finance_clerk | 3-class + amount-mismatch sweep; write `payment_events`, audit, and Action cards | read-only |
+| `POST /fees/dunning/run` | owner, principal, finance, finance_head, finance_clerk | quiet-hours gate; before-due + overdue + escalation selection; queue comms with `fee_dunning_log` dedup | dedup key |
 | `GET /reports/fees/summary` | owner, principal, finance_*, coordinator, itadmin | per-term aggregates, collection %, method mix, concession spend | read-only |
 | `GET /reports/fees/aging` | same | overdue buckets + oldest debtors (PII-stripped) | read-only |
-| `POST /fees/concessions` | finance_clerk, finance_head, principal, owner | create request; apply at generation or to an obligation | unique per (student,head,period) |
-| `POST /fees/concessions/:id/decide` | approver per threshold | approve/reject; applies `concession_cents`, recomputes `net_amount_cents` | status short-circuit |
+| `POST /fees/concessions` | owner, principal, finance, finance_head, finance_clerk, parent, teacher | create request; apply at generation or to an obligation | one row per call (no dedup) |
+| `POST /fees/concessions/:id/decide` | owner, principal, finance, finance_head — requester ≠ approver (owner exempt) | approve/reject; applies `concession_cents`, recomputes `net_amount_cents` | status short-circuit |
 | `GET /fees/receipts` / `GET /fees/receipts/:id` | staff; parent own | receipt list + PDF (via `files.store`) | read-only |
 
 ### 5.2 Gateway doors
 
 | Plugin | Door | Gate | Behaviour |
 |---|---|---|---|
-| `payments.upi` | `POST /plugins/payments.upi/links` | finance_clerk, finance_head, owner, principal | lock obligation, refuse settled/in-progress, create `initiated` payment, build `upi://` intent |
+| `payments.upi` | `POST /plugins/payments.upi/links` | finance, finance_head, finance_clerk, owner, principal, **parent (own child)** | lock obligation, refuse settled/in-progress, create `initiated` payment, build `upi://` intent |
 | `payments.upi` | `POST /plugins/payments.upi/webhook` | public, rate-limited | fail-closed HMAC over raw bytes; tenant resolved from the payment; lifecycle; freshness; replay dedupe; record fact only |
-| `payments.razorpay` | `POST /plugins/payments.razorpay/orders` | finance_clerk, finance_head, owner, principal | unconfigured → 503; phase 1 lock+insert; phase 2 REST order; phase 3 failure→`failed`+502 / success→`order_log` |
+| `payments.razorpay` | `POST /plugins/payments.razorpay/orders` | finance, finance_head, finance_clerk, owner, principal (**parent NOT admitted** — the parent "Pay by card" button 403s; see §15 gaps) | unconfigured → 503; phase 1 lock+insert; phase 2 REST order; phase 3 failure→`failed`+502 / success→`order_log` |
 | `payments.razorpay` | `POST /plugins/payments.razorpay/webhook` | public, rate-limited | parse → per-tenant secret candidates → HMAC → resolve tenant → bind signing tenant (SEC-21) → lifecycle → freshness → dedupe → update `order_log` fact only |
 | `accounting.tally` | `GET /plugins/accounting.tally/daybook` | owner, itadmin, finance_* | confirmed payments mapped to ledger names |
 | `accounting.tally` | `POST /plugins/accounting.tally/export` | owner, itadmin, finance_* | Tally 4.1 receipt XML, sha256 hash, digest-level audit, budget-checked |
@@ -288,11 +295,14 @@ finance selects/creates a plan template (head × grades × terms × amount, opti
 ```
 parent → /parent/fees → own children's obligations + outstanding total
   → Pay (full or partial above the configured minimum) → method
-       UPI      → link door → upi:// intent / QR
-       Razorpay → order door → checkout
-       desk     → pay at office; clerk records manually
+       UPI      → link door → upi:// intent / QR (parent-admitted)
+       Razorpay → order door → checkout (STAFF ONLY — parent "Pay by card" 403s; §15 gap)
+       desk     → pay at office; clerk initiates, a confirmer settles
   → gateway webhook records a FACT (never settles)
-  → settlement: clerk/head confirms (or auto-settle policy on a verified capture)
+  → settlement: finance / finance_head / owner confirms (clerk cannot — maker-checker);
+     verified capture → settled_via='gateway', else 'manual'. There is NO auto-settle:
+     a verified capture never moves money by itself (dead flag removed, `settled_via='auto'`
+     reserved but never written).
   → receipt issued, allocated to obligations/installments, FEE_RECEIPT delivered, statuses recomputed
 ```
 
@@ -316,11 +326,17 @@ finance_clerk proposes refund (full or partial, reason) → action raised
 
 ### 6.5 Concession / waiver
 ```
-request (parent/teacher/finance) → approval per threshold (principal above 10%)
+request (parent/teacher/finance — parents and teachers see only their own requests)
+  → approval by owner/principal/finance/finance_head with separation-of-duties
+     (requester ≠ approver; owner exempt; no amount threshold in code)
   → applied to an obligation (or to generation via sibling/staff rules)
   → concession_cents set, net_amount_cents recomputed; paid_cents untouched
   → payment_events(concession) + audit + guardian notice on decision
 ```
+Discretionary write-offs (bad-debt forgiveness outside the concession kinds) do NOT exist: no table,
+no door, no thresholds. The only `waived_cents` writer is a concession approved with `kind='waiver`;
+`fee_installments.status='waived'` exists in the CHECK but no door writes it. RTE statutory 100%
+waivers are a separate authority (lottery import), not discretion.
 
 ### 6.6 Reconciliation
 ```
@@ -410,7 +426,10 @@ Alert rules: `comms_queue_stalled`, `comms_failed`, `comms_delivered_to_nobody`,
 ## 9. Configuration & capabilities
 
 Settings are validated against the manifest `settingsSchema` (unknown keys refused), encrypted with a
-tenant-bound AES-256-GCM key, and secret-class keys are masked on read.
+tenant-bound AES-256-GCM key, and secret-class keys are masked on read. NOTE: the sample below mixes
+two stores — the kernel `PUT /fees/settings` keys (thresholds, partials, receipt series, late-fee
+numerics) and per-plugin settings (comms quiet-hours, rail credentials, Tally mapping), each written
+through its own door:
 
 ```json
 {
@@ -422,12 +441,12 @@ tenant-bound AES-256-GCM key, and secret-class keys are masked on read.
   },
   "concessions": {
     "sibling_discount_percent": 0, "staff_ward_percent": 0,
-    "approval_threshold_cents": 0, "categories": ["concession","scholarship","staff","sibling","waiver"]
+    "categories": ["concession","scholarship","staff","sibling","waiver"]
   },
   "collection": {
     "methods": ["upi","razorpay","cash","card","cheque","netbanking","bank_transfer","manual"],
     "allow_parent_partial": true, "min_partial_cents": 10000,
-    "receipt_prefix": "RCP", "receipt_series_start": 1, "auto_settle_verified_capture": false
+    "receipt_prefix": "RCP", "receipt_series_start": 1
   },
   "dunning": {
     "enabled": true, "before_due_days": [3,1], "overdue_repeat_days": 7,
@@ -464,26 +483,38 @@ Outstanding ₹X across N children                                   [Pay now]
 
 ### Finance desk — `/fees`
 ```
-Tabs: Ledger · Payments · Reconciliation · Dunning · Concessions · By class · Plans · Insights
-Payments:    date · student · amount · method · status · receipt · gateway_ref · verified? · [Refund]
-Refunds:     propose/approve queue (maker-checker) · reason · gateway vs manual · approval threshold
-Reconcile:   discrepancy cards → [Mark matched] [Raise case] · last sweep · tolerance
-Dunning:     overdue queue · [Run sweep] · quiet-hours state · last-sent per obligation · escalations
-Concessions: request queue · approve/reject · apply to obligation
+Tabs (actual): Ledger · Payments · Installments · Delivery · Discounts & waivers · By class · Plans
+(Plans embeds the FeePlans builder; reconciliation and dunning are operation cards inside
+Payments, not tabs; there is no /fees/insights route — summaries live on /insights and /board-pack.)
+Ledger: dues table (student, term, head, amount/paid/due/status) + per-row Record payment,
+  owner-only Void, Invoice · per-student drawer · Outstanding / Collected % / Past-due stats.
+Payments: newest-100 (date/student/amount/method/reference/provenance gateway-vs-manual/status)
+  + Refund + Mark matched (disputed only) · Run reconciliation · Run fee reminders ·
+  fee-policy card (owner/finance_head) · counter-PIN card (owner/finance_head).
 ```
+The shared `RecordPaymentModal` performs initiate+confirm in one desk intent, so it requires
+confirmation authority — a `finance_clerk` alone is refused at confirm. Counter cash therefore
+needs a confirmer (finance/head/owner) even when the clerk collected it: this is the
+maker-checker working as designed, and it means a single-clerk school must route confirmations
+through the owner or head. Counter-PINs (`POST /fees/pins`, owner/finance_head) authenticate the
+collector at initiation; they do not confer confirmation.
 
-### Owner/principal — `/fees/insights`
+### Owner/principal — summaries on `/insights` and `/board-pack`
 ```
 billed · collected · outstanding · collection % · aging buckets · top defaulters (PII-stripped)
 collection trend · method mix · concession spend · refunds · reconciliation health · [Export CSV]
 ```
+(via `GET /reports/fees/summary` and `GET /reports/board-pack`; no dedicated `/fees/insights` route.)
 
 ### Person 360 — `/people/:id` (Fees tab)
 Per-student obligations, allocations, installments, concessions, payment history, record-payment action
 (subject to the caller's settlement authority).
 
-### Setup wizard — `/fees/setup`
-Academic year → Fee heads → Terms & due dates → Plan templates → Rails & secrets → Done.
+### Setup surfaces (no combined wizard — there is no `/fees/setup` route)
+Module switching lives on `/plugins` (or the People-console size preset: Small/Standard/Large →
+module switches + 3 standard heads Tuition/TRANSport/Activity); structure on `/fees/plans`;
+policy on the `/fees` Payments tab; rails credentials on each plugin's settings; Tally on `/returns`.
+A new school walks these in the order of §14, not through one screen.
 
 **Navigation & access:** nav is driven by the server capability payload (`GET /me/effective`); a route is
 reachable only if the caller's role or mask reaches its mapped door. There is no client-invented permission
@@ -552,10 +583,119 @@ recorded in `app.fee_dunning_log`; every receipt is an immutable artifact.
 
 ---
 
-## 14. Acceptance criteria (definition of done)
+## 14. New-school setup runbook (Part 2, stage: money)
 
-1. A parent can see their children's dues, pay through a gateway, and download a receipt — end to end.
-2. A clerk can find any payment, propose a refund, and a distinct approver can complete it.
+A school arrives here with Part 1 done (roster, classes, finance roles appointed). Trial plan already
+entitles every fee feature (§9 gates list `trial`), so there is no paywall on setup. Walk in order —
+each step names its screen, door, role, and what "done" looks like:
+
+```
+1. Switch the modules on ............ /plugins or People-console size preset ... owner
+   Small (7) / Standard (12) / Large (all 29). The preset ALSO creates the 3 standard
+   fee heads (Tuition/TUIT, Transport/TRANS, Activity/ACT); 409 already-exists is fine.
+   Done: plugins_enabled beyond the born-on 4 (checklist counts this).
+2. Fix the fee heads ................ /fees/plans head picker + POST /fees/heads .. owner/principal/finance(_head)
+   Add Lab, Hostel, Exam…; set category, refundability, tax_code, gl_ledger_name.
+   NOTE: tax_code/gl_ledger_name/is_refundable are STORED but never consumed — no GST
+   math and no ledger mapping read them (see §15). Done: heads list covers every charge.
+3. Build plan templates ............. /fees/plans → POST /fee-plans ............. owner/principal/finance(_head/_clerk)
+   Per plan: name, fee head, grades (from the school's own /classes list), terms with
+   per-student paise + due dates (≤24 terms), installments (2/3/4/6/12), sibling
+   auto-concession, hike % (above 10% requires an SMC meeting record within 180 days).
+   There is NO plan edit: correction is void-run + new plan. Done: one plan per grade-band.
+4. Generate the dues ................ [Generate fee dues] → POST /fee-plans/:id/generate
+   One transaction fans out one obligation per active student × term (+ installments,
+   + sibling concessions); existing rows are skipped, paid rows never touched.
+   Undo (only while nothing is paid): Void last run (owner/finance_head), or single
+   void per obligation (owner only, $0-paid only). Done: ledger shows billed totals.
+5. Set the money policy .............. /fees Payments tab → PUT /fees/settings ... owner/finance_head
+   Refund-approval threshold (default ₹5,000), parent-partial on/off + minimum (₹100),
+   receipt prefix/series, late-fee per-day + cap + grace (0 = off), then Run late fees.
+   Done: policy card saved (audited).
+6. Connect the rails ................ each plugin's settings .................... owner/itadmin (secrets)
+   UPI: default_vpa (else 503) · Razorpay: key_id/secret + webhook_secret ·
+   WhatsApp BSP sender/DLT + quiet hours · Tally company/mapping. Secrets encrypted,
+   masked on read, key-name-only audit. Done: links/orders succeed; test UPI intent.
+7. Set the reminder policy .......... comms.whatsapp before-due offsets + escalation ages
+   Overdue always sweeps; pre-due/escalation are opt-in. Quiet hours default 21:00–08:00 IST.
+   Done: Run fee reminders queues >0 with dedup keys (or honestly 0 off-season).
+8. Collect .......................... parents: /parent/fees (UPI intent, office cash);
+   desk: RecordPaymentModal (initiate+confirm needs confirmer rights — see §10 clerk note).
+   Every confirm mints RCP-… + PDF + FEE_RECEIPT notice. Done: collected % moves.
+9. Reconcile + report ................ Run reconciliation (disputed → mark matched / case);
+   aging buckets, board-pack money, Tally daybook + export. Done: zero unexplained disputed.
+```
+
+Skipping is allowed except where doors enforce (imports validate against defined classes;
+generation needs active students in plan grades). A school that collects only cash can skip
+step 6 entirely — manual settlement is a first-class path, always labelled `manual`.
+
+---
+
+## 15. Production readiness, generality boundary & role×domain map
+
+### 15.1 Ready for production money (verified against code)
+
+Integer-paise storage with no floats on any mutation path; idempotent initiation (header +
+partial unique), generation (`ON CONFLICT DO NOTHING`), webhooks (event-id dedupe), refunds
+(status short-circuit); maker-checker with SoD refusal + audit; advisory-locked deterministic
+receipts; HMAC webhooks that record facts but never settle; hash-chained audit + `payment_events`
+in-transaction; FORCE RLS everywhere with composite tenant FKs; no DELETE on the money path;
+restore drill (`money-dr-drill`) verifying `paid ≤ net`, receipt↔payment equality, allocation
+orphans. Trial plan entitles all fee features, so a new school is not paywalled mid-setup.
+
+### 15.2 Generality boundary: India-first by construction
+
+The domain is generalised **per-tenant** (heads, plans, terms, installments, concessions, dunning
+policy, thresholds, receipt series are all school data) but **India-locked** in code. A school
+outside India, or an Indian school needing GST, hits these walls:
+
+- **INR-only.** `currency:'INR'` is literal in Razorpay/UPI doors; no currency column exists
+  anywhere; `₹`/`en-IN` is baked into every surface and dunning copy.
+- **IST-only.** Late-fee, dunning, reconciliation and Tally windows hardcode `Asia/Kolkata`
+  (`routes.js`, `tally/index.js`) — even though the tenant now carries its own `timezone`
+  (Part 1 profile). Money jobs do not read it.
+- **No GST.** `tax_code` is stored on heads and never consumed; no rates, no tax breakup on
+  receipts/invoices; Tally maps generic `Fee Income / Sundry Debtors`, not head ledgers.
+- **Single late-fee formula** (flat per-day × overdue − grace, optional cap). No compounding,
+  per-head rates, or schedules.
+- **Statutory shapes are Indian**: RTE 25% quota + 100% waiver, UDISE/OASIS returns, Tally XML.
+
+### 15.3 Known gaps (code-verified, not roadmap wishes)
+
+| # | Gap | Where | Impact |
+|---|---|---|---|
+| 1 | Parent "Pay by card/netbanking" button 403s | `ParentFees.tsx` renders it; `POST /plugins/payments.razorpay/orders` admits staff only | Parents can pay online by UPI only; cards need the desk. Fix: admit parent with own-child scoping, or remove the button. |
+| 2 | Tally export has no UI trigger | `POST /plugins/accounting.tally/export` exists; `Returns.tsx` reads daybook + history only | Accountant sees what WOULD export but cannot produce the file in-app. Fix: one button calling the existing door. |
+| 3 | Receipt reads `school:{name:'SchoolOS'}` | `routes.js:3644` (+ tally `companyName='SchoolOS Demo'` default, UPI label) | Legal documents carry the platform name, not the school's. Fix: resolve tenant name. |
+| 4 | Obligation invoice is `.txt`, not PDF | `invoice-<id>.txt` (`routes.js:3177`) vs receipt PDF | Fine for records, weak for parent-facing paperwork. |
+| 5 | No discretionary write-offs | no table/door/thresholds; `installments waived` unwritten | Bad debt can only leave via waiver-kind concessions (approval-capped) or void ($0-paid). |
+| 6 | No cheque-bounce handling | bounced cheques stay `confirmed` | Manual correction only (refund/void path). |
+| 7 | `day-worker` brief undercounts dues | filters `status='pending'`, a value the CHECK never holds (should be `open`) | Morning brief shows fewer dues than the ledger. One-word fix. |
+| 8 | Receipt series is collision-honest, not gapless | `MAX+1` under lock; rollback leaves gaps; mid-stream prefix change parses numeric suffix only | Acceptable for school receipts; do not promise gapless books. |
+| 9 | No fee-plan edit | void-run + recreate only | Plan typos after first payment require per-obligation handling. |
+| 10 | Concession requests have no dedup | one row per call | Double-clicks queue two requests (status guard prevents double-apply). |
+
+### 15.4 Role × domain connections (how fees touches the rest)
+
+- **Admissions** — RTE lottery import writes `rte-lottery` students + guardians + auto-approved 100% waivers + fee obligations; funnel conversion creates `admissions`-source students that later get billed by plans. Admissions desk reads dues context but holds no ledger write.
+- **People/roster** — obligations key off `app.students.status='active'`; withdrawal keeps history; transfers don't move dues (dues are per-student, not per-class — class change never reprices).
+- **Comms rails** — dunning/reminder/receipt delivery rides `comms.whatsapp`/sms/email; quiet-hours and DLT live on the rail side; `fee_dunning_log` dedups, `communications` proves delivery.
+- **Accounting (Tally)** — read-only consumer of confirmed payments; never posts. `tax_code`/`gl_ledger_name` are future mapping hooks, not live wiring.
+- **Oversight** — board-pack money, `/insights` summaries, and audit verify read the same ledger; `UDISE/OASIS` returns read enrollment + fee aggregates at filing time.
+- **Parent assistant / family.view** — grounded reads (`fees_open`, explain-fees) over the parent's own children; never a source of truth, never a writer.
+- **Billing (SaaS)** — `app.billing_orders` + `/billing/*` is the school→SchoolOS subscription plane; shares the Razorpay rail pattern but NEVER touches student money tables.
+- **Payroll/HR** — staff-ward concessions link the fee and HR domains by rule (`staff` kind), not by money movement.
+- **Library/transport/clinic** — no money coupling today: transport fees are a fee HEAD (TRANS), not a computed sync with `transport.gps` riders; library fines live in the desk, not obligations. Cross-domain billing (e.g., bus riders → transport dues) is unbuilt by design — heads are manual.
+
+---
+
+## 16. Acceptance criteria (definition of done)
+
+1. A parent can see their children's dues, pay online by UPI (card/netbanking is staff-only
+   until gap §15.3#1 is closed) or cash at the desk, and download a receipt — end to end.
+2. A clerk can find any payment, propose a refund, and a distinct approver can complete it;
+   the clerk can never confirm a settlement or approve a material refund.
 3. Every settlement is either provider-verified or explicitly labelled manual, in the audit ledger.
 4. Reconciliation surfaces every ghost/missing/orphan/mismatch with an Action, and the sweep is audited.
 5. Dunning sends pre-due, overdue, and escalation notices with per-offset dedup and delivery evidence.
@@ -566,3 +706,5 @@ recorded in `app.fee_dunning_log`; every receipt is an immutable artifact.
 10. No money path uses floats; every invariant in §4.4 is enforced by the database and pinned by a test.
 11. Every surface is reachable only through the server capability payload; no client-invented permissions.
 12. Every number in the UI is derived from a live door or shown as an honest empty state.
+13. A verified gateway capture never settles by itself; every confirmed payment names its settler
+    and its provenance (`gateway` vs `manual`).
