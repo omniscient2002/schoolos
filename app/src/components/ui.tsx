@@ -1,4 +1,4 @@
-import { cloneElement, createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 import { avatarHue, initials } from '../lib/format';
@@ -55,20 +55,38 @@ export function Card({ children, className = '', pad, head, sub, actions, onClic
   );
 }
 
-/* ============ Stat ============ */
-export function Stat({ label, value, delta, sub, spark, onClick, style, count, countFormat }: {
-  label: string; value: ReactNode; delta?: { value: string; dir: 'up' | 'down' | 'flat' };
+/* ============ Stat ============
+   `unavailable` is a first-class fourth state, not a missing value. A
+   26px em-dash reads as "this failed to render"; what it actually means
+   is "we do not have this figure, and here is why" — which the `sub`
+   carries. The figure is set in the same muted tone as supporting text
+   and at body weight, so the eye reads it as an absence rather than as
+   a number, and the surrounding stats still lead.
+
+   The props are a union so that supplying one of `value`/`unavailable`
+   without the other is a type error rather than a rendering surprise. */
+type StatValueProps =
+  | { value: ReactNode; unavailable?: never }
+  | { value?: never; unavailable: string };
+type StatProps = StatValueProps & {
+  label: string;
+  delta?: { value: string; dir: 'up' | 'down' | 'flat' };
   sub?: ReactNode; spark?: ReactNode; onClick?: () => void; style?: CSSProperties;
   /* character: pass `count` (a number) and the value stamps in, then counts
      up — Indian digit grouping by default, or supply countFormat. */
   count?: number; countFormat?: (n: number) => string;
-}) {
+};
+
+export function Stat(props: StatProps) {
+  const { label, value, unavailable, delta, sub, spark, onClick, style, count, countFormat } = props;
   return (
     <div className={`card stat ${onClick ? 'card-click' : ''}`} style={style} role={onClick ? 'button' : undefined} onClick={onClick} tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}>
       <div className="label">{label}</div>
       <div className="stat-value-row">
-        <div className="value">{count != null ? <Ticker value={count} format={countFormat} /> : value}</div>
+        {unavailable
+          ? <div className="value value-unavailable">{unavailable}</div>
+          : <div className="value">{count != null ? <Ticker value={count} format={countFormat} /> : value}</div>}
         {delta && <span className={`delta ${delta.dir}`}>{delta.dir === 'up' ? '▲' : delta.dir === 'down' ? '▼' : ''} {delta.value}</span>}
         {spark && !delta && <span className="stat-spark">{spark}</span>}
       </div>
@@ -79,10 +97,11 @@ export function Stat({ label, value, delta, sub, spark, onClick, style, count, c
 }
 
 /* ============ Empty / Error / Loading ============ */
-export function Empty({ icon, title, sub, action, titleAs = 'h3', style }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode; titleAs?: 'h1' | 'h2' | 'h3'; style?: CSSProperties }) {
+export function Empty({ icon, title, sub, action, titleAs = 'h3', size, style }: { icon?: ReactNode; title: string; sub?: string; action?: ReactNode; titleAs?: 'h1' | 'h2' | 'h3'; /* `size="sm"` for sidebar/narrow-column slots, where the full padding
+       would push the surrounding content off the page. */ size?: 'sm'; style?: CSSProperties }) {
   const Tag = titleAs;
   return (
-    <div className="empty" style={style}>
+    <div className={`empty ${size === 'sm' ? 'empty-sm' : ''}`} style={style}>
       {icon}
       <Tag>{title}</Tag>
       {sub && <p>{sub}</p>}
@@ -193,22 +212,53 @@ export function Dropdown({ trigger, children, align = 'right', width, label }: {
 /* ============ Dialog focus (APG, unit 16 C1) ============
    Shared by Modal/Drawer: focus moves to the first focusable when the dialog
    opens, Tab is trapped while open, Escape and scrim clicks dismiss, and focus
-   returns to the trigger on close (parity with the Dropdown primitive). */
+   returns to the trigger on close (parity with the Dropdown primitive).
+
+   The restore is scheduled, not immediate, because the trigger can unmount in
+   the same commit as the dialog. Two things make that safe:
+     · the pending rAF is tracked and cancelled when a new dialog takes focus,
+       so a late restore cannot yank the caret back out from under it; and
+     · the element to restore to is captured ONCE per open cycle, not per
+       effect invocation. Under StrictMode the effect runs twice, and the
+       second pass would otherwise capture the dialog's OWN first control as
+       the "previous" element — so closing would try to focus a button that
+       has already unmounted and drop the caret on <body>. */
 export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: () => void) {
   const ref = useRef<T>(null);
   /* keep the latest closer without re-running the effect (callers pass inline
      arrows; a re-run would yank focus back to the first field mid-typing) */
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  /* A pending "return focus to the trigger" callback. */
+  const restoreRef = useRef(0);
+  /* The element focused BEFORE this dialog opened, and whether we have taken
+     it yet. Captured ONCE per mounted dialog: the effect runs twice under
+     StrictMode, and a second capture would read the dialog's OWN first control
+     (focus already moved there on the first pass) as the "previous" element —
+     so closing would try to focus an unmounted button and drop the caret on
+     <body>. Keying on "already captured" rather than on "a restore is pending"
+     is what makes that impossible. */
+  const prevRef = useRef<HTMLElement | null>(null);
+  const capturedRef = useRef(false);
+
   useEffect(() => {
     if (!open) return;
     const root = ref.current;
-    const prev = document.activeElement as HTMLElement | null;
+    /* A dialog is taking focus now, so any restore still in flight is stale. */
+    if (restoreRef.current) { cancelAnimationFrame(restoreRef.current); restoreRef.current = 0; }
+    if (!capturedRef.current) {
+      prevRef.current = document.activeElement as HTMLElement | null;
+      capturedRef.current = true;
+    }
     const target = root?.querySelector<HTMLElement>('[data-autofocus]')
       ?? root?.querySelector<HTMLElement>('input, textarea, select')
       ?? root?.querySelector<HTMLElement>('a[href], button, [tabindex]:not([tabindex="-1"])')
       ?? root;
     target?.focus();
+    /* Guard: if focus did not take (detached target, no focusable), fall back
+       to the dialog itself so a keyboard user is never left behind the
+       scrim with no idea a dialog opened. */
+    if (root && !root.contains(document.activeElement)) root.focus();
     const onDoc = (e: MouseEvent) => { if (root && e.target instanceof Node && !root.contains(e.target)) closeRef.current(); };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { closeRef.current(); return; }
@@ -228,7 +278,22 @@ export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: ()
       document.removeEventListener('mousedown', onDoc);
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
-      requestAnimationFrame(() => prev?.focus?.());
+      restoreRef.current = requestAnimationFrame(() => {
+        restoreRef.current = 0;
+        /* Only restore on a REAL close. The dialog element is still in the
+           document during a StrictMode re-invocation and when another dialog
+           replaced this one, and pulling focus out from under an open dialog
+           is worse than leaving it alone. A genuine close detaches it —
+           whether the parent unmounts the component (Fees does this: the Drawer
+           is rendered with a literal `open` and removed on close) or `open`
+           flips false and the element is no longer returned. */
+        if (root && root.isConnected) return;
+        const wasFocused = prevRef.current;
+        prevRef.current = null;
+        capturedRef.current = false;
+        /* The trigger may be gone (row deleted, route changed). */
+        if (wasFocused && wasFocused.isConnected) wasFocused.focus?.();
+      });
     };
   }, [open]);
   return ref;
@@ -274,14 +339,19 @@ export function Drawer({ open, onClose, title, sub, children, footer }: {
 }) {
   /* unit 16 (C1): APG dialog focus, same contract as Modal */
   const dialogRef = useDialogFocus<HTMLElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return (
     <>
       <div className="drawer-overlay" />
-      <aside ref={dialogRef} tabIndex={-1} className="drawer" role="dialog" aria-modal="true">
+      {/* The title is a ReactNode, so it cannot go in aria-label. It is a real
+          heading wired by id: without this the drawer was a role="dialog"
+          with NO accessible name, which is a WCAG 4.1.2 failure and makes
+          every drawer announce only as "dialog". */}
+      <aside ref={dialogRef} tabIndex={-1} className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="drawer-head">
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 640, fontSize: 'var(--text-lg)' }}>{title}</div>
+            <h2 id={titleId} className="drawer-title">{title}</h2>
             {sub && <div className="u-small u-muted" style={{ marginTop: 2 }}>{sub}</div>}
           </div>
           <button className="iconbtn" onClick={onClose} aria-label="Close panel"><Icon.X size={17} /></button>
@@ -357,9 +427,22 @@ export function Tabs({ tabs, active, onChange, pill, panelId }: {
    Sorting is IN-MEMORY and DETERMINISTIC — the rows prop order is never
    mutated (this is display order, not data policy); ties break on rowKey.
    aria-sort="ascending|descending|none" lands on the th; the indicator icon
-   is aria-hidden (aria-sort carries the state). No server round-trip. */
+   is aria-hidden (aria-sort carries the state). No server round-trip.
+
+   EMPTY CELLS: an absent value renders an em-dash, because "we have a
+   record here and the field is empty" should not look like a rendering
+   failure. An ACTION column is the exception — there, "no action applies
+   to this row" is a real answer, and a column of dashes beside every row
+   is noise. Pass `emptyCell: 'blank'` to render nothing instead. */
+type DataColumn<T> = {
+  key: string; label: ReactNode; render?: (row: T) => ReactNode;
+  width?: number | string; align?: 'left' | 'right';
+  sortable?: boolean; sortValue?: (row: T) => string | number;
+  emptyCell?: 'blank';
+};
+
 export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty, caption }: {
-  columns: { key: string; label: ReactNode; render?: (row: T) => ReactNode; width?: number | string; align?: 'left' | 'right'; sortable?: boolean; sortValue?: (row: T) => string | number }[];
+  columns: DataColumn<T>[];
   rows: T[]; rowKey: (row: T) => string; onRowClick?: (row: T) => void; empty?: ReactNode; caption?: string;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
@@ -410,8 +493,11 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, empty, caption
               onKeyDown={onRowClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row); } } : undefined}
             >
               {columns.map(c => {
-                /* unit 10: empty cells render an em-dash — one decision, every table */
+                /* unit 10: empty cells render an em-dash — one decision, every table.
+                   An action column opts out: "no action applies" is an answer,
+                   not a missing value. */
                 const v = c.render ? c.render(row) : (row as Record<string, unknown>)[c.key] as ReactNode;
+                if (c.emptyCell === 'blank' && (v === undefined || v === null || v === '')) return <td key={c.key} style={{ textAlign: c.align }} />;
                 return <td key={c.key} style={{ textAlign: c.align }}>{v === undefined || v === null || v === '' ? <span className="u-faint">—</span> : v}</td>;
               })}
             </tr>
@@ -427,7 +513,7 @@ export function PageHead({ title, sub, actions, back }: { title: ReactNode; sub?
   return (
     <div className="page-head">
       <div style={{ minWidth: 0 }}>
-        {back && <div style={{ marginBottom: 6 }}><Link to={back.to} className="u-small u-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 32, padding: '0 4px' }}><Icon.ChevronLeft size={13} /> {back.label}</Link></div>}
+        {back && <div style={{ marginBottom: 6 }}><Link to={back.to} className="u-small u-muted link-action" style={{ padding: '0 4px' }}><Icon.ChevronLeft size={13} /> {back.label}</Link></div>}
         <h1>{title}</h1>
         {sub && <div className="sub">{sub}</div>}
       </div>
@@ -444,10 +530,22 @@ export const useToast = () => useContext(ToastCtx);
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const idRef = useRef(1);
+  const lastRef = useRef<{ id: number; title: string; sub?: string; tone: Toast['tone'] } | null>(null);
   const push = (t: Omit<Toast, 'id'>) => {
+    /* FIX-9: a consecutive identical toast (same title+tone and same sub modulo the per-request
+       `(request req-…)` suffix the server appends, e.g. a double-clicked failing action) is announced
+       once, not stacked — one error, one announcement. The survivor keeps its original 4.2s timer;
+       once it dismisses, the same error may announce again. */
+    const norm = (s?: string) => (s ?? '').replace(/\s*\(request req-[A-Za-z0-9-]+\)\s*$/, '');
+    const l = lastRef.current;
+    if (l && norm(l.title) === norm(t.title) && norm(l.sub) === norm(t.sub) && l.tone === t.tone) return;
     const id = idRef.current++;
+    lastRef.current = { id, title: t.title, sub: t.sub, tone: t.tone };
     setToasts(ts => [...ts.slice(-3), { ...t, id }]);
-    setTimeout(() => setToasts(ts => ts.filter(x => x.id !== id)), 4200);
+    setTimeout(() => {
+      if (lastRef.current?.id === id) lastRef.current = null;
+      setToasts(ts => ts.filter(x => x.id !== id));
+    }, 4200);
   };
   return (
     <ToastCtx.Provider value={push}>

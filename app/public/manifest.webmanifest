@@ -1,0 +1,20 @@
+{
+  "name": "SchoolOS — School Operations Platform",
+  "short_name": "SchoolOS",
+  "description": "SchoolOS — the intelligent operating system for schools.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F2ED",
+  "theme_color": "#F4F2ED",
+  "lang": "en-IN",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

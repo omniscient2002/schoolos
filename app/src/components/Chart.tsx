@@ -29,7 +29,7 @@ export function LineChart({ series, labels, height = 180, yFormat = (v: number) 
   const y = (v: number) => PT + (1 - (v - scale.min) / (scale.max - scale.min)) * (H - PT - PB);
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }} role="img" aria-label="line chart">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }} role="img" aria-label="line chart" className="chart-svg">
       {showGrid && scale.ticks.map(t => (
         <g key={t}>
           <line x1={PL} x2={W - PR} y1={y(t)} y2={y(t)} stroke="var(--border-subtle)" strokeWidth="1" />
@@ -40,7 +40,13 @@ export function LineChart({ series, labels, height = 180, yFormat = (v: number) 
         const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${(PL + i * xw).toFixed(1)},${y(p).toFixed(1)}`).join(' ');
         return (
           <g key={s.name}>
-            {area && si === 0 && (
+            {/* CHART-1: the area fill appends `L… L… Z` to the line's `d`. When the series has no
+                points, `d` is the empty string, so the path became " L-502,168 L60,168 Z" — it
+                starts with lineto instead of moveto, which SVG forbids. Chrome dropped the whole
+                path and logged `<path> attribute d: Expected moveto path command ('M' or 'm')`,
+                twice per empty chart. The negative x is the tell: `points.length - 1` is -1, so the
+                first corner lands left of the origin. An empty chart should draw no area at all. */}
+            {area && si === 0 && s.points.length > 0 && (
               <path d={`${d} L${PL + (s.points.length - 1) * xw},${H - PB} L${PL},${H - PB} Z`} fill={s.color} opacity="0.08" />
             )}
             <path d={d} fill="none" stroke={s.color} strokeWidth="2" strokeDasharray={s.dashed ? '5 4' : undefined}
@@ -87,7 +93,7 @@ export function BarChart({ data, height = 180, color = 'var(--accent)', format =
   const W = 600, H = height, PB = 24, PT = 8;
   const bw = (W - 8) / data.length;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }} role="img" aria-label="bar chart">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }} role="img" aria-label="bar chart" className="chart-svg">
       {data.map((d, i) => {
         const h = ((d.value / max) * (H - PB - PT));
         const isMax = highlightMax && d === maxLabel;

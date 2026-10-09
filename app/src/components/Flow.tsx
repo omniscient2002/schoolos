@@ -117,7 +117,7 @@ export function LoopClosed({ at, summary }: { at?: string; summary?: string }) {
       gap: 10, alignItems: 'center', padding: '12px 16px', borderRadius: 'var(--r-lg)',
       background: 'color-mix(in srgb, var(--success) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--success) 30%, transparent)',
     }}>
-      <span style={{ width: 28, height: 28, borderRadius: 10, background: 'var(--success)', color: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+      <span style={{ width: 28, height: 28, borderRadius: 10, background: 'var(--success)', color: 'var(--btn-ink)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
         <Icon.Check size={16} />
       </span>
       <div className="u-col" style={{ gap: 1 }}>
@@ -168,7 +168,7 @@ export function VerifyRow({ ok, label, detail }: { ok: boolean; label: string; d
     <div className="u-inline" style={{ gap: 9, alignItems: 'flex-start' }}>
       <span style={{
         width: 17, height: 17, borderRadius: 9, flexShrink: 0, marginTop: 1, display: 'grid', placeItems: 'center',
-        background: ok ? 'var(--success)' : 'var(--surface-3)', color: ok ? '#fff' : 'var(--text-3)',
+        background: ok ? 'var(--success)' : 'var(--surface-3)', color: ok ? 'var(--btn-ink)' : 'var(--text-3)',
       }}>
         <Icon.Check size={11} />
       </span>

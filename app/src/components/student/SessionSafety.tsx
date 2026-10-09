@@ -10,11 +10,19 @@
 
    The countdown is honest UX, not enforcement: it tracks real
    user activity (pointer/keys/wheel) and mirrors the server's
-   idle timeout, which remains the pinned, tested guard
-   (no-store + Clear-Site-Data on logout are server-side).
+   idle timeout.
+
+   On wiping the device: the server attaches `Clear-Site-Data` to
+   /student/* and to logout, but the browser REFUSES that header on a
+   cross-origin fetch whose credentials mode prohibits modifying local
+   data — which is how this client calls the API — so it never fires.
+   The client half therefore does the work itself: signOut() wipes every
+   app-owned storage key (see clearAppStorage in lib/theme.ts). Both the
+   manual button and the idle timeout go through that one path.
    ============================================================ */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiLogoutAudit, setToken, redirectToLoginWithReturn } from '../../services/liveApi';
+import { clearAppStorage } from '../../lib/theme';
 import { Button } from '../ui';
 import { Icon } from '../Icon';
 import { fmtTime } from '../../lib/format';
@@ -35,9 +43,17 @@ export function SessionSafety({ idleMinutes = 10, signedInAt = null }: {
     if (signingOut.current) return;
     signingOut.current = true;
     /* same sequence as ProfileMenu's sign-out: audit best-effort,
-       then clear storage + token, then leave for the front door */
+       then clear storage + token, then leave for the front door.
+       This lane is the shared-computer one — the banner says so on every
+       student session — so it wipes ALL app storage, not just the session.
+       Preferences go too: a kiosk that hands the next student the last
+       student's language and appearance is a leak in everything but name. */
     try { await apiLogoutAudit(); } catch { /* ledger best-effort */ }
-    localStorage.removeItem('schoolos.session');
+    /* P2-16: await the wipe before handing the device on. `clearAppStorage` now also empties the
+       Cache API, which is async — without the await, redirectToLoginWithReturn() could run while
+       cached responses were still on the device. The order below is the guarantee: revoke the
+       session on the ledger, purge this browser, drop the in-memory token, then leave. */
+    await clearAppStorage();
     setToken(null);
     setGone(true);
     redirectToLoginWithReturn();

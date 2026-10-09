@@ -20,11 +20,11 @@ export async function adminListUsers(): Promise<{ users: AdminUser[] }> {
   return apiGet('/plugins/people.admin/users');
 }
 
-/** Provision a staff member or parent. Password is generated server-side and
- *  shown exactly once in the response. */
+/** Provision a staff member, a parent or a pupil (P2-11 / G-1). Password is generated
+ *  server-side and shown exactly once, as `temporaryPassword`. */
 export async function adminCreateUser(input: {
-  name: string; email: string; role: string; phone?: string;
-}): Promise<{ user: AdminUser; tempPassword: string }> {
+  name: string; email: string; role: string; phone?: string; studentId?: string;
+}): Promise<{ user: AdminUser; temporaryPassword?: string; note?: string }> {
   return apiPost('/plugins/people.admin/users', input);
 }
 
@@ -36,8 +36,15 @@ export async function adminActivateUser(id: string) {
   return apiPost(`/plugins/people.admin/users/${id}/activate`, {});
 }
 
-export async function adminResetPassword(id: string): Promise<{ tempPassword: string }> {
-  return apiPost(`/plugins/people.admin/users/${id}/reset-password`, {});
+/* The one-time password arrives as `temporaryPassword` — ONE name, on both doors (P2-11).
+   It used to be emitted twice, as `temporaryPassword` and a `tempPassword` alias, and the screen
+   read the alias while reset-password answered only the first spelling: the office saw an EMPTY
+   password box for an account whose credential had just been replaced. Reading one name, and
+   refusing loudly when it is absent, is what makes that unrecoverable state impossible. */
+export async function adminResetPassword(id: string): Promise<{ temporaryPassword: string }> {
+  const r = await apiPost<{ temporaryPassword?: string }>(`/plugins/people.admin/users/${id}/reset-password`, {});
+  if (!r.temporaryPassword) throw new Error('The server did not return a one-time password — the account password was changed but is not recoverable here. Ask the owner to reset it again.');
+  return { temporaryPassword: r.temporaryPassword };
 }
 
 export interface TransferResult {
@@ -157,6 +164,11 @@ export const libraryDeskOverview = () => apiGet<LibraryDeskOverview>('/plugins/l
 export const libraryDeskBooks = (search?: string) => apiGet<{ books: LibraryBook[]; hasMore?: boolean }>(`/plugins/library/desk/books${search ? `?search=${encodeURIComponent(search)}` : ''}`);
 export const libraryDeskBook = (id: string) => apiGet<LibraryDeskBookDetail>(`/plugins/library/desk/books/${id}`);
 export const libraryAddBook = (input: Record<string, unknown>) => apiPost<{ bookId: string; book: { id: string; code: string; title: string; copies: number } }>('/plugins/library/books', input);
+/* The bulk door is all-or-nothing and emits ONE summary event, which is what makes a 500-title
+   catalog load possible at all: the per-title door would trip the plugin event budget after ~60
+   writes. A rejected row rejects the batch, so the screen must show which row failed. */
+export const libraryBulkBooks = (books: Record<string, unknown>[]) =>
+  apiPost<{ ok: boolean; inserted: number; copies: number }>('/plugins/library/books/bulk', { books });
 export const libraryAddCopies = (bookId: string, copies: number) => apiPost<{ added: number; codes: string[] }>(`/plugins/library/books/${bookId}/copies`, { copies });
 export const libraryRetireBook = (bookId: string) => apiPost<{ ok: boolean }>(`/plugins/library/books/${bookId}/retire`, {});
 export const libraryIssue = (input: { bookId: string; studentId?: string; userId?: string; dueOn?: string }) =>

@@ -1,124 +1,270 @@
 /* ============================================================
    SchoolOS Design Tokens
-   Serious infrastructure for a school. Calm, precise, warm-neutral.
+   ------------------------------------------------------------
+   The single source of truth for the visual system. Every other
+   stylesheet composes from these; nothing invents a raw hex.
+
+   The product reads as a well-made school office: warm paper,
+   deep teal, near-black ink. Calm and precise, never glossy.
+   Three ideas hold the system together:
+
+     1. DEPTH IS A RAMP, NOT A SWITCH. Resting surfaces sit on a
+        whisper of shadow plus a hairline. Overlays climb. Nothing
+        is flat, nothing shouts.
+     2. SHADOWS CARRY THE BRAND. The wide, soft layer of every
+        elevation step is tinted toward the accent, so lifted
+        surfaces feel lit by the product rather than by nothing.
+     3. TYPE CARRIES THE HIERARCHY. Three readable steps do the
+        work: what the page is → what needs action → supporting
+        detail. Small text is metadata, never a primary fact.
    ============================================================ */
 
 :root {
-  /* Surfaces */
-  --bg: #F7F6F3;              /* app background: warm paper */
-  --bg-subtle: #F1F0EC;
-  --surface: #FFFFFF;
-  --surface-2: #FAF9F7;
-  --surface-3: #F3F2EE;
-  --surface-inverse: #17181A;
+  /* ══════════════════════════════════════════════════════════
+     SURFACES — a warm-paper ladder with real, visible steps.
+     Canvas is recessed; --surface (white) is the plane content
+     sits ON, so panels separate by luminance first and by
+     hairline second.
+     ══════════════════════════════════════════════════════════ */
+  --bg: #F5F3EF;               /* app canvas: warm paper */
+  --bg-subtle: #EFECE5;        /* recessed wells, sunken strips */
+  --surface: #FFFFFF;          /* cards, panels, inputs */
+  --surface-2: #FAF9F6;        /* insets: table heads, quiet rows */
+  --surface-3: #F1EEE7;        /* hover tint, track fills */
+  --surface-4: #E8E4DB;        /* pressed / active segments */
+  --surface-inverse: #17181A;  /* toasts, inverted bars */
   /* Compat aliases (unit 2): pre-token code referenced --bg-2 / --text-1.
      Resolve them into the real ramps instead of silently failing to initial. */
   --bg-2: var(--surface-2);
   --text-1: var(--text);
   --surface-1: var(--surface);
 
-  /* Borders */
-  --border: #E7E4DE;
-  --border-strong: #D6D2CA;
-  --border-subtle: #EFede8;
+  /* ══════════════════════════════════════════════════════════
+     BORDERS — four deliberate steps, so a screen can always say
+     how strong an edge is meant to be.
+     ══════════════════════════════════════════════════════════ */
+  --border: #E3DFD5;           /* card edges */
+  --border-strong: #CAC4B7;    /* interactive boundaries: inputs, secondary buttons */
+  --border-subtle: #EDE9E1;    /* row dividers inside a card */
+  --border-focus: var(--accent);
+  --hairline: var(--border);
+  --hairline-soft: var(--border-subtle);
 
-  /* Text */
-  --text: #1C1D20;
-  --text-2: #55575C;
-  --text-3: #686C71; /* 5.0:1 on surface, >=4.6 on all surface tints (unit 7 batch 1; was 3.36:1) */
+  /* ══════════════════════════════════════════════════════════
+     TEXT — near-black primary, comfortably legible secondary,
+     and a tertiary that still clears AA on every surface tint.
+     ══════════════════════════════════════════════════════════ */
+  --text: #191A1C;
+  --text-2: #54565B;
+  --text-3: #676A70;           /* >=4.6:1 on surface, surface-2 and surface-3 */
   --text-inverse: #FAFAF8;
 
-  /* Accent — deep teal (#0F766E): trustworthy, Indian-modern, not default-SaaS-blue */
+  /* ══════════════════════════════════════════════════════════
+     ACCENT — deep teal (#0F766E): trustworthy, Indian-modern,
+     and deliberately not default-SaaS-blue. One primary action
+     per view uses it.
+     ══════════════════════════════════════════════════════════ */
   --accent: #0F766E;
   --accent-hover: #0C625B;
-  --accent-active: #0A5049;
-  --accent-weak: #E4F1EF;
-  --accent-weak-2: #CDE4E0;
-  --accent-text: #0B5A54;
+  --accent-active: #094B45;
+  --accent-weak: #E3F0EE;
+  --accent-weak-2: #C7E1DD;
+  --accent-text: #0A544E;      /* the legible teal for text and icons */
+  /* Ink ON a solid accent fill. Kept as a channel because dark.css flips it:
+     the lifted dark teal needs near-black ink, not white. */
+  --btn-ink: #FFFFFF;
+  --focus-ring: 2px solid var(--accent);
+  --ring-soft: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  --ring-inset: inset 0 0 0 1px var(--accent);
 
-  /* AI — restrained iris; used ONLY for AI-identified surfaces */
+  /* ══════════════════════════════════════════════════════════
+     AI — restrained iris. Used ONLY for explicitly AI-labelled
+     actions and explanatory surfaces. Never a brand substitute.
+     ══════════════════════════════════════════════════════════ */
   --ai: #5D53B8;
+  --ai-hover: #4C43A3;
   --ai-weak: #EEECFA;
-  --ai-weak-2: #DDD9F4;
-  --ai-text: #4A419B;
+  --ai-weak-2: #DAD5F3;
+  --ai-text: #463E93;
 
-  /* Semantic — conventional, accessible on warm paper */
-  --success: #15803D;
-  --success-weak: #E6F3EA;
-  --success-weak-2: #CBE6D4;
+  /* ══════════════════════════════════════════════════════════
+     SEMANTIC — conventional, warm-paper friendly, and paired
+     with words/icons everywhere. A `-weak` is the fill; a
+     `-text` is the deeper step that passes AA as type on it.
+     ══════════════════════════════════════════════════════════ */
+  --success: #157F3D;
+  --success-weak: #E4F2E9;
+  --success-weak-2: #C6E3D1;
+  --success-text: #116B34;
   --warning: #D97706;
-  --warning-weak: #FCEFDC;
-  --warning-weak-2: #F6DFB5;
-  --danger: #B91C1C;
-  --danger-weak: #FBE9E8;
-  --danger-weak-2: #F4CDCB;
+  --warning-weak: #FCEDDA;
+  --warning-weak-2: #F4DCB0;
+  --warning-text: #8A4409;
+  --danger: #B3261E;
+  --danger-weak: #FBE8E6;
+  --danger-weak-2: #F3CAC6;
+  --danger-text: #A01F18;
   --info: #2563EB;
   --info-weak: #E8EEFC;
-  --info-weak-2: #CFDCF9;
-  /* Text variants: #D97706 fails AA as text on paper, so the text token is a deeper
-     step of the same amber; the fill/icon colour stays the specified #D97706. */
-  --success-text: #15803D;
-  --warning-text: #92400E;
-  --danger-text: #B91C1C;
+  --info-weak-2: #CCD9F8;
   --info-text: #1D4ED8;
 
-  /* unit 12: chart/status family — data-vis colors, one dark override point */
-  --chart-amber: #DC6803;   /* due-soon / watch / in-progress */
-  --chart-blue: #175CD3;    /* info-channel metrics */
-  --chart-red: #D92D20;     /* critical / breach */
-  --chart-violet: #5D53B8;  /* tertiary series (== --ai) */
-  --chart-teal: #3C8C64;    /* positive-adjacent series */
-  --chart-slate: #828C98;   /* retired / neutral series */
-  --chart-red-deep: #C4320A; /* emergency ramp end — exact-value sibling; zero light-mode change required it */
-  --chart-steel: #4A7A8C;   /* admissions pipeline stage */
+  /* Marigold — attention and warmth. Never the primary action colour. */
+  --marigold: #D97706;
+  --marigold-weak: #FCEFDC;
+  --marigold-text: #8A4409;
 
-  /* unit 12: interaction ramps (hover states were hardcoded before) */
-  --ai-hover: #4C43A3;
-  --secondary-hover-border: #C9C4BA;
-  --input-hover-border: #C4BFB5;
-  --danger-hover: #98291F;
-  --danger-hover-text: #92400E;
+  /* ══════════════════════════════════════════════════════════
+     CHART + STATUS — data-visualisation hues and the single
+     vocabulary components are allowed to express meaning with.
+     ══════════════════════════════════════════════════════════ */
+  --chart-amber: #C2660A;      /* due-soon / watch / in-progress */
+  --chart-blue: #1A56C4;       /* info-channel metrics */
+  --chart-red: #C6291C;        /* critical / breach */
+  --chart-red-deep: #A62A0B;   /* emergency ramp end */
+  --chart-violet: #5D53B8;     /* tertiary series (== --ai) */
+  --chart-teal: #2F7D58;       /* positive-adjacent series */
+  --chart-slate: #6E7783;      /* retired / neutral series */
+  --chart-steel: #3F6E80;      /* admissions pipeline stage */
+
+  /* The only status colours components may use.
+     critical/danger→--status-critical · warning→--status-warning ·
+     success→--status-success · info/accent→--status-info ·
+     ai→--status-ai · neutral/outline→--status-neutral */
+  --status-critical: #B3261E;
+  --status-critical-bg: color-mix(in srgb, #B3261E 10%, transparent);
+  --status-high: #B45309;
+  --status-warning: #B45309;
+  --status-warning-bg: color-mix(in srgb, #D97706 14%, transparent);
+  --status-success: #157F3D;
+  --status-success-bg: color-mix(in srgb, #157F3D 10%, transparent);
+  --status-info: #2563EB;
+  --status-info-bg: color-mix(in srgb, #2563EB 9%, transparent);
+  --status-ai: #5D53B8;
+  --status-ai-bg: color-mix(in srgb, #5D53B8 9%, transparent);
+  --status-neutral: var(--text-2);
+  --status-neutral-bg: var(--surface-3);
+
+  /* Interaction ramps — hover states are tokenised, never hardcoded. */
+  --secondary-hover-border: #B9B2A3;
+  --input-hover-border: #B9B2A3;
+  --danger-hover: #8F1D16;
+  --danger-hover-text: #8A4409;
+  --scrim: color-mix(in srgb, #17181A 38%, transparent);
+  --scrim-soft: color-mix(in srgb, #17181A 20%, transparent);
 
   /* Campus hues (avatars, charts) */
   --campus-a: #0F766E;
-  --campus-b: #7A5AB8;
-  --campus-c: #B87A2E;
+  --campus-b: #6D52A8;
+  --campus-c: #A96A24;
+  /* The server sends a per-campus hex into --campus-hue inline. Light mode
+     uses it directly; dark.css overrides this channel with a lifted tone. */
+  --campus-hue-dot: var(--campus-hue, var(--campus-a));
 
-  /* Typography */
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  /* ══════════════════════════════════════════════════════════
+     TYPOGRAPHY
+     Inter is the designed face; it is loaded in index.html with
+     `display=swap`, so the stack below is what renders offline
+     and during the swap. `ui-sans-serif/system-ui` first means
+     every platform lands on its own best text face, not on
+     whatever Helvetica-metric clone the OS happens to ship.
 
-  --text-xs: 11px;
-  --text-sm: 12.5px;
-  --text-md: 13.5px;
-  --text-lg: 15px;
-  --text-xl: 19px;
-  --text-2xl: 24px;
-  --text-3xl: 30px;
+     The scale: 12px is the floor for anything a person must
+     read. 11px exists only for timestamps and dense-table counts.
+     ══════════════════════════════════════════════════════════ */
+  --font-sans: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Telugu", "Noto Sans Tamil", "Noto Sans Kannada", "Noto Sans Malayalam", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
 
-  --leading-tight: 1.25;
-  --leading-normal: 1.5;
+  /* Devanagari (hi-IN). Inter has no Devanagari glyphs, so naming one
+     explicitly is what makes the fallback DELIBERATE: without a named face,
+     Devanagari lands on whatever the OS happens to ship (Mangal, Nirmala UI,
+     Devanagari Sangam MN…), so the product looks different on every platform.
 
-  /* Spacing (4px base) */
-  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px;
+     Inter still leads, so Latin runs — the wordmark, IDs, and every string the
+     partial hi-IN dictionary has not translated — keep the exact same face as
+     the English UI. Fallback is per run, not per glyph, so a mixed
+     "SchoolOS — साइन इन" line is simply two runs in two correct faces.
+
+     This must NOT end in var(--font-sans): the Hindi override in base.css
+     sets --font-sans to var(--font-hi), so a self-reference here is a custom
+     property cycle, which invalidates BOTH and leaves font-family unset. */
+  --font-hi: "Inter", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Telugu", "Noto Sans Tamil", "Noto Sans Kannada", "Noto Sans Malayalam", "Nirmala UI", "Kohinoor Devanagari", "Devanagari Sangam MN", "Mangal", ui-sans-serif, system-ui, sans-serif;
+
+  --text-2xs: 11px;  /* metadata only: timestamps, dense-table counts */
+  --text-xs: 12px;   /* the floor for labels, hints, error text */
+  --text-sm: 13px;   /* secondary UI, table meta */
+  --text-md: 14px;   /* body copy */
+  --text-base: 15px; /* comfortable body / lead paragraph */
+  --text-lg: 16px;   /* card titles, control labels */
+  --text-xl: 19px;   /* section titles */
+  --text-2xl: 24px;  /* panel headings */
+  --text-3xl: 30px;  /* page titles (desktop) */
+  --text-4xl: 36px;  /* focal numbers */
+  --text-5xl: 44px;  /* hero / single-metric moments */
+
+  --leading-tight: 1.2;    /* display type */
+  --leading-snug: 1.35;    /* headings, card titles */
+  --leading-normal: 1.5;   /* body */
+  --leading-relaxed: 1.62; /* long-form reading */
+
+  /* Tracking is the difference between "set in a font" and
+     "designed". Large type tightens; small caps-style labels open. */
+  --track-display: -0.03em;
+  --track-heading: -0.022em;
+  --track-subheading: -0.014em;
+  --track-body: -0.005em;
+  --track-label: 0.005em;
+  --track-caps: 0.07em;
+
+  /* ══════════════════════════════════════════════════════════
+     SPACING — 4px base. Air belongs BETWEEN groups, not inside
+     every element.
+     ══════════════════════════════════════════════════════════ */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px; --s-5: 20px;
   --s-6: 24px; --s-7: 32px; --s-8: 40px; --s-9: 48px; --s-10: 64px;
+  --s-11: 80px; --s-12: 96px;
 
-  /* Radii */
+  /* ══════════════════════════════════════════════════════════
+     RADII — one scale. Controls are tighter than surfaces; a
+     button and the card behind it should not share a corner.
+     ══════════════════════════════════════════════════════════ */
+  --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 8px;
-  --r-lg: 11px;
-  --r-xl: 14px;
+  --r-ctl: 9px;    /* inputs, buttons, selects */
+  --r-chip: 7px;   /* badges, small pills */
+  --r-lg: 12px;    /* nested surfaces */
+  --r-card: 14px;  /* the standard card */
+  --r-panel: 16px; /* modals, large panels */
+  --r-xl: 20px;
+  --r-hero: 24px;  /* hero / login surfaces only */
   --r-full: 999px;
 
-  /* Elevation — neutral ink base with a hint of teal in the wider layers,
-     so lifted surfaces feel tinted by the brand rather than grey. */
-  --shadow-xs: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
-  --shadow-sm: 0 1px 2px color-mix(in srgb, var(--text) 6%, transparent), 0 2px 6px color-mix(in srgb, var(--accent) 5%, transparent);
-  --shadow-md: 0 2px 4px color-mix(in srgb, var(--text) 6%, transparent), 0 6px 16px color-mix(in srgb, var(--accent) 7%, transparent);
-  --shadow-lg: 0 4px 10px color-mix(in srgb, var(--text) 7%, transparent), 0 14px 36px color-mix(in srgb, var(--accent) 9%, transparent);
-  --shadow-xl: 0 10px 20px color-mix(in srgb, var(--text) 8%, transparent), 0 28px 60px color-mix(in srgb, var(--accent) 12%, transparent);
+  /* ══════════════════════════════════════════════════════════
+     ELEVATION
+     Every step is two layers: a tight contact shadow that says
+     "this touches a surface", and a wide ambient layer tinted
+     toward the accent so lifted surfaces feel lit by the brand.
+     Resting cards use --shadow-xs; the dashboard grid is calm,
+     and the depth budget is spent on overlays and focus.
+     ══════════════════════════════════════════════════════════ */
+  --shadow-xs: 0 1px 2px rgb(25 26 28 / 0.05);
+  --shadow-sm: 0 1px 2px rgb(25 26 28 / 0.05), 0 2px 4px -2px rgb(25 26 28 / 0.05);
+  --shadow-md: 0 1px 2px rgb(25 26 28 / 0.05), 0 6px 16px -6px color-mix(in srgb, var(--accent) 22%, transparent);
+  --shadow-lg: 0 2px 4px rgb(25 26 28 / 0.05), 0 14px 32px -8px rgb(25 26 28 / 0.16);
+  --shadow-xl: 0 4px 10px rgb(25 26 28 / 0.06), 0 30px 64px -18px rgb(25 26 28 / 0.24);
+  --shadow-2xl: 0 8px 20px rgb(25 26 28 / 0.08), 0 48px 100px -28px rgb(25 26 28 / 0.3);
+  --shadow-panel: var(--shadow-lg);
 
-  /* Z-index */
+  /* A 1px inner highlight along the top edge. On a white card over
+     warm paper this is the difference between "a rectangle" and
+     "a sheet of paper catching light". Nearly invisible, always felt. */
+  --edge-light: inset 0 1px 0 rgb(255 255 255 / 0.7);
+  --edge-dark: inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+  /* ══════════════════════════════════════════════════════════
+     Z-INDEX
+     ══════════════════════════════════════════════════════════ */
   --z-sticky: 100;
   --z-topbar: 200;
   --z-drawer: 300;
@@ -126,55 +272,70 @@
   --z-popover: 500;
   --z-toast: 600;
 
-  /* Motion */
-  --ease: cubic-bezier(.25,.46,.45,.94);
-  --ease-out: cubic-bezier(.16,1,.3,1);
-  --ease-spring: cubic-bezier(.34,1.56,.64,1); /* micro-interactions: slight overshoot, never on layout */
-  --t-fast: 120ms;
-  --t-med: 200ms;
-  --t-slow: 320ms;
+  /* ══════════════════════════════════════════════════════════
+     MOTION — quiet and truthful. Motion explains a change of
+     state; it is never asked to be admired. Short in, shorter
+     out; nothing bounces on a consequential action.
+     ══════════════════════════════════════════════════════════ */
+  --t-instant: 80ms;   /* opacity flips, colour on press */
+  --t-fast: 130ms;     /* hover, focus, small colour shifts */
+  --t-med: 200ms;      /* dialog open, panel slide, tab swap */
+  --t-slow: 320ms;     /* progress bars, larger reveals */
+  --t-slower: 480ms;   /* skeleton cross-fades only */
 
-  /* Control height scale — buttons, inputs, badges share one rhythm */
-  --ctl-h-sm: 32px; /* unit 7 batch 1: touch-target floor (was 26) */
-  --ctl-h-md: 32px;
-  --ctl-h-lg: 38px;
-  --ctl-h-badge: 20px;
+  --ease: cubic-bezier(.4, 0, .2, 1);                              /* general */
+  --ease-out: cubic-bezier(.16, 1, .3, 1);                         /* entrances */
+  --ease-in: cubic-bezier(.4, 0, 1, 1);                            /* exits */
+  --ease-emphasized: cubic-bezier(.2, 0, 0, 1);                   /* large moves */
+  --ease-spring: cubic-bezier(.34, 1.4, .64, 1);                   /* small affordances only */
 
-  /* Character — identity touches, used sparingly */
-  --radius-hero: 16px;   /* hero cards & feature surfaces only */
-  --gradient-accent: linear-gradient(135deg, color-mix(in srgb, var(--accent) 84%, #fff) 0%, var(--accent) 52%, var(--accent-active) 100%);
-  --focus-ring: 2px solid var(--accent);
+  /* ══════════════════════════════════════════════════════════
+     CONTROL RHYTHM — one height scale shared by buttons, inputs
+     and selects, so a filter bar and a form line up.
+     ══════════════════════════════════════════════════════════ */
+  --ctl-h-sm: 32px;
+  --ctl-h-md: 38px;
+  --ctl-h-lg: 44px;
+  --ctl-h-badge: 22px;
+  --tap-min: 44px;      /* WCAG 2.5.8 floor for coarse pointers */
 
-  /* Layout */
-  --sidebar-w: 232px;
-  --sidebar-w-collapsed: 64px;
-  --topbar-h: 52px;
-  /* Ask panel: overlay drawer width — never a layout sibling. */
-  --right-panel-w: 360px;
-
-  /* Semantic status tokens — the only status colors components may use.
-     Map: critical/danger→--status-critical, warning→--status-warning,
-     success→--status-success, info/accent→--status-info, ai→--status-ai,
-     neutral/outline→--status-neutral. */
-  --status-critical: #B91C1C;
-  --status-critical-bg: color-mix(in srgb, #B91C1C 9%, transparent);
-  --status-high: #C2410C;
-  --status-warning: #D97706;
-  --status-warning-bg: color-mix(in srgb, #D97706 10%, transparent);
-  --status-success: #15803D;
-  --status-success-bg: color-mix(in srgb, #15803D 10%, transparent);
-  --status-info: #2563EB;
-  --status-info-bg: color-mix(in srgb, #2563EB 9%, transparent);
-  --status-ai: #6D28D9;
-  --status-ai-bg: color-mix(in srgb, #6D28D9 9%, transparent);
-  --status-neutral: var(--text-2);
-  --status-neutral-bg: var(--surface-3);
-
-  /* Density system — operational dashboards use standard; dense rows use compact. */
+  /* Density system — operational dashboards use standard; dense
+     ledger rows use compact. */
   --density-pad-standard: var(--s-4) var(--s-5);
   --density-pad-compact: var(--s-3) var(--s-4);
+
+  /* ══════════════════════════════════════════════════════════
+     IDENTITY — two restrained touches. A near-vertical micro-shade
+     on the primary action gives it dimension without gloss, and a
+     page wash keeps the canvas from being a flat field of beige.
+     ══════════════════════════════════════════════════════════ */
+  --gradient-accent: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 86%, #fff) 0%,
+    var(--accent) 62%,
+    color-mix(in srgb, var(--accent) 96%, #000) 100%);
+  --gradient-ai: linear-gradient(180deg,
+    color-mix(in srgb, var(--ai) 84%, #fff) 0%,
+    var(--ai) 62%,
+    color-mix(in srgb, var(--ai) 96%, #000) 100%);
+  --gradient-page: radial-gradient(1200px 700px at 8% -12%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 62%);
+
+  /* ══════════════════════════════════════════════════════════
+     LAYOUT
+     ══════════════════════════════════════════════════════════ */
+  --sidebar-w: 248px;
+  --sidebar-w-collapsed: 68px;
+  --topbar-h: 56px;
+  --page-max: 1440px;
+  /* Ask panel: overlay drawer width — never a layout sibling. */
+  --right-panel-w: 380px;
+  --tabbar-h: 60px;
 }
 
+/* Reduced motion is a correctness setting, not a preference: every
+   duration collapses to zero and every nonessential transform is
+   removed, so nothing delays attendance marking or payment entry. */
 @media (prefers-reduced-motion: reduce) {
-  :root { --t-fast: 0ms; --t-med: 0ms; --t-slow: 0ms; }
+  :root {
+    --t-instant: 0ms; --t-fast: 0ms; --t-med: 0ms; --t-slow: 0ms; --t-slower: 0ms;
+  }
 }

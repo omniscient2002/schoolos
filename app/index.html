@@ -1,10 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-IN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="SchoolOS — the intelligent operating system for schools." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#F4F2ED" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#161511" media="(prefers-color-scheme: dark)" />
+
+    <!-- Typography. Inter is the designed face (see styles/tokens.css --font-sans);
+         it was declared but never actually fetched, so every surface rendered in
+         whatever the OS happened to ship. `display=swap` means text paints
+         immediately in the system fallback and upgrades when the webfont lands,
+         so this is safe on a slow or offline school network.
+         Noto Sans + the Indic script faces (Devanagari for Hindi/Marathi,
+         Bengali, Telugu, Tamil, Kannada, Malayalam) keep parent communication
+         and Hindi UI free of tofu boxes on low-end Androids that ship no Indic
+         fonts. This is the Google-Fonts fallback (0.6): if the project later
+         vendors @fontsource Noto packages for self-hosting, drop this link and
+         keep the stacks in tokens.css untouched. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Bengali:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Kannada:wght@400;500;600;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600;700&family=Noto+Sans+Telugu:wght@400;500;600;700&display=swap" />
+
     <title>SchoolOS — School Operations Platform</title>
   </head>
   <body>

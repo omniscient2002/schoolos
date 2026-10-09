@@ -1,177 +1,204 @@
 /* ============================================================
-   dark.css — the dark layer.
-   Shape: the same dark token set applies via
+   dark.css — the dark token set.
+
+   Shape: the same declarations apply via
      (a) @media (prefers-color-scheme: dark) on :root:not([data-theme="light"])
          — system preference, and
      (b) :root[data-theme="dark"] — explicit user choice (wins over media).
    [data-theme="light"] with a dark OS re-asserts nothing: the media query is
    excluded by :not(), and light values live in tokens.css — user choice wins.
 
-   Direction (2026-09 refresh): Linear's disciplined dark surfaces — warm
-   near-black base, clearly ordered elevation steps, quiet hairlines — with
-   the same #0F766E family lifted to a legible dark teal. Semantics are the
-   light-mode hues raised for AA on dark. The declaration list appears twice
-   by necessity (a media block cannot share a rule with a bare selector in
-   plain CSS) — keep the two lists in sync.
+   The list appears twice by necessity (a media block cannot share a rule
+   with a bare selector in plain CSS) — keep the two lists in sync.
+
+   SCOPE: this file sets COLOUR tokens only. The elevation ramp and the
+   inner edge highlight are defined once, in polish.css, because a soft
+   shadow needs different *values* on a near-black canvas than the
+   same shadow on warm paper — and that is a rendering decision, not a
+   theme decision. Themes do not carry the shadow ladder.
+
+   Direction: warm near-black base, clearly ordered surface steps, quiet
+   hairlines, the same #0F766E family lifted to a legible dark teal, and
+   the semantic hues raised for AA on dark.
    ============================================================ */
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     /* surfaces — warm near-black, one clear step at a time */
-    --bg: #161511;
+    --bg: #14130F;
     --bg-subtle: #1A1915;
-    --surface: #1E1C17;
-    --surface-2: #242220;
-    --surface-3: #2B2925;
-    --text: #ECEAE3;
+    --surface: #1C1B17;
+    --surface-2: #232220;
+    --surface-3: #2B2A25;
+    --surface-4: #36342E;
+    --surface-inverse: #F5F3EF;
+
+    /* borders — visible against a near-black canvas, never black-on-black */
+    --border: #37352E;
+    --border-strong: #4C4941;
+    --border-subtle: #2A2823;
+
+    /* text */
+    --text: #EDEBE4;
     --text-1: var(--text);
-    --text-2: #B4B0A6;
-    --text-3: #928D82;   /* >=4.6:1 on every dark surface tint */
-    --text-inverse: #161511;
-    --border: #34322C;
-    --border-strong: #46433A;
-    --border-subtle: #282620;
+    --text-2: #B6B2A8;
+    --text-3: #948F84;   /* >=4.6:1 on every dark surface tint */
+    --text-inverse: #14130F;
+
     /* accent — the #0F766E family, lifted for AA on dark */
-    --accent: #3FA795;
-    --accent-hover: #52B7A5;
-    --accent-active: #66C9B7;
-    --accent-weak: #17332E;
-    --accent-weak-2: #1F4A42;
-    --accent-text: #7CCFC0;
+    --accent: #3EB49F;
+    --accent-hover: #55C2AE;
+    --accent-active: #6FD2BF;
+    --accent-weak: #14322C;
+    --accent-weak-2: #1D4840;
+    --accent-text: #7FD4C4;
+
     /* AI violet — lifted */
-    --ai: #8B7FE0;
-    --ai-weak: #24203A;
-    --ai-weak-2: #322C4E;
-    --ai-text: #B4ACF0;
-    --ai-hover: #9C92E8;
-    /* semantic — light hues raised for AA on dark */
-    --success: #5BC08A;
-    --success-weak: #15291D;
-    --success-weak-2: #1E3A29;
-    --warning: #E0A33A;
-    --warning-weak: #33290F;
-    --warning-weak-2: #463917;
-    --danger: #F0837A;
-    --danger-weak: #3B201C;
-    --danger-weak-2: #4E2A24;
-    --info: #6B9BD1;
-    --info-weak: #1B2635;
-    --info-weak-2: #24344A;
-    --success-text: #5BC08A;
-    --warning-text: #E0A33A;
-    --danger-text: #F0837A;
-    --info-text: #8FB6E6;
+    --ai: #9286E8;
+    --ai-hover: #A79BEF;
+    --ai-weak: #23203A;
+    --ai-weak-2: #322D4F;
+    --ai-text: #B8AEF3;
+
+    /* semantic — the light hues raised for AA on dark */
+    --success: #5CC98C;
+    --success-weak: #14291D;
+    --success-weak-2: #1D3A29;
+    --success-text: #7BD6A2;
+    --warning: #E3A83F;
+    --warning-weak: #32280F;
+    --warning-weak-2: #473918;
+    --warning-text: #EFBA5F;
+    --danger: #F28C82;
+    --danger-weak: #3A1F1B;
+    --danger-weak-2: #4E2924;
+    --danger-text: #F7A79E;
+    --info: #7BA9DC;
+    --info-weak: #1A2534;
+    --info-weak-2: #233348;
+    --info-text: #9CC1EC;
+
+    --marigold: #E3A83F;
+    --marigold-weak: #32280F;
+    --marigold-text: #EFBA5F;
+
     /* status family */
-    --status-critical: #F0837A;
-    --status-critical-bg: color-mix(in srgb, #F0837A 12%, transparent);
+    --status-critical: #F28C82;
+    --status-critical-bg: color-mix(in srgb, #F28C82 14%, transparent);
     --status-high: #E8956B;
-    --status-warning: #E0A33A;
-    --status-warning-bg: color-mix(in srgb, #E0A33A 12%, transparent);
-    --status-success: #5BC08A;
-    --status-success-bg: color-mix(in srgb, #5BC08A 12%, transparent);
-    --status-info: #6B9BD1;
-    --status-info-bg: color-mix(in srgb, #6B9BD1 12%, transparent);
-    --status-ai: #A99DF0;
-    --status-ai-bg: color-mix(in srgb, #A99DF0 12%, transparent);
+    --status-warning: #E3A83F;
+    --status-warning-bg: color-mix(in srgb, #E3A83F 14%, transparent);
+    --status-success: #5CC98C;
+    --status-success-bg: color-mix(in srgb, #5CC98C 14%, transparent);
+    --status-info: #7BA9DC;
+    --status-info-bg: color-mix(in srgb, #7BA9DC 13%, transparent);
+    --status-ai: #9286E8;
+    --status-ai-bg: color-mix(in srgb, #9286E8 14%, transparent);
+    --status-neutral: var(--text-2);
+    --status-neutral-bg: var(--surface-3);
+
     /* charts — same hues, lifted for dark legibility */
-    --chart-amber: #E8A04C;
-    --chart-blue: #5B9CE8;
-    --chart-red: #E96E62;
-    --chart-red-deep: #E85B45;
-    --chart-violet: #A99DF0;
-    --chart-teal: #57C489;
-    --chart-slate: #9BA3AD;
+    --chart-amber: #E9A64F;
+    --chart-blue: #6BA5EC;
+    --chart-red: #EC7A6E;
+    --chart-red-deep: #E9665A;
+    --chart-violet: #A79BEF;
+    --chart-teal: #5CC98C;
+    --chart-slate: #A2AAB4;
+    --chart-steel: #6FA6BC;
+
     /* interaction ramps */
-    --secondary-hover-border: #6B6656;
-    --input-hover-border: #5A5648;
-    --danger-hover: #E06E5E;
-    --danger-hover-text: #E8B54D;
-    /* campus hue channel: server hex feeds --campus-hue; dark derives a legible display tone */
-    --btn-ink: #161511; /* dark ink on light-teal filled buttons */
-    --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0F766E) 68%, #ECEAE3);
-    /* elevation reads via contrast, not glow, on dark (refinement.css owns the live values) */
-    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.55);
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
-    --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 10px 24px -16px rgb(0 0 0 / 0.7);
-    --shadow-lg: 0 2px 8px rgb(0 0 0 / 0.55), 0 22px 50px -24px rgb(0 0 0 / 0.8);
-    --shadow-xl: 0 4px 14px rgb(0 0 0 / 0.6), 0 34px 80px -34px rgb(0 0 0 / 0.9);
-    --gradient-accent: var(--accent);
+    --secondary-hover-border: #6B6759;
+    --input-hover-border: #605C4E;
+    --danger-hover: #F5A097;
+    --danger-hover-text: #EFBA5F;
+    --scrim: rgb(0 0 0 / 62%);
+    --scrim-soft: rgb(0 0 0 / 42%);
+
+    /* campus hue channel: the server hex feeds --campus-hue; dark derives a
+       legible display tone instead of using the raw hex */
+    --btn-ink: #14130F;   /* dark ink on the lifted light-teal fill */
+    --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0F766E) 66%, #EDEBE4);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #161511;
+  --bg: #14130F;
   --bg-subtle: #1A1915;
-  --surface: #1E1C17;
-  --surface-2: #242220;
-  --surface-3: #2B2925;
-  --text: #ECEAE3;
+  --surface: #1C1B17;
+  --surface-2: #232220;
+  --surface-3: #2B2A25;
+  --surface-4: #36342E;
+  --surface-inverse: #F5F3EF;
+  --border: #37352E;
+  --border-strong: #4C4941;
+  --border-subtle: #2A2823;
+  --text: #EDEBE4;
   --text-1: var(--text);
-  --text-2: #B4B0A6;
-  --text-3: #928D82;
-  --text-inverse: #161511;
-  --border: #34322C;
-  --border-strong: #46433A;
-  --border-subtle: #282620;
-  --accent: #3FA795;
-  --accent-hover: #52B7A5;
-  --accent-active: #66C9B7;
-  --accent-weak: #17332E;
-  --accent-weak-2: #1F4A42;
-  --accent-text: #7CCFC0;
-  --ai: #8B7FE0;
-  --ai-weak: #24203A;
-  --ai-weak-2: #322C4E;
-  --ai-text: #B4ACF0;
-  --ai-hover: #9C92E8;
-  --success: #5BC08A;
-  --success-weak: #15291D;
-  --success-weak-2: #1E3A29;
-  --warning: #E0A33A;
-  --warning-weak: #33290F;
-  --warning-weak-2: #463917;
-  --danger: #F0837A;
-  --danger-weak: #3B201C;
-  --danger-weak-2: #4E2A24;
-  --info: #6B9BD1;
-  --info-weak: #1B2635;
-  --info-weak-2: #24344A;
-  --success-text: #5BC08A;
-  --warning-text: #E0A33A;
-  --danger-text: #F0837A;
-  --info-text: #8FB6E6;
-  --status-critical: #F0837A;
-  --status-critical-bg: color-mix(in srgb, #F0837A 12%, transparent);
+  --text-2: #B6B2A8;
+  --text-3: #948F84;
+  --text-inverse: #14130F;
+  --accent: #3EB49F;
+  --accent-hover: #55C2AE;
+  --accent-active: #6FD2BF;
+  --accent-weak: #14322C;
+  --accent-weak-2: #1D4840;
+  --accent-text: #7FD4C4;
+  --ai: #9286E8;
+  --ai-hover: #A79BEF;
+  --ai-weak: #23203A;
+  --ai-weak-2: #322D4F;
+  --ai-text: #B8AEF3;
+  --success: #5CC98C;
+  --success-weak: #14291D;
+  --success-weak-2: #1D3A29;
+  --success-text: #7BD6A2;
+  --warning: #E3A83F;
+  --warning-weak: #32280F;
+  --warning-weak-2: #473918;
+  --warning-text: #EFBA5F;
+  --danger: #F28C82;
+  --danger-weak: #3A1F1B;
+  --danger-weak-2: #4E2924;
+  --danger-text: #F7A79E;
+  --info: #7BA9DC;
+  --info-weak: #1A2534;
+  --info-weak-2: #233348;
+  --info-text: #9CC1EC;
+  --marigold: #E3A83F;
+  --marigold-weak: #32280F;
+  --marigold-text: #EFBA5F;
+  --status-critical: #F28C82;
+  --status-critical-bg: color-mix(in srgb, #F28C82 14%, transparent);
   --status-high: #E8956B;
-  --status-warning: #E0A33A;
-  --status-warning-bg: color-mix(in srgb, #E0A33A 12%, transparent);
-  --status-success: #5BC08A;
-  --status-success-bg: color-mix(in srgb, #5BC08A 12%, transparent);
-  --status-info: #6B9BD1;
-  --status-info-bg: color-mix(in srgb, #6B9BD1 12%, transparent);
-  --status-ai: #A99DF0;
-  --status-ai-bg: color-mix(in srgb, #A99DF0 12%, transparent);
-  --chart-amber: #E8A04C;
-  --chart-blue: #5B9CE8;
-  --chart-red: #E96E62;
-  --chart-red-deep: #E85B45;
-  --chart-violet: #A99DF0;
-  --chart-teal: #57C489;
-  --chart-slate: #9BA3AD;
-  --secondary-hover-border: #6B6656;
-  --input-hover-border: #5A5648;
-  --danger-hover: #E06E5E;
-  --danger-hover-text: #E8B54D;
-  --btn-ink: #161511; /* dark ink on light-teal filled buttons */
-  --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0F766E) 68%, #ECEAE3);
-  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.55);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
-  --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 10px 24px -16px rgb(0 0 0 / 0.7);
-  --shadow-lg: 0 2px 8px rgb(0 0 0 / 0.55), 0 22px 50px -24px rgb(0 0 0 / 0.8);
-  --shadow-xl: 0 4px 14px rgb(0 0 0 / 0.6), 0 34px 80px -34px rgb(0 0 0 / 0.9);
-  --gradient-accent: var(--accent);
+  --status-warning: #E3A83F;
+  --status-warning-bg: color-mix(in srgb, #E3A83F 14%, transparent);
+  --status-success: #5CC98C;
+  --status-success-bg: color-mix(in srgb, #5CC98C 14%, transparent);
+  --status-info: #7BA9DC;
+  --status-info-bg: color-mix(in srgb, #7BA9DC 13%, transparent);
+  --status-ai: #9286E8;
+  --status-ai-bg: color-mix(in srgb, #9286E8 14%, transparent);
+  --status-neutral: var(--text-2);
+  --status-neutral-bg: var(--surface-3);
+  --chart-amber: #E9A64F;
+  --chart-blue: #6BA5EC;
+  --chart-red: #EC7A6E;
+  --chart-red-deep: #E9665A;
+  --chart-violet: #A79BEF;
+  --chart-teal: #5CC98C;
+  --chart-slate: #A2AAB4;
+  --chart-steel: #6FA6BC;
+  --secondary-hover-border: #6B6759;
+  --input-hover-border: #605C4E;
+  --danger-hover: #F5A097;
+  --danger-hover-text: #EFBA5F;
+  --scrim: rgb(0 0 0 / 62%);
+  --scrim-soft: rgb(0 0 0 / 42%);
+  --btn-ink: #14130F;
+  --campus-hue-dot: color-mix(in srgb, var(--campus-hue, #0F766E) 66%, #EDEBE4);
 }
 
 /* campus dots consume the derived channel; light falls back to the server hex */

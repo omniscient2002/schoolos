@@ -84,15 +84,62 @@ export interface TeacherSuggestion {
   rank: number;
 }
 
-export interface TeacherBriefSection {
-  heading: string;
-  lines: string[];
+/* GET /teacher/brief?when=eod|week
+   The wire shape is the plugin's aggregate (server/src/plugins/teacher.copilot),
+   NOT a {span, sections} pair — an earlier client type claimed that and every
+   teacher screen crashed on `undefined.map` against the real payload.
+   Each block is independently `available`: a block whose table is not built
+   answers {available:false, reason}, and the UI must say so rather than
+   render its absence as a zero. */
+export interface TeacherBriefPeriodRef {
+  seq: string;
+  label: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  is_break: boolean;
+  subject: string | null;
+  room: string | null;
 }
-
+export interface TeacherBriefPeriod {
+  seq: string;
+  time: string;
+  subject: string | null;
+  room: string | null;
+  isBreak: boolean;
+}
 export interface TeacherBrief {
-  /** eod briefs are "today so far"; weekly briefs name the span. */
-  span: string;
-  sections: TeacherBriefSection[];
+  when: 'eod' | 'week';
+  generatedFor: string;
+  /** The plain-words content the brief exists to deliver. */
+  sentences: string[];
+  /** Server's own provenance label — shown verbatim, never paraphrased. */
+  label: string;
+  sources: { kind: string; table: string; available: boolean }[];
+  timetable:
+    | { available: false; reason?: string }
+    | {
+        available: true;
+        day: string;
+        teachingToday: number;
+        currentPeriod: TeacherBriefPeriodRef | null;
+        nextPeriod: TeacherBriefPeriodRef | null;
+        periods: TeacherBriefPeriod[];
+      };
+  homework:
+    | { available: false; reason?: string }
+    | { available: true; openHomework: number; pendingSubmissions: number; reviewedSubmissions: number };
+  concerns:
+    | { available: false; reason?: string }
+    | {
+        available: true; open: number;
+        items: { concernId: string; category: string | null; urgency: string | null; status: string }[];
+      };
+  curriculumPace:
+    | { available: false; reason?: string }
+    | {
+        available: true;
+        rows: { subject: string; grade: string; covered: number; partial: number; total: number; pacePct: number }[];
+      };
 }
 
 /* ============================================================
@@ -181,7 +228,11 @@ export interface TeacherHomework {
   due_at: string;               /* ISO */
   status: 'open' | 'closed';
   created_at: string;
-  submission_counts?: { submitted: number; late: number; reviewed: number; missing: number }; /* PROPOSED row enrichment */
+  /* The server sends `submission_count` (a single live number, teacher.classroom
+     `/homework`); `submission_counts` is the richer per-state breakdown this client
+     will read the day the server sends it. The screen already degrades to the count
+     it has rather than showing a zero it did not measure. */
+  submission_counts?: { submitted: number; late: number; reviewed: number; missing: number };
 }
 
 export interface NewHomework {
@@ -260,34 +311,24 @@ export interface MyWorkload {
   note: string;
 }
 
-/* ---------- P9 · announcements + messages (comms rail) ---------- */
+/* ---------- P9 · announcements + messages (comms rail) ----------
+   REMOVED (P3-7 close-out). This block declared a teacher-side announcement and
+   in-school-messaging surface — `GET/POST /comms/announcements`,
+   `GET /comms/threads?mine=1`, `POST /comms/threads/:id/messages` — that the server
+   has never registered, and nothing in the SPA ever called it. A typed wrapper around a
+   door that does not exist is a promise the product cannot keep, and the door-latching
+   fallback turned any future caller into a user-visible "This teacher door is not
+   connected yet".
 
-export interface TeacherAnnouncement {
-  id: string;
-  audiences: string[];          /* class grades, e.g. ["8-B"] */
-  title: string;
-  body: string;
-  template_id: string | null;
-  status: 'sent' | 'scheduled';
-  scheduled_at: string | null;
-  sent_at: string | null;
-  receipts: { delivered: number; read: number; total: number };
-}
+   What exists instead, and is wired: the kernel's `/announcements` (staff draft →
+   owner/principal approval → per-recipient receipts, routes.js) and `app.notifications`
+   for in-app delivery. An in-school MESSAGING domain (threads, participants, masked
+   guardian numbers) is a new domain with no shipped code to repair — the same category
+   the product already rules out of scope (hostel, payroll, push). It is a build, not a
+   wrapper, so it is not here pretending to be one.
 
-export interface MsgMessage { id: string; from: 'teacher' | 'guardian'; text: string; at: string; template_id?: string }
-
-export interface MsgThread {
-  id: string;
-  student_id: string;
-  student_name: string;
-  class_grade: string;
-  guardian_name: string;
-  guardian_phone_masked: string;  /* masked numbers only — never a raw phone (P9) */
-  unread: number;
-  messages: MsgMessage[];
-}
-
-export interface MessageTemplate { id: string; name: string; text: string }
+   server/tests/frontend-door-surface.test.js now fails if a client file names a door the
+   server does not register, so this cannot quietly come back. */
 
 /* ---------- P11 · PTM (teacher.support, TS-2) — server shapes ----------
    GET  /ptm/slots        → { slots: [{ slotId, teacherId, teacherName, date,
@@ -418,30 +459,6 @@ export async function listDutyRoster(window: 'today' | 'week' | 'month' = 'week'
 /** GET /workload/mine (§4, frozen) */
 export async function myWorkload(): Promise<{ workload: MyWorkload }> {
   const r = await flowRead<{ workload: MyWorkload }>('workload', '/workload/mine');
-  return r.data;
-}
-
-/** GET /comms/announcements?mine=1 — PROPOSED door (comms rail, P9); freeze with TS-1 */
-export async function listAnnouncements(): Promise<{ announcements: TeacherAnnouncement[] }> {
-  const r = await flowRead<{ announcements: TeacherAnnouncement[] }>('announce', '/comms/announcements?mine=1');
-  return r.data;
-}
-
-/** POST /comms/announcements — PROPOSED door (comms rail, P9); freeze with TS-1 */
-export async function sendAnnouncement(body: { audiences: string[]; title: string; body: string; template_id?: string; scheduled_at?: string }): Promise<{ ok: boolean; announcement: TeacherAnnouncement }> {
-  const r = await flowWrite<{ ok: boolean; announcement: TeacherAnnouncement }>('announce', '/comms/announcements', { method: 'POST', body: JSON.stringify(body) });
-  return r.data;
-}
-
-/** GET /comms/threads?mine=1 — PROPOSED door (in-school messaging, P9); freeze with TS-1 */
-export async function listThreads(): Promise<{ threads: MsgThread[] }> {
-  const r = await flowRead<{ threads: MsgThread[] }>('threads', '/comms/threads?mine=1');
-  return r.data;
-}
-
-/** POST /comms/threads/:id/messages — PROPOSED door (in-school messaging, P9); freeze with TS-1 */
-export async function sendThreadMessage(threadId: string, text: string, templateId?: string): Promise<{ ok: boolean; message: MsgMessage }> {
-  const r = await flowWrite<{ ok: boolean; message: MsgMessage }>('threads', `/comms/threads/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ text, template_id: templateId }) });
   return r.data;
 }
 
@@ -689,7 +706,7 @@ export async function reflectLesson(id: string, body: { worked?: string; reinfor
    TU-3 (ui-insights) SECTION — mastery maps · progress stories ·
    curriculum coverage · class analytics · interventions.
 
-   Doors (frozen §4 unless marked PROPOSED):
+   Doors (all server-registered; `PROPOSED` no longer appears here — see below):
      GET  /mastery/student/:id?subject=      getMasteryStudent
      GET  /mastery/class/:grade?subject=     getMasteryClass
      GET  /curriculum/tree?subject=&grade=   getCurriculumTree
@@ -697,8 +714,16 @@ export async function reflectLesson(id: string, body: { worked?: string; reinfor
      GET  /interventions?student=            getInterventions
      POST /interventions                     createIntervention
      POST /interventions/:id/reassess        moveIntervention
-     GET  /progress/story/:studentId         getProgressStory   (PROPOSED)
-     GET  /analytics/class/:grade            getClassAnalytics  (PROPOSED composite)
+     GET  /progress/story/:studentId         getProgressStory
+     GET  /analytics/class/:grade            getClassAnalytics
+
+   P3-7 close-out: the last two were labelled PROPOSED, which was true when this file
+   was written and stopped being true when `teacher.copilot` shipped them
+   (teacher.copilot/index.js `/progress/story/:studentId` and `/analytics/class/:grade`,
+   staff-gated, and both reachable from /teacher/progress-story and /teacher/analytics via
+   server/src/effective-access.js). A stale label is not cosmetic here: it is the marker
+   this file used to decide what was a promise and what was a build, and the whole P3-7
+   backlog was really "count the promises, then keep only the ones the server keeps".
 
    A3 rule baked into the contract: every mastery label carries
    evidence + confidence + expiry. Evidence older than 28 days
@@ -764,7 +789,9 @@ export const TREND_INFO: Record<MasteryTopic['trend'], { glyph: string; label: s
 export function evidenceLinkTarget(link: MasteryEvidence['link']): { to: string; label: string } {
   switch (link) {
     case 'homework': return { to: '/teacher/submissions', label: 'Open homework' };
-    case 'assessment': return { to: '/teacher/assessments', label: 'Open assessments' };
+    /* P3-6: this pointed at '/teacher/assessments', which is not a route — the link went nowhere.
+       Marks entry is /teacher/exam-marks, which is where an assessment row can actually be acted on. */
+    case 'assessment': return { to: '/teacher/exam-marks', label: 'Open exam marks' };
     case 'observation': return { to: '/teacher/mastery', label: 'Open mastery map' };
     case 'intervention': return { to: '/teacher/interventions', label: 'Open support plans' };
   }
@@ -846,8 +873,8 @@ export const STORY_KIND_LABEL: Record<StoryKind, string> = {
   assessment: 'Assessment', intervention: 'Support', observed: 'Observation', improvement: 'Improvement',
 };
 
-/** GET /progress/story/:studentId — PROPOSED door (builds from mastery.evidence
- *  + lesson + intervention events; freeze with TS-3 before W2). */
+/** GET /progress/story/:studentId — server door (teacher.copilot), staff-gated. Builds from
+ *  mastery.evidence + lesson + intervention events; the narrative instead of the score. */
 export async function getProgressStory(studentId: string): Promise<{ data: { studentName: string; steps: StoryStep[] } | null; source: TeacherSource }> {
   const r = await flowRead<{ studentName: string; steps: StoryStep[] }>('story', `/progress/story/${encodeURIComponent(studentId)}`);
   return { data: r.data ?? null, source: r.source };
@@ -924,8 +951,8 @@ export interface ClassAnalyticsData {
   readiness: { nextUnit: string; verdict: 'ready' | 'almost' | 'not_yet'; reasons: string[] };
 }
 
-/** GET /analytics/class/:grade — PROPOSED composite door (mastery.class +
- *  homework completion + assessment patterns + readiness); freeze with TS-3. */
+/** GET /analytics/class/:grade — server composite door (teacher.copilot), staff-gated
+ *  (mastery.class + homework completion + assessment patterns + readiness). */
 export async function getClassAnalytics(classGrade: string): Promise<{ data: ClassAnalyticsData | null; source: TeacherSource }> {
   const r = await flowRead<ClassAnalyticsData>(`analytics_${classGrade}`, `/analytics/class/${encodeURIComponent(classGrade)}`);
   return { data: r.data ?? null, source: r.source };

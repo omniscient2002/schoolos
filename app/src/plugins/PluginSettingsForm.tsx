@@ -222,7 +222,7 @@ export default function PluginSettingsForm({ pluginId, onSaved }: { pluginId: st
                 value={Array.isArray(current) ? current.join('\n') : current == null ? '' : String(current)}
                 onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
                 placeholder="one item per line"
-                style={{ maxWidth: 360, fontFamily: 'var(--mono)' }}
+                style={{ maxWidth: 360, fontFamily: 'var(--font-mono)' }}
               />
             ) : (
               <input

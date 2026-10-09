@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Modal, Button, useToast } from './ui';
 import { fmtMoney } from '../lib/format';
 import { friendly } from '../lib/friendlyErrors';
+import { roleLabel, statusLabel, humanize } from '../lib/labels';
 import { apiPost } from '../services/liveApi';
 import { useStore } from '../state/store';
 
@@ -39,19 +40,25 @@ export function RecordPaymentModal({ row, onClose, onDone }: {
   const { actorName, session } = useStore();
   const [method, setMethod] = useState('cash');
   const [ref, setRef] = useState('');
+  const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   if (!row) return null;
   const due = Math.max(0, row.amount - row.paidAmount);
 
   const record = async () => {
+    if (method === 'cash' && pin.trim() !== '' && !/^[0-9]{4,6}$/.test(pin.trim())) {
+      toast({ title: 'Counter PIN is 4–6 digits', tone: 'info' }); return;
+    }
     setBusy(true);
     try {
-      const init = await apiPost<{ payment: { id: string } }>('/fees/payments', { obligationId: row.id, method });
+      const init = await apiPost<{ payment: { id: string } }>('/fees/payments',
+        { obligationId: row.id, method, ...(method === 'cash' && pin.trim() ? { pin: pin.trim() } : {}) });
       const conf = await apiPost<{ payment: { receipt_no: string | null }, obligation: { status: string } }>(
         `/fees/payments/${init.payment.id}/confirm`, ref.trim() ? { gatewayRef: ref.trim() } : {});
+      const methodLabel = METHODS.find(m => m.value === method)?.label ?? humanize(method);
       toast({
         title: `Payment recorded — receipt ${conf.payment.receipt_no ?? 'issued'}`,
-        sub: `${fmtMoney(due)} by ${method} against ${row.studentName} · ${row.term} ${row.category} · obligation now ${conf.obligation.status}.`,
+        sub: `${fmtMoney(due)} by ${methodLabel} against ${row.studentName} · ${row.term} ${row.category} · fee due now ${statusLabel(conf.obligation.status)}.`,
         tone: 'success'});
       onDone();
       onClose();
@@ -77,9 +84,9 @@ export function RecordPaymentModal({ row, onClose, onDone }: {
     >
       <div className="u-col" style={{ gap: 12 }}>
         <p className="u-small u-muted" style={{ margin: 0 }}>
-          This initiates the payment and immediately records its settlement against the ledger. Use it when
+          This initiates the payment and immediately records its settlement against the fee records. Use it when
           the money has actually arrived — the UPI intent, gateway webhook or bank statement is your proof.
-          Every entry is audited with your name ({actorName}, {session.roleId}).
+          Every entry is audited with your name ({actorName}, {roleLabel(session.roleId)}).
         </p>
         <label className="u-col u-small" style={{ gap: 6 }}>
           <span>Payment method</span>
@@ -91,6 +98,12 @@ export function RecordPaymentModal({ row, onClose, onDone }: {
           <span>Gateway / UPI reference <span className="u-faint">(optional — from your gateway dashboard or bank statement)</span></span>
           <input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="e.g. UPI-4821… or RZP-…" />
         </label>
+        {method === 'cash' && (
+          <label className="u-col u-small" style={{ gap: 6 }}>
+            <span>Counter PIN <span className="u-faint">(only if the office enrolled one for you — otherwise leave blank)</span></span>
+            <input className="input" type="password" inputMode="numeric" maxLength={6} value={pin} onChange={e => setPin(e.target.value)} placeholder="4–6 digits" autoComplete="off" />
+          </label>
+        )}
       </div>
     </Modal>
   );

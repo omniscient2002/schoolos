@@ -24,6 +24,19 @@ export const KNOWN_ROLES: readonly RoleId[] = [
 /** The lightest surface: what an unrecognised role gets. Never the broadest — see the note above. */
 export const UNKNOWN_ROLE_FALLBACK: RoleId = 'student';
 
+/* The roles the school can APPOINT through the provisioning console — one declaration, derived.
+ *
+ * `owner` is excluded because owners are created at tenant bootstrap (one per school, and only
+ * there); the server's own list of issuable roles is `ROLES_NO_OWNER`, and a school must not be able
+ * to mint a second one from a dropdown.
+ *
+ * `student` used to be excluded here too, which left the whole student portal with no possible
+ * user: the server issues the role, ~20 `/student/*` doors exist, and nothing could ever create one
+ * (G-1). A pupil's portal account is now created the same way any account is — from the roster,
+ * where the school actually is (see PeopleAdmin's "Create portal account" on a student row).
+ */
+export const PROVISIONABLE_ROLES: readonly RoleId[] = KNOWN_ROLES.filter((r) => r !== 'owner');
+
 export function mapAccountRole(role: string | null | undefined): RoleId {
   const r = String(role ?? '');
   return (KNOWN_ROLES as readonly string[]).includes(r) ? (r as RoleId) : UNKNOWN_ROLE_FALLBACK;

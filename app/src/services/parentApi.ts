@@ -80,9 +80,26 @@ export interface ParentAttendanceData {
 }
 
 /* GET /parent/child/:id/exams → upcoming (date/syllabus) + published results + explain */
-export interface ParentExamUpcoming { id: string; title: string; subject?: string | null; date: string; syllabus?: string | null }
-export interface ParentExamResult { id: string; title: string; subject?: string | null; published_at?: string | null; score?: string | null }
+/* GET /parent/child/:id/exams → upcoming (date/syllabus) + published results + explain
+   The wire sends `name`/`exam`, not `title`, and does NOT always include a
+   date — the previous type claimed otherwise, so every exam rendered a blank
+   name and the literal string "Invalid Date" in the date column. `date` is
+   therefore optional here, and fmtDateShort renders an em-dash when absent. */
+export interface ParentExamUpcoming { id: string; name: string; term?: string | null; class_grade?: string | null; date?: string | null }
+export interface ParentExamResult { exam: string; term?: string | null; total_pct?: string | number | null; grade?: string | null; published_at?: string | null }
 export interface ParentExamsData { child_id: string; upcoming: ParentExamUpcoming[]; published: ParentExamResult[]; explain?: string | null }
+
+/* GET /parent/child/:id/academics → PUBLISHED report cards only, with the moderation overlay
+   applied (U-15). No child_id in the payload — the door is already scoped to one child. */
+export interface ParentAcademicsReport {
+  exam: string;
+  term?: string | null;
+  pct?: string | number | null;
+  grade?: string | null;
+  publishedAt?: string | null;
+  explain?: string | null;
+}
+export interface ParentAcademicsData { reports: ParentAcademicsReport[] }
 
 /* GET/POST /parent/consents · POST /:id/decide {granted|declined} (immutable once set) */
 export type ConsentKind = 'trip' | 'photo' | 'medical' | 'activity' | 'transport';
@@ -151,6 +168,8 @@ export const getAssignments = (childId: string) => call<ParentAssignmentsData>(`
 export const getAttendance = (childId: string) => call<ParentAttendanceData>(`/parent/child/${encodeURIComponent(childId)}/attendance`);
 
 export const getExams = (childId: string) => call<ParentExamsData>(`/parent/child/${encodeURIComponent(childId)}/exams`);
+
+export const getAcademics = (childId: string) => call<ParentAcademicsData>(`/parent/child/${encodeURIComponent(childId)}/academics`);
 
 /* GET /parent/child/:id/transport → the child's bus route (no live position to families) */
 export interface ParentTransportData {

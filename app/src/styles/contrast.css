@@ -1,0 +1,355 @@
+/* ============================================================
+   contrast.css — the high-contrast theme.
+
+   High contrast is a SEPARATE axis from light/dark, applied as
+   `data-contrast="1"` on <html> on top of whichever theme is
+   active. Someone who needs more contrast should not also have to
+   choose a colour scheme, so both high-contrast-light and
+   high-contrast-dark exist and both are first-class.
+
+   What changes, and why:
+     · Canvas and surfaces go to the extremes. Every step between
+       them is removed, because the whole point is that a boundary
+       is never ambiguous.
+     · Borders become structural. Thin, warm, low-contrast rules are
+       the first thing to disappear for a low-vision user, so every
+       boundary is stated explicitly at a weight you can see.
+     · Text goes to the ends of the ramp. Nothing is "muted grey
+       that reads as a hint" any more.
+     · Status keeps its hue but steps to the AA-safe extreme, so
+       meaning survives the contrast increase.
+     · Shadows are removed. On a pure-contrast canvas a shadow adds
+       a soft edge that contradicts the strong ones around it.
+
+   Layout, semantics, focus management and the honest
+   empty/loading/error states are all untouched — this changes how
+   things look, never what they mean.
+   ============================================================ */
+
+/* ---------- high contrast on the light base ---------- */
+:root[data-contrast='1'] {
+  --bg: #FFFFFF;
+  --bg-subtle: #FFFFFF;
+  --bg-2: #FFFFFF;
+  --surface: #FFFFFF;
+  --surface-1: #FFFFFF;
+  --surface-2: #FFFFFF;
+  --surface-3: #F0F0F0;
+  --surface-4: #E4E4E4;
+  --surface-inverse: #000000;
+
+  --border: #000000;
+  --border-strong: #000000;
+  --border-subtle: #595959;
+  --hairline: #000000;
+  --hairline-soft: #595959;
+
+  --text: #000000;
+  --text-1: #000000;
+  --text-2: #000000;
+  --text-3: #262626;
+  --text-inverse: #FFFFFF;
+
+  --accent: #00504A;
+  --accent-hover: #003733;
+  --accent-active: #002E2B;
+  --accent-weak: #D5E8E6;
+  --accent-weak-2: #A9CFCA;
+  --accent-text: #003733;
+  --btn-ink: #FFFFFF;
+
+  --ai: #3A3194;
+  --ai-hover: #2C2570;
+  --ai-weak: #E4E1F7;
+  --ai-weak-2: #BDB6EC;
+  --ai-text: #2C2570;
+
+  --success: #0A5C2A;
+  --success-weak: #D3EDD9;
+  --success-weak-2: #A6D5B4;
+  --success-text: #0A5C2A;
+  --warning: #6B3A00;
+  --warning-weak: #FBE6C8;
+  --warning-weak-2: #F0C48A;
+  --warning-text: #5A3100;
+  --danger: #8C0F0A;
+  --danger-weak: #FBDEDB;
+  --danger-weak-2: #F2B7B2;
+  --danger-text: #8C0F0A;
+  --info: #12399E;
+  --info-weak: #DCE4FB;
+  --info-weak-2: #B4C4F3;
+  --info-text: #0F2E85;
+
+  --marigold: #6B3A00;
+  --marigold-weak: #FBE6C8;
+  --marigold-text: #5A3100;
+
+  --status-critical: #8C0F0A;
+  --status-critical-bg: #FBDEDB;
+  --status-high: #7A2E00;
+  --status-warning: #6B3A00;
+  --status-warning-bg: #FBE6C8;
+  --status-success: #0A5C2A;
+  --status-success-bg: #D3EDD9;
+  --status-info: #12399E;
+  --status-info-bg: #DCE4FB;
+  --status-ai: #3A3194;
+  --status-ai-bg: #E4E1F7;
+  --status-neutral: #000000;
+  --status-neutral-bg: #F0F0F0;
+
+  --chart-amber: #6B3A00;
+  --chart-blue: #12399E;
+  --chart-red: #8C0F0A;
+  --chart-red-deep: #6E0A06;
+  --chart-violet: #3A3194;
+  --chart-teal: #0A5C2A;
+  --chart-slate: #3A3A3A;
+  --chart-steel: #1F4A5C;
+
+  --secondary-hover-border: #000000;
+  --input-hover-border: #000000;
+  --danger-hover: #6B0A06;
+  --danger-hover-text: #5A3100;
+  --scrim: rgb(0 0 0 / 62%);
+  --scrim-soft: rgb(0 0 0 / 40%);
+  --campus-hue-dot: #000000;
+
+  /* Shadows off. On a pure-contrast canvas a soft edge contradicts
+     the hard ones around it. Structure is carried by borders. */
+  --shadow-xs: 0 0 0 0 transparent;
+  --shadow-sm: 0 0 0 0 transparent;
+  --shadow-md: 0 0 0 0 transparent;
+  --shadow-lg: 0 0 0 0 transparent;
+  --shadow-xl: 0 0 0 0 transparent;
+  --shadow-2xl: 0 0 0 0 transparent;
+  --shadow-panel: none;
+  --edge-light: none;
+  --edge-dark: none;
+
+  --gradient-accent: var(--accent);
+  --gradient-ai: var(--ai);
+  --gradient-page: none;
+
+  /* The one non-negotiable: focus must be impossible to lose. */
+  --focus-ring: 3px solid #000000;
+  --ring-soft: 0 0 0 4px #FFFFFF, 0 0 0 7px #000000;
+}
+
+/* ---------- high contrast on the dark base ---------- */
+:root[data-contrast='1'][data-theme='dark'],
+:root[data-contrast='1'] .dark-base {
+  --bg: #000000;
+  --bg-subtle: #0A0A0A;
+  --bg-2: #000000;
+  --surface: #0A0A0A;
+  --surface-1: #0A0A0A;
+  --surface-2: #141414;
+  --surface-3: #1F1F1F;
+  --surface-4: #2B2B2B;
+  --surface-inverse: #FFFFFF;
+
+  --border: #FFFFFF;
+  --border-strong: #FFFFFF;
+  --border-subtle: #B0B0B0;
+  --hairline: #FFFFFF;
+  --hairline-soft: #B0B0B0;
+
+  --text: #FFFFFF;
+  --text-1: #FFFFFF;
+  --text-2: #FFFFFF;
+  --text-3: #DEDEDE;
+  --text-inverse: #000000;
+
+  --accent: #5FE3CD;
+  --accent-hover: #8BEEE0;
+  --accent-active: #B4F4EA;
+  --accent-weak: #0C3B34;
+  --accent-weak-2: #14564C;
+  --accent-text: #8BEEE0;
+  --btn-ink: #000000;
+
+  --ai: #BDB6F5;
+  --ai-hover: #D2CDF9;
+  --ai-weak: #211E3D;
+  --ai-weak-2: #33305A;
+  --ai-text: #D2CDF9;
+
+  --success: #6FE39B;
+  --success-weak: #0B2E18;
+  --success-weak-2: #14542B;
+  --success-text: #8CEBAF;
+  --warning: #F5C069;
+  --warning-weak: #33260B;
+  --warning-weak-2: #4E3A10;
+  --warning-text: #F5C069;
+  --danger: #FF9B94;
+  --danger-weak: #3A1613;
+  --danger-weak-2: #5A201C;
+  --danger-text: #FFB3AD;
+  --info: #94B8FA;
+  --info-weak: #131C3A;
+  --info-weak-2: #1D2A55;
+  --info-text: #AEC8FC;
+
+  --status-critical: #FF9B94;
+  --status-critical-bg: #3A1613;
+  --status-high: #FFB37A;
+  --status-warning: #F5C069;
+  --status-warning-bg: #33260B;
+  --status-success: #6FE39B;
+  --status-success-bg: #0B2E18;
+  --status-info: #94B8FA;
+  --status-info-bg: #131C3A;
+  --status-ai: #BDB6F5;
+  --status-ai-bg: #211E3D;
+  --status-neutral: #FFFFFF;
+  --status-neutral-bg: #1F1F1F;
+
+  --chart-amber: #F5C069;
+  --chart-blue: #94B8FA;
+  --chart-red: #FF9B94;
+  --chart-red-deep: #FF7A6E;
+  --chart-violet: #BDB6F5;
+  --chart-teal: #6FE39B;
+  --chart-slate: #C8C8C8;
+  --chart-steel: #9FCBDD;
+
+  --secondary-hover-border: #FFFFFF;
+  --input-hover-border: #FFFFFF;
+  --danger-hover: #FFB3AD;
+  --danger-hover-text: #F5C069;
+  --campus-hue-dot: #FFFFFF;
+
+  --focus-ring: 3px solid #FFFFFF;
+  --ring-soft: 0 0 0 4px #000000, 0 0 0 7px #FFFFFF;
+}
+
+/* System dark + high contrast, for the same reason the dark token set is
+   declared twice in dark.css: a media query cannot share a rule with a
+   bare selector in plain CSS. Keep these two lists in sync. */
+@media (prefers-color-scheme: dark) {
+  :root[data-contrast='1']:not([data-theme='light']) {
+    --bg: #000000;
+    --bg-subtle: #0A0A0A;
+    --bg-2: #000000;
+    --surface: #0A0A0A;
+    --surface-1: #0A0A0A;
+    --surface-2: #141414;
+    --surface-3: #1F1F1F;
+    --surface-4: #2B2B2B;
+    --surface-inverse: #FFFFFF;
+    --border: #FFFFFF;
+    --border-strong: #FFFFFF;
+    --border-subtle: #B0B0B0;
+    --hairline: #FFFFFF;
+    --hairline-soft: #B0B0B0;
+    --text: #FFFFFF;
+    --text-1: #FFFFFF;
+    --text-2: #FFFFFF;
+    --text-3: #DEDEDE;
+    --text-inverse: #000000;
+    --accent: #5FE3CD;
+    --accent-hover: #8BEEE0;
+    --accent-active: #B4F4EA;
+    --accent-weak: #0C3B34;
+    --accent-weak-2: #14564C;
+    --accent-text: #8BEEE0;
+    --btn-ink: #000000;
+    --ai: #BDB6F5;
+    --ai-hover: #D2CDF9;
+    --ai-weak: #211E3D;
+    --ai-weak-2: #33305A;
+    --ai-text: #D2CDF9;
+    --success: #6FE39B;
+    --success-weak: #0B2E18;
+    --success-weak-2: #14542B;
+    --success-text: #8CEBAF;
+    --warning: #F5C069;
+    --warning-weak: #33260B;
+    --warning-weak-2: #4E3A10;
+    --warning-text: #F5C069;
+    --danger: #FF9B94;
+    --danger-weak: #3A1613;
+    --danger-weak-2: #5A201C;
+    --danger-text: #FFB3AD;
+    --info: #94B8FA;
+    --info-weak: #131C3A;
+    --info-weak-2: #1D2A55;
+    --info-text: #AEC8FC;
+    --status-critical: #FF9B94;
+    --status-critical-bg: #3A1613;
+    --status-high: #FFB37A;
+    --status-warning: #F5C069;
+    --status-warning-bg: #33260B;
+    --status-success: #6FE39B;
+    --status-success-bg: #0B2E18;
+    --status-info: #94B8FA;
+    --status-info-bg: #131C3A;
+    --status-ai: #BDB6F5;
+    --status-ai-bg: #211E3D;
+    --status-neutral: #FFFFFF;
+    --status-neutral-bg: #1F1F1F;
+    --chart-amber: #F5C069;
+    --chart-blue: #94B8FA;
+    --chart-red: #FF9B94;
+    --chart-red-deep: #FF7A6E;
+    --chart-violet: #BDB6F5;
+    --chart-teal: #6FE39B;
+    --chart-slate: #C8C8C8;
+    --chart-steel: #9FCBDD;
+    --secondary-hover-border: #FFFFFF;
+    --input-hover-border: #FFFFFF;
+    --danger-hover: #FFB3AD;
+    --danger-hover-text: #F5C069;
+    --campus-hue-dot: #FFFFFF;
+    --focus-ring: 3px solid #FFFFFF;
+    --ring-soft: 0 0 0 4px #000000, 0 0 0 7px #FFFFFF;
+  }
+}
+
+/* ---------- structural rules under high contrast ----------
+   These are the few places where the class layer relies on a soft
+   edge or a tint for grouping. Each one gets an explicit edge. */
+:root[data-contrast='1'] :focus-visible {
+  outline: 3px solid #000;
+  outline-offset: 2px;
+}
+:root[data-contrast='1'][data-theme='dark'] :focus-visible,
+:root[data-contrast='1'] .dark-base :focus-visible { outline-color: #fff; }
+
+:root[data-contrast='1'] .card,
+:root[data-contrast='1'] .table-wrap,
+:root[data-contrast='1'] .modal,
+:root[data-contrast='1'] .drawer,
+:root[data-contrast='1'] .dropdown-menu,
+:root[data-contrast='1'] .empty,
+:root[data-contrast='1'] .wo-card,
+:root[data-contrast='1'] .report-bubble,
+:root[data-contrast='1'] .input,
+:root[data-contrast='1'] .select,
+:root[data-contrast='1'] .textarea { border-width: 2px; }
+
+:root[data-contrast='1'] .nav-item.active {
+  background: var(--accent);
+  color: var(--btn-ink);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+:root[data-contrast='1'] .nav-item.active::before { display: none; }
+:root[data-contrast='1'] .nav-item.active svg { color: var(--btn-ink); opacity: 1; }
+
+:root[data-contrast='1'] .tab.active { border-bottom-width: 3px; }
+:root[data-contrast='1'] .badge { border: 1px solid currentColor; }
+:root[data-contrast='1'] .seg-tabs .seg-tab.on { outline: 2px solid var(--text); outline-offset: -2px; }
+:root[data-contrast='1'] .avatar { border: 2px solid var(--text); }
+:root[data-contrast='1'] .mobile-tabbar { border-top-width: 2px; }
+:root[data-contrast='1'] .topbar { border-bottom-width: 2px; }
+:root[data-contrast='1'] .sidebar { border-right-width: 2px; }
+/* Row rules go visible: on a pure canvas they are the only thing
+   separating one record from the next. */
+:root[data-contrast='1'] table.data td { border-bottom-color: var(--border-subtle); }
+:root[data-contrast='1'] table.data thead th { background: var(--surface-3); }
+:root[data-contrast='1'] .divider,
+:root[data-contrast='1'] .event-row { border-color: var(--border-subtle); }

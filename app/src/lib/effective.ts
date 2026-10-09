@@ -50,6 +50,23 @@ export function canSurface(eff: EffectiveAccess | null | undefined, path: string
   return prefix == null ? false : caps[prefix] === true;
 }
 
+/** Does the server name this surface at all (exact, :param, or section-prefix match)?
+ *  Unknown paths are NOT renderable either (FEX-5) — but the caller can tell "no such page"
+ *  (render NotFound) apart from "known but denied" (render the role message). FIX-8. */
+export function isKnownSurface(eff: EffectiveAccess | null | undefined, path: string): boolean {
+  const caps = eff?.capabilities;
+  if (!caps) return true; // no server answer yet — treat as known; the * route decides
+  if (path in caps) return true;
+  const paramMatch = Object.keys(caps)
+    .filter(pattern => pattern.includes(':'))
+    .some(pattern => {
+      const re = new RegExp(`^${pattern.split('/').map(part => part.startsWith(':') ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('/')}\\/?$`);
+      return re.test(path);
+    });
+  if (paramMatch) return true;
+  return Object.keys(caps).some(p => !p.includes(':') && path.startsWith(p + '/'));
+}
+
 /** The classes this caller owns (a teacher's form-classes); empty for every other role. */
 export function ownedClasses(eff: EffectiveAccess | null | undefined): Array<{ grade: string; section: string }> {
   return eff?.scope?.classes ?? [];

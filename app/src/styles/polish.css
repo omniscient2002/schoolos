@@ -1,353 +1,194 @@
 /* ============================================================
-   SchoolOS · REFINEMENT — "calm, trustworthy, capable"
+   SchoolOS · REFINEMENT
    ------------------------------------------------------------
-   Design brief: Linear's clarity and calm density, Stripe's
-   confidence. Flat, quiet, information-forward. No glass, no
-   decorative gradients, restrained depth. Marigold stays an
-   attention/warmth accent, never the primary action colour.
+   Imported LAST so it settles the whole system.
 
-   Imported LAST so it settles the whole system. Layout and
-   placement are intentionally untouched — this file only sets
-   the shared foundation: tokens, surfaces, controls, chrome,
-   data, overlays, motion and the suppression of the earlier
-   flashier character effects.
+   This file does NOT redefine tokens. tokens.css is the single
+   source of truth for colour, type, space, radius, depth and
+   motion; components.css owns the component class layer. What
+   lives here is the handful of things that must win over both:
+
+     1. the page canvas
+     2. overlay motion
+     3. the optional motion primitives (components/motion.tsx),
+        which are the CSS half of that module
+     4. dark-mode elevation, where shadows must read as
+        separation rather than as grey fog
+     5. the reduced-motion clause
    ============================================================ */
 
-:root {
-  /* Shape — medium radius; controls a touch smaller */
-  --r-sm: 5px;
-  --r-md: 7px;
-  --r-lg: 9px;
-  --r-xl: 11px;
-  --r-card: 12px;
-  --r-panel: 14px;
-  --r-ctl: 9px;
-  --r-chip: 7px;
-
-  /* Hairlines — quiet, low contrast */
-  --hairline: var(--border);
-  --hairline-soft: var(--border-subtle);
-
-  /* Depth — restraint. Surfaces are flat; only overlays lift. */
-  --shadow-xs: 0 1px 1px rgb(28 29 32 / 0.04);
-  --shadow-sm: 0 1px 2px rgb(28 29 32 / 0.05);
-  --shadow-md: 0 1px 3px rgb(28 29 32 / 0.06), 0 8px 20px -14px rgb(28 29 32 / 0.22);
-  --shadow-lg: 0 2px 6px rgb(28 29 32 / 0.07), 0 18px 44px -22px rgb(28 29 32 / 0.28);
-  --shadow-xl: 0 4px 12px rgb(28 29 32 / 0.08), 0 30px 70px -30px rgb(28 29 32 / 0.32);
-  --shadow-panel: var(--shadow-lg);
-
-  /* Focus — visible, AA, one definition */
-  --focus-ring: 2px solid var(--accent);
-  --ring-soft: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
 /* ============================================================
-   1 · GROUND — plain surface, a whisper of warmth/teal
+   1 · GROUND — a warm plane with one whisper of brand in it.
+   Flat beige is cheap; a barely-there wash reads as considered.
    ============================================================ */
 html { scroll-behavior: smooth; }
 
 body {
   background:
-    radial-gradient(1200px 720px at 10% -10%, color-mix(in srgb, var(--accent) 3.5%, transparent), transparent 62%),
-    radial-gradient(900px 560px at 104% -6%, color-mix(in srgb, var(--marigold, #D97706) 2.5%, transparent), transparent 58%),
+    var(--gradient-page),
+    radial-gradient(900px 540px at 104% -6%, color-mix(in srgb, var(--marigold) 2.5%, transparent), transparent 60%),
     var(--bg);
   background-attachment: fixed;
-  letter-spacing: -0.004em;
-}
-
-h1 { letter-spacing: -0.022em; font-weight: 640; }
-h2, h3 { letter-spacing: -0.014em; }
-
-/* ============================================================
-   2 · SURFACES — quiet panels, dividers over card-on-card
-   ============================================================ */
-.card {
-  border-radius: var(--r-card);
-  border: 1px solid var(--hairline);
-  background: var(--surface);
-  box-shadow: none;                 /* flat by default */
-  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease), transform 160ms var(--ease-out);
-}
-.card-head {
-  border-bottom: 1px solid var(--hairline-soft);
-  border-radius: var(--r-card) var(--r-card) 0 0;
-}
-.card-body { padding: var(--s-5); }
-.card-head + .card-body { padding-top: var(--s-4); }
-
-/* only interactive cards react — and only a hair */
-.card-click:hover {
-  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
-}
-.card-click:active { transform: none; }
-.card-click:focus-visible { box-shadow: var(--ring-soft); }
-
-.stat .value { font-weight: 660; letter-spacing: -0.025em; }
-.stat .label { letter-spacing: .04em; }
-
-.grid { gap: var(--s-4); }
-
-/* ============================================================
-   3 · CONTROLS — flat, confident, snappy
-   ============================================================ */
-.btn {
-  border-radius: var(--r-ctl);
-  font-weight: 550;
-  height: var(--ctl-h-md);
-  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease), box-shadow 140ms var(--ease), transform 120ms var(--ease);
-}
-.btn:active:not(:disabled) { transform: translateY(0.5px); }
-
-.btn-primary {
-  background: var(--accent);
-  box-shadow: none;
-}
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-primary:active:not(:disabled) { background: var(--accent-active); }
-
-.btn-secondary {
-  background: var(--surface);
-  border-color: var(--border-strong);
-  box-shadow: none;
-}
-.btn-secondary:hover:not(:disabled) { background: var(--surface-2); border-color: var(--secondary-hover-border); }
-
-.btn-ghost { border-radius: var(--r-ctl); }
-.btn-sm { border-radius: var(--r-chip); height: var(--ctl-h-sm); }
-.btn-lg { border-radius: var(--r-ctl); }
-.btn-icon, .iconbtn { border-radius: var(--r-ctl); }
-.iconbtn { transition: background 140ms var(--ease), color 140ms var(--ease); }
-.iconbtn:hover { background: var(--surface-3); color: var(--text); }
-
-.input, .select, .textarea {
-  border-radius: var(--r-ctl);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  box-shadow: none;
-  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
-}
-.input:hover, .select:hover, .textarea:hover { border-color: var(--input-hover-border); }
-.input:focus, .select:focus, .textarea:focus {
-  border-color: var(--accent);
-  box-shadow: var(--ring-soft);
-}
-
-/* segmented + tabs — quiet, underline/segmented without gloss */
-.tabs-pill {
-  border-radius: var(--r-ctl);
-  padding: 3px;
-  background: var(--surface-3);
-  box-shadow: none;
-}
-.tabs-pill .tab { border-radius: var(--r-chip); }
-.tabs-pill .tab.active {
-  box-shadow: none;
-  border: 1px solid var(--hairline);
-  background: var(--surface);
-}
-.tab { border-radius: 0; }
-.tab.active { background: transparent; }
-
-/* ============================================================
-   4 · CHROME — solid and quiet, no frosted glass
-   ============================================================ */
-.sidebar {
-  background: var(--surface);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border-right: 1px solid var(--hairline);
-}
-.topbar {
-  background: var(--surface);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border-bottom: 1px solid var(--hairline);
-  box-shadow: none;
-}
-
-.nav-item {
-  border-radius: var(--r-md);
-  padding: 7px 10px;
-  transition: background 140ms var(--ease), color 140ms var(--ease);
-}
-.nav-item:hover { background: var(--surface-2); }
-.nav-item.active {
-  background: var(--accent-weak);
-  color: var(--accent-text);
-  box-shadow: none;
-}
-.nav-item svg { opacity: .9; }
-
-/* command-bar feel for the topbar search */
-.topbar-search {
-  background: var(--surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-ctl);
-  transition: background 140ms var(--ease), border-color 140ms var(--ease);
-}
-.topbar-search:hover { background: var(--surface-3); border-color: var(--border-strong); }
-
-.avatar { box-shadow: none; }
-.avatar.square { border-radius: 10px; }
-
-/* Collapsed rail: the brand mark + collapse toggle did not fit in 64px, so the
-   toggle overflowed and was clipped — leaving no way to re-open the sidebar.
-   Hide the mark and centre the toggle so "expand" is always reachable. */
-.sidebar.collapsed > a:first-child { padding: 10px 0 !important; justify-content: center; gap: 0; }
-/* the brand mark styles itself `display:flex` inline, so the hide must win */
-.sidebar.collapsed > a:first-child > div:first-child { display: none !important; }
-.sidebar.collapsed .sidebar-collapse { margin-left: 0 !important; }
-
-/* ============================================================
-   5 · DATA — hairline rows, no shadows
-   ============================================================ */
-.table-wrap {
-  border-radius: var(--r-card);
-  border: 1px solid var(--hairline);
-  box-shadow: none;
-}
-table.data th {
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--hairline);
-  letter-spacing: .05em;
-}
-table.data td { border-bottom: 1px solid var(--hairline-soft); }
-table.data tbody tr { transition: background 120ms var(--ease); }
-table.data tbody tr:hover { background: var(--surface-2); box-shadow: none; }
-
-.progress { height: 6px; border-radius: 999px; }
-
-/* ============================================================
-   6 · OVERLAYS — the only place depth is spent
-   ============================================================ */
-.modal-overlay {
-  background: color-mix(in srgb, var(--surface-inverse) 36%, transparent);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-.modal {
-  border-radius: var(--r-panel);
-  border: 1px solid var(--hairline);
-  box-shadow: var(--shadow-xl);
-  background: var(--surface);
-  animation: refinePop 180ms var(--ease-out);
-}
-
-.drawer {
-  border-radius: 0;
-  border-left: 1px solid var(--hairline);
-  box-shadow: var(--shadow-xl);
-  background: var(--surface);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  animation: refineSlide 200ms var(--ease-out);
-}
-
-.dropdown-menu {
-  border-radius: var(--r-card);
-  border: 1px solid var(--hairline);
-  box-shadow: var(--shadow-md);
-  padding: 5px;
-  animation: refinePop 140ms var(--ease-out);
-}
-.dropdown-item { border-radius: var(--r-md); transition: background 120ms var(--ease); }
-
-.toast {
-  border-radius: var(--r-card);
-  box-shadow: var(--shadow-lg);
-  animation: refineToast 200ms var(--ease-out);
-}
-
-.empty {
-  border-radius: var(--r-card);
-  border: 1px solid var(--hairline);
-  background: var(--surface-2);
-}
-
-.badge { height: 21px; padding: 0 8px; letter-spacing: .005em; }
-.badge-outline { border-color: var(--border-strong); }
-.skeleton { border-radius: var(--r-chip); }
-
-/* honesty notice (ui.tsx SampleNote) */
-.sample-note {
-  display: flex; align-items: flex-start; gap: 8px;
-  margin: 0 0 var(--s-4);
-  padding: 9px 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--hairline);
-  background: var(--surface-2);
-  color: var(--text-2);
-  font-size: var(--text-sm); line-height: 1.5;
 }
 
 /* ============================================================
-   7 · MOTION — snappy and honest; no cinematic transitions
+   2 · OVERLAY MOTION
+   Short in, and never slower on the way out. Motion explains a
+   change of state; it is not the change of state.
    ============================================================ */
-@keyframes refinePop { from { opacity: 0; transform: translateY(4px) scale(.99); } to { opacity: 1; transform: none; } }
-@keyframes refineSlide { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
-@keyframes refineToast { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes refinePop    { from { opacity: 0; transform: translateY(4px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes refineSlide  { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes refineToast  { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+@keyframes refineSheet  { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 
-.page { animation: fadeIn 120ms var(--ease); }
+.modal { animation: refineSheet var(--t-med) var(--ease-out); }
+.drawer { animation: refineSlide var(--t-med) var(--ease-out); }
+.dropdown-menu { animation: refinePop var(--t-fast) var(--ease-out); }
+.toast { animation: refineToast var(--t-med) var(--ease-out); }
+
+/* A dialog that closes must never linger: the exit is faster than
+   the entrance, and on the common path the overlay unmounts
+   immediately (no exit animation) rather than blocking the user. */
 
 /* ============================================================
-   8 · CALM THE EARLIER DECORATIVE LAYER
-   The "Living Register" effects (stamp scale, roll-call stagger,
-   ripples, breathing orb, sparkles, card spine, marigold
-   underlines) were the opposite of calm. Keep only the honest
-   toast timer; everything else settles to a quiet hover/focus.
+   3 · MOTION PRIMITIVES
+   The CSS half of components/motion.tsx. Every one of these is
+   optional sugar: under prefers-reduced-motion, or with no
+   IntersectionObserver, each degrades to its static form.
    ============================================================ */
-.btn:active:not(:disabled), .btn:not(:disabled):active, .iconbtn:active,
-.nav-item:active, .card-click:active, .chip:active { transform: none; }
-.btn > svg:last-child, .btn:hover:not(:disabled) > svg:last-child,
-.btn:active:not(:disabled) > svg:last-child,
-.btn:hover:not(:disabled) > svg:first-child { transform: none; }
-.btn-primary:active:not(:disabled) { box-shadow: none; }
 
-.card-click:hover::before { display: none; }   /* ledger spine */
-.nav-item::before { display: none; }            /* marigold thread */
-.page-head h1::after { display: none; }          /* marigold rule */
+/* Reveal — the register line being written as you reach it. A short
+   settle, never a theatrical entrance, and never more than 8px. */
+.reveal {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--t-slow) var(--ease-out), transform var(--t-slow) var(--ease-out);
+  transition-delay: var(--reveal-delay, 0ms);
+  will-change: opacity, transform;
+}
+.reveal-in { opacity: 1; transform: none; will-change: auto; }
+.reveal-in * { animation: none; }
 
-.ai-orb, .ai-orb::after { animation: none; box-shadow: none; }
-.ai-orb::after { display: none; }
+/* Roll — a roll-call container. Children arrive one after another.
+   The stagger is capped so a long list does not turn into a queue. */
+.roll > * { animation: refinePop var(--t-slow) var(--ease-out) both; }
+.roll > *:nth-child(1) { animation-delay: 0ms; }
+.roll > *:nth-child(2) { animation-delay: 45ms; }
+.roll > *:nth-child(3) { animation-delay: 90ms; }
+.roll > *:nth-child(4) { animation-delay: 135ms; }
+.roll > *:nth-child(n+5) { animation-delay: 180ms; }
+
+/* PulseDot — the live indicator. A single quiet breath, gated on
+   the component actually passing a label (i.e. it means something);
+   an unlabelled decorative dot does not animate. */
+.pulse-dot { position: relative; display: inline-flex; flex-shrink: 0; }
+.pulse-dot i {
+  display: block; width: 100%; height: 100%; border-radius: 999px;
+  background: var(--pd, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pd, var(--accent)) 22%, transparent);
+}
+.pulse-dot[aria-label] i { animation: pulseDot 2.4s var(--ease) infinite; }
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px color-mix(in srgb, var(--pd, var(--accent)) 22%, transparent); }
+  50%      { opacity: .55; box-shadow: 0 0 0 3px color-mix(in srgb, var(--pd, var(--accent)) 12%, transparent); }
+}
+
+/* AiOrb — the assistant's presence. A slow, low-amplitude breath.
+   `think` quickens it. Kept subtle: this is a workspace, not a
+   screensaver. */
 .ai-orb {
-  background: color-mix(in srgb, var(--ai) 14%, var(--surface));
-  color: var(--ai-text);
-  border: 1px solid color-mix(in srgb, var(--ai) 22%, transparent);
+  display: inline-block;
+  width: 34px; height: 34px; border-radius: 999px;
+  background: radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--ai) 34%, var(--surface)), color-mix(in srgb, var(--ai) 12%, var(--surface)) 72%);
+  border: 1px solid color-mix(in srgb, var(--ai) 24%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 30%, transparent);
+  animation: orbBreathe 5.5s var(--ease) infinite;
 }
-.pulse-dot::before, .pulse-dot::after { display: none; }
-.ask-door::before { display: none; }
-.ask-door > svg, .empty svg, .badge .dot, .stat .delta svg { animation: none; }
-.roll > * { animation: none; }
-.stat .value, .empty h3, .empty p, .toast svg { animation: none; }
-.dropdown-menu > * { animation: none; }
+.ai-orb.sm { width: 22px; height: 22px; }
+.ai-orb.think { animation-duration: 2.2s; }
+@keyframes orbBreathe {
+  0%, 100% { transform: scale(1); opacity: .92; }
+  50%      { transform: scale(1.045); opacity: 1; }
+}
+
+/* Skeleton shimmer is reduced to a slow cross-fade rather than a
+   travelling highlight — a sweeping band across a dense table
+   draws more attention than the data that is arriving. */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-3) 0%, var(--surface-2) 50%, var(--surface-3) 100%);
+  background-size: 100% 100%;
+  animation: skeletonFade 1.8s var(--ease) infinite;
+}
+@keyframes skeletonFade { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
 /* ============================================================
-   9 · DARK — depth via contrast, same calm
+   4 · DARK — depth reads as separation, not as grey fog.
+   On a near-black canvas a soft shadow is invisible, so the
+   elevation ramp is re-expressed as a bright edge plus a
+   deeper black ambient. Surfaces separate by luminance.
    ============================================================ */
-[data-theme="dark"] {
+[data-theme='dark'] {
+  --edge-light: inset 0 1px 0 rgb(255 255 255 / 0.05);
   --hairline: var(--border);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
-  --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 10px 24px -16px rgb(0 0 0 / 0.7);
-  --shadow-lg: 0 2px 8px rgb(0 0 0 / 0.55), 0 22px 50px -24px rgb(0 0 0 / 0.8);
-  --shadow-xl: 0 4px 14px rgb(0 0 0 / 0.6), 0 34px 80px -34px rgb(0 0 0 / 0.9);
+  --hairline-soft: var(--border-subtle);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.45), 0 2px 6px -2px rgb(0 0 0 / 0.5);
+  --shadow-md: 0 1px 3px rgb(0 0 0 / 0.45), 0 8px 22px -8px rgb(0 0 0 / 0.7);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.5), 0 18px 44px -12px rgb(0 0 0 / 0.75);
+  --shadow-xl: 0 4px 12px rgb(0 0 0 / 0.55), 0 30px 70px -20px rgb(0 0 0 / 0.85);
+  --shadow-2xl: 0 8px 18px rgb(0 0 0 / 0.6), 0 44px 96px -24px rgb(0 0 0 / 0.9);
+  /* On dark, the accent-tinted ambient would be invisible and the
+     flat grey would grey out the brand. Keep a real accent edge. */
+  --gradient-accent: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 92%, #fff) 0%,
+    var(--accent) 60%,
+    color-mix(in srgb, var(--accent) 92%, #000) 100%);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --hairline: var(--border);
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
-    --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 10px 24px -16px rgb(0 0 0 / 0.7);
-    --shadow-lg: 0 2px 8px rgb(0 0 0 / 0.55), 0 22px 50px -24px rgb(0 0 0 / 0.8);
-    --shadow-xl: 0 4px 14px rgb(0 0 0 / 0.6), 0 34px 80px -34px rgb(0 0 0 / 0.9);
+    --hairline-soft: var(--border-subtle);
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.45), 0 2px 6px -2px rgb(0 0 0 / 0.5);
+    --shadow-md: 0 1px 3px rgb(0 0 0 / 0.45), 0 8px 22px -8px rgb(0 0 0 / 0.7);
+    --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.5), 0 18px 44px -12px rgb(0 0 0 / 0.75);
+    --shadow-xl: 0 4px 12px rgb(0 0 0 / 0.55), 0 30px 70px -20px rgb(0 0 0 / 0.85);
+    --shadow-2xl: 0 8px 18px rgb(0 0 0 / 0.6), 0 44px 96px -24px rgb(0 0 0 / 0.9);
+    --gradient-accent: linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 92%, #fff) 0%,
+      var(--accent) 60%,
+      color-mix(in srgb, var(--accent) 92%, #000) 100%);
   }
+  /* The blur backdrop has to do the separating on dark, since a
+     translucent topbar over near-black is just near-black. */
+  :root:not([data-theme="light"]) .topbar {
+    background: color-mix(in srgb, var(--surface) 86%, transparent);
+    border-bottom-color: var(--border-strong);
+  }
+  :root:not([data-theme="light"]) .sidebar { background: var(--bg-subtle); }
 }
 
 /* ============================================================
-   10 · QUIET CLAUSE — reduced motion removes transitions
+   5 · REDUCED MOTION
+   A correctness setting, not a preference. Every nonessential
+   transform and animation is removed; nothing may delay
+   attendance marking, fee entry or form recovery.
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
-  .modal, .drawer, .dropdown-menu, .toast, .page { animation: none !important; }
+  *, *::before, *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+  .modal, .drawer, .dropdown-menu, .toast, .page, .reveal { animation: none !important; }
+  .reveal { opacity: 1 !important; transform: none !important; }
+  .roll > * { animation: none !important; opacity: 1 !important; }
+  .pulse-dot i, .ai-orb, .skeleton { animation: none !important; }
+  .ai-orb { opacity: 1; }
+  .skeleton { opacity: .8; }
+  /* Hover lifts are decoration, not information. */
+  .card-click:hover, .card-click:active, .wo-card:hover { transform: none !important; }
+  .btn:active:not(:disabled) { transform: none !important; }
 }

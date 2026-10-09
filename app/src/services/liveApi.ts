@@ -103,22 +103,51 @@ async function obtainStepUpToken(): Promise<string | null> {
   return stepUpToken;
 }
 
-async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
+/* F-26: every request gets a deadline. A hung request used to hang the screen
+   forever (no AbortController anywhere except Login+renew). Default 30s;
+   callers that move bytes (exports, uploads) pass a larger `timeoutMs`.
+   An existing caller signal is honoured too (AbortSignal.any). */
+export const DEFAULT_TIMEOUT_MS = 30000;
+async function call<T>(path: string, opts: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
   const method = (opts.method ?? 'GET').toUpperCase();
   const csrf = csrfToken();
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
+  const timeoutMs = typeof opts.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
+  /* P2-1: `content-type` is NOT a CORS-safelisted request header, so sending it on a bodyless
+     request turns every GET into a PREFLIGHTED one — an extra round trip per read, on every screen
+     load, for every user. Measured over a real onboarding run: 641 of 2,254 calls (28%) were
+     preflights. The header is only meaningful when there is a body to describe, so it is sent only
+     then. This is the single hottest function in the app; the behaviour is pinned by a test. */
+  const hasBody = opts.body != null && opts.body !== '';
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...opts,
+      signal,
     /* L5-3.2: same-origin deployments authenticate via the HttpOnly cookie and
        receive Set-Cookie (login / logout Max-Age=0) — same-origin needs no CORS
        cooperation. Cross-origin dev keeps the pure bearer flow. */
     ...(SAME_ORIGIN ? { credentials: 'same-origin' as RequestCredentials } : {}),
     headers: {
-      'content-type': 'application/json',
+      ...(hasBody ? { 'content-type': 'application/json' } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(csrf && !['GET', 'HEAD', 'OPTIONS'].includes(method) ? { 'x-csrf-token': csrf } : {}),
       ...(opts.headers ?? {}),
     },
-  });
+    });
+  } catch (e) {
+    // AbortSignal.timeout rejects with TimeoutError; a caller-owned abort keeps
+    // its own reason. Only the deadline maps to the friendly timeout copy
+    // (friendlyErrors.ts already rewrites 'timeout'). Name-checked, not
+    // instanceof: DOMException realms differ between jsdom/node and browsers.
+    if ((e as { name?: unknown } | null)?.name === 'TimeoutError') {
+      const err = new Error(`timeout after ${timeoutMs}ms — the server took too long to answer`) as Error & { code?: string; status?: number };
+      err.code = 'TIMEOUT';
+      throw err;
+    }
+    throw e;
+  }
   const body = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith('/auth/')) {
     // session expired or revoked — clear and let the AuthGate take over
@@ -139,7 +168,18 @@ async function call<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const message = (body as { error?: string }).error ?? `HTTP ${res.status}`;
     const requestId = res.headers.get('x-request-id');
-    throw new Error(requestId ? `${message} (request ${requestId})` : message);
+    /* UX-08: carry the server's stable error `code` on the Error so screens can
+       show a plain-language explanation instead of the raw server string. */
+    const err = new Error(requestId ? `${message} (request ${requestId})` : message) as Error & { code?: string; status?: number; payload?: unknown };
+    const code = (body as { code?: unknown }).code;
+    if (typeof code === 'string') err.code = code;
+    err.status = res.status;
+    /* A door that answers a REFUSAL with structured detail (the import mapper's
+       per-field `errors[]`, a validation list) would otherwise reach the screen as
+       "HTTP 400" and nothing else. The body rides along; `message` still wins for
+       every screen that only ever shows the string. */
+    err.payload = body;
+    throw err;
   }
   return body as T;
 }
@@ -236,7 +276,7 @@ export interface FeePlan {
   last_generated_at?: string | null;
 }
 export const apiFeePlans = () => call<{ feePlans: FeePlan[] }>('/fee-plans');
-export const apiCreateFeePlan = (body: { name: string; category?: string; grades: string[]; terms: FeePlanTerm[]; feeHeadId?: string; installments?: FeeInstallmentPart[] }) =>
+export const apiCreateFeePlan = (body: { name: string; category?: string; grades: string[]; terms: FeePlanTerm[]; feeHeadId?: string; installments?: FeeInstallmentPart[]; hikePct?: number; consultationMeetingId?: string }) =>
   call<{ feePlan: FeePlan }>('/fee-plans', { method: 'POST', body: JSON.stringify(body) });
 export const apiGenerateFeePlan = (id: string) =>
   call<{ inserted: number; skipped: number; students: number; installmentsCreated?: number; autoConcessions?: number; billingRunId?: string }>(`/fee-plans/${id}/generate`, { method: 'POST', body: '{}' });
@@ -291,16 +331,21 @@ export interface LivePayment {
   id: string; student_id: string; obligation_id: string | null; amount_cents: number; refunded_cents: number;
   method: string; status: string; gateway_ref: string | null; receipt_no: string | null;
   confirmed_at: string | null; created_at: string; settled_via: string | null; reconciliation_status: string;
+  gateway_fact?: 'captured' | 'recorded' | null;
   student_name?: string; grade?: string; section?: string; obligation_label?: string | null; term?: string | null;
 }
-export const apiPayments = (q: { status?: string; method?: string; studentId?: string } = {}) => {
+export const apiPayments = (q: { status?: string; method?: string; studentId?: string; recon?: 'disputed' } = {}) => {
   const p = new URLSearchParams();
   if (q.status) p.set('status', q.status);
   if (q.method) p.set('method', q.method);
   if (q.studentId) p.set('studentId', q.studentId);
+  if (q.recon) p.set('recon', q.recon);
   const qs = p.toString();
   return call<{ payments: LivePayment[]; scoped: string }>(`/payments${qs ? `?${qs}` : ''}`);
 };
+export interface ReconRun { id: string; ran_at: string; source: 'manual' | 'worker'; ghost: number; missing: number; orphan: number; amount_mismatch: number; actions_raised: number; total: number }
+export const apiReconRuns = (limit = 5) =>
+  call<{ runs: ReconRun[] }>(`/payments/recon-runs?limit=${limit}`);
 export const apiRefundPayment = (id: string, body: { reason?: string; refundCents?: number } = {}) =>
   call<{ payment: { id: string; status: string; refunded_cents: number }; gateway: Record<string, unknown>; refundedCents: number }>(
     `/payments/${id}/refund`, { method: 'POST', body: JSON.stringify(body) });
@@ -385,6 +430,44 @@ export const apiMigrationCommit = (id: string) =>
   call<{ created: number; skipped: number; imported: number; status: string }>(`/migration/sources/${id}/commit`, { method: 'POST', body: '{}' });
 export interface TrustReceipt { totalRows: number; imported: number; flagged: number; skipped: number; feeTotalCents: string; feePaidCents: string; differenceCents: string; rollbackDays: number }
 
+/* ---- ops.import: the column-mapping + dry-run engine (writes nothing) ----
+   The kernel commit doors above are the only authority that creates records; this
+   plugin answers "what would this file do?" before a single row is staged. */
+export interface ImportFieldDef {
+  required: boolean;
+  type: 'string' | 'phone' | 'date' | 'integer' | 'boolean' | 'enum';
+  maxLen?: number;
+  min?: number;
+  enum?: string[];
+  default?: unknown;
+  normalize?: 'uppercase';
+  description?: string;
+  examples?: string[];
+}
+export interface ImportSchema {
+  kind: string;
+  fields: Record<string, ImportFieldDef>;
+  identity: string;
+  notes: string[];
+}
+export const apiImportSchema = (kind: string) =>
+  call<{ schema: ImportSchema; kinds: string[] }>(`/plugins/ops.import/schema/${encodeURIComponent(kind)}`);
+export const apiImportValidateMapping = (kind: string, mapping: Record<string, string>) =>
+  call<{ ok: true; schema: string[] }>('/plugins/ops.import/validate-mapping', { method: 'POST', body: JSON.stringify({ kind, mapping }) });
+export interface ImportShadowReport {
+  kind: string;
+  totalRows: number;
+  analyzed: number;
+  truncated: boolean;
+  validRows: number;
+  errorRows: number;
+  fieldErrors: number;
+  topErrors: { error: string; rows: number }[];
+  diff: Record<string, unknown> | null;
+}
+export const apiImportShadow = (kind: string, mapping: Record<string, string>, rows: Record<string, string>[]) =>
+  call<ImportShadowReport & { ok: true }>('/plugins/ops.import/shadow', { method: 'POST', body: JSON.stringify({ kind, mapping, rows }) });
+
 /* ---- ops.bi read-model doors (L3-4.3) — L4-4.2 swap ---- */
 export const apiBiAttendance = (days: number, grade?: string) =>
   call<Record<string, unknown>>(`/plugins/ops.bi/attendance?days=${days}${grade ? `&grade=${encodeURIComponent(grade)}` : ''}`);
@@ -401,12 +484,102 @@ export const apiWorkOrders = () => call<{ workOrders: Record<string, unknown>[];
 export const apiCreateWorkOrder = (body: { title: string; description?: string; category: string; priority: string; assetId?: string }) =>
   call<{ workOrder: Record<string, unknown> }>('/work-orders', { method: 'POST', body: JSON.stringify(body) });
 export const apiAssets = () => call<{ assets: Record<string, unknown>[] }>('/assets');
+
+/* ── health.clinic — the infirmary log. Nurse-lane PII: the read door is deliberately NOT a teacher,
+   finance or parent read, and this screen asks the same question before it calls it. ───────────────── */
+export interface ClinicVisit {
+  visitId: string; studentId: string; studentName: string; visitedAt: string;
+  complaint: string; temperatureC?: number | null; action: string; notes?: string | null;
+}
+export const apiClinicVisits = () => call<{ visits: ClinicVisit[] }>('/plugins/health.clinic/visits');
+export const apiLogClinicVisit = (body: { studentId: string; complaint: string; temperatureC?: number; action?: string; notes?: string }) =>
+  call<{ ok: boolean; visitId: string; action: string; visitedAt: string; noticeActionId?: string | null }>(
+    '/plugins/health.clinic/visits', { method: 'POST', body: JSON.stringify(body) });
+export const apiIssueSickPass = (visitId: string) =>
+  call<{ ok: boolean; passId: string; validUntil: string }>(`/plugins/health.clinic/visits/${visitId}/sick-pass`, { method: 'POST', body: '{}' });
+export const apiCorrectClinicVisit = (visitId: string, body: { correction: string; action?: string }) =>
+  call<{ ok: boolean }>(`/plugins/health.clinic/visits/${visitId}/correct`, { method: 'POST', body: JSON.stringify(body) });
+
+/* ── the statutory / accounting exports ─────────────────────────────────────────────────────────────
+   Three add-ons whose whole product IS a file a school has to file or hand to an accountant:
+   UDISE (aggregate return), CBSE OASIS (per-exam result upload) and Tally (voucher XML). Each door
+   is a GET/POST that streams a file; the wrappers below fetch it as a blob so the screen can offer a
+   real download instead of a "copy this URL" instruction. */
+export const apiUdiseColumns = () => call<Record<string, unknown>>('/plugins/ops.udise/columns');
+/* Each export door streams a file, so the wrapper FETCHES it with the session bearer and hands the
+   browser a real download. A plain <a href> to the same URL would 401: these are authenticated doors,
+   and "download this link" is the instruction that always fails silently in production. */
+async function downloadFile(url: string, filename: string): Promise<void> {
+  const res = await fetch(url, { headers: { ...authHeaders() } });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json() as { error?: string }).error ?? ''; } catch { /* not json */ }
+    throw new Error(detail || `The export could not be produced (HTTP ${res.status})`);
+  }
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(href);
+}
+export const downloadUdiseExport = (year: string, filename: string, format: 'csv' | 'json' = 'csv') =>
+  downloadFile(`${LIVE_BASE}/plugins/ops.udise/export?year=${encodeURIComponent(year)}&format=${format}`, filename);
+export const apiCbseRules = () => call<{ pack: string; version: string; board: string; rules: Record<string, string> }>('/plugins/pack.cbse/rules');
+export const apiCbseValidateExam = (examId: string) =>
+  call<{ ok?: boolean; violations?: { rule?: string; detail?: string }[]; notes?: string[]; checked?: number }>(
+    `/plugins/pack.cbse/validate/exam/${examId}`);
+export const downloadCbseOasis = (examId: string, filename: string) =>
+  downloadFile(`${LIVE_BASE}/plugins/pack.cbse/export/oasis/${examId}`, filename);
+export const apiTallyDaybook = (from?: string, to?: string) =>
+  call<{ entries?: Record<string, unknown>[] }>(`/plugins/accounting.tally/daybook${from || to ? `?${from ? `from=${from}` : ''}${from && to ? '&' : ''}${to ? `to=${to}` : ''}` : ''}`);
+export const apiTallyExports = () => call<{ exports: Record<string, unknown>[] }>('/plugins/accounting.tally/exports');
+
+/* ── hr.leave — staff absence is a FACT the timetable consumes, not a request workflow.
+   Marking one publishes `staff.leave.marked.v1`; cancelling it withdraws the fact. The roster read
+   is the coordination desk's: who is absent on a date, who is on duty. ───────────────────────── */
+export interface LiveLeaveRow {
+  leaveId: string; staffId: string; staffName: string; leaveDate: string;
+  kind: string; status: string; reason?: string | null;
+}
+export const apiLeaves = () => call<{ leaves: LiveLeaveRow[] }>('/plugins/hr.leave/leave');
+export const apiMarkLeave = (body: { staffId: string; leaveDate: string; kind: string; reason?: string }) =>
+  call<{ ok: boolean; leaveId: string; staffName: string }>('/plugins/hr.leave/leave', { method: 'POST', body: JSON.stringify(body) });
+export const apiCancelLeave = (id: string) =>
+  call<{ ok: boolean; status: string }>(`/plugins/hr.leave/leave/${id}/cancel`, { method: 'POST', body: '{}' });
+export const apiDutyRoster = (date: string) => call<{
+  date: string;
+  absent: { leaveId: string; staffId: string; name: string; role: string; kind: string; reason?: string | null; verification?: string }[];
+  onDuty: { staffId: string; name: string; role: string; verification?: string }[];
+  blocked?: { staffId: string; name: string; role: string; reason: string }[];
+}>(`/plugins/hr.leave/roster/${date}`);
 export const apiWorkOrderStatus = (id: string, to: string, costCents?: number) =>
   call<{ workOrder: Record<string, unknown> }>(`/work-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to, ...(costCents != null ? { costCents } : {}) }) });
 export const apiCases = (status?: string) => call<{ cases: Record<string, unknown>[] }>(`/cases${status ? `?status=${status}` : ''}`);
 export const apiCreateCase = (body: { kind: string; title: string; detail?: string; priority?: string; origin?: string }) =>
   call<{ case: Record<string, unknown> }>('/cases', { method: 'POST', body: JSON.stringify(body) });
-export const apiCase = (id: string) => call<{ case: Record<string, unknown> }>(`/cases/${id}`);
+/** One case row (app.cases). Typed once, here, because the workspace renders every column of it
+ *  and a `Record<string, unknown>` would push the whole shape into casts at the call site. */
+export interface ApiCase {
+  id: string;
+  code: string;
+  kind: string;
+  title: string;
+  detail: string | null;
+  priority: string;
+  status: string;
+  owner: string | null;
+  opened_by: string | null;
+  origin: string;
+  sla_due_at: string | null;
+  linked_refs: { label?: string; ref?: string }[] | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+export const apiCase = (id: string) => call<{ case: ApiCase }>(`/cases/${encodeURIComponent(id)}`);
+/* The case flow is the server's, not the board's: open → triaged → in-progress → resolved → closed. */
+export const apiCaseStatus = (id: string, to: string) =>
+  call<{ case: ApiCase }>(`/cases/${id}/status`, { method: 'POST', body: JSON.stringify({ to }) });
 export const apiMyCases = (status?: string) => call<{ cases: Record<string, unknown>[] }>(`/my-cases${status ? `?status=${status}` : ''}`);
 export const apiActions = (status?: string) => call<{ actions: Record<string, unknown>[] }>(`/actions${status ? `?status=${status}` : ''}`);
 export const apiDecideAction = (id: string, decision: 'approved' | 'dismissed', note?: string) =>
@@ -449,8 +622,8 @@ export const apiPrincipalHome = () => call<Record<string, unknown>>('/principal/
 export const apiFeeSettings = () => call<{ settings: Record<string, unknown> }>('/fees/settings');
 export const apiSaveFeeSettings = (body: Record<string, unknown>) =>
   call<{ settings: Record<string, unknown> }>('/fees/settings', { method: 'PUT', body: JSON.stringify(body) });
-export const apiRunLateFees = () =>
-  call<{ updated: number }>('/fees/late-fees/run', { method: 'POST', body: '{}' });
+export const apiRunLateFees = (dryRun = false) =>
+  call<{ updated: number; dryRun?: boolean; wouldUpdate?: number }>(`/fees/late-fees/run${dryRun ? '?dryRun=true' : ''}`, { method: 'POST', body: '{}' });
 export const apiObligationInvoice = (id: string) =>
   call<{ invoice: { fileId: string; filename: string; sha256: string }; cached: boolean }>(`/fees/obligations/${encodeURIComponent(id)}/invoice`);
 export const apiVoidBillingRun = (id: string, reason?: string) =>
@@ -485,6 +658,9 @@ export const apiFunnelMoveStage = (id: string, to: string) =>
 export const apiFunnelHistory = (id: string) =>
   call<{ history: { from_stage: string | null; to_stage: string; actor: string; at: string }[] }>(`/plugins/admissions.funnel/leads/${id}/history`);
 export const apiFunnelSummary = () => call<{ byStage: Record<string, number>; total: number }>(`/plugins/admissions.funnel/summary`);
+/* GET /school/staff — the school's own staff roster (owner/principal/coordinator/itadmin).
+   Added for the operations hub, which was counting `seed.staff` over a live register. */
+export const apiSchoolStaff = () => call<{ staff: { id: string; name: string; role: string }[] }>('/school/staff');
 export const apiFunnelActivities = (id: string) =>
   call<{ activities: ApiFunnelActivity[] }>(`/plugins/admissions.funnel/leads/${id}/activities`);
 export const apiLogFunnelActivity = (id: string, body: { kind: string; scheduledAt?: string; outcome?: string; notes?: string; completed?: boolean }) =>
@@ -533,3 +709,10 @@ export const apiVisitorComplete = (id: string, override: boolean, note?: string)
   call<{ ok: boolean; status: string; overrideUsed?: boolean }>(`/plugins/ops.visitors/visitors/${id}/complete`, { method: 'POST', body: JSON.stringify(override ? { override: true, note } : {}) });
 export const apiVisitorDeny = (id: string, note?: string) =>
   call<{ ok: boolean; status: string }>(`/plugins/ops.visitors/visitors/${id}/deny`, { method: 'POST', body: JSON.stringify(note ? { note } : {}) });
+
+/* ---- workflow rules (L2-5.2 step-runner — owner / principal / IT admin) ---- */
+export interface WorkflowRule { id: string; name: string; topic: string; condition: { field?: string; op?: string; value?: unknown } | null; action: Record<string, unknown>; enabled: boolean; created_at: string }
+export const apiWorkflowRules = () => call<{ rules: WorkflowRule[] }>('/workflow-rules');
+export const apiCreateWorkflowRule = (b: { name: string; topic: string; condition?: unknown; action: { kind: 'outbox' | 'comms'; [k: string]: unknown } }) =>
+  call<{ id: string }>('/workflow-rules', { method: 'POST', body: JSON.stringify(b) });
+export const apiDisableWorkflowRule = (id: string) => call<{ ok: boolean }>(`/workflow-rules/${id}`, { method: 'DELETE' });

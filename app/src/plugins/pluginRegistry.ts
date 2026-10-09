@@ -246,13 +246,14 @@ export const pluginById = (id: string) => FIRST_PARTY_PLUGINS.find(p => p.id ===
    static section: no enable buttons, no server dependency, no
    class/version governance vocabulary. They must not look like
    plugin cards.
-   - transport: retired from the grid — capability duplicates the
+   - transport: retired from the grid — the capability duplicates the
      transport.gps rail (one plugin, one card); the /transport
-     screen stays core.
+     screen stays core. P2-12: this once described ids the server
+     does NOT register, which read as a bug in the registry.
    - maintenance: core capability, never was a plugin.
-   - exams: core until exams.assessment registers in wave 3 —
-     when plugin-agent registers it, the card returns with the
-     real server id.
+   - exams: superseded by the REAL `exams.assessment` plugin (wave 3
+     shipped), which is the exam card on this same board — this entry
+     is the core capability surface only.
    ============================================================ */
 export interface BuiltInCapability { id: string; name: string; description: string; icon: string }
 
@@ -272,7 +273,7 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapability[] = [
   {
     id: 'exams',
     name: 'Examinations',
-    description: 'Exam mode, halls, invigilation, marks entry primitives. Planned: marks feed the Learning primitives. Returns as the exams.assessment plugin in wave 3.',
+    description: 'Exam mode, halls, invigilation, marks entry primitives. Marks and report cards are served by the exams.assessment add-on above.',
     icon: 'Award',
   },
 ];

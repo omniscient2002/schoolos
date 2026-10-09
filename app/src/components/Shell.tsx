@@ -5,18 +5,21 @@ import { LIVE_API, redirectToLoginWithReturn } from '../services/liveApi';
 import { Avatar, Dropdown, Empty } from './ui';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { fmtRelative } from '../lib/format';
 import { t, useLang } from '../i18n';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
 import { listTenants, switchTenant, readTenantId, type TenantMembership } from '../screens/account/tenantSwitch';
-import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
+import { storedTheme, setTheme, storedContrast, setContrast, type ThemeChoice, type ContrastChoice } from '../lib/theme';
 import { useKernelNav } from '../plugins/useKernel';
 import { useSession, sessionSchoolName } from '../App';
 import { canSurface, type EffectiveAccess } from '../lib/effective';
 import { mapAccountRole, isLightRole } from '../lib/roles';
+import { roleLabel } from '../lib/labels';
+import { NotificationsBell } from './NotificationsBell';
 
 /* P0 fix 2c: chrome identity comes from the authenticated session
-   (useSession — the live /me user). */
-const roleTitle = (r: string): string => r.charAt(0).toUpperCase() + r.slice(1);
+   (useSession — the live /me user). U-25: the role chip uses the shared
+   plain-language titles (no more "Itadmin"). */
+const roleTitle = roleLabel;
 
 function useChromeIdentity(): { name: string; title: string; email: string } {
   const live = useSession();
@@ -41,71 +44,83 @@ export function useNavItems(): NavItem[] {
      partial coverage; see i18n/hi-IN.ts). Applied to the parent case and
      the finance case as the proof surfaces. */
   const L = (label: string, key: string) => t(key, { fallback: label });
-  const kernel = { to: '/plugins', label: 'Modules', icon: 'Layers' as const };
+  const kernel = { to: '/plugins', label: 'Add-ons', icon: 'Layers' as const };
   /* library v2 (docs/LIBRARY-DESIGN.md): the librarian gets the desk; borrowers get the catalog; owner and
      principal get the aggregate operations view. All three are plugin-gated. */
   const library = { to: '/library', label: 'Library', icon: 'Book' as const, plugin: 'library' };
-  const libraryOps = { to: '/library/insights', label: 'Library', icon: 'Book' as const, plugin: 'library' };
-  /* build-out wave D: People console (people.admin plugin) + System services
+  const libraryOps = { to: '/library/insights', label: 'Library reports', icon: 'Book' as const, plugin: 'library' };
+  /* build-out wave D: People console (people.admin plugin) + message channels
      (owner/itadmin core surface for rails/plugins/queues) — plugin-gated so
      disabled modules never appear in the menu. */
-  const peopleAdmin = { to: '/people-admin', label: 'People console', icon: 'Users' as const, plugin: 'people.admin' };
-  const rails = { to: '/rails', label: 'System services', icon: 'Shield' as const };
+  const peopleAdmin = { to: '/people-admin', label: 'Manage people', icon: 'Users' as const, plugin: 'people.admin' };
+  const rails = { to: '/rails', label: 'Message channels', icon: 'Shield' as const };
   const openActions = domain.actions.filter(a => a.status === 'open').length;
   const openWOs = domain.workOrders.filter(w => !['resolved', 'closed', 'cancelled'].includes(w.status)).length;
 
   const items: NavItem[] = (() => { switch (role) {
     case 'principal':
       return [
-        { to: '/principal/home', label: 'Home', icon: 'Today' }, /* OPP-API-1 */
-        { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/principal-brief', label: 'Morning brief', icon: 'Clipboard' }, /* OPP-PRD-2 */
-        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
-        { to: '/next', label: 'Next', icon: 'Next' },
-        { to: '/action-center', label: 'Approvals', icon: 'Clipboard' }, /* OPP-FE-12: the principal's own decision queue was reachable but not in nav */
-        { to: '/announcements', label: 'Announcements', icon: 'Message' }, /* OPP-PRD-3 */
+        { to: '/principal/home', label: 'School overview', icon: 'Today' }, /* OPP-API-1 */
+        { to: '/attention', label: 'Needs you', icon: 'Attention', badge: openActions },
+        { to: '/action-center', label: 'Approvals', icon: 'Clipboard' }, /* OPP-FE-12 */
         { to: '/people', label: 'People', icon: 'People' },
-        { to: '/appraisals', label: 'Appraisals', icon: 'Award' }, /* OPP-PRD-11 */
+        { to: '/rte', label: 'RTE admissions', icon: 'Users' },
+        { to: '/attendance', label: 'Attendance', icon: 'Clipboard' },
+        { to: '/learning', label: 'Learning', icon: 'Learning' },
+        { to: '/nep', label: 'NEP', icon: 'Learning' },
+        { to: '/reports', label: 'Reports', icon: 'Insights' },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
+        { to: '/principal-brief', label: 'Morning brief', icon: 'Clipboard' }, /* OPP-PRD-2 */
+        { to: '/next', label: 'Next', icon: 'Next' },
+        { to: '/announcements', label: 'Announcements', icon: 'Message' }, /* OPP-PRD-3 */
+        { to: '/setup', label: 'Setup guide', icon: 'Check' }, /* Part 1: the people chain */
         { to: '/classes', label: 'Classes & sections', icon: 'Grid' },
         { to: '/timetable', label: 'Timetable', icon: 'Grid' },
-        { to: '/learning', label: 'Learning', icon: 'Learning' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/transport', label: 'Transport', icon: 'Bus' },
+        { to: '/transport/setup', label: 'Routes & stops', icon: 'Bus' },
+        { to: '/clinic', label: 'Clinic', icon: 'Shield' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
-        { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* OPP-FE-12 */
+        { to: '/fees/plans', label: 'Fee structure', icon: 'Layers' }, /* L5-2.2 */
+        { to: '/reception', label: 'Reception', icon: 'Phone' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
-        { to: '/reports', label: 'Reports', icon: 'Insights' },
-        { to: '/board-pack', label: 'Board pack', icon: 'Insights' }, /* OPP-PRD-20: reachable but not in nav */
-        { to: '/group', label: 'Group', icon: 'Building' }, /* OPP-PRD-20 */
-        { to: '/coord/workload', label: 'Duty fairness', icon: 'Scale' }, /* OPP-PRD-17 */
-        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* OPP-FE-12: principal fee-health view was route-only */
-        { to: '/fees/plans', label: 'Fee plans', icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface */
+        { to: '/board-pack', label: 'Board pack', icon: 'Insights' }, /* OPP-PRD-20 */
+        { to: '/appraisals', label: 'Appraisals', icon: 'Award' }, /* OPP-PRD-11 */
+        { to: '/group', label: 'School group', icon: 'Building' }, /* OPP-PRD-20 */
+        { to: '/coord/workload', label: 'Duty balance', icon: 'Scale' }, /* OPP-PRD-17 */
         { to: '/automation', label: 'Automation', icon: 'Automation' },
-        { to: '/ai-usage', label: 'AI usage', icon: 'Sparkle' }, /* OPP-RBAC: principal oversees AI use */
-        { to: '/memory', label: 'AI memory', icon: 'Memory' },
-        { to: '/audit', label: 'Audit trail', icon: 'Clipboard' },
+        { to: '/ai-usage', label: 'AI use', icon: 'Sparkle' }, /* OPP-RBAC */
+        { to: '/memory', label: 'Notes & history', icon: 'Memory' },
+        { to: '/audit', label: 'Activity history', icon: 'Clipboard' },
+        { to: '/returns', label: 'Statutory returns', icon: 'Download' }, /* UDISE · OASIS · Tally + the infrastructure profile they read */
         { to: '/compliance', label: 'Compliance', icon: 'Calendar' }, /* OPP-PRD-5 */
+        { to: '/safety', label: 'Safety audit', icon: 'Shield' }, /* 4.5 NCPCR wall + verification ledger */
+        { to: '/mpd', label: 'MPD', icon: 'Shield' },
         { to: '/certificates', label: 'Certificates', icon: 'File' }, /* OPP-PRD-7 */
-        { to: '/delegations', label: 'Delegations', icon: 'Shield' }, /* OPP-OVR-2 */
+        { to: '/delegations', label: 'Standing in / acting for', icon: 'Shield' }, /* OPP-OVR-2 */
         libraryOps,
         kernel,
       ];
     case 'teacher':
       return [
-        { to: '/teacher', label: 'Command center', icon: 'Compass' },
-        { to: '/teacher/lessons', label: 'Lessons', icon: 'Book' },
+        { to: '/teacher', label: 'My teaching', icon: 'Compass' },
+        { to: '/attendance', label: 'Attendance', icon: 'Clipboard' },
         { to: '/teacher/homework', label: 'Homework', icon: 'Clipboard' },
-        { to: '/teacher/submissions', label: 'Submissions', icon: 'File' },
-        { to: '/teacher/support', label: 'Student support', icon: 'Heart' },
-        { to: '/teacher/duties', label: 'Duties & workload', icon: 'Scale' },
+        { to: '/teacher/submissions', label: 'To review', icon: 'File' },
+        { to: '/teacher/lessons', label: 'Lessons', icon: 'Book' },
         { to: '/teacher/leave', label: 'My leave', icon: 'Calendar' },
-        { to: '/teacher/copilot', label: 'Teaching copilot', icon: 'Sparkle' },
-        { to: '/teacher/mastery', label: 'Mastery map', icon: 'Grid' },
-        { to: '/teacher/progress-story', label: 'Progress story', icon: 'Insights' },
-        { to: '/teacher/curriculum', label: 'Curriculum', icon: 'Learning' },
-        { to: '/teacher/analytics', label: 'Class analytics', icon: 'Insights' },
+        { to: '/teacher/support', label: 'Student support', icon: 'Heart' },
+        { to: '/teacher/duties', label: 'Duties', icon: 'Scale' },
+        { to: '/teacher/copilot', label: 'Teaching assistant', icon: 'Sparkle' },
+        { to: '/teacher/mastery', label: 'Topic understanding', icon: 'Grid' },
+        { to: '/teacher/progress-story', label: 'How students are doing', icon: 'Insights' },
+        { to: '/teacher/curriculum', label: 'Syllabus', icon: 'Learning' },
+        { to: '/nep', label: 'NEP', icon: 'Learning' },
+        { to: '/teacher/analytics', label: 'Class insights', icon: 'Insights' },
         { to: '/teacher/exam-marks', label: 'Exam marks', icon: 'Clipboard' },
-        { to: '/today', label: 'Today', icon: 'Today' },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
@@ -115,37 +130,51 @@ export function useNavItems(): NavItem[] {
     case 'coordinator':
       return [
         /* CU-1 CoordinatorOS lane — Command Center first, then the desk surfaces */
-        { to: '/coord/home', label: 'Command Center', icon: 'Compass' },
+        { to: '/coord/home', label: 'Coordinator desk', icon: 'Compass' },
         { to: '/coord/substitutions', label: 'Substitutions', icon: 'Refresh' },
-        { to: '/timetable', label: 'Timetable', icon: 'Grid' },
-        { to: '/coord/workload', label: 'Workload fairness', icon: 'Scale' },
-        { to: '/coord/curriculum', label: 'Curriculum monitor', icon: 'Learning' },
         { to: '/coord/escalations', label: 'Escalations', icon: 'Flag' },
+        { to: '/timetable', label: 'Timetable', icon: 'Grid' },
+        { to: '/coord/workload', label: 'Duty balance', icon: 'Scale' },
+        { to: '/coord/curriculum', label: 'Syllabus progress', icon: 'Learning' },
         { to: '/coord/approvals', label: 'Approvals', icon: 'Clipboard' },
-        { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
+        { to: '/attention', label: 'Needs you', icon: 'Attention', badge: openActions },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
+        { to: '/rte', label: 'RTE admissions', icon: 'Users' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/transport', label: 'Transport', icon: 'Bus' },
+        { to: '/transport/setup', label: 'Routes & stops', icon: 'Bus' },
+        { to: '/clinic', label: 'Clinic', icon: 'Shield' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
-        { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/reception', label: 'Reception', icon: 'Phone' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
+        { to: '/returns', label: 'Statutory returns', icon: 'Download' }, /* UDISE readiness + the infrastructure profile */
+        { to: '/safety', label: 'Safety audit', icon: 'Shield' }, /* 4.5 verification wall the roster reads */
+        { to: '/mpd', label: 'MPD', icon: 'Shield' },
+        { to: '/nep', label: 'NEP', icon: 'Learning' },
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
       ];
     case 'finance':
     case 'finance_head':
     case 'finance_clerk':
       return [
-        { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
+        { to: '/attention', label: 'Needs you', icon: 'Attention', badge: openActions },
         { to: '/next', label: 'Next', icon: 'Next' },
-        { to: '/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' }, /* T509: finance's core surface was routed but never in the nav */
-        { to: '/fees/plans', label: L('Fee plans', 'nav.feePlans'), icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface (blocks.md request) */
+        { to: '/fees', label: L('Fees', 'nav.fees'), icon: 'Wallet' }, /* T509 */
+        { to: '/fees/plans', label: L('Fee structure', 'nav.feePlans'), icon: 'Layers' }, /* L5-2.2 */
+        { to: '/payroll', label: 'Payroll', icon: 'Wallet' },
+        /* the accountant's card of the returns surface — the Tally day-book and voucher export */
+        { to: '/returns', label: 'Accountant export', icon: 'Download' },
         { to: '/people', label: L('People', 'nav.people'), icon: 'People' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/transport', label: 'Transport', icon: 'Bus' },
+        { to: '/transport/setup', label: 'Routes & stops', icon: 'Bus' },
+        { to: '/clinic', label: 'Clinic', icon: 'Shield' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
-        { to: '/reception', label: 'Front desk', icon: 'Phone' },
-        { to: '/migration', label: 'Data import', icon: 'Database' },
+        { to: '/reception', label: 'Reception', icon: 'Phone' },
+        { to: '/migration', label: 'Bring your data in', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
         { to: '/reports', label: 'Reports', icon: 'Insights' },
       ];
@@ -156,59 +185,80 @@ export function useNavItems(): NavItem[] {
         { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
         { to: '/next', label: 'Next', icon: 'Next' },
         { to: '/people', label: 'People', icon: 'People' },
+        { to: '/rte', label: 'RTE admissions', icon: 'Users' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        /* H1: the transport in-charge's own surfaces. The write screen existed with no route and
+           no nav item, so the route/stop doors were reachable only by hand-written request. */
+        { to: '/transport', label: 'Routes & riders', icon: 'Bus' },
+        { to: '/transport/setup', label: 'Add / edit routes', icon: 'Bus' },
       ];
     case 'owner':
       return [
-        { to: '/owner/home', label: 'Home', icon: 'Today' }, /* OPP-API-1 */
-        { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openActions }, /* OPP-PRD-19 */
-        { to: '/action-center', label: 'Approvals', icon: 'Clipboard' }, /* OPP-FE-12: owner decides every action; the queue was route-only */
-        { to: '/group', label: 'Group', icon: 'Building' },
+        { to: '/owner/home', label: 'School overview', icon: 'Today' }, /* OPP-API-1 */
+        { to: '/attention', label: 'Needs you', icon: 'Attention', badge: openActions }, /* OPP-PRD-19 */
+        { to: '/action-center', label: 'Approvals', icon: 'Clipboard' }, /* OPP-FE-12 */
+        { to: '/people', label: 'People', icon: 'People' },
+        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* FEE-RBAC-3 */
+        { to: '/classes', label: 'Classes & sections', icon: 'Grid' },
+        { to: '/school-profile', label: 'School profile', icon: 'Building' },
+        { to: '/setup', label: 'Setup guide', icon: 'Check' }, /* Part 1: the people chain */
+        { to: '/reports', label: 'Reports', icon: 'Insights' },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
         { to: '/board-pack', label: 'Board pack', icon: 'Insights' }, /* OPP-PRD-1 */
         { to: '/principal-brief', label: 'Morning brief', icon: 'Clipboard' }, /* OPP-PRD-2 */
         { to: '/announcements', label: 'Announcements', icon: 'Message' }, /* OPP-PRD-3 */
-        { to: '/classes', label: 'Classes & sections', icon: 'Grid' },
+        { to: '/group', label: 'School group', icon: 'Building' },
         { to: '/timetable', label: 'Timetable', icon: 'Grid' },
         libraryOps,
         peopleAdmin,
+        { to: '/rte', label: 'RTE admissions', icon: 'Users' },
         kernel,
         rails,
-        { to: '/people', label: 'People', icon: 'People' },
         { to: '/appraisals', label: 'Appraisals', icon: 'Award' }, /* OPP-PRD-11 */
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/transport', label: 'Transport', icon: 'Bus' },
+        { to: '/transport/setup', label: 'Routes & stops', icon: 'Bus' },
+        { to: '/clinic', label: 'Clinic', icon: 'Shield' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
-        { to: '/reception', label: 'Front desk', icon: 'Phone' },
+        { to: '/reception', label: 'Reception', icon: 'Phone' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
-        { to: '/migration', label: 'Data import', icon: 'Database' },
+        { to: '/migration', label: 'Bring your data in', icon: 'Database' },
         { to: '/insights', label: 'Insights', icon: 'Insights' },
-        { to: '/reports', label: 'Reports', icon: 'Insights' },
-        { to: '/fees', label: 'Fees', icon: 'Wallet' }, /* FEE-RBAC-3: the strongest fee role had no fee desk entry */
-        { to: '/fees/plans', label: 'Fee plans', icon: 'Layers' }, /* L5-2.2: L4-2.1 invoicing surface */
-        { to: '/audit', label: 'Audit trail', icon: 'Clipboard' }, /* OPP-FE-12: owner verifies the chain; route-only before */
+        { to: '/fees/plans', label: 'Fee structure', icon: 'Layers' }, /* L5-2.2 */
+        { to: '/payroll', label: 'Payroll', icon: 'Wallet' },
+        { to: '/returns', label: 'Statutory returns', icon: 'Download' }, /* UDISE · OASIS · Tally + the infrastructure profile they read */
+        { to: '/audit', label: 'Activity history', icon: 'Clipboard' }, /* OPP-FE-12 */
         { to: '/compliance', label: 'Compliance', icon: 'Calendar' }, /* OPP-PRD-5 */
+        { to: '/safety', label: 'Safety audit', icon: 'Shield' }, /* 4.5 NCPCR wall + verification ledger */
+        { to: '/mpd', label: 'MPD', icon: 'Shield' },
+        { to: '/nep', label: 'NEP', icon: 'Learning' },
         { to: '/certificates', label: 'Certificates', icon: 'File' }, /* OPP-PRD-7 */
-        { to: '/delegations', label: 'Delegations', icon: 'Shield' }, /* OPP-OVR-2 */
-        { to: '/memory', label: 'AI memory', icon: 'Memory' },
+        { to: '/delegations', label: 'Standing in / acting for', icon: 'Shield' }, /* OPP-OVR-2 */
+        { to: '/memory', label: 'Notes & history', icon: 'Memory' },
         { to: '/automation', label: 'Automation', icon: 'Automation' },
-        { to: '/ai-usage', label: 'AI usage', icon: 'Sparkle' },
-        { to: '/ai-governance', label: 'AI governance', icon: 'Shield' }, /* OPP-PRD-19 */
-        { to: '/it', label: 'Platform', icon: 'Shield' }, /* OPP-PRD-19 */
-        { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1: custom roles (owner + IT admin) */
-        { to: '/plugins/settings', label: 'Plugin settings', icon: 'Settings' }, /* L5-5.2 */
+        { to: '/ai-usage', label: 'AI use', icon: 'Sparkle' },
+        { to: '/ai-governance', label: 'AI rules', icon: 'Shield' }, /* OPP-PRD-19 */
+        { to: '/it', label: 'Platform & security', icon: 'Shield' }, /* OPP-PRD-19 */
+        { to: '/roles', label: 'Who can do what', icon: 'Key' }, /* L5-5.1 */
+        { to: '/plugins/settings', label: 'Add-on settings', icon: 'Settings' }, /* L5-5.2 */
+        { to: '/billing', label: 'Billing', icon: 'File' },
       ];
     case 'itadmin':
       return [
-        { to: '/today', label: 'Today', icon: 'Today' },
-        { to: '/attention', label: 'Needs your attention', icon: 'Attention' },
+        { to: '/today', label: "Today's briefing", icon: 'Today' },
+        { to: '/attention', label: 'Needs you', icon: 'Attention' },
         { to: '/operations', label: 'Operations', icon: 'Operations' },
+        { to: '/setup', label: 'Setup guide', icon: 'Check' }, /* Part 1: the people chain */
         { to: '/classes', label: 'Classes & sections', icon: 'Grid' },
         { to: '/timetable', label: 'Timetable', icon: 'Grid' },
         { to: '/visitors', label: 'Visitors', icon: 'Shield' },
-        { to: '/it', label: 'Platform', icon: 'Shield' },
-        { to: '/memory', label: 'AI memory', icon: 'Memory' },
-        { to: '/roles', label: 'Roles & permissions', icon: 'Key' }, /* L5-5.1 */
-        { to: '/plugins/settings', label: 'Plugin settings', icon: 'Settings' }, /* L5-5.2 */
+        { to: '/mpd', label: 'MPD', icon: 'Shield' },
+        { to: '/nep', label: 'NEP', icon: 'Learning' },
+        { to: '/rte', label: 'RTE admissions', icon: 'Users' },
+        { to: '/it', label: 'Platform & security', icon: 'Shield' },
+        { to: '/memory', label: 'Notes & history', icon: 'Memory' },
+        { to: '/roles', label: 'Who can do what', icon: 'Key' }, /* L5-5.1 */
+        { to: '/plugins/settings', label: 'Add-on settings', icon: 'Settings' }, /* L5-5.2 */
         peopleAdmin,
         kernel,
         rails,
@@ -230,6 +280,7 @@ export function useNavItems(): NavItem[] {
       return [
         { to: '/today', label: 'Today', icon: 'Today' },
         { to: '/attention', label: 'Needs your attention', icon: 'Attention', badge: openWOs },
+        { to: '/clinic', label: 'Clinic', icon: 'Shield' },
         { to: '/maintenance', label: 'Maintenance', icon: 'Wrench', badge: openWOs },
         { to: '/reception', label: 'Front desk', icon: 'Phone' },
         { to: '/maintenance/report', label: 'Report issue', icon: 'Zap' },
@@ -300,13 +351,14 @@ export function Sidebar() {
      English label — translated items must keep their group in every
      language instead of collapsing into 'More'. */
   const groups: { label: string; items: NavItem[] }[] = [
-    { label: 'Daily operations', items: items.filter(i => ['/today', '/principal-brief', '/attention', '/next', '/action-center', '/group', '/board-pack', '/announcements', '/visitors'].includes(i.to)) },
+    { label: 'Daily operations', items: items.filter(i => ['/today', '/principal-brief', '/attention', '/next', '/action-center', '/group', '/board-pack', '/announcements', '/visitors', '/attendance'].includes(i.to)) },
     /* CU-1: coordinator desk surfaces (nav items pointing at /coord/*) */
     { label: 'Coordination', items: items.filter(i => i.to.startsWith('/coord')) },
-    { label: 'Records', items: items.filter(i => ['/people', '/learning', '/operations', '/fees', '/fees/plans', '/people-admin'].includes(i.to)) },
+    { label: 'School records', items: items.filter(i => ['/people', '/classes', '/learning', '/operations', '/fees', '/fees/plans', '/payroll', '/rte', '/people-admin'].includes(i.to)) },
+    { label: 'School setup', items: items.filter(i => ['/timetable', '/school-profile', '/setup', '/appraisals', '/certificates', '/delegations', '/compliance', '/mpd'].includes(i.to)) },
     /* the library desk's sections are their own group (librarian nav) */
     { label: 'Library', items: items.filter(i => i.to === '/library' || i.to.startsWith('/library/')) },
-    { label: 'Intelligence', items: items.filter(i => ['/insights', '/reports', '/automation', '/memory', '/ai-usage', '/ai-governance', '/audit', '/compliance', '/certificates', '/delegations', '/it'].includes(i.to)) },
+    { label: 'Reports & insights', items: items.filter(i => ['/insights', '/reports', '/automation', '/memory', '/ai-usage', '/ai-governance', '/audit', '/it', '/migration'].includes(i.to)) },
     { label: 'Your space', items: items.filter(i => ['/parent', '/parent/family', '/parent/fees', '/parent/chat', '/student', '/student/home2', '/student/fees', '/student/portfolio'].includes(i.to)) },
   ];
   /* T509: the label whitelist silently DROPPED every assigned item it didn't
@@ -320,13 +372,13 @@ export function Sidebar() {
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <Link to="/today" style={{ display: 'flex', padding: '14px 16px 10px', gap: 10, borderBottom: '1px solid var(--border-subtle)', alignItems: 'center' }}>
-        <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 15, flexShrink: 0 }}>M</div>
-        <div style={{ minWidth: 0 }} className="sidebar-label">
-          <div style={{ fontWeight: 650, fontSize: 'var(--text-md)', letterSpacing: '-0.01em' }}>SchoolOS</div>
-          <div className="u-xs u-faint u-truncate">{sessionSchoolName(live)}</div>
-        </div>
-        <button className="btn btn-ghost btn-sm sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-pressed={collapsed} onClick={() => setCollapsed(c => !c)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
+      <Link to="/today" className="sidebar-brand" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        <span className="brand-mark" aria-hidden="true">M</span>
+        <span className="sidebar-brand-text sidebar-label">
+          <span className="sidebar-brand-name">SchoolOS</span>
+          <span className="sidebar-brand-school u-truncate">{sessionSchoolName(live)}</span>
+        </span>
+        <button className="btn btn-ghost btn-sm sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-pressed={collapsed} onClick={() => setCollapsed(c => !c)}>
           <Icon.PanelLeft size={15} />
         </button>
       </Link>
@@ -389,7 +441,7 @@ export function CampusSwitcher() {
     <Dropdown width={250} label="Campus switcher" trigger={() => (
       <button className="btn btn-ghost btn-sm" style={{ gap: 7 }}>
         <span className="campus-dot" style={{ width: 8, height: 8, borderRadius: 3, ['--campus-hue' as string]: campus.hue ?? 'var(--campus-a)' }} />
-        <span className="u-truncate" style={{ maxWidth: 100 }}>{campus.name}</span>
+        <span className="u-truncate topbar-campus-name">{campus.name}</span>
         <Icon.ChevronDown size={13} />
       </button>
     )}>
@@ -417,38 +469,15 @@ export function CampusSwitcher() {
 }
 
 /* ================= Notifications ================= */
-export function NotificationsBell() {
-  const { domain, dispatch } = useStore();
-  const navigate = useNavigate();
-  const unread = domain.notifications.filter(n => !n.read).length;
-  return (
-    <Dropdown width={350} label="Notifications" trigger={() => (
-      <button className="iconbtn" aria-label={`Notifications, ${unread} unread`}>
-        <Icon.Bell size={16} />
-        {!!unread && <span style={{ position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: 5, background: 'var(--danger)', border: '2px solid var(--surface)' }} />}
-      </button>
-    )}>
-      {close => (
-        <>
-          <div className="u-between" style={{ padding: '8px 10px 6px' }}>
-            <div role="none" className="dropdown-label" style={{ padding: 0 }}>Notifications</div>
-            <button className="u-xs u-muted" onClick={() => dispatch({ type: 'notification/read', all: true })}>Mark all read</button>
-          </div>
-          {domain.notifications.slice(0, 7).map(n => (
-            <button key={n.id} role="menuitem" className="dropdown-item" style={{ alignItems: 'flex-start', gap: 10 }} onClick={() => { dispatch({ type: 'notification/read', id: n.id }); close(); navigate(n.ref ?? '/today'); }}>
-              <span style={{ marginTop: 5, width: 7, height: 7, borderRadius: 4, background: n.read ? 'var(--border-strong)' : n.group === 'needs-you' ? 'var(--danger)' : n.group === 'approvals' ? 'var(--warning)' : 'var(--accent)', flexShrink: 0 }} />
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: 'block', fontWeight: n.read ? 480 : 600, fontSize: 'var(--text-md)' }}>{n.title}</span>
-                <span className="u-small u-muted" style={{ display: 'block', marginTop: 1 }}>{n.body}</span>
-                <span className="u-xs u-faint">{fmtRelative(n.on)} · {n.group === 'needs-you' ? 'Needs you' : n.group === 'approvals' ? 'Approvals' : n.group}</span>
-              </span>
-            </button>
-          ))}
-        </>
-      )}
-    </Dropdown>
-  );
-}
+/* P3-5, corrected. These two bells were NOT duplicates: the one that lived here read the demo store
+   (`domain.notifications`, the mock plane), while `components/NotificationsBell.tsx` read
+   `GET /notifications` and posted `POST /notifications/read`. Deleting the second file as an unused
+   duplicate therefore orphaned two live doors — which the parity gate caught immediately
+   ("2 unwired door(s)"), because that is exactly what it is for.
+
+   So the shell mounts the LIVE bell and the mock one is gone: one bell, the server's notifications,
+   and the parity gate has nothing left to complain about. */
+export { NotificationsBell };
 
 /* ================= Profile ================= */
 /* L5-4.1: multi-school memberships for the signed-in email (L2-4.2 doors).
@@ -519,15 +548,26 @@ function SwitchSchoolSection() {
   );
 }
 
-/* D17: theme is per browser and every role may set it, so it lives in the
+/* D17: appearance is per browser and every role may set it, so it lives in the
    account menu (always reachable) as well as in Settings → Appearance, which
-   is owner/itadmin-only. Light is the default; System follows the OS. */
+   is owner/itadmin-only. Light is the default; System follows the OS.
+
+   Two independent axes. Theme picks the colour scheme; contrast picks how much
+   of it is given up. Someone who needs more contrast should not also be forced
+   into a colour scheme, so high contrast is a toggle rather than a fourth
+   theme — and it layers on top of light OR dark. */
 function AppearanceMenu() {
   const [theme, setThemeState] = useState<ThemeChoice>(storedTheme());
+  const [contrast, setContrastState] = useState<ContrastChoice>(storedContrast());
   useEffect(() => {
     const onTheme = (e: Event) => setThemeState((e as CustomEvent<ThemeChoice>).detail ?? storedTheme());
+    const onContrast = (e: Event) => setContrastState((e as CustomEvent<ContrastChoice>).detail ?? storedContrast());
     window.addEventListener('schoolos:theme', onTheme);
-    return () => window.removeEventListener('schoolos:theme', onTheme);
+    window.addEventListener('schoolos:contrast', onContrast);
+    return () => {
+      window.removeEventListener('schoolos:theme', onTheme);
+      window.removeEventListener('schoolos:contrast', onContrast);
+    };
   }, []);
   const opts: { id: ThemeChoice; label: string; icon: keyof typeof Icon }[] = [
     { id: 'light', label: 'Light', icon: 'Sun' },
@@ -541,8 +581,19 @@ function AppearanceMenu() {
         const Ico = Icon[o.icon];
         return (
           <button key={o.id} role="menuitemradio" aria-checked={theme === o.id} className="dropdown-item" onClick={() => setTheme(o.id)}>
-            <Ico size={14} /> {o.label}
-            {theme === o.id && <Icon.Check size={14} style={{ marginLeft: 'auto', color: 'var(--accent-text)' }} />}
+            <Ico size={15} /> {o.label}
+            {theme === o.id && <Icon.Check size={15} style={{ marginLeft: 'auto', color: 'var(--accent-text)' }} />}
+          </button>
+        );
+      })}
+      <div role="none" className="dropdown-sep" />
+      <div role="none" className="dropdown-label">Contrast</div>
+      {(['standard', 'high'] as ContrastChoice[]).map(c => {
+        const on = contrast === c;
+        return (
+          <button key={c} role="menuitemradio" aria-checked={on} className="dropdown-item" onClick={() => setContrast(c)}>
+            <Icon.Eye size={15} /> {c === 'high' ? 'High contrast' : 'Standard'}
+            {on && <Icon.Check size={15} style={{ marginLeft: 'auto', color: 'var(--accent-text)' }} />}
           </button>
         );
       })}
@@ -572,6 +623,7 @@ export function ProfileMenu() {
           <div role="none" className="dropdown-sep" />
           <AppearanceMenu />
           <div role="none" className="dropdown-sep" />
+          <LanguageSwitcher />
           {/* L5-4.1: multi-school switch — lists this email's memberships and
               re-issues the session against the chosen school (audited server
               door). A full reload is the honest reset: every store, cache and
@@ -614,7 +666,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const list: PaletteItem[] = [
       { id: 'n1', label: 'Go to Today', group: 'Navigate', icon: 'Today', action: go('/today'), path: '/today' },
       { id: 'n2', label: 'Go to Needs your attention', group: 'Navigate', icon: 'Attention', action: go('/attention'), path: '/attention' },
-      { id: 'n3', label: 'Go to Action Center', group: 'Navigate', icon: 'Zap', action: go('/action-center'), path: '/action-center' },
+      { id: 'n3', label: 'Go to Approvals', group: 'Navigate', icon: 'Zap', action: go('/action-center'), path: '/action-center' },
       { id: 'n4', label: 'Go to People', group: 'Navigate', icon: 'People', action: go('/people'), path: '/people' },
       { id: 'n5', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/learning'), path: '/learning' },
       { id: 'n6', label: 'Go to Attendance', group: 'Navigate', icon: 'Clipboard', action: go('/attendance'), path: '/attendance' },
@@ -624,19 +676,21 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: 'n10', label: 'Go to Transport', group: 'Navigate', icon: 'Bus', action: go('/transport'), path: '/transport' },
       { id: 'n11', label: 'Go to Calendar', group: 'Navigate', icon: 'Calendar', action: go('/calendar'), path: '/calendar' },
       { id: 'n12', label: 'Go to Insights', group: 'Navigate', icon: 'Insights', action: go('/insights'), path: '/insights' },
-      { id: 'n13', label: 'Go to Automation builder', group: 'Navigate', icon: 'Workflow', action: go('/automation'), path: '/automation' },
-      { id: 'n14', label: 'Go to AI memory', group: 'Navigate', icon: 'Memory', action: go('/memory'), path: '/memory' },
+      { id: 'n13', label: 'Go to Automation', group: 'Navigate', icon: 'Workflow', action: go('/automation'), path: '/automation' },
+      { id: 'n14', label: 'Go to Notes & history', group: 'Navigate', icon: 'Memory', action: go('/memory'), path: '/memory' },
       { id: 'n15', label: 'Go to School policies', group: 'Navigate', icon: 'Scale', action: go('/constitution'), path: '/constitution' },
       { id: 'n16', label: 'Go to Cases', group: 'Navigate', icon: 'Wrench', action: go('/cases'), path: '/cases' },
       { id: 'n17', label: 'Go to Incidents', group: 'Navigate', icon: 'Alert', action: go('/incidents'), path: '/incidents' },
-      { id: 'n18', label: 'Go to Data quality', group: 'Navigate', icon: 'Database', action: go('/data-health'), path: '/data-health' },
-      { id: 'n19', label: 'Go to Audit trail', group: 'Navigate', icon: 'Clipboard', action: go('/audit'), path: '/audit' },
-      { id: 'n20', label: 'Go to AI rules & control', group: 'Navigate', icon: 'Shield', action: go('/ai-governance'), path: '/ai-governance' },
+      { id: 'n18', label: 'Go to Data health', group: 'Navigate', icon: 'Database', action: go('/data-health'), path: '/data-health' },
+      { id: 'n19', label: 'Go to Activity history', group: 'Navigate', icon: 'Clipboard', action: go('/audit'), path: '/audit' },
+      { id: 'n20', label: 'Go to AI rules', group: 'Navigate', icon: 'Shield', action: go('/ai-governance'), path: '/ai-governance' },
       { id: 'n21', label: 'Go to Settings', group: 'Navigate', icon: 'Settings', action: go('/settings'), path: '/settings' },
+      { id: 'n22', label: 'Go to School profile', group: 'Navigate', icon: 'Building', action: go('/school-profile'), path: '/school-profile' },
+      { id: 'n23', label: 'Go to Setup guide', group: 'Navigate', icon: 'Check', action: go('/setup'), path: '/setup' },
       /* light-role destinations (parent/student) — filtered to their own paths below */
       { id: 'lp1', label: 'Go to Family', group: 'Navigate', icon: 'Home', action: go('/parent/family'), path: '/parent/family' },
       { id: 'lp3', label: 'Go to Fees', group: 'Navigate', icon: 'Wallet', action: go('/parent/fees'), path: '/parent/fees' },
-      { id: 'lp4', label: 'Go to AI Assistant', group: 'Navigate', icon: 'Sparkle', action: go('/parent/copilot'), path: '/parent/copilot' },
+      { id: 'lp4', label: 'Go to Ask the school', group: 'Navigate', icon: 'Sparkle', action: go('/parent/copilot'), path: '/parent/copilot' },
       { id: 'ls1', label: 'Go to My Day', group: 'Navigate', icon: 'Today', action: go('/student/home2'), path: '/student/home2' },
       { id: 'ls2', label: 'Go to Learning', group: 'Navigate', icon: 'Learning', action: go('/student/learning'), path: '/student/learning' },
       { id: 'ls3', label: 'Go to Portfolio', group: 'Navigate', icon: 'Award', action: go('/student/portfolio'), path: '/student/portfolio' },
@@ -720,8 +774,10 @@ export function Topbar({ onOpenPalette }: { onOpenPalette: () => void }) {
   return (
     <header className="topbar">
       <button className="btn btn-secondary btn-sm topbar-search" style={{ gap: 8, color: 'var(--text-3)', justifyContent: 'flex-start' }} onClick={onOpenPalette} aria-label="Open search and command menu">
-        <Icon.Search size={14} />
-        <span className="u-hide-mobile" style={{ flex: 1, textAlign: 'left' }}>Search or ask…</span>
+        <Icon.Search size={15} />
+        {/* The label is dropped, not the field: an icon-only search with a
+            200px hole beside it reads as a layout bug on a phone. */}
+        <span className="topbar-search-label">Search or ask…</span>
         <kbd className="u-hide-mobile">⌘K</kbd>
       </button>
       {!light && <CampusSwitcher />}

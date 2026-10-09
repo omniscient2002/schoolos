@@ -45,13 +45,13 @@ export default function SubstitutionFeedWidget() {
             <Badge tone={n > 0 ? 'accent' : 'outline'}>{n}</Badge>
           )}
         </div>
-        <span className="u-xs u-faint">plugin</span>
+        <span className="u-xs u-faint">add-on</span>
       </div>
       <div className="u-xs u-muted" style={{ marginTop: 6, lineHeight: 1.6 }}>
         {state.loading
           ? 'Checking the timetable…'
           : state.error
-            ? 'Live event feed unavailable — assignments still on the ledger.'
+            ? 'Live event feed unavailable — assignments are still saved.'
             : n === 0
               ? 'No substitutions assigned yet — raised here when the timetable rail assigns one.'
               : state.items.join('  ·  ')}

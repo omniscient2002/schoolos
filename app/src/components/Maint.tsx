@@ -63,7 +63,7 @@ export function SLAIndicator({ sla, breach, tone, size = 'md' }: { sla: { label:
         whiteSpace: 'nowrap',
       }}
     >
-      {icon} {breach ? 'SLA ' : ''}{sla.label}
+      {icon} {breach ? 'Past deadline · ' : ''}{sla.label}
     </span>
   );
 }

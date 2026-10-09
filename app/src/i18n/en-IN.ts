@@ -103,4 +103,12 @@ export const enIN: Record<string, string> = {
   // Parent proof strings (screens/parent/*)
   'parent.greeting': 'Hello, {name}',
   'parent.fees': 'Fees',
+
+  // Common actions (short-code 'hi' bundle covers these first)
+  'common.save': 'Save',
+  'common.cancel': 'Cancel',
+  'common.close': 'Close',
+  'common.retry': 'Try again',
+  'common.loading': 'Loading…',
+  'common.search': 'Search',
 };

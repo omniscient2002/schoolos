@@ -17,7 +17,7 @@ import { Icon } from './components/Icon';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TeacherProvider } from './state/teacherContext';
 import { mapAccountRole, isLightRole, homeForRole } from './lib/roles';
-import { canSurface } from './lib/effective';
+import { canSurface, isKnownSurface } from './lib/effective';
 
 /* ---------- lazy screens ---------- */
 const F = (loader: () => Promise<{ default: React.ComponentType }>) => lazy(loader);
@@ -42,15 +42,25 @@ const Next = F(() => import('./screens/Next'));
 const People = F(() => import('./screens/People'));
 const PersonDetail = F(() => import('./screens/PersonDetail'));
 const Learning = F(() => import('./screens/Learning'));
+const Nep = F(() => import('./screens/Nep'));
 const Attendance = F(() => import('./screens/Attendance'));
 /* school structure — configurable classes & sections (owner/principal/itadmin) */
 const Classes = F(() => import('./screens/Classes'));
+/* school profile — the tenant identity card (owner-only doors; the screen prefills
+   from GET /school/profile and writes through POST /onboard/school) */
+const SchoolProfile = F(() => import('./screens/SchoolProfile'));
+/* setup guide — Part 1 of onboarding: the people chain (owner/principal/itadmin
+   read GET /school/setup; each stage's write door re-gates) */
+const Setup = F(() => import('./screens/Setup'));
 const Timetable = F(() => import('./screens/Timetable'));
 const Operations = F(() => import('./screens/Operations'));
 const Fees = F(() => import('./screens/Fees'));
 const FunnelBoard = F(() => import('./screens/FunnelBoard'));
 const VisitorsBoard = F(() => import('./screens/VisitorsBoard'));
 const Transport = F(() => import('./screens/Transport'));
+/* H1: the write model for routes and stops (retirement, never deletion). This screen was written with
+   the transport doors and never mounted, so the doors had no UI at all. */
+const TransportSetup = F(() => import('./screens/TransportSetup'));
 const Documents = F(() => import('./screens/Documents'));
 const Maintenance = F(() => import('./screens/Maintenance'));
 const WorkOrders = F(() => import('./screens/WorkOrders'));
@@ -69,6 +79,10 @@ const Migration = F(() => import('./screens/Migration'));
 const PluginsScreen = F(() => import('./screens/Plugins'));
 const ReportIssue = F(() => import('./screens/ReportIssue'));
 const HR = F(() => import('./screens/HR'));
+/* health.clinic — the infirmary log; until this screen existed the add-on had five doors and no UI. */
+const Clinic = F(() => import('./screens/Clinic'));
+/* UDISE + CBSE OASIS + Tally — three export add-ons that had doors and no screen. */
+const Returns = F(() => import('./screens/Returns'));
 const CalendarScreen = F(() => import('./screens/CalendarScreen'));
 const Cases = F(() => import('./screens/Cases'));
 const CaseDetail = F(() => import('./screens/CaseDetail'));
@@ -92,9 +106,15 @@ const PrincipalBrief = F(() => import('./screens/PrincipalBrief'));
 const OversightHome = F(() => import('./screens/OversightHome')); /* OPP-API-1 */
 const Announcements = F(() => import('./screens/Announcements'));
 const Compliance = F(() => import('./screens/Compliance'));
+/* Master Action Plan 1.2/1.3/4.1/0.2 — kernel doors, no plugin gate */
+const MpdCenter = F(() => import('./screens/MpdCenter'));
+const RteManager = F(() => import('./screens/RteManager'));
+const Payroll = F(() => import('./screens/Payroll'));
+const Billing = F(() => import('./screens/Billing'));
 const Certificates = F(() => import('./screens/Certificates'));
 const Delegations = F(() => import('./screens/Delegations'));
 const PeopleAdmin = F(() => import('./screens/PeopleAdmin'));
+const Safety = F(() => import('./screens/Safety')); /* Action Plan 4.5 — kernel doors, no plugin gate */
 const LibraryHome = F(() => import('./screens/library/LibraryHome'));
 const LibraryDesk = F(() => import('./screens/library/LibraryDesk'));
 const LibraryDeskDashboard = F(() => import('./screens/library/desk/Dashboard'));
@@ -222,6 +242,18 @@ function Guard({ children }: { children: React.ReactNode }) {
      identity, so the demo preview switcher (no server session) is unaffected; a surface the server has no
      opinion about is allowed, because the server still enforces every door. */
   if (mapAccountRole(live.role) === session.roleId && live.effective && !canSurface(live.effective, pathname)) {
+    /* FIX-8: an UNKNOWN path (no caps entry, no :param or section-prefix match) is a typo, not a
+       role problem — render the friendly NotFound screen instead of the role-denied copy. FEX-5 still
+       holds: the unknown screen itself is never rendered, and every door stays server-enforced. */
+    if (!isKnownSurface(live.effective, pathname)) {
+      return (
+        <PageShell>
+          <Suspense fallback={<div className="grid grid-2"><SkeletonCard /><SkeletonCard /></div>}>
+            <NotFound />
+          </Suspense>
+        </PageShell>
+      );
+    }
     return (
       <PageShell>
         <div className="empty" style={{ padding: '80px 0' }}>
@@ -251,6 +283,11 @@ function S({ children }: { children: React.ReactNode }) {
  * whatever the URL. Session persists in localStorage; sign-out clears it. */
 export interface SessionUser {
   name: string; role: string; email: string;
+  /* The caller's own user id, from /me. Needed wherever the SERVER refuses a self-action and the UI
+     must say so in advance rather than after a 403 (P2-10: an author offered Approve on their own
+     announcement, which segregation of duties always refuses). Absent on a cached session opened
+     before this field existed — screens must degrade to offering the control, not to hiding it. */
+  id?: string;
   school?: { name: string | null; slug: string | null };
   /* RBAC-3/RBAC-6: the caller's OWN custom-role binding + mask, straight from /me. A display hint for
      choosing which controls to render — never an authorization decision (the server re-decides on every
@@ -295,7 +332,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     let full = s;
     try {
       const me = await apiMe();
-      full = { name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null };
+      full = { id: me.id, name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null };
       /* item 14: the effective-access answer rides the session the same way the mask does — one extra
          request, and a failure must never block sign-in (the server still enforces every door). */
       try { full = { ...full, effective: await apiMeEffective() }; } catch { /* render hint only */ }
@@ -354,7 +391,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       try { effective = await apiMeEffective(); } catch { /* render hint only; server still enforces */ }
       if (!dead) {
         setRole(mapAccountRole(me.role));
-        setSession({ name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null, effective });
+        setSession({ id: me.id, name: me.name, role: me.role, email: me.email, school: me.school, role_key: me.role_key ?? null, custom: me.custom ?? null, effective });
         setSessionIdentity({ name: me.name, email: me.email });
       }
       /* L5-2.1 (review BLOCKER-2 fix): a restored RESTRICTED session must not
@@ -431,9 +468,14 @@ function AppRoutes() {
       <Route path="/people" element={<S><People /></S>} />
       <Route path="/people/:id" element={<S><PersonDetail /></S>} />
       <Route path="/learning" element={<S><Learning /></S>} />
+      <Route path="/nep" element={<S><Nep /></S>} />
       <Route path="/attendance" element={<S><Attendance /></S>} />
       {/* school structure: owner/principal/IT admin define the classes & sections every picker uses */}
       <Route path="/classes" element={<S><Classes /></S>} />
+      {/* school profile: the tenant identity card — owner-only read + write doors */}
+      <Route path="/school-profile" element={<S><SchoolProfile /></S>} />
+      {/* setup guide: Part 1 (people chain) — owner/principal/itadmin read door */}
+      <Route path="/setup" element={<S><Setup /></S>} />
       {/* M3/M4: the timetable write surface — gated on the ops.timetable plugin like every module */}
       <Route path="/timetable" element={<S><KernelGate plugin="ops.timetable"><Timetable /></KernelGate></S>} />
       <Route path="/operations" element={<S><Operations /></S>} />
@@ -443,6 +485,7 @@ function AppRoutes() {
       <Route path="/admissions" element={<S><KernelGate plugin="admissions.funnel"><FunnelBoard /></KernelGate></S>} />
       <Route path="/visitors" element={<S><KernelGate plugin="ops.visitors"><VisitorsBoard /></KernelGate></S>} />
       <Route path="/transport" element={<S><Transport /></S>} />
+      <Route path="/transport/setup" element={<S><KernelGate plugin="transport.gps"><TransportSetup /></KernelGate></S>} />
       <Route path="/documents" element={<S><Documents /></S>} />
       <Route path="/maintenance" element={<S><Maintenance /></S>} />
       <Route path="/maintenance/work-orders" element={<S><WorkOrders /></S>} />
@@ -486,6 +529,8 @@ function AppRoutes() {
       <Route path="/rails" element={<S><RailsBoard /></S>} />
       <Route path="/maintenance/report" element={<S><ReportIssue /></S>} />
       <Route path="/operations/hr" element={<S><HR /></S>} />
+      <Route path="/clinic" element={<S><KernelGate plugin="health.clinic"><Clinic /></KernelGate></S>} />
+      <Route path="/returns" element={<S><Returns /></S>} />
       <Route path="/calendar" element={<S><CalendarScreen /></S>} />
       <Route path="/cases" element={<S><Cases /></S>} />
       <Route path="/cases/:id" element={<S><CaseDetail /></S>} />
@@ -507,6 +552,11 @@ function AppRoutes() {
       <Route path="/principal/home" element={<S><OversightHome /></S>} />
       <Route path="/announcements" element={<S><Announcements /></S>} />
       <Route path="/compliance" element={<S><Compliance /></S>} />
+      <Route path="/safety" element={<S><Safety /></S>} />
+      <Route path="/mpd" element={<S><MpdCenter /></S>} />
+      <Route path="/rte" element={<S><RteManager /></S>} />
+      <Route path="/payroll" element={<S><Payroll /></S>} />
+      <Route path="/billing" element={<S><Billing /></S>} />
       <Route path="/certificates" element={<S><Certificates /></S>} />
       <Route path="/delegations" element={<S><Delegations /></S>} />
       <Route path="/it" element={<S><ItAdmin /></S>} />
@@ -516,10 +566,9 @@ function AppRoutes() {
       {/* L5-5.2: plugin settings — list + per-plugin form (owner + IT admin) */}
       <Route path="/plugins/settings" element={<S><PluginSettings /></S>} />
       <Route path="/plugins/settings/:id" element={<S><PluginSettings /></S>} />
-      {/* L5-2.1: voluntary self-service password change (any signed-in role;
-          deliberately NOT in the staffOnly list — parents/students change
-          their own passwords here too). The forced flow renders the same
-          screen from AuthGate before any route exists. */}
+      {/* L5-2.1: voluntary self-service password change (any signed-in role — parents/students change
+          their own passwords here too, which is why there is no staff-only list to be on).
+          The forced flow renders the same screen from AuthGate before any route exists. */}
       <Route path="/account/password" element={<S><ChangePassword mode="page" /></S>} />
       <Route path="/parent" element={<S><ParentHome /></S>} />
       <Route path="/parent/complaints" element={<S><ParentComplaints /></S>} />
@@ -574,7 +623,8 @@ function AppRoutes() {
       <Route path="/counselor/concerns" element={<S><CounselorConcerns /></S>} />
       <Route path="/appraisals" element={<S><Appraisals /></S>} />
       <Route path="/noticeboard" element={<S><Noticeboard /></S>} />
-      {/* CU-1 coordinator lane — /coord/* is staff-gated via staffOnly '/coord' above */}
+      {/* CU-1 coordinator lane — every /coord/* screen is behind the coordinator route gate above,
+          and the server re-gates each door it calls. */}
       <Route path="/coord/home" element={<S><CoordHome /></S>} />
       <Route path="/coord/substitutions" element={<S><CoordSubstitutions /></S>} />
       <Route path="/coord/workload" element={<S><CoordWorkload /></S>} />

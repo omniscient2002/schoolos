@@ -23,9 +23,15 @@ export interface Person {
   phone: string;
   avatarHueSeed?: string;
   /* student */
-  grade?: number;
+  /* GRADE-1: a grade is free text, not a number. The school authors it on the
+     Classes & sections screen ("e.g. 6, LKG, Nursery") and it is stored and
+     returned as text. Typing it `number` is what made the attendance register
+     render "Grade NaN-A" and load an empty roster. */
+  grade?: number | string;
   section?: string;
   rollNo?: string;
+  /* the guardian contact carried on the roster row (P3-2 counts families from it) */
+  guardianName?: string;
   guardianIds?: string[];
   busRoute?: string;
   status?: 'active' | 'inactive';

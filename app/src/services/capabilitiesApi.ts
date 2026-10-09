@@ -10,8 +10,11 @@ import { apiGet } from './liveApi';
 
 export interface Capabilities {
   rails: {
-    sms: { configured: boolean; provider: string };
-    whatsapp: { configured: boolean; provider: string };
+    /* `sandbox` means the rail is on its default `logger` provider: it records the message and
+       reports success, but nothing is sent. `configured` is false in that state, so a school is
+       never told SMS is connected while its notices go to a log. */
+    sms: { configured: boolean; provider: string; sandbox?: boolean };
+    whatsapp: { configured: boolean; provider: string; sandbox?: boolean };
     razorpay: { configured: boolean };
     files: { configured: boolean };
   };

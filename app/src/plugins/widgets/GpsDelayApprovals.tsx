@@ -49,13 +49,13 @@ export default function GpsDelayApprovalsWidget() {
             <Badge tone={n > 0 ? 'warning' : 'success'}>{n}</Badge>
           )}
         </div>
-        <span className="u-xs u-faint">plugin</span>
+        <span className="u-xs u-faint">add-on</span>
       </div>
       <div className="u-xs u-muted" style={{ marginTop: 6, lineHeight: 1.6 }}>
         {state.loading
-          ? 'Reading the approval spine…'
+          ? 'Checking for delay approvals…'
           : state.error
-            ? 'Live action feed unavailable — approvals still on the ledger.'
+            ? 'Live action feed unavailable — approvals are still saved.'
             : n === 0
               ? 'No GPS delay approvals open — guardian notices clear.'
               : state.items.slice(0, 2).map(a => a.title).join('  ·  ') + (n > 2 ? `  ·  +${n - 2} more` : '')}

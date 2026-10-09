@@ -26,16 +26,42 @@ export interface OnboardStatus {
   checklist: { id: string; label: string; done: boolean; href: string }[];
 }
 
+/* School profile — the tenant identity card. Same keys the signup door accepts
+   and POST /onboard/school patches; GET /school/profile reads them back. */
+export interface SchoolProfileFields {
+  address: string; city: string; state: string; postalCode: string; country: string;
+  board: string; phone: string; email: string; website: string; timezone: string;
+}
+export interface SchoolProfile {
+  name: string; slug: string; onboardedAt: string | null; profile: SchoolProfileFields;
+}
+export type SchoolProfilePatch = { schoolName?: string } & Partial<SchoolProfileFields>;
+
 export async function apiSignup(body: {
-  schoolName: string; address?: string; board?: string; phone?: string;
-  ownerName: string; ownerEmail: string; ownerPassword: string;
+  schoolName: string; address?: string; city?: string; state?: string; postalCode?: string; country?: string;
+  board?: string; phone?: string; email?: string; website?: string; timezone?: string;
+  ownerName: string; ownerEmail: string; ownerPassword: string; ownerPhone?: string;
 }): Promise<SignupOk> {
   const r = await apiPost<SignupOk>('/onboard/signup', body);
   setToken(r.token); // the owner is signed in the moment their school exists
   return r;
 }
 
-export const apiOnboardSchool = (body: { schoolName?: string; address?: string; board?: string; phone?: string }) =>
+export const apiSchoolProfile = () => apiGet<{ school: SchoolProfile }>('/school/profile');
+
+export const apiOnboardSchool = (body: SchoolProfilePatch) =>
   apiPost<{ ok: boolean; school: { name: string; config: Record<string, unknown> } }>('/onboard/school', body);
+
+/* Setup guide (Part 1: the people chain) — one read for the /setup screen:
+   each staffing stage with its live done-flag and count. Owner, principal and
+   IT admin only (server-gated); every stage's write door re-gates. */
+export interface SetupStage {
+  id: string; label: string; hint: string; done: boolean; count?: number; href?: string;
+}
+export interface SetupGuide {
+  school: { name: string | null; slug: string | null };
+  stages: SetupStage[];
+}
+export const apiSetupStages = () => apiGet<SetupGuide>('/school/setup');
 
 export const apiOnboardStatus = () => apiGet<OnboardStatus>('/onboard/status');
