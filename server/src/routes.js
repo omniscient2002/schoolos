@@ -2095,14 +2095,39 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
 
   // Transport compliance core: daily runs + board/de-board timestamps + attendants + fares + inspections.
+  // Indian-school notes: a route runs TWO trips a day (pickup + drop), so `shift` joins the day key;
+  // vehicle document expiry (fitness/permit/PUC/insurance) and driver licence state ride the fleet
+  // registers below; boarding completeness is per-ROUTE (the old whole-school denominator made every
+  // route read ~2% complete).
   const todayIso = () => new Date().toISOString().slice(0, 10);
-  app.get('/transport/runs', { preHandler: roleGatedMe('owner', 'principal', 'transport', 'coordinator', 'itadmin', 'teacher') }, async (req) => {
+  const TRANSPORT_SHIFTS = ['pickup', 'drop', 'extra'];
+  const cleanRegNo = (v) => String(v ?? '').trim().toUpperCase().slice(0, 20);
+  // Indian registration: KA 01 AB 1234 (dashes/spaces tolerated, normalized by reg_norm in the DB).
+  const REG_RE = /^[A-Z]{2}[- ]?[0-9]{1,2}[- ]?[A-Z]{1,3}[- ]?[0-9]{1,4}$/;
+  const cleanPhone10 = (v) => {
+    if (v == null || String(v).trim() === '') return null;
+    const d = String(v).replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    return /^[6-9]\d{9}$/.test(d) ? d : 'INVALID';
+  };
+  const docState = (iso, day, warnDays = 30) => {
+    if (!iso) return 'missing';
+    const d = String(iso).slice(0, 10);
+    if (d < day) return 'expired';
+    const soon = new Date(day); soon.setDate(soon.getDate() + warnDays);
+    return d <= soon.toISOString().slice(0, 10) ? 'expiring' : 'valid';
+  };
+  app.get('/transport/runs', { preHandler: roleGatedMe('owner', 'principal', 'transport', 'coordinator', 'itadmin', 'teacher') }, async (req, reply) => {
+    const routeId = typeof req.query?.routeId === 'string' && req.query.routeId ? String(req.query.routeId) : null;
+    if (routeId && !UUID_RE_NOTICE.test(routeId)) return bad(reply, 'routeId must be a uuid');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
-        `SELECT r.id, r.ran_on, t.code, t.name,
+        `SELECT r.id, r.ran_on, r.shift, r.vehicle_id, r.driver_id, r.attendant_id, t.code, t.name,
                 (SELECT count(DISTINCT (student_id)) FROM app.boarding b WHERE b.run_id=r.id AND b.direction='board')::int AS boarded
-           FROM app.bus_runs r JOIN app.routes t ON t.id=r.route_id
-          ORDER BY r.ran_on DESC LIMIT 20`);
+            FROM app.bus_runs r JOIN app.routes t ON t.id=r.route_id
+           WHERE ($1::uuid IS NULL OR r.route_id=$1)
+             AND ($2::date IS NULL OR r.ran_on=$2::date)
+           ORDER BY r.ran_on DESC, t.code, r.shift LIMIT 50`,
+        [routeId, typeof req.query?.date === 'string' && DATE_RE.test(req.query.date) ? req.query.date : null]);
       return { runs: r.rows };
     });
   });
@@ -2110,16 +2135,45 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.post('/transport/runs', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
     const routeId = String(req.body?.routeId ?? '');
     if (!UUID_RE_NOTICE.test(routeId)) return bad(reply, 'routeId must be a uuid');
+    const shift = String(req.body?.shift ?? 'pickup');
+    if (!TRANSPORT_SHIFTS.includes(shift)) return bad(reply, 'shift must be pickup|drop|extra');
+    for (const k of ['vehicleId', 'driverId', 'attendantId']) {
+      const v = req.body?.[k];
+      if (v !== undefined && v !== null && String(v).trim() !== '' && !UUID_RE_NOTICE.test(String(v))) {
+        return bad(reply, `${k} must be a uuid`);
+      }
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const route = (await c.query(`SELECT id, code, name FROM app.routes WHERE id=$1`, [routeId])).rows[0];
+      const route = (await c.query(`SELECT id, code, name, retired_at FROM app.routes WHERE id=$1`, [routeId])).rows[0];
       if (!route) return bad(reply, 'No route with that id', 404);
+      if (route.retired_at) return bad(reply, `Route ${route.code} is retired — restore it before running trips`, 409);
+      // Crew must belong to this school (RLS scopes the read: another school's id reads as absent).
+      const crew = {};
+      if (req.body?.vehicleId) {
+        crew.vehicle = (await c.query(`SELECT id, reg_no, retired_at, status FROM app.vehicles WHERE id=$1`, [req.body.vehicleId])).rows[0];
+        if (!crew.vehicle) return bad(reply, 'No vehicle with that id', 404);
+        if (crew.vehicle.retired_at || crew.vehicle.status === 'retired') return bad(reply, `${crew.vehicle.reg_no} is retired — pick a live vehicle`, 409);
+      }
+      if (req.body?.driverId) {
+        crew.driver = (await c.query(`SELECT id, name, status FROM app.drivers WHERE id=$1`, [req.body.driverId])).rows[0];
+        if (!crew.driver) return bad(reply, 'No driver with that id', 404);
+        if (crew.driver.status !== 'active') return bad(reply, `${crew.driver.name} is not active`, 409);
+      }
+      if (req.body?.attendantId) {
+        crew.attendant = (await c.query(`SELECT id, name, retired_at FROM app.attendants WHERE id=$1`, [req.body.attendantId])).rows[0];
+        if (!crew.attendant) return bad(reply, 'No attendant with that id', 404);
+        if (crew.attendant.retired_at) return bad(reply, `${crew.attendant.name} is retired from the roster`, 409);
+      }
       const today = new Date().toISOString().slice(0, 10);
       const run = (await c.query(
-        `INSERT INTO app.bus_runs (tenant_id, route_id, ran_on, started_by) VALUES ($1,$2,$3::date,$4)
-         ON CONFLICT (tenant_id, route_id, ran_on) DO NOTHING RETURNING id, ran_on`,
-        [req.user.tenant_id, route.id, today, req.user.id])).rows[0]
-        ?? (await c.query(`SELECT id, ran_on FROM app.bus_runs WHERE route_id=$1 AND ran_on=$2::date`, [route.id, today])).rows[0];
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Bus run started', recordType: 'BusRun', recordRef: run.id, reason: `${route.code} · ${today}`, policyRef: 'Transport (boarding log)', risk: 'low', outcome: 'run open for boarding' });
+        `INSERT INTO app.bus_runs (tenant_id, route_id, ran_on, shift, started_by, vehicle_id, driver_id, attendant_id, note)
+          VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9)
+          ON CONFLICT (tenant_id, route_id, ran_on, shift) DO NOTHING RETURNING id, ran_on, shift`,
+        [req.user.tenant_id, route.id, today, shift, req.user.id,
+         crew.vehicle?.id ?? null, crew.driver?.id ?? null, crew.attendant?.id ?? null,
+         typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 500) : null])).rows[0]
+        ?? (await c.query(`SELECT id, ran_on, shift FROM app.bus_runs WHERE route_id=$1 AND ran_on=$2::date AND shift=$3`, [route.id, today, shift])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Bus run started', recordType: 'BusRun', recordRef: run.id, reason: `${route.code} · ${today} · ${shift}`, policyRef: 'Transport (boarding log)', risk: 'low', outcome: 'run open for boarding' });
       return { run: { ...run, route: { code: route.code, name: route.name } } };
     });
   });
@@ -2127,16 +2181,42 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     const b = req.body ?? {};
     if (!UUID_RE_NOTICE.test(String(b.studentId ?? ''))) return bad(reply, 'studentId must be a uuid');
     if (!['board', 'deboard'].includes(b.direction)) return bad(reply, 'direction must be board|deboard');
+    if (b.stopId !== undefined && b.stopId !== null && String(b.stopId).trim() !== '' && !UUID_RE_NOTICE.test(String(b.stopId))) {
+      return bad(reply, 'stopId must be a uuid');
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const run = (await c.query(`SELECT id, route_id FROM app.bus_runs WHERE id=$1`, [req.params.id])).rows[0];
+      const run = (await c.query(
+        `SELECT r.id, r.route_id, r.shift, t.code AS route_code, t.capacity, t.permit_capacity
+           FROM app.bus_runs r JOIN app.routes t ON t.id=r.route_id WHERE r.id=$1`, [req.params.id])).rows[0];
       if (!run) return bad(reply, 'No run with that id', 404);
-      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
+      const st = (await c.query(`SELECT id, name, bus_route FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
       if (!st) return bad(reply, 'No active pupil with that id', 404);
+      let stopId = null;
+      if (b.stopId) {
+        const stop = (await c.query(
+          `SELECT id FROM app.route_stops WHERE id=$1 AND route_id=$2 AND retired_at IS NULL`, [b.stopId, run.route_id])).rows[0];
+        if (!stop) return bad(reply, 'That stop is not on this run\u2019s route (retired stops cannot take boardings)', 400);
+        stopId = stop.id;
+      }
+      // Roster honesty: a child assigned to another route CAN still be marked (field reality — a child
+      // boards the wrong bus), but the response says so instead of silently inflating this run.
+      const routeMismatch = st.bus_route != null && st.bus_route !== '' && st.bus_route !== run.route_code;
       try {
         const row = (await c.query(
-          `INSERT INTO app.boarding (tenant_id, run_id, student_id, direction, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id, at`,
-          [req.user.tenant_id, run.id, st.id, b.direction, req.user.id])).rows[0];
-        return { boarding: row, student_name: st.name };
+          `INSERT INTO app.boarding (tenant_id, run_id, student_id, direction, stop_id, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, at`,
+          [req.user.tenant_id, run.id, st.id, b.direction, stopId, req.user.id])).rows[0];
+        // Overloading is a warning, never a block at the bus door: refusing a child at 7am because the
+        // register is full strands the child. The office sees the flag on the board instead.
+        let overloaded = false;
+        if (b.direction === 'board') {
+          const cap = run.permit_capacity ?? run.capacity ?? null;
+          if (cap) {
+            const n = (await c.query(
+              `SELECT count(DISTINCT student_id)::int AS n FROM app.boarding WHERE run_id=$1 AND direction='board'`, [run.id])).rows[0].n;
+            overloaded = n > cap;
+          }
+        }
+        return { boarding: row, student_name: st.name, routeMismatch, overloaded };
       } catch (e) {
         if (e.code === '23505') return bad(reply, `${st.name} is already marked ${b.direction}ed on this run`, 409);
         throw e;
@@ -2145,24 +2225,34 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   });
   app.get('/transport/runs/:id/board', { preHandler: [roleGatedMe('owner','principal','transport','coordinator','itadmin', 'teacher'), uuidParams('id')] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const run = (await c.query(`SELECT id, route_id, ran_on FROM app.bus_runs WHERE id=$1`, [req.params.id])).rows[0];
+      const run = (await c.query(
+        `SELECT r.id, r.route_id, r.ran_on, r.shift, t.code AS route_code
+           FROM app.bus_runs r JOIN app.routes t ON t.id=r.route_id WHERE r.id=$1`, [req.params.id])).rows[0];
       if (!run) return bad(reply, 'No run with that id', 404);
       const rows = (await c.query(
-        `SELECT b.student_id, s.name, s.grade, s.section, b.direction, b.at
-           FROM app.boarding b JOIN app.students s ON s.id=b.student_id
-          WHERE b.run_id=$1 ORDER BY s.name, b.direction`, [run.id])).rows;
+        `SELECT b.student_id, s.name, s.grade, s.section, b.direction, b.at, b.stop_id, st.name AS stop_name
+            FROM app.boarding b JOIN app.students s ON s.id=b.student_id
+            LEFT JOIN app.route_stops st ON st.id=b.stop_id
+           WHERE b.run_id=$1 ORDER BY s.name, b.direction`, [run.id])).rows;
+      // ROUTE-scoped denominator: riders of THIS route, not the whole school's bus roster.
       const riders = (await c.query(
-        `SELECT count(*)::int AS n FROM app.students WHERE status='active' AND bus_route IS NOT NULL AND bus_route<>''`)).rows[0].n;
+        `SELECT count(*)::int AS n FROM app.students WHERE status='active' AND bus_route=$1`, [run.route_code])).rows[0].n;
       const boarded = new Set(rows.filter((r) => r.direction === 'board').map((r) => r.student_id)).size;
       return { run, boardings: rows, riders, completeness: riders ? Math.round(boarded / riders * 1000) / 10 : null };
     });
   });
   app.get('/transport/attendants', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const day = new Date().toISOString().slice(0, 10);
       const r = await c.query(
-        `SELECT a.id, a.name, a.route_id, a.police_verified_on, u.name AS staff_name, u.role AS staff_role
-           FROM app.attendants a LEFT JOIN app.users u ON u.id=a.user_id ORDER BY a.name`);
-      return { attendants: r.rows };
+        `SELECT a.id, a.name, a.route_id, a.phone, a.police_verified_on, a.police_valid_till,
+                u.name AS staff_name, u.role AS staff_role
+            FROM app.attendants a LEFT JOIN app.users u ON u.id=a.user_id
+           WHERE a.retired_at IS NULL ORDER BY a.name`);
+      return { attendants: r.rows.map((a) => ({
+        ...a,
+        verification: !a.police_verified_on ? 'pending' : !a.police_valid_till ? 'valid' : docState(a.police_valid_till, day, 60),
+      })) };
     });
   });
   app.post('/transport/attendants', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
@@ -2177,6 +2267,13 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
       if (!UUID_RE_NOTICE.test(String(b.routeId))) return bad(reply, 'routeId must be a uuid');
       routeId = String(b.routeId);
     }
+    const phone = b.phone !== undefined ? cleanPhone10(b.phone) : null;
+    if (phone === 'INVALID') return bad(reply, 'phone must be a 10-digit Indian mobile number');
+    let validTill = null;
+    if (b.policeValidTill !== undefined && b.policeValidTill !== null && String(b.policeValidTill).trim() !== '') {
+      if (!DATE_RE.test(String(b.policeValidTill))) return bad(reply, 'policeValidTill must be YYYY-MM-DD');
+      validTill = String(b.policeValidTill);
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       let userId = null;
       let label = name;
@@ -2186,21 +2283,37 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
         userId = u.id;
         label = label || u.name;
       }
+      if (routeId) {
+        const rt = (await c.query(`SELECT id FROM app.routes WHERE id=$1 AND retired_at IS NULL`, [routeId])).rows[0];
+        if (!rt) return bad(reply, 'No live route with that id', 404);
+      }
       const row = (await c.query(
-        `INSERT INTO app.attendants (tenant_id, user_id, name, route_id, created_by) VALUES ($1,$2,$3,$4,$5)
-         RETURNING id, name, route_id`,
-        [req.user.tenant_id, userId, label, routeId, req.user.id])).rows[0];
+        `INSERT INTO app.attendants (tenant_id, user_id, name, route_id, phone, police_valid_till, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)
+          RETURNING id, name, route_id`,
+        [req.user.tenant_id, userId, label, routeId, phone, validTill, req.user.id])).rows[0];
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant rostered', recordType: 'Attendant', recordRef: row.id, reason: label, policyRef: 'Transport (attendant rule)', risk: 'low', outcome: 'rostered — police verification still pending' });
       return { attendant: row };
     });
   });
   app.put('/transport/attendants/:id/verify', { preHandler: [require('owner','principal','transport','coordinator','itadmin'), uuidParams('id')] }, async (req, reply) => {
     if (!DATE_RE.test(String(req.body?.policeVerifiedOn ?? ''))) return bad(reply, 'policeVerifiedOn must be YYYY-MM-DD');
+    const validTill = req.body?.policeValidTill !== undefined && req.body?.policeValidTill !== null && String(req.body.policeValidTill).trim() !== ''
+      ? String(req.body.policeValidTill).trim() : null;
+    if (validTill && !DATE_RE.test(validTill)) return bad(reply, 'policeValidTill must be YYYY-MM-DD');
+    if (validTill && validTill < String(req.body.policeVerifiedOn)) return bad(reply, 'policeValidTill cannot be before the verification date');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const r = await c.query(`UPDATE app.attendants SET police_verified_on=$1::date WHERE id=$2 RETURNING id, name`,
-        [String(req.body.policeVerifiedOn), req.params.id]);
+      const r = await c.query(`UPDATE app.attendants SET police_verified_on=$1::date, police_valid_till=$2::date WHERE id=$3 AND retired_at IS NULL RETURNING id, name`,
+        [String(req.body.policeVerifiedOn), validTill, req.params.id]);
       if (!r.rows[0]) return bad(reply, 'No attendant with that id', 404);
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant police-verified', recordType: 'Attendant', recordRef: r.rows[0].id, reason: r.rows[0].name, policyRef: 'NCPCR (staff verification)', risk: 'low', outcome: `verified ${req.body.policeVerifiedOn}` });
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant police-verified', recordType: 'Attendant', recordRef: r.rows[0].id, reason: r.rows[0].name, policyRef: 'NCPCR (staff verification)', risk: 'low', outcome: `verified ${req.body.policeVerifiedOn}${validTill ? ` · valid till ${validTill}` : ''}` });
+      return { ok: true };
+    });
+  });
+  app.post('/transport/attendants/:id/retire', { preHandler: [require('owner','principal','transport','coordinator','itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(`UPDATE app.attendants SET retired_at=now() WHERE id=$1 AND retired_at IS NULL RETURNING id, name`, [req.params.id])).rows[0];
+      if (!r) return bad(reply, 'No attendant with that id', 404);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant retired', recordType: 'Attendant', recordRef: r.id, reason: r.name, policyRef: 'Transport (attendant rule)', risk: 'low', outcome: 'retired from the roster — history retained' });
       return { ok: true };
     });
   });
