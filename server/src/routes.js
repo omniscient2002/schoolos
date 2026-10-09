@@ -2340,28 +2340,90 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.post('/transport/fares/quote', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin', 'finance', 'finance_head', 'admissions') }, async (req, reply) => {
     const km = Number(req.body?.km);
     if (!Number.isFinite(km) || km < 0 || km > 200) return bad(reply, 'km must be 0–200');
+    const routeCode = typeof req.body?.routeCode === 'string' ? req.body.routeCode.trim() : '';
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // A route slab beats the per-km estimator: schools charge per route per term, not per kilometre.
+      if (routeCode) {
+        const slab = (await c.query(
+          `SELECT rf.amount_cents, rf.academic_year, rf.trip, r.code FROM app.route_fares rf
+             JOIN app.routes r ON r.id=rf.route_id
+            WHERE upper(r.code)=upper($1) AND r.retired_at IS NULL
+            ORDER BY rf.academic_year DESC LIMIT 1`, [routeCode])).rows[0];
+        if (slab) return { amountCents: slab.amount_cents, academicYear: slab.academic_year, trip: slab.trip, routeCode: slab.code, source: 'route' };
+      }
       const rate = (await c.query(`SELECT per_km_cents, academic_year FROM app.fares ORDER BY academic_year DESC LIMIT 1`)).rows[0];
       if (!rate) return bad(reply, 'No fare rate on record — the office sets ₹/km first', 409);
-      return { amountCents: Math.round(rate.per_km_cents * km), perKmCents: rate.per_km_cents, academicYear: rate.academic_year };
+      return { amountCents: Math.round(rate.per_km_cents * km), perKmCents: rate.per_km_cents, academicYear: rate.academic_year, source: 'per_km' };
+    });
+  });
+  // Route slabs: the term fare for one route (one-way / two-way). The transport desk proposes, finance owns.
+  app.get('/transport/route-fares', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin', 'finance', 'finance_head', 'admissions') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT rf.id, rf.route_id, r.code AS route_code, r.name AS route_name, rf.academic_year, rf.trip, rf.amount_cents
+           FROM app.route_fares rf JOIN app.routes r ON r.id=rf.route_id
+          WHERE r.retired_at IS NULL
+            AND ($1::uuid IS NULL OR rf.route_id=$1) AND ($2::text IS NULL OR rf.academic_year=$2)
+          ORDER BY r.code, rf.academic_year DESC, rf.trip`,
+        [typeof req.query?.routeId === 'string' && UUID_RE_NOTICE.test(req.query.routeId) ? req.query.routeId : null,
+         typeof req.query?.academicYear === 'string' && req.query.academicYear ? String(req.query.academicYear).slice(0, 12) : null]);
+      return { routeFares: r.rows };
+    });
+  });
+  app.put('/transport/route-fares', { preHandler: require('owner', 'principal', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.routeId ?? ''))) return bad(reply, 'routeId must be a uuid');
+    const year = typeof b.academicYear === 'string' ? b.academicYear.trim().slice(0, 12) : '';
+    if (!year) return bad(reply, 'academicYear is required');
+    const trip = String(b.trip ?? 'two_way');
+    if (!['one_way', 'two_way'].includes(trip)) return bad(reply, 'trip must be one_way|two_way');
+    const amount = Number(b.amountCents);
+    if (!Number.isInteger(amount) || amount < 0 || amount > 100000000) return bad(reply, 'amountCents must be an integer 0–100000000 (paise)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const route = (await c.query(`SELECT id, code FROM app.routes WHERE id=$1 AND retired_at IS NULL`, [b.routeId])).rows[0];
+      if (!route) return bad(reply, 'No live route with that id', 404);
+      await c.query(
+        `INSERT INTO app.route_fares (tenant_id, route_id, academic_year, trip, amount_cents, created_by)
+          VALUES ($1,$2,$3,$4,$5,$6)
+          ON CONFLICT (tenant_id, route_id, academic_year, trip) DO UPDATE SET amount_cents=EXCLUDED.amount_cents`,
+        [req.user.tenant_id, route.id, year, trip, amount, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Route fare set', recordType: 'RouteFare', recordRef: `${route.code}/${year}/${trip}`, reason: `₹${(amount / 100).toFixed(2)}`, policyRef: 'Transport (route slab)', risk: 'medium', outcome: 'slab on record' });
+      return { ok: true, routeCode: route.code, academicYear: year, trip, amountCents: amount };
     });
   });
   app.get('/transport/inspections', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const r = await c.query(`SELECT id, route_id, title, detail, inspected_on FROM app.inspections ORDER BY inspected_on DESC LIMIT 100`);
+      const r = await c.query(`SELECT id, route_id, vehicle_id, kind, title, detail, inspected_on FROM app.inspections ORDER BY inspected_on DESC LIMIT 100`);
       return { inspections: r.rows };
     });
   });
+  const INSPECTION_KINDS = ['joint','fitness','permit','puc','insurance','gps_cctv','internal','other'];
   app.post('/transport/inspections', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
     const b = req.body ?? {};
     const title = typeof b.title === 'string' ? b.title.trim().slice(0, 160) : '';
     if (!title) return bad(reply, 'title is required (e.g. joint RTO–education inspection)');
     if (!DATE_RE.test(String(b.inspectedOn ?? ''))) return bad(reply, 'inspectedOn must be YYYY-MM-DD');
+    const kind = String(b.kind ?? 'joint');
+    if (!INSPECTION_KINDS.includes(kind)) return bad(reply, `kind must be ${INSPECTION_KINDS.join('|')}`);
+    for (const [k, label] of [['routeId', 'routeId'], ['vehicleId', 'vehicleId']]) {
+      const v = b[k];
+      if (v !== undefined && v !== null && String(v).trim() !== '' && !UUID_RE_NOTICE.test(String(v))) {
+        return bad(reply, `${label} must be a uuid`);
+      }
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (b.routeId) {
+        const rt = (await c.query(`SELECT id FROM app.routes WHERE id=$1`, [b.routeId])).rows[0];
+        if (!rt) return bad(reply, 'No route with that id', 404);
+      }
+      if (b.vehicleId) {
+        const v = (await c.query(`SELECT id FROM app.vehicles WHERE id=$1`, [b.vehicleId])).rows[0];
+        if (!v) return bad(reply, 'No vehicle with that id', 404);
+      }
       const row = (await c.query(
-        `INSERT INTO app.inspections (tenant_id, route_id, title, detail, inspected_on, created_by)
-         VALUES ($1,$2,$3,$4,$5::date,$6) RETURNING id, title, inspected_on`,
-        [req.user.tenant_id, b.routeId ?? null, title,
+        `INSERT INTO app.inspections (tenant_id, route_id, vehicle_id, kind, title, detail, inspected_on, created_by)
+          VALUES ($1,$2,$3,$4,$5,$6,$7::date,$8) RETURNING id, title, inspected_on`,
+        [req.user.tenant_id, b.routeId ?? null, b.vehicleId ?? null, kind, title,
          typeof b.detail === 'string' ? b.detail.trim().slice(0, 2000) : null,
          String(b.inspectedOn), req.user.id])).rows[0];
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Transport inspection logged', recordType: 'Inspection', recordRef: row.id, reason: title, policyRef: 'Transport (joint inspection)', risk: 'low', outcome: 'on record' });
@@ -2381,11 +2443,32 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
         `SELECT count(DISTINCT (run_id, student_id))::int AS boarded FROM app.boarding b
           JOIN app.bus_runs r ON r.id=b.run_id WHERE r.ran_on >= $1::date AND r.ran_on < $2::date AND b.direction='board'`, [from, to])).rows[0].boarded;
       const att = (await c.query(
-        `SELECT count(*)::int AS total, count(*) FILTER (WHERE police_verified_on IS NOT NULL)::int AS verified FROM app.attendants`)).rows[0];
+        `SELECT count(*)::int AS total, count(*) FILTER (WHERE police_verified_on IS NOT NULL)::int AS verified FROM app.attendants WHERE retired_at IS NULL`)).rows[0];
       const insp = (await c.query(
         `SELECT count(*)::int AS n FROM app.inspections WHERE inspected_on >= $1::date AND inspected_on < $2::date`, [from, to])).rows[0].n;
-      return { quarter: q, runs, boardings: board, attendants: att, inspections: insp,
-        note: 'District-committee pack: runs, boarding marks, attendant verification and inspections, straight from the registers.' };
+      // Fleet document state as of today: any key paper expired/expiring within 30 days flags the vehicle.
+      const day = new Date().toISOString().slice(0, 10);
+      const fleet = (await c.query(
+        `SELECT permit_valid_till, fitness_valid_till, insurance_valid_till, puc_valid_till, fire_ext_valid_till
+           FROM app.vehicles WHERE retired_at IS NULL AND status <> 'retired'`)).rows;
+      const docWorst = (v) => {
+        const ds = [v.permit_valid_till, v.fitness_valid_till, v.insurance_valid_till, v.puc_valid_till, v.fire_ext_valid_till]
+          .map((d) => d ? docState(d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10), day) : 'missing')
+          .filter((s) => s !== 'missing');
+        if (ds.includes('expired')) return 'expired';
+        if (ds.includes('expiring')) return 'expiring';
+        return ds.length ? 'valid' : 'missing';
+      };
+      const vehicles = { total: fleet.length, expired: fleet.filter((v) => docWorst(v) === 'expired').length,
+        expiring: fleet.filter((v) => docWorst(v) === 'expiring').length };
+      const drivers = (await c.query(
+        `SELECT licence_valid_till, police_valid_till, status FROM app.drivers WHERE retired_at IS NULL`)).rows;
+      const dISO = (d) => d ? (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10)) : null;
+      const driverDocs = { total: drivers.length,
+        licenceExpired: drivers.filter((d) => dISO(d.licence_valid_till) && dISO(d.licence_valid_till) < day).length,
+        inactive: drivers.filter((d) => d.status !== 'active').length };
+      return { quarter: q, runs, boardings: board, attendants: att, inspections: insp, vehicles, drivers: driverDocs,
+        note: 'District-committee pack: runs, boarding marks, attendant verification, inspections and fleet papers, straight from the registers.' };
     });
   });
 
