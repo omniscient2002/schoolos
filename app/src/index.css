@@ -1,5 +1,22 @@
-/* Design system entry — the full token/base/component set lives in /styles. */
+/* ============================================================
+   Design system entry point.
+
+   Order is load-bearing and explicit:
+     1. tokens      the single source of truth (colour/type/space/depth)
+     2. base        reset, typography, scaffolding, layout safety
+     3. components  the shared class layer every screen composes from
+     4. dark        the dark token set (media query + explicit choice)
+     5. contrast    the high-contrast token set (opt-in via data-contrast)
+     6. polish      cross-cutting refinement — imported last, so it settles
+
+   The theme layers sit between components and polish on purpose:
+   a theme only re-states TOKENS, and polish (which consumes those
+   tokens in component rules) is the last word. Anything a theme
+   tries to set as a component rule is a bug.
+   ============================================================ */
 @import './styles/tokens.css';
 @import './styles/base.css';
 @import './styles/components.css';
-@import './styles/polish.css';    /* refinement layer — shared surface/control/chrome polish (imported last so it settles the system) */
+@import './styles/dark.css';
+@import './styles/contrast.css';
+@import './styles/polish.css';
