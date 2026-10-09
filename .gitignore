@@ -34,6 +34,9 @@ uk*.xml
 research/
 .ui-audit/
 
+# raw onboarding API dumps contain live PII, tokens and reset-password flows — never track
+docs/onboard-raw/
+
 # internal audit/probe scratch (not product)
 .audit/
 .bombprobe/
