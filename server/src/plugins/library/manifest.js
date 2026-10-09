@@ -16,7 +16,7 @@ export default {
   events: {
     subscribe: [],
     publish: [
-      'library.book.added.v1', 'library.book.updated.v1', 'library.book.retired.v1',
+      'library.book.added.v1', 'library.book.updated.v1', 'library.book.retired.v1', 'library.catalog.imported.v1',
       'library.copy.added.v1', 'library.copy.status.v1',
       'library.loan.issued.v1', 'library.loan.returned.v1', 'library.loan.renewed.v1', 'library.loan.lost.v1',
       'library.reservation.created.v1', 'library.reservation.ready.v1',

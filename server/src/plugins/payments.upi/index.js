@@ -106,8 +106,14 @@ export function register(app, kernel) {
     // known (RLS would hide the row). The fact-writes below run as the constrained app role.
     const paymentId = body?.payload?.payment?.entity?.notes?.paymentId ?? body?.paymentId;
     if (!paymentId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId)) return reply.code(400).send({ error: 'Payment event is missing a valid payment reference' });
-    const p = (await sysq(`SELECT tenant_id FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
+    const p = (await sysq(`SELECT tenant_id, amount_cents, status FROM app.payments WHERE id=$1`, [paymentId])).rows[0];
     if (!p) return reply.code(404).send({ error: 'We couldn\'t find that payment' });
+    // F-12: the signed amount is advisory, never authoritative — the webhook
+    // records facts and settlement stays kernel-only. But a signed amount that
+    // disagrees with the payment row is evidence the confirm door must see, so
+    // compare here and flag the mismatch on the event + audit (additive only).
+    const signedAmount = body?.payload?.payment?.entity?.amount;
+    const amountMismatch = Number.isFinite(Number(signedAmount)) && String(BigInt(signedAmount)) !== String(p.amount_cents);
     // webhook facts are tenant-resolved from the payment row, then written on that tenant's path
     return withUser(p.tenant_id, 'system', async (c) => {
       // ── Gate 4: lifecycle (redteam P2-1 promoted) — facts only for an ENABLED rail
@@ -147,12 +153,14 @@ export function register(app, kernel) {
         return { ok: true, outcome: 'replay no-op (event already recorded); settlement is kernel-only (staff confirm)' };
       }
       await emitEvent(c, p.tenant_id,
-        { type: 'fees', label: `${type} — webhook fact recorded (${eventId})`, ref: paymentId },
-        type, { paymentId, eventId, verified });
+        { type: 'fees', label: `${type} — webhook fact recorded (${eventId})${amountMismatch ? ' · AMOUNT MISMATCH' : ''}`, severity: amountMismatch ? 'warn' : 'info', ref: paymentId },
+        type, { paymentId, eventId, verified, amountMismatch, signedAmountCents: signedAmount ?? null, paymentAmountCents: String(p.amount_cents) });
       await requestAudit(c, p.tenant_id, ID, {
         actor: 'gateway webhook', action: `UPI webhook ${type}`, recordType: 'Payment', recordRef: paymentId,
-        reason: `event ${eventId}`, policyRef: 'Fees §4.2', risk: 'low',
-        outcome: `fact recorded · HMAC verified over raw bytes · settlement untouched (kernel-only)` });
+        reason: `event ${eventId}`, policyRef: 'Fees §4.2', risk: amountMismatch ? 'high' : 'low',
+        outcome: amountMismatch
+          ? `fact recorded · HMAC verified · SIGNED AMOUNT ${signedAmount} ≠ PAYMENT ${p.amount_cents} — confirm door must reconcile before settling · settlement untouched`
+          : `fact recorded · HMAC verified over raw bytes · settlement untouched (kernel-only)` });
       await meterPlugin(c, p.tenant_id, ID, 'webhooks_received');
       return { ok: true, outcome: 'fact recorded; settlement is kernel-only (staff confirm)' };
     });

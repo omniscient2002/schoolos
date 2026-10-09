@@ -11,17 +11,22 @@ const ID = 'accounting.tally';
 export { default as manifest } from './manifest.js';
 
 // Tally 4.1 voucher XML for a receipt (importable via Gateway of Tally → Import)
+// F-13: every interpolated string is XML-escaped — the company name rides
+// `?company=` and ledger/party names ride plugin settings, so unescaped values
+// are an injection surface in the export envelope.
+const escXml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 function voucherXml(v, companyName) {
   const d = v.confirmed_at ?? v.created_at;
   const day = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const amt = (v.amount_cents / 100).toFixed(2);
-  const ledger = v.ledger_name ?? 'Fee Income';
-  const party = v.ledger_party ?? 'Sundry Debtors';
+  const amt = (Number(v.amount_cents) / 100).toFixed(2);
+  const ledger = escXml(v.ledger_name ?? 'Fee Income');
+  const party = escXml(v.ledger_party ?? 'Sundry Debtors');
+  companyName = escXml(companyName);
   return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>` +
     `<BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME>` +
     `<STATICVARIABLES><SVCOMPANYNAME>${companyName}</SVCOMPANYNAME></STATICVARIABLES></REQUESTDESC>` +
     `<REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Receipt" ACTION="Create" OBJVIEW="Accounting Voucher View">` +
-    `<DATE>${day}</DATE><NARRATION>SchoolOS ${v.receipt_no ?? v.id} · student ${v.student_id ?? 'n/a'} · ref ${v.gateway_ref ?? 'counter'}</NARRATION>` +
+    `<DATE>${day}</DATE><NARRATION>SchoolOS ${escXml(v.receipt_no ?? v.id)} · student ${escXml(v.student_id ?? 'n/a')} · ref ${escXml(v.gateway_ref ?? 'counter')}</NARRATION>` +
     `<VOUCHERTYPENAME>Receipt</VOUCHERTYPENAME><PARTYLEDGERNAME>${party}</PARTYLEDGERNAME>` +
     `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${ledger}</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${amt}</AMOUNT></ALLLEDGERENTRIES.LIST>` +
     `<ALLLEDGERENTRIES.LIST><LEDGERNAME>${party}</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${amt}</AMOUNT></ALLLEDGERENTRIES.LIST>` +

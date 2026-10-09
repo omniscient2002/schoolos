@@ -107,6 +107,25 @@ const isbnValid = (v, len) => {
   return sum % 11 === 0;
 };
 
+/* Shared input contract for the single add and the bulk catalog import. Returns either { error } or
+   the normalised { title, copies, manualCode }. `seenCodes`, when given, is the caller's lowercased
+   set of references already used in the batch — the bulk door's in-batch duplicate guard. */
+const validateBookInput = (b, seenCodes = null) => {
+  const title = typeof b?.title === 'string' ? b.title.trim() : '';
+  if (!title) return { error: 'Give the book its title' };
+  const copies = Number(b.copies ?? b.copies_total ?? b.copiesTotal ?? 1);
+  if (!Number.isInteger(copies) || copies < 0 || copies > 1000) return { error: 'Copies must be a whole number between 0 and 1000' };
+  if (b.isbn13 && !isbnValid(b.isbn13, 13)) return { error: 'That ISBN-13 check digit doesn\'t match' };
+  if (b.isbn10 && !isbnValid(b.isbn10, 10)) return { error: 'That ISBN-10 check digit doesn\'t match' };
+  const manualCode = typeof b.code === 'string' && b.code.trim() ? b.code.trim().slice(0, 40) : null;
+  if (manualCode && seenCodes) {
+    const key = manualCode.toLowerCase();
+    if (seenCodes.has(key)) return { error: `Duplicate catalogue reference "${manualCode}" within this import` };
+    seenCodes.add(key);
+  }
+  return { title, copies, manualCode };
+};
+
 export function register(app, kernel) {
   const { withUser, requestAudit, emitEvent, require, sysq } = kernel;
   const lifecycleGate = makeLifecycleGate(sysq, ID);
@@ -314,46 +333,67 @@ export function register(app, kernel) {
   // Add a title — creates `copies` physical copy rows using the tenant's identifier scheme.
   app.post(`/plugins/${ID}/books`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
-    const title = typeof b.title === 'string' ? b.title.trim() : '';
-    const copies = Number(b.copies ?? b.copies_total ?? b.copiesTotal ?? 1);
-    if (!title) return bad(reply, 'Give the book its title');
-    if (!Number.isInteger(copies) || copies < 0 || copies > 1000) return bad(reply, 'Copies must be a whole number between 0 and 1000');
-    if (b.isbn13 && !isbnValid(b.isbn13, 13)) return bad(reply, 'That ISBN-13 check digit doesn\'t match');
-    if (b.isbn10 && !isbnValid(b.isbn10, 10)) return bad(reply, 'That ISBN-10 check digit doesn\'t match');
     // The librarian may assign the catalogue reference (an accession/register number); otherwise one is
     // generated. It is the stable id the desk reads and writes on the book.
-    const manualCode = typeof b.code === 'string' && b.code.trim() ? b.code.trim().slice(0, 40) : null;
+    const v = validateBookInput(b);
+    if (v.error) return bad(reply, v.error);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const t = req.user.tenant_id;
       const s = await settings(t);
-      if (manualCode) {
-        const clash = (await c.query(`SELECT 1 FROM library.book WHERE tenant_id=$1 AND lower(code)=lower($2)`, [t, manualCode])).rows[0];
-        if (clash) return bad(reply, `The catalogue already uses the reference "${manualCode}" — pick another`, 409);
+      if (v.manualCode) {
+        const clash = (await c.query(`SELECT 1 FROM library.book WHERE tenant_id=$1 AND lower(code)=lower($2)`, [t, v.manualCode])).rows[0];
+        if (clash) return bad(reply, `The catalogue already uses the reference "${v.manualCode}" — pick another`, 409);
       }
-      const ins = await c.query(
-        `INSERT INTO library.book (tenant_id, code, copies_total, title, subtitle, author, publisher, edition, pub_year, language,
-            isbn10, isbn13, subject, category, dewey_code, description, shelf_location, price_cents, acquired_on,
-            vendor, bill_ref, book_type, created_by)
-         VALUES ($1,$2,$23,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-         RETURNING id, code, title`,
-        [t, manualCode ?? `LIB-${Date.now().toString(36).toUpperCase()}-${randomBytes(2).toString('hex').toUpperCase()}`,
-          title.slice(0, 300), b.subtitle ?? null, b.author ?? null, b.publisher ?? null, b.edition ?? null,
-          Number.isInteger(Number(b.pubYear ?? b.pub_year)) ? Number(b.pubYear ?? b.pub_year) : null, b.language ?? null,
-          b.isbn10 ?? null, b.isbn13 ?? null, b.subject ?? null, b.category ?? null, b.deweyCode ?? b.dewey_code ?? null,
-          b.description ?? null, b.shelfLocation ?? b.shelf_location ?? null,
-          Number.isFinite(Number(b.priceCents ?? b.price_cents)) ? Number(b.priceCents ?? b.price_cents) : null,
-          isDate(b.acquiredOn ?? b.acquired_on) ? (b.acquiredOn ?? b.acquired_on) : null,
-          b.vendor ?? null, b.billRef ?? b.bill_ref ?? null,
-          ['book', 'reference', 'magazine', 'journal', 'other'].includes(b.bookType ?? b.book_type) ? (b.bookType ?? b.book_type) : 'book',
-          req.user.id, copies]);
-      const book = ins.rows[0];
-      for (let i = 0; i < copies; i++) await makeCopy(c, t, book.id, s);
+      const book = await insertBookRow(c, t, b, v, s, req.user.id);
       await emitEvent(c, t, { type: 'library', label: `Book added: ${book.title} (${book.code})`, ref: book.id },
-        'library.book.added.v1', { bookId: book.id, code: book.code, copies });
+        'library.book.added.v1', { bookId: book.id, code: book.code, copies: v.copies });
       await requestAudit(c, t, ID, { actor: req.user.name, action: 'Book added to catalog', recordType: 'LibraryBook',
         recordRef: book.id, reason: `${book.code} · ${book.title.slice(0, 60)}`, policyRef: 'Library desk norms',
-        risk: 'low', outcome: `${copies} copies on the shelf` });
-      return { ok: true, bookId: book.id, book: { id: book.id, code: book.code, title: book.title, copies } };
+        risk: 'low', outcome: `${v.copies} copies on the shelf` });
+      return { ok: true, bookId: book.id, book: { id: book.id, code: book.code, title: book.title, copies: v.copies } };
+    });
+  });
+
+  /* D5/E1: BULK catalog import — the operator path for loading a whole catalogue. A per-title emit
+     tripped the plugin event budget on a large import (the same wall B2 fixed for timetable slots), so
+     this validates the whole batch, writes it in ONE transaction, and emits a SINGLE summary
+     `library.catalog.imported.v1` event — all-or-nothing, like the timetable bulk load. */
+  app.post(`/plugins/${ID}/books/bulk`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
+    const list = Array.isArray(req.body?.books) ? req.body.books : null;
+    if (!list || !list.length) return bad(reply, 'books[] is required (an array of title rows)');
+    if (list.length > 500) return reply.code(413).send({ error: 'A bulk catalog load is limited to 500 titles per call — split the import.' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const t = req.user.tenant_id;
+      const s = await settings(t);
+      const seenCodes = new Set();
+      const errors = [];
+      const prepared = [];
+      for (let i = 0; i < list.length; i++) {
+        const v = validateBookInput(list[i] ?? {}, seenCodes);
+        if (v.error) { errors.push({ row: i, error: v.error }); continue; }
+        prepared.push({ i, b: list[i] ?? {}, v });
+      }
+      // A reference already in the catalogue is rejected too — same rule as the single add door.
+      for (const p of prepared) {
+        if (!p.v.manualCode) continue;
+        const clash = (await c.query(`SELECT 1 FROM library.book WHERE tenant_id=$1 AND lower(code)=lower($2)`, [t, p.v.manualCode])).rows[0];
+        if (clash) errors.push({ row: p.i, error: `The catalogue already uses the reference "${p.v.manualCode}"` });
+      }
+      if (errors.length) return reply.code(409).send({ error: `${errors.length} row(s) could not be imported — nothing was written.`, errors: errors.slice(0, 50) });
+      let inserted = 0;
+      let copies = 0;
+      for (const p of prepared) {
+        await insertBookRow(c, t, p.b, p.v, s, req.user.id);
+        inserted += 1;
+        copies += p.v.copies;
+      }
+      // ONE summary event for the whole import — the fix for the event-budget wall.
+      await emitEvent(c, t, { type: 'library', label: `Catalog imported — ${inserted} titles` },
+        'library.catalog.imported.v1', { titles: inserted, copies });
+      await requestAudit(c, t, ID, { actor: req.user.name, action: 'Catalog bulk-imported', recordType: 'Plugin',
+        recordRef: t, reason: `bulk catalog load · ${inserted} titles`, policyRef: 'Library desk norms', risk: 'low',
+        outcome: `${inserted} titles · ${copies} copies · 1 summary event (budget-safe)` });
+      return { ok: true, inserted, copies };
     });
   });
 
@@ -380,6 +420,30 @@ export function register(app, kernel) {
          FROM next RETURNING id, copy_code`,
       [tenantId, bookId, prefix, start, pad, isBarcode, isAccession]);
     return r.rows[0];
+  };
+
+  /* One title INSERT shared by the single add and the bulk catalog import, so the column list and the
+     copy-creation loop can never drift between the two doors. `s` is the tenant settings snapshot. */
+  const insertBookRow = async (c, t, b, v, s, userId) => {
+    const ins = await c.query(
+      `INSERT INTO library.book (tenant_id, code, copies_total, title, subtitle, author, publisher, edition, pub_year, language,
+          isbn10, isbn13, subject, category, dewey_code, description, shelf_location, price_cents, acquired_on,
+          vendor, bill_ref, book_type, created_by)
+       VALUES ($1,$2,$23,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       RETURNING id, code, title`,
+      [t, v.manualCode ?? `LIB-${Date.now().toString(36).toUpperCase()}-${randomBytes(2).toString('hex').toUpperCase()}`,
+        v.title.slice(0, 300), b.subtitle ?? null, b.author ?? null, b.publisher ?? null, b.edition ?? null,
+        Number.isInteger(Number(b.pubYear ?? b.pub_year)) ? Number(b.pubYear ?? b.pub_year) : null, b.language ?? null,
+        b.isbn10 ?? null, b.isbn13 ?? null, b.subject ?? null, b.category ?? null, b.deweyCode ?? b.dewey_code ?? null,
+        b.description ?? null, b.shelfLocation ?? b.shelf_location ?? null,
+        Number.isFinite(Number(b.priceCents ?? b.price_cents)) ? Number(b.priceCents ?? b.price_cents) : null,
+        isDate(b.acquiredOn ?? b.acquired_on) ? (b.acquiredOn ?? b.acquired_on) : null,
+        b.vendor ?? null, b.billRef ?? b.bill_ref ?? null,
+        ['book', 'reference', 'magazine', 'journal', 'other'].includes(b.bookType ?? b.book_type) ? (b.bookType ?? b.book_type) : 'book',
+        userId, v.copies]);
+    const book = ins.rows[0];
+    for (let i = 0; i < v.copies; i++) await makeCopy(c, t, book.id, s);
+    return book;
   };
 
   app.patch(`/plugins/${ID}/books/:id`, { preHandler: [require(...DESK), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
@@ -805,10 +869,25 @@ export function register(app, kernel) {
            FROM app.students s
            LEFT JOIN library.loan l ON l.student_id=s.id AND l.tenant_id=s.tenant_id
            LEFT JOIN library.fine f ON f.borrower_student_id=s.id AND f.tenant_id=s.tenant_id
-          WHERE s.tenant_id=$1
-            AND ($2::text IS NULL OR s.name ILIKE '%'||$2||'%' ESCAPE '\\' OR s.admission_no ILIKE '%'||$2||'%' ESCAPE '\\')
+          /* LIB-1: only ACTIVE students are borrowable — the issue door below refuses
+             anything else with 409 "Only an active student can borrow". This picker used to
+             list withdrawn/transferred pupils as if they could borrow, so a librarian could
+             select one, fill in every field, press Issue, and get a 409 naming nothing about
+             which row was the problem. */
+          WHERE s.tenant_id=$1 AND s.status='active'
+            AND ($2::text IS NULL OR s.name ILIKE '%'||$2||'%' ESCAPE '\' OR s.admission_no ILIKE '%'||$2||'%' ESCAPE '\')
             AND ($5::text IS NULL OR s.grade=$5) AND ($6::text IS NULL OR s.section=$6)
-          GROUP BY s.id ORDER BY s.grade::int NULLS LAST, s.section, s.name LIMIT $3 OFFSET $4`,
+          GROUP BY s.id
+          /* GRADE-1: app.students.grade is FREE TEXT - the school authors it on the
+             Classes & sections screen ("e.g. 6, LKG, Nursery") and PUT /school/classes
+             stores it verbatim. This used to be ORDER BY s.grade::int, which raises
+             "invalid input syntax for type integer: Grade 8" (SQLSTATE 22P02) for any
+             school whose grades are not bare integers - a 500 that emptied the borrower
+             picker and made it impossible to issue a book to anybody. Sort naturally
+             instead: the integer the label carries, when it carries one, then the label. */
+          ORDER BY NULLIF(regexp_replace(s.grade, '\\D', '', 'g'), '')::int NULLS LAST,
+                   s.grade, s.section, s.name
+          LIMIT $3 OFFSET $4`,
         [req.user.tenant_id, esc, limit, offset, grade, section])).rows;
       const staff = type === 'student' ? [] : (await c.query(
         `SELECT u.id, u.name, u.role, u.email,

@@ -32,6 +32,7 @@ import { uuidParams } from '../_shared/uuid-param.js';
 import { hashPassword } from '../../auth.js';
 import { ROLES } from '../../auth.js';
 import { toE164 } from '../_shared/phone.js';
+import { parseDob, parseGender } from '../_shared/enrolment.js';
 import { istToday } from '../../ist.js';
 
 const ID = 'people.admin';
@@ -73,8 +74,14 @@ export function register(app, kernel) {
   };
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  // ── provision a user (owner, itadmin) — owner role is forbidden ─────────────
-  app.post(`/plugins/${ID}/users`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {
+  // ── provision a user (owner, itadmin; principal may mint ONLY the itadmin) ──
+  // Owner role is forbidden everywhere. The people chain is owner → principal →
+  // itadmin → everyone else: the owner appoints the principal (owner-only, below),
+  // and the principal appoints the IT admin so a school is never blocked on the
+  // owner for its one delegation step. A principal reaching for any other role is
+  // refused — the IT admin adds everyone else. Suspend/activate/reset/list stay
+  // ADMIN-only (identity authority does not follow the principal).
+  app.post(`/plugins/${ID}/users`, { preHandler: [require(...ADMIN, 'principal'), lifecycleGate] }, async (req, reply) => {
     const b = req.body ?? {};
     const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
     const name = typeof b.name === 'string' ? b.name.trim() : '';
@@ -114,16 +121,41 @@ export function register(app, kernel) {
       });
       return bad(reply, 'Only the school owner can create a principal account', 403);
     }
+    if (req.user.role === 'principal' && role !== 'itadmin') {
+      // Mirror the owner/principal refusal contracts: a delegation probe is a
+      // privilege-escalation attempt, so the ledger row must COMMIT before the
+      // 403 is transmitted — the trail exists even for refused calls.
+      await withUser(req.user.tenant_id, req.user.role, async (c) => {
+        await requestAudit(c, req.user.tenant_id, ID, {
+          actor: req.user.name, action: 'Attempted provisioning beyond delegation (refused)', recordType: 'User', recordRef: email,
+          reason: `role requested: ${role} by principal`, policyRef: 'Platform §2.4 (identity & access)', risk: 'medium',
+          outcome: 'refused — principals may only create the IT admin account' });
+      });
+      return bad(reply, 'Principals can only create the IT admin account — the IT admin adds everyone else', 403);
+    }
     if (!ROLES_NO_OWNER.includes(role)) return bad(reply, `Role must be one of: ${ROLES_NO_OWNER.join(', ')}`);
+    /* FIX-11 (orphan student accounts): a pupil portal account without a roster binding is a login the
+       student plane cannot pin to a child (G-1) — results/homework land nowhere and the account looks
+       broken. The roster "Give a pupil a portal account" flow always supplies studentId; the bare
+       provision form hides the student role for exactly this reason. Refuse the unbound case here so a
+       direct-API caller cannot mint what the UI deliberately prevents. Parent stays optional (phone-only
+       parents match structurally at admission). */
+    if (role === 'student' && !b.studentId) return bad(reply, 'Pick the pupil this portal account belongs to — student accounts are created from the roster so results and homework land on the right child', 400);
+    /* G-2 door-side mirror (FIX-11 precedent for pupils): a parent account with
+       neither a phone nor a linked child can never see anything — no child_link,
+       no phone-match. The console already refuses this; the door must too, so a
+       direct-API caller cannot mint unreachable accounts and a future bulk-parent
+       lane inherits the guard instead of mass-producing them. */
+    if (role === 'parent' && !phone && !b.studentId) return bad(reply, 'Give the parent a phone number or pick their child — without one of these the account will never see a child', 400);
     const suppliedPassword = typeof b.password === 'string' && b.password.length >= 8 ? b.password : null;
     if (b.password != null && !suppliedPassword) return bad(reply, 'Password must be at least 8 characters (or leave it out to generate a temporary one)');
     const temp = suppliedPassword ? null : tempPassword();
     const password = suppliedPassword ?? temp;
 
-    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // validation BEFORE write: a bad student reference must not leave a
       // half-provisioned account behind
-      if (role === 'parent' && b.studentId) {
+      if ((role === 'parent' || role === 'student') && b.studentId) {
         if (!UUID_RE.test(String(b.studentId))) return bad(reply, 'That student reference is not a valid id');
         const st = (await c.query(`SELECT id FROM app.students WHERE id=$1 AND tenant_id=$2`, [b.studentId, req.user.tenant_id])).rows[0];
         if (!st) return bad(reply, 'That student is not in your school\'s roster', 404);
@@ -138,7 +170,13 @@ export function register(app, kernel) {
           [req.user.tenant_id, email, name.slice(0, 120), role, hashPassword(password), phone, temp ? true : false])).rows[0];
       } catch (e) {
         await c.query('ROLLBACK TO SAVEPOINT provision_user');
-        if (e.code === '23505') return bad(reply, 'An account with this email already exists at your school', 409);
+        if (e.code === '23505') {
+          // one phone per tenant (008): a phone clash is NOT an email clash — say which one
+          if (String(e.constraint ?? '').includes('phone')) {
+            return bad(reply, 'That phone number is already used by another account at your school', 409);
+          }
+          return bad(reply, 'An account with this email already exists at your school', 409);
+        }
         throw e;
       }
       await c.query('RELEASE SAVEPOINT provision_user');
@@ -164,6 +202,24 @@ export function register(app, kernel) {
         }
         linkedStudentId = b.studentId;
       }
+      /* G-1 · the pupil's OWN portal account. A parent links to a child through family.child_link;
+         a pupil links to the roster row through `app.students.user_id` — the structural binding
+         migration 132 added and student.world is supposed to resolve identity from. Creating the
+         account without it left the pupil with a login the student plane could not pin to a child,
+         which is why the whole portal looked unreachable even once the role could be issued.
+         An account already bound elsewhere (the unique index says one row per user) is refused
+         rather than moved silently: two children must not inherit one another's results. */
+      if (role === 'student' && b.studentId) {
+        const bound = (await c.query(
+          `UPDATE app.students SET user_id=$3 WHERE tenant_id=$1 AND id=$2 AND (user_id IS NULL OR user_id=$3)
+           RETURNING id, name, admission_no`,
+          [req.user.tenant_id, b.studentId, row.id])).rows[0];
+        if (!bound) {
+          const other = (await c.query(`SELECT id FROM app.students WHERE tenant_id=$1 AND user_id=$2`, [req.user.tenant_id, row.id])).rows[0];
+          if (other) return bad(reply, 'That pupil already has a portal account — suspend it first if you mean to replace it', 409);
+        }
+        linkedStudentId = b.studentId;
+      }
       await emitEvent(c, req.user.tenant_id,
         { type: 'people', label: `Account created: ${row.name} (${row.role})`, ref: row.id },
         'people.user.created', { userId: row.id, email: row.email, role: row.role, tempPasswordIssued: !!temp, linkedStudentId });
@@ -173,8 +229,10 @@ export function register(app, kernel) {
         outcome: `${row.role} account created${temp ? ' · temporary password issued (force_change stamped)' : ' · password set by caller'}${linkedStudentId ? ' · linked to child' : ''}` });
       return {
         ok: true, user: { id: row.id, email: row.email, name: row.name, role: row.role, active: row.active, forceChange: temp ? true : false, createdAt: row.created_at },
-        // tempPassword: the adminApi client alias for the same once-only secret
-        ...(temp ? { temporaryPassword: temp, tempPassword: temp, note: 'This temporary password is shown once — it is not stored in plaintext; the user must change it at first sign-in.' } : {}),
+        // ONE name for the once-only secret (P2-11) — `temporaryPassword`, as the onboarding door
+        // and every server test already read. It used to be emitted twice (`temporaryPassword` and a
+        // `tempPassword` alias), which is how the SPA and the server disagreed in the first place.
+        ...(temp ? { temporaryPassword: temp, note: 'This temporary password is shown once — it is not stored in plaintext; the user must change it at first sign-in.' } : {}),
       };
     });
   });
@@ -192,11 +250,13 @@ export function register(app, kernel) {
     });
   });
 
-  // ── suspend / activate (owner, itadmin) — owner accounts are protected ──────
-  const setSuspended = (suspend) =>
-    app.post(`/plugins/${ID}/users/:id/${suspend ? 'suspend' : 'activate'}`,
-      { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] },
-      async (req, reply) => {
+  /* ── suspend / activate (owner, itadmin) — owner accounts are protected ──────
+     The two paths are REGISTERED, not composed. They used to come from one factory whose path was
+     `.../${suspend ? 'suspend' : 'activate'}`, which meant neither door could be found by the route
+     scanner — so the permission matrix under-reported them, no drift guard could check a client's role
+     list against them, and "is this door reachable?" had to be answered by reading the helper. The
+     bodies stay shared below; only the registration is explicit. */
+  const suspendActivate = (suspend) => async (req, reply) => {
         return withUser(req.user.tenant_id, req.user.role, async (c) => {
           const u = (await c.query(`SELECT id, email, name, role, active FROM app.users WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
             [req.params.id, req.user.tenant_id])).rows[0];
@@ -215,11 +275,14 @@ export function register(app, kernel) {
             actor: req.user.name, action: suspend ? 'User suspended' : 'User reactivated', recordType: 'User', recordRef: u.id,
             reason: `${u.role} · ${u.email}`, policyRef: 'Platform §2.4 (identity & access)', risk: 'medium',
             outcome: suspend ? 'active=false — the next request fails with "account disabled"' : 'active=true — sign-in restored' });
-          return { ok: true, userId: u.id, active: upd.rows[0].active, ...(suspend ? { note: 'Their sessions die at the next request — the kernel re-reads the account row on every call.' } : {}) };
-        });
-      });
-  setSuspended(true);
-  setSuspended(false);
+      return { ok: true, userId: u.id, active: upd.rows[0].active, ...(suspend ? { note: 'Their sessions die at the next request — the kernel re-reads the account row on every call.' } : {}) };
+    });
+  };
+
+  app.post(`/plugins/${ID}/users/:id/suspend`,
+    { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, suspendActivate(true));
+  app.post(`/plugins/${ID}/users/:id/activate`,
+    { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, suspendActivate(false));
 
   // ── reset password (owner, itadmin) — temp password shown once ──────────────
   app.post(`/plugins/${ID}/users/:id/reset-password`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
@@ -240,6 +303,12 @@ export function register(app, kernel) {
         actor: req.user.name, action: 'Password reset (temporary issued)', recordType: 'User', recordRef: u.id,
         reason: `${u.role} · ${u.email}`, policyRef: 'Platform §2.4 (identity & access)', risk: 'medium',
         outcome: 'scrypt hash replaced · force_change=true · temp password shown once to the admin' });
+      /* F3: this door used to answer `temporaryPassword` while the SPA read `tempPassword`, so
+         "Reset password" minted a secret the office never saw — an unrecoverable lockout. A second
+         name was then added to the create door as a deliberate alias. P2-11 removes the alias: one
+         door answers one name, the client reads exactly that name, and a mismatch is a type error
+         instead of a silently empty box. `temporaryPassword` is the name the server's own tests,
+         the onboarding door and every audit of this door already read. */
       return { ok: true, userId: u.id, temporaryPassword: temp, note: 'This temporary password is shown once — the user must change it at next sign-in.' };
     });
   });
@@ -336,10 +405,23 @@ export function register(app, kernel) {
       if (v && v.__err) return bad(reply, `${k === 'name' ? 'The name' : k === 'bus_route' ? 'The bus route' : 'The field'} ${v.__err}`);
       patch[k] = v;
     }
-    if (!Object.keys(patch).length) return bad(reply, 'Nothing to update — send at least one field (name, guardian_name, guardian_phone, bus_route)');
+    if (!Object.keys(patch).length) return bad(reply, 'Nothing to update — send at least one field (name, guardian_name, guardian_phone, bus_route, dob, gender)');
     if (patch.name === null) return bad(reply, 'The name can\'t be empty');
+    /* P2-7: date of birth and gender are record FACTS about the child, not class placement, so they
+       ride this door. Both are parsed by the same functions the enrolment door and the CSV import
+       use — three lanes, one rule — and both may be cleared by sending an empty string. */
+    if (b.dob !== undefined) {
+      const dob = parseDob(b.dob);
+      if (!dob.ok) return bad(reply, dob.error);
+      patch.dob = dob.value;
+    }
+    if (b.gender !== undefined) {
+      const gender = parseGender(b.gender);
+      if (!gender.ok) return bad(reply, gender.error);
+      patch.gender = gender.value;
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const s = (await c.query(`SELECT id, name, grade, section, guardian_name, guardian_phone, bus_route, status FROM app.students WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+      const s = (await c.query(`SELECT id, name, grade, section, guardian_name, guardian_phone, bus_route, dob, gender, status FROM app.students WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
       if (!s) return bad(reply, 'We couldn\'t find that student', 404);
       if (s.status !== 'active') return bad(reply, `Only an active student's record can be edited (this student is ${s.status})`, 409);
@@ -352,7 +434,7 @@ export function register(app, kernel) {
         if ((before ?? null) !== (v ?? null)) changes.push(v === null ? `${k} cleared` : `${k} updated`);
       }
       if (!changes.length) return { ok: true, student: s, changed: [] };
-      const upd = (await c.query(`UPDATE app.students SET ${sets.join(', ')} WHERE id=$1 RETURNING id, name, grade, section, guardian_name, guardian_phone, bus_route`, vals)).rows[0];
+      const upd = (await c.query(`UPDATE app.students SET ${sets.join(', ')} WHERE id=$1 RETURNING id, name, grade, section, guardian_name, guardian_phone, bus_route, dob, gender`, vals)).rows[0];
       await emitEvent(c, req.user.tenant_id,
         { type: 'people', label: `Student record updated: ${s.name} — ${changes.join(', ')}`, ref: s.id },
         'people.student.updated', { studentId: s.id, fields: changes });
@@ -547,12 +629,33 @@ export function register(app, kernel) {
     for (const n of ['name', 'grade', 'section']) if (idx(n) === -1) return bad(reply, `The header row must have a ${n} column (found: ${header.join(', ') || 'none'})`);
     const iName = idx('name'), iGrade = idx('grade'), iSection = idx('section');
     const iAdm = idx('admission_no'), iGn = idx('guardian_name'), iGp = idx('guardian_phone');
+    /* P2-7: the same two enrolment columns the manual form collects. Optional headers, optional
+       values — a spreadsheet that has no dob column still imports exactly as before — but when the
+       column IS there and holds something, the row is checked rather than stored blindly. */
+    const iDob = idx('dob') === -1 ? idx('date_of_birth') : idx('dob');
+    const iGender = idx('gender');
 
     const dataRows = table.slice(1);
     if (dataRows.length > MAX_ROWS) return bad(reply, `That file has ${dataRows.length} rows — the limit is ${MAX_ROWS} per import. Split it and try again.`, 413);
 
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const seenAdm = new Set();   // in-file dedupe: first occurrence wins
+      /* P2-6: validate the class the same way POST /students now does. This lane validated the
+         NAME and nothing else, so "Bad Grade Row / Grade 77 / Z" came back in `ok[]` while a
+         nameless row came back in `failed[]` — the per-row report was good enough to name a
+         missing name and blind to a class that does not exist. `Grade 77` was accepted into a
+         school with Grades 1-8 and is invisible to every screen that reads the school's own
+         structure. Read the structure directly rather than importing routes.js, which imports
+         this plugin's loader. Empty structure means the school has not set up classes yet, and
+         is therefore not a reason to reject anything. */
+      const cfgRow = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const rawSections = cfgRow?.config?.setup?.sections;
+      const schoolClasses = Array.isArray(rawSections)
+        ? rawSections
+            .filter((x) => x && typeof x.grade === 'string' && x.grade.trim())
+            .map((x) => ({ grade: x.grade.trim(), sections: Array.isArray(x.sections) ? x.sections.map((s) => String(s).trim().toUpperCase()).filter(Boolean) : [] }))
+        : [];
+      const classMap = new Map(schoolClasses.map((x) => [x.grade, x.sections]));
       const ok = []; const failed = [];
       for (let r = 0; r < dataRows.length; r++) {
         const rowNo = r + 2; // human line number (header is line 1)
@@ -566,8 +669,17 @@ export function register(app, kernel) {
         // code) landed undeliverable while the create door normalizes through toE164. Normalize here too.
         const rawPhone = iGp === -1 ? '' : String(cells[iGp] ?? '').trim();
         const guardianPhone = rawPhone ? toE164(rawPhone) : null;
+        const rawDob = iDob === -1 ? '' : String(cells[iDob] ?? '').trim();
+        const rawGender = iGender === -1 ? '' : String(cells[iGender] ?? '').trim();
         try {
           if (rawPhone && !guardianPhone) throw new Error('guardian phone is not usable — enter it with the country code, e.g. +91 98450 00101');
+          // P2-7: parse with the SHARED parsers, so a spreadsheet dob is held to exactly the rule
+          // the manual form is, and a bad one fails this ROW with a reason the office can act on
+          // rather than 500-ing the batch on a date CHECK.
+          const dob = parseDob(rawDob);
+          if (!dob.ok) throw new Error(`date of birth: ${dob.error}`);
+          const gender = parseGender(rawGender);
+          if (!gender.ok) throw new Error(gender.error);
           if (!name) throw new Error('name is required');
           if (name.length > 120) throw new Error('name is too long (max 120 characters)');
           if (!grade) throw new Error('grade is required');
@@ -576,16 +688,25 @@ export function register(app, kernel) {
           // S0 fix D4: the promote/transfer doors cap class+section at 16 — the
           // import lane must not sneak a longer value past that contract.
           if (section.length > 16) throw new Error('section is too long (max 16 characters)');
+          if (classMap.size) {
+            if (!classMap.has(grade)) {
+              throw new Error(`"${grade}" is not one of this school's classes — expected one of: ${[...classMap.keys()].join(', ')}`);
+            }
+            const secs = classMap.get(grade);
+            if (secs.length && !secs.includes(section)) {
+              throw new Error(`section "${section}" is not one of ${grade}'s sections — expected one of: ${secs.join(', ')}`);
+            }
+          }
           if (admissionNo && seenAdm.has(admissionNo)) throw new Error(`duplicate admission number in file (${admissionNo}) — keeping the first`);
           if (admissionNo) seenAdm.add(admissionNo);
           await c.query('SAVEPOINT import_row');
           try {
             const ins = await c.query(
-              `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, source, source_ref)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,'import',$8) RETURNING id, admission_no`,
+              `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, dob, gender, source, source_ref)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'import',$10) RETURNING id, admission_no`,
               [req.user.tenant_id,
                admissionNo || `IMP-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`,
-               name, grade, section, guardianName, guardianPhone, `csv row ${rowNo}`]);
+               name, grade, section, guardianName, guardianPhone, dob.value, gender.value, `csv row ${rowNo}`]);
             await c.query('RELEASE SAVEPOINT import_row');
             ok.push({ row: rowNo, studentId: ins.rows[0].id, name, grade, section, admissionNo: ins.rows[0].admission_no });
           } catch (e) {

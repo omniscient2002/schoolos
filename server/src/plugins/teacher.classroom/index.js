@@ -42,26 +42,22 @@ const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 // submission_student_id_ref_fkey → app.students(tenant_id, id) ON DELETE RESTRICT), so the
 // write path must RESOLVE the signed-in user to a roster row instead of storing the user id.
 //
-// HOW, AND WHY IT IS DONE THIS WAY. There is no structural link from `app.users` to
-// `app.students`: no FK, no shared column, no students.user_id. The only correspondence that
-// exists in this database is the NAME (verified against the live dev DB and the test seed: the
-// user `student@meridian.edu` is named `Aarav Sharma` and the roster carries exactly one
-// `Aarav Sharma`; `student2@meridian.edu` is `Diya Nair`). The class gate below already resolved
-// the student that way — it is the 034 `child_link` name-match convention this module inherited —
-// so resolving the id the same way is the one choice that keeps the WRITE and the READS
-// consistent instead of inventing a third rule.
+// HOW, AND WHY IT IS DONE THIS WAY (F-16 update: the structural repair HAS landed).
+// `app.students.user_id` (migration 132) now binds a pupil's portal account to exactly
+// one roster row, written when the school creates the account from that row
+// (people.admin, G-1). The submit door reads that binding FIRST
+// (`resolveStudentByUser`, same pin `student.world` resolves from), so the two
+// planes agree and a same-named section-sibling can never inherit the submission.
 //
-// THE WEAKNESS, STATED PLAINLY (do not paper over it): a name is not an identity. This resolution
-// cannot distinguish two students who share a name, and the seed shows that is not hypothetical —
-// `Diya Nair` has three grade-8 rows (sections A, B and C) and the roster carries 125 such
-// (name, grade) groups. Scoping to the homework's `class_grade` narrows it but does not make it
-// unique, so when several same-name students sit in the homework's grade we take the LOWEST
-// `admission_no` — the school's own registration order, i.e. the first-enrolled child. That is a
-// deterministic, auditable tiebreak, not a correct identification: for a duplicate name the
-// submission may be attributed to the wrong section-sibling. Nobody can do better from these two
-// tables; the structural repair is a `students.user_id` column backfilled at provisioning, or an
-// explicit link row, and the teacher roster is the authority meanwhile. Every query is scoped by
-// `tenant_id` so the weakness can never cross a school boundary.
+// Name matching remains ONLY as the fallback for rows enrolled before the account
+// existed (the 034 `child_link` name-match convention this module inherited). The old
+// weakness therefore survives in exactly one case — an UNBOUND account whose name
+// matches several same-grade rows (the seed's three grade-8 `Diya Nair`s), where we
+// take the LOWEST `admission_no` as a deterministic, auditable tiebreak, not a
+// correct identification. The fix for that residue is provisioning discipline (bind
+// every pupil account), not a cleverer query: no amount of SQL recovers which
+// section-sibling signed in. Every query is scoped by `tenant_id` so the weakness
+// can never cross a school boundary.
 const STUDENT_BY_NAME_SQL =
   `SELECT id, name, grade, section, admission_no FROM app.students
    WHERE tenant_id = $1 AND lower(name) = lower($2)`;
@@ -73,6 +69,18 @@ async function resolveStudent(c, tenantId, userName, grade) {
     `${STUDENT_BY_NAME_SQL} AND grade = $3
      ORDER BY admission_no ASC, id ASC LIMIT 1`,
     [tenantId, userName, grade])).rows;
+  return rows[0] ?? null;
+}
+
+// F-16 · STRUCTURAL identity first. `app.students.user_id` (migration 132) binds the
+// account to exactly one roster row — the same pin `student.world` resolves from, so the
+// two planes finally agree. Name matching below stays ONLY as the fallback for rows
+// enrolled before the account existed. Returns the active bound row, or null.
+async function resolveStudentByUser(c, tenantId, userId) {
+  const rows = (await c.query(
+    `SELECT id, name, grade, section, admission_no FROM app.students
+      WHERE tenant_id = $1 AND status = 'active' AND user_id = $2 LIMIT 1`,
+    [tenantId, userId])).rows;
   return rows[0] ?? null;
 }
 
@@ -343,23 +351,36 @@ export function register(app, kernel) {
       // The two branches are kept distinct on purpose: "not in this class" is the homework's own
       // rule (existing behaviour, existing copy), while "not linked to any student" is about the
       // ACCOUNT and is the case that must not be mistaken for a wrong-class refusal.
-      const inClass = (await c.query(STUDENT_IN_CLASS_SQL,
-        [req.user.tenant_id, req.user.name, hw.class_grade])).rows[0].n;
-      if (inClass === 0) {
-        const anywhere = (await c.query(
-          `SELECT count(*)::int AS n FROM app.students WHERE tenant_id=$1 AND lower(name)=lower($2)`,
-          [req.user.tenant_id, req.user.name])).rows[0].n;
-        if (anywhere === 0) {
-          return bad(reply, 'Your login isn\'t linked to a student at this school, so this homework can\'t be filed against you — please ask the school office to link your account', 409);
+      // F-16: structural binding FIRST (migration 132) — the account names its
+      // roster row, so a same-named section-sibling can never inherit this
+      // submission. The bound row's own grade is the class gate: a bound pupil
+      // in another grade gets the same "different class" answer as the name path.
+      const bound = await resolveStudentByUser(c, req.user.tenant_id, req.user.id);
+      let student = null;
+      if (bound) {
+        if (bound.grade !== hw.class_grade) {
+          return bad(reply, 'This homework is for a different class');
         }
-        return bad(reply, 'This homework is for a different class');
-      }
-      const student = await resolveStudent(c, req.user.tenant_id, req.user.name, hw.class_grade);
-      if (!student) {
-        // Unreachable while the two queries above agree, and that is the point: if they ever
-        // diverge we refuse loudly rather than fall back to the user id (which is how this
-        // regression happened) or to a 500 (which hides it).
-        return bad(reply, 'We couldn\'t match your login to a student record for this class — please ask the school office to check your account', 409);
+        student = bound;
+      } else {
+        const inClass = (await c.query(STUDENT_IN_CLASS_SQL,
+          [req.user.tenant_id, req.user.name, hw.class_grade])).rows[0].n;
+        if (inClass === 0) {
+          const anywhere = (await c.query(
+            `SELECT count(*)::int AS n FROM app.students WHERE tenant_id=$1 AND lower(name)=lower($2)`,
+            [req.user.tenant_id, req.user.name])).rows[0].n;
+          if (anywhere === 0) {
+            return bad(reply, 'Your login isn\'t linked to a student at this school, so this homework can\'t be filed against you — please ask the school office to link your account', 409);
+          }
+          return bad(reply, 'This homework is for a different class');
+        }
+        student = await resolveStudent(c, req.user.tenant_id, req.user.name, hw.class_grade);
+        if (!student) {
+          // Unreachable while the two queries above agree, and that is the point: if they ever
+          // diverge we refuse loudly rather than fall back to the user id (which is how this
+          // regression happened) or to a 500 (which hides it).
+          return bad(reply, 'We couldn\'t match your login to a student record for this class — please ask the school office to check your account', 409);
+        }
       }
       const late = new Date() > new Date(hw.due_at);
       await c.query('SAVEPOINT submit_once');

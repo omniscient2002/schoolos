@@ -23,6 +23,7 @@
 import { pool } from '../../db.js';
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
+import { pluginAbsent } from '../_shared/optional-table.js';
 
 const ID = 'student.world';
 export { default as manifest } from './manifest.js';
@@ -110,13 +111,20 @@ export function register(app, kernel) {
       [schema, t, column])).rows.length;
   };
 
-  // ── IDENTITY PIN: student role → own app.students row (demo name-match, see header)
-  /* S0 fix E1 (HIGH): the name match is the ONLY barrier between a student login and
-     another child's report cards (plugin_exams.report RLS is tenant-only) — and names
-     are NOT unique. A second same-named student used to silently pin to the first row
-     (ORDER BY created_at LIMIT 1), serving the wrong child's results/identity. The pin
-     now refuses ambiguity: exactly one active match, else the honest "not set up" path. */
+  // ── IDENTITY PIN: student role → own app.students row ───────────────────────────
+  /* The pin is STRUCTURAL: `app.students.user_id` (migration 132) is the account↔roster binding,
+     and a pupil's portal account is written with it the moment the school creates one
+     (people.admin, G-1). That binding is unique per tenant, so it cannot be ambiguous and cannot
+     drift onto a different child.
+     The unambiguous-name match remains ONLY as the fallback for rows enrolled before the account
+     existed (`POST /students` links one at creation, and migration 132 backfilled the rest). It is
+     not a second source of truth — it is the absence of one, handled honestly: two same-named
+     pupils resolve to nothing rather than to whichever row was inserted first (S0 fix E1). */
   const ownStudent = async (c, user) => {
+    const bound = (await c.query(
+      `SELECT id, name, grade, section, admission_no FROM app.students
+        WHERE tenant_id=$1 AND status='active' AND user_id=$2`, [user.tenant_id, user.id])).rows[0];
+    if (bound) return bound;
     const r = await c.query(
       `SELECT id, name, grade, section, admission_no, count(*) OVER () AS name_matches
        FROM app.students
@@ -132,7 +140,7 @@ export function register(app, kernel) {
     `SELECT p.seq, p.label, p.start_time, p.end_time, s.subject, s.teacher_name, s.room
      FROM app.timetable_slots s JOIN app.timetable_periods p ON p.id=s.period_id
      WHERE s.tenant_id=$1 AND s.day_of_week=$2
-     ORDER BY p.sort_idx, s.subject`, [tenantId, dayName]).catch(() => ({ rows: [] }))).rows;
+     ORDER BY p.sort_idx, s.subject`, [tenantId, dayName]).catch(pluginAbsent)).rows;
 
   // homework read plane (031 lane may be absent): mode split per SS-1 brief
   const homeworkRows = async (c, tenantId, grade) => {
@@ -142,7 +150,7 @@ export function register(app, kernel) {
       `SELECT id, title, subject, detail, due_at${hasMode ? ', mode' : ''}
        FROM teacher.homework
        WHERE tenant_id=$1 AND class_grade=$2 AND (status IS NULL OR status <> 'archived')
-       ORDER BY due_at ASC NULLS LAST LIMIT 50`, [tenantId, grade]).catch(() => ({ rows: [] }))).rows;
+       ORDER BY due_at ASC NULLS LAST LIMIT 50`, [tenantId, grade]).catch(pluginAbsent)).rows;
     // StudentOS §1/§12: paper is the default medium — a homework row only lands in
     // the digital list when the school EXPLICITLY labels it digital. Unlabelled
     // rows (schools that never set mode) must never require an upload.
@@ -161,7 +169,7 @@ export function register(app, kernel) {
     `SELECT e.name AS exam_name, e.term, r.snapshot, r.created_at
      FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
      WHERE r.tenant_id=$1 AND r.student_id=$2 AND e.status='published'
-     ORDER BY r.created_at DESC LIMIT 12`, [tenantId, studentId]).catch(() => ({ rows: [] }))).rows;
+     ORDER BY r.created_at DESC LIMIT 12`, [tenantId, studentId]).catch(pluginAbsent)).rows;
 
   const explainFor = (r) =>
     r.pct == null ? 'Result details will appear here once the school publishes them.' :
@@ -187,7 +195,7 @@ export function register(app, kernel) {
       const exams = me ? (await c.query(
         `SELECT name, term, status, published_at FROM plugin_exams.exam
          WHERE tenant_id=$1 AND class_grade=$2
-         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, me.grade]).catch(() => ({ rows: [] }))).rows : [];
+         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, me.grade]).catch(pluginAbsent)).rows : [];
       const upcoming_test = exams.find((e) => e.status === 'published')
         ? { name: exams.find((e) => e.status === 'published').name, term: exams.find((e) => e.status === 'published').term }
         : null;
@@ -500,7 +508,7 @@ export function register(app, kernel) {
         blocks.push({ title: 'Homework due this week', lines: due.length ? due.map((h) => `${h.subject ?? ''}: ${h.title}${h.due_at ? ` (due ${String(h.due_at).slice(0, 10)})` : ''}`) : ['Nothing due this week.'] });
         const exams = (await c.query(
           `SELECT name, term FROM plugin_exams.exam WHERE tenant_id=$1 AND class_grade=$2 AND status='published'
-           ORDER BY created_at DESC LIMIT 5`, [req.user.tenant_id, me.grade]).catch(() => ({ rows: [] }))).rows;
+           ORDER BY created_at DESC LIMIT 5`, [req.user.tenant_id, me.grade]).catch(pluginAbsent)).rows;
         blocks.push({ title: 'Results published', lines: exams.length ? exams.map((e) => `${e.name} (${e.term}) — see your results page`) : ['No results published this week.'] });
       }
       // PLGX-1: tenant-wide event labels are served only to roles that hold the kernel event feed.
@@ -508,7 +516,7 @@ export function register(app, kernel) {
       if (EVENT_FEED_ROLES.includes(req.user.role)) {
         const events = (await c.query(
           `SELECT label, created_at FROM app.events WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
-           ORDER BY created_at DESC LIMIT 10`, [req.user.tenant_id]).catch(() => ({ rows: [] }))).rows;
+           ORDER BY created_at DESC LIMIT 10`, [req.user.tenant_id]).catch(pluginAbsent)).rows;
         blocks.push({ title: 'Announcements & events this week', lines: events.length ? events.map((e) => e.label) : ['No new announcements.'] });
       }
       blocks.push({ title: 'Printed by', lines: [`Generated ${istDate()} (IST) — student.world noticeboard`] });
@@ -567,7 +575,7 @@ export function register(app, kernel) {
   // ── session — kiosk idle-countdown contract (STUDENT_IDLE_TIMEOUT_MINUTES, default 10) ──
   app.get('/student/session', { preHandler: [require(...STUDENT), lifecycleGate] }, async (req) => {
     const s = (await kernel.sysq(
-      `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID]).catch(() => ({ rows: [] }))).rows[0];
+      `SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [req.user.tenant_id, ID]).catch(pluginAbsent)).rows[0];
     const idle = Math.max(1, parseInt(process.env.STUDENT_IDLE_TIMEOUT_MINUTES ?? s?.settings?.student_idle_timeout_minutes ?? '10', 10) || 10);
     return { idle_minutes: idle, logout_url: '/auth/logout',
       note: 'You are on a shared school computer. When you finish, log out — your data will not stay on this machine.' };

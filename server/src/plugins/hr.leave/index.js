@@ -83,7 +83,11 @@ export function register(app, kernel) {
     });
   });
 
-  // duty roster for a date: who is absent (facts from this plugin) × who is present
+  // duty roster for a date: who is absent (facts from this plugin) × who is present.
+  // Safety (4.5): every row carries its police-verification state, and staff whose
+  // verification has EXPIRED are listed in `blocked` — they must not be rostered
+  // until re-verified. Missing verification warns (state 'missing') but never blocks,
+  // so a school that never recorded anything is nagged, not locked out day one.
   app.get(`/plugins/${ID}/roster/:date`, { preHandler: [require(...DESK), lifecycleGate] }, async (req, reply) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.date))) return bad(reply, 'Please use a valid date (YYYY-MM-DD)');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
@@ -98,11 +102,34 @@ export function register(app, kernel) {
            AND NOT EXISTS (SELECT 1 FROM plugin_hr.leave l
                            WHERE l.tenant_id=$1 AND l.staff_id=u.id AND l.leave_date=$2 AND l.status='marked')
          ORDER BY u.name`, [req.user.tenant_id, req.params.date])).rows;
+      let verifyBy = new Map();
+      try {
+        // dates read as TEXT: pg returns DATE columns as JS Date objects, whose
+        // toString is locale-shaped — comparing those lexicographically never matches.
+        const vers = (await c.query(`SELECT user_id, to_char(expires_on,'YYYY-MM-DD') AS exp FROM app.staff_verifications`)).rows;
+        verifyBy = new Map(vers.map((v) => [v.user_id, v.exp]));
+      } catch { verifyBy = new Map(); } // pre-146 database: every row reads 'missing', nothing blocks
+      const day = String(req.params.date);
+      const stateOf = (id) => {
+        if (!verifyBy.has(id)) return 'missing';
+        const exp = verifyBy.get(id);
+        if (exp < day) return 'expired';
+        const soon = new Date(`${day}T00:00:00Z`); soon.setUTCDate(soon.getUTCDate() + 60);
+        return exp <= soon.toISOString().slice(0, 10) ? 'expiring' : 'valid';
+      };
+      const tag = (r, staffId) => ({ ...r, verification: stateOf(staffId) });
+      const blocked = [...absent, ...onDuty]
+        .filter((r) => stateOf(r.staff_id ?? r.id) === 'expired')
+        .map((r) => ({ staffId: r.staff_id ?? r.id, name: r.name, role: r.role,
+          reason: 'Police verification expired — re-verify before rostering' }));
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Duty roster read', recordType: 'Leave', recordRef: req.params.date,
         reason: 'coordination desk', policyRef: 'HR §1.4', risk: 'low',
-        outcome: `${absent.length} absent, ${onDuty.length} on duty for ${req.params.date}` });
-      return { date: req.params.date, absent: absent.map((a) => ({ leaveId: a.id, staffId: a.staff_id, name: a.name, role: a.role, kind: a.kind, reason: a.reason })), onDuty: onDuty.map((d) => ({ staffId: d.id, name: d.name, role: d.role })) };
+        outcome: `${absent.length} absent, ${onDuty.length} on duty for ${req.params.date}${blocked.length ? ` · ${blocked.length} blocked (verification expired)` : ''}` });
+      return { date: req.params.date,
+        absent: absent.map((a) => tag({ leaveId: a.id, staffId: a.staff_id, name: a.name, role: a.role, kind: a.kind, reason: a.reason }, a.staff_id)),
+        onDuty: onDuty.map((d) => tag({ staffId: d.id, name: d.name, role: d.role }, d.id)),
+        blocked };
     });
   });
 

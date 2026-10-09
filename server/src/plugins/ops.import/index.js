@@ -236,7 +236,9 @@ export function register(app, kernel) {
     const mapCheck = validateMapping(kind, mapping);
     if (!mapCheck.ok) return reply.code(400).send({ ok: false, errors: mapCheck.errors });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const report = await shadowReport(c, req.user.tenant_id, kind, mapping, rows);
+      // F-22: honor the tenant's max_shadow_rows instead of the hard default.
+      const maxRows = (await c.query(`SELECT settings->>'max_shadow_rows' AS m FROM app.plugins WHERE tenant_id=$1 AND plugin_id='ops.import'`, [req.user.tenant_id])).rows[0]?.m;
+      const report = await shadowReport(c, req.user.tenant_id, kind, mapping, rows, { maxRows });
       await emitEventSafe(kernel, c, req.user.tenant_id, report);
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: 'Import shadow-run analyzed', recordType: 'Migration', recordRef: kind,

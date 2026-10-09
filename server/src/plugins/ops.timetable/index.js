@@ -1,4 +1,5 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
+import { substitutionSuggestions } from '../_shared/substitute-suggest.js';
 // ops.timetable — Class C primitives provider: grid, slots, substitutions,
 // deterministic period-autofill. Every write audited. No kernel edits.
 const ID = 'ops.timetable';
@@ -74,40 +75,14 @@ export function register(app, kernel) {
     });
   });
 
-  // deterministic-first candidate ranking (docs/11 §7): same-subject free teachers first
+  // deterministic-first candidate ranking (docs/11 §7): same-subject free teachers first.
+  // The ranking lives in `_shared/substitute-suggest.js` so the leave-cover proposal (routes.js)
+  // offers the coordinator exactly what this door offers the timetable desk.
   app.get(`/plugins/${ID}/substitutions/suggest`, { preHandler: [require('coordinator','principal','owner','itadmin'), lifecycleGate] }, async (req, reply) => {
     const { absentTeacher, dayOfWeek } = req.query ?? {};
     if (!absentTeacher) return reply.code(400).send({ error: 'Pick the absent teacher' });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const day = DAYS.includes(dayOfWeek) ? dayOfWeek : DAYS[(new Date().getDay() + 6) % 7];
-      const missed = (await c.query(
-        `SELECT s.id, s.subject, s.room, p.label, p.start_time, p.end_time, p.sort_idx
-         FROM app.timetable_slots s JOIN app.timetable_periods p ON p.id = s.period_id
-         WHERE s.tenant_id=$1 AND s.day_of_week=$2 AND s.teacher_name=$3 ORDER BY p.sort_idx`,
-        [req.user.tenant_id, day, absentTeacher])).rows;
-      const busy = new Set((await c.query(
-        `SELECT DISTINCT s.teacher_name, p.sort_idx FROM app.timetable_slots s
-         JOIN app.timetable_periods p ON p.id = s.period_id
-         WHERE s.tenant_id=$1 AND s.day_of_week=$2`,
-        [req.user.tenant_id, day])).rows.map(r => `${r.teacher_name}|${r.sort_idx}`));
-      const candidates = (await c.query(
-        `SELECT DISTINCT teacher_name FROM app.timetable_slots WHERE tenant_id=$1 AND teacher_name <> $2`,
-        [req.user.tenant_id, absentTeacher])).rows.map(r => r.teacher_name);
-      const teaches = new Set((await c.query(
-        `SELECT DISTINCT teacher_name, subject FROM app.timetable_slots WHERE tenant_id=$1`,
-        [req.user.tenant_id])).rows.map(r => `${r.teacher_name}|${r.subject}`));
-      const suggestions = missed.map(m => ({
-        slot: { id: m.id, subject: m.subject, label: m.label, start: m.start_time, end: m.end_time, room: m.room },
-        candidates: candidates
-          .filter(t => !busy.has(`${t}|${m.sort_idx}`)) // actually free that period
-          .map(t => ({
-            teacher: t,
-            // same-subject teachers rank first (compared against the teacher pool, not the subject)
-            score: (teaches.has(`${t}|${m.subject}`) ? 100 : 0) + (t.length % 3), // stable tiebreak
-          }))
-          .sort((a, b) => b.score - a.score || a.teacher.localeCompare(b.teacher))
-          .slice(0, 3),
-      }));
+      const { day, suggestions } = await substitutionSuggestions(c, req.user.tenant_id, { absentTeacher, dayOfWeek });
       return { day, absentTeacher, suggestions, rule: 'same-subject free teacher first, then any free teacher — deterministic ranking, never a model' };
     });
   });
@@ -132,6 +107,21 @@ export function register(app, kernel) {
           return reply.code(403).send({ error: 'You can only autofill a class assigned to you. Ask an administrator to assign this class (or the principal\'s office).' });
         }
       }
+      // F-22: honor the tenant's autofill_default ('present' | 'none'). 'none'
+      // means the school does not want unmarked students auto-marked: the door
+      // reports instead of writing, so a configured refusal is visible, not silent.
+      const autofillDefault = (await c.query(`SELECT settings->>'autofill_default' AS d FROM app.plugins WHERE tenant_id=$1 AND plugin_id='ops.timetable'`, [req.user.tenant_id])).rows[0]?.d ?? 'present';
+      const rosterN = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students
+         WHERE tenant_id=$1 AND status='active' AND grade=$2 AND section=$3`,
+        [req.user.tenant_id, grade, section])).rows[0].n;
+      if (autofillDefault !== 'present') {
+        await requestAudit(c, req.user.tenant_id, ID, {
+          actor: req.user.name, action: 'Attendance period autofill (skipped)', recordType: 'Plugin', recordRef: `${grade}-${section}`,
+          reason: `autofill_default='${autofillDefault}' · ${periodSeq ?? 'period n/a'}`, policyRef: 'Attendance §1.1', risk: 'low',
+          outcome: `0 rows inserted (autofill disabled by setting) · ${rosterN} on roster` });
+        return { marked: 0, alreadyMarked: 0, date, grade, section, skipped: `autofill_default='${autofillDefault}'` };
+      }
       // Deterministic, idempotent, safe: insert ONLY for students with no attendance row
       // today (absent/present/human-marked rows are never touched — Attendance §1.1).
       // Single statement, unique-index-safe on concurrent replays.
@@ -146,10 +136,6 @@ export function register(app, kernel) {
          RETURNING student_id`,
         [req.user.tenant_id, grade, section, date, req.user.id]);
       const marked = ins.rows.length;
-      const rosterN = (await c.query(
-        `SELECT count(*)::int AS n FROM app.students
-         WHERE tenant_id=$1 AND status='active' AND grade=$2 AND section=$3`,
-        [req.user.tenant_id, grade, section])).rows[0].n;
       const ev = await emitEvent(c, req.user.tenant_id,
         { type: 'attendance', label: `Period autofill — ${grade}-${section} ${periodSeq ?? ''} · ${marked} unmarked marked present (${date})`, severity: 'info', ref: `${grade}-${section}` },
         'attendance.autofilled', { date, grade, section, periodSeq: periodSeq ?? null, marked },
@@ -357,6 +343,47 @@ export function register(app, kernel) {
   });
 
   // ── slots ────────────────────────────────────────────────────────────────
+  // ── conflict detector (Action Plan 2.4): same teacher/room/section twice in one
+  // day×period cell. Read-only; the coordinator still owns every resolution.
+  app.get(`/plugins/${ID}/conflicts`, { preHandler: [require(...READ_ROLES), lifecycleGate] }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const slots = (await c.query(
+        `SELECT id, day_of_week, period_id, subject, teacher_name, teacher_id, room, grade, section
+           FROM app.timetable_slots WHERE retired_at IS NULL`)).rows;
+      const cell = (s) => `${s.day_of_week}||${s.period_id}`;
+      const who = (s) => s.teacher_id ?? (s.teacher_name?.trim() || null);
+      const clashes = [];
+      const byCell = new Map();
+      for (const s of slots) {
+        if (!byCell.has(cell(s))) byCell.set(cell(s), []);
+        byCell.get(cell(s)).push(s);
+      }
+      for (const [key, group] of byCell) {
+        if (group.length < 2) continue;
+        const [day, period] = key.split('||');
+        const seenT = new Map(), seenR = new Map(), seenS = new Map();
+        for (const s of group) {
+          const t = who(s);
+          if (t) {
+            if (seenT.has(t)) clashes.push({ kind: 'teacher', dayOfWeek: day, periodId: period, ref: t, slots: [seenT.get(t), s.id] });
+            else seenT.set(t, s.id);
+          }
+          const room = (s.room ?? '').trim();
+          if (room) {
+            if (seenR.has(room)) clashes.push({ kind: 'room', dayOfWeek: day, periodId: period, ref: room, slots: [seenR.get(room), s.id] });
+            else seenR.set(room, s.id);
+          }
+          const sec = `${s.grade ?? ''}||${s.section ?? ''}`;
+          if (sec !== '||') {
+            if (seenS.has(sec)) clashes.push({ kind: 'section', dayOfWeek: day, periodId: period, ref: `${s.grade}-${s.section}`, slots: [seenS.get(sec), s.id] });
+            else seenS.set(sec, s.id);
+          }
+        }
+      }
+      return { conflicts: clashes, cells: byCell.size, slots: slots.length };
+    });
+  });
+
   app.get(`/plugins/${ID}/slots`, { preHandler: [require(...READ_ROLES), lifecycleGate] }, async (req) => {
     const { dayOfWeek, periodId, grade, section } = req.query ?? {};
     return withUser(req.user.tenant_id, req.user.role, async (c) => {

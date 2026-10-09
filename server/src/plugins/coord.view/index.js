@@ -365,12 +365,51 @@ export function register(app, kernel) {
           'sub.assign.v1', { actionId: a.id, code: a.code, decidedBy: req.user.id, template: 'sub.assign.v1' });
         emitted = 'sub.assign.v1';
       }
+      // L6: an approved leave-cover proposal carries the affected {slot, date} pairs and a
+      // deterministic suggested substitute. Approving it ASSIGNS the cover (writes
+      // app.timetable_substitutions) and stamps the teacher's handover packet — otherwise the review
+      // screen's promise ("the substitute has been assigned") would be false. `substitute` in the body
+      // overrides the suggested pick for the whole leave.
+      let assigned = 0;
+      let substituteName = null;
+      if (b.decision === 'approved' && Array.isArray(p.assignments) && p.assignments.length) {
+        const hasSubs = await tableExists(c, 'app', 'timetable_substitutions');
+        const hasSlots = await tableExists(c, 'app', 'timetable_slots');
+        if (hasSubs && hasSlots) {
+          const override = b.substitute ? String(b.substitute).slice(0, 120) : null;
+          const names = new Set();
+          for (const asg of p.assignments) {
+            const substitute = override || (typeof asg?.substitute === 'string' && asg.substitute ? asg.substitute : null);
+            if (!UUID.test(String(asg?.slot_id ?? '')) || !DATE.test(String(asg?.date ?? '')) || !substitute) continue;
+            const slot = (await c.query(
+              `SELECT teacher_name FROM app.timetable_slots WHERE id=$1 AND tenant_id=$2`,
+              [asg.slot_id, req.user.tenant_id])).rows[0];
+            if (!slot) continue;
+            await c.query(
+              `INSERT INTO app.timetable_substitutions (tenant_id, slot_id, date, absent_teacher, substitute, reason, assigned_by)
+               VALUES ($1,$2,$3::date,$4,$5,$6,$7)
+               ON CONFLICT (slot_id, date) DO UPDATE SET substitute=EXCLUDED.substitute, reason=EXCLUDED.reason,
+                 status='assigned', assigned_by=EXCLUDED.assigned_by`,
+              [req.user.tenant_id, asg.slot_id, asg.date, slot.teacher_name, substitute,
+               'Leave cover approved by coordinator', req.user.id]);
+            assigned += 1;
+            names.add(substitute);
+          }
+          substituteName = names.size ? [...names].join(', ').slice(0, 120) : null;
+          if (assigned && p.leaveRequestId && await tableExists(c, 'teacher', 'handover_packet')) {
+            await c.query(
+              `UPDATE teacher.handover_packet SET substitute_name=$2, packet_at=COALESCE(packet_at, now())
+                WHERE tenant_id=$1 AND leave_request_id=$3`,
+              [req.user.tenant_id, substituteName, p.leaveRequestId]);
+          }
+        }
+      }
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.name, action: `Substitution action ${b.decision}`, recordType: 'Action', recordRef: a.code,
         reason: b.note ? String(b.note).slice(0, 200) : 'coordinator decide door',
         policyRef: a.policy_ref ?? 'coord.decision.v1 · proposer≠decider', risk: 'medium',
-        outcome: `${a.status} → ${status}${emitted ? ` · ${emitted} emitted` : ' · no event (rejected)'}` });
-      return { ok: true, action_id: a.id, code: a.code, decision: b.decision, status, event: emitted };
+        outcome: `${a.status} → ${status}${emitted ? ` · ${emitted} emitted` : ' · no event (rejected)'}${assigned ? ` · ${assigned} period(s) covered${substituteName ? ` by ${substituteName}` : ''}` : ''}` });
+      return { ok: true, action_id: a.id, code: a.code, decision: b.decision, status, event: emitted, assigned, substitute: substituteName };
     });
   });
 

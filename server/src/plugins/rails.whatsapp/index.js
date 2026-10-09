@@ -40,8 +40,10 @@ async function readSettings(tenantId) {
     const r = await kernelQ(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
     return decryptSettings(r.rows[0]?.settings ?? {}, tenantId);
   } catch (e) {
-    console.error(`${ID}: settings read failed — degrading to logger provider:`, e.message);
-    return {};
+    // F-14: see rails.sms — a failed settings read must fail the send, never
+    // degrade to a logger ok:true.
+    console.error(`${ID}: settings read failed — refusing to send:`, e.message);
+    return { __settingsFailed: true, __settingsError: String(e?.message ?? e) };
   }
 }
 
@@ -156,6 +158,9 @@ export async function sendWhatsapp({ to, template, params, body, dedupKey, tenan
     return { ok: false, provider: 'logger', ref: null, body, error: 'recipient must be E.164 (+countrycode…)' };
   }
   const s = await readSettings(tenantId);
+  if (s.__settingsFailed) {
+    return { ok: false, provider: 'logger', ref: null, body, error: `plugin settings could not be read (${s.__settingsError ?? 'unknown error'}) — refusing to send rather than logging as delivered` };
+  }
   const provider = ['logger', 'http-generic', 'cloud-api'].includes(s.provider) ? s.provider : 'logger';
   // template registry reuse: the registered DLT body wins; queue body is the fallback
   const tplBody = await readTemplate(tenantId, template);

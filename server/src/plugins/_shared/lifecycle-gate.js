@@ -32,7 +32,8 @@ export function makeLifecycleGate(sysq, pluginId) {
         'health.clinic': 'Health clinic', 'exams.assessment': 'Exams', 'admissions.funnel': 'Admissions',
         'pack.dpdp': 'Data requests (DPDP)', 'pack.cbse': 'CBSE pack', 'payments.upi': 'Fee payments',
         'payments.razorpay': 'Fee payments', 'transport.gps': 'Transport', 'comms.whatsapp': 'WhatsApp updates',
-        'accounting.tally': 'Accounting',
+        'accounting.tally': 'Accounting', 'ops.import': 'Data import', 'ops.bi': 'Reports',
+        'ops.udise': 'UDISE returns', 'files.store': 'Documents', 'library': 'Library',
       };
       const label = FRIENDLY[pluginId] ?? pluginId.split('.')[0].replace(/^./, (c) => c.toUpperCase());
       return reply.code(409).send({ error: `${label} is switched off — ask the school owner to turn it on` });

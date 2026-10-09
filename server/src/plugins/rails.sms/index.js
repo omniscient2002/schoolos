@@ -31,8 +31,12 @@ async function readSettings(tenantId) {
     const r = await kernelQ(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`, [tenantId, ID]);
     return decryptSettings(r.rows[0]?.settings ?? {}, tenantId);
   } catch (e) {
-    console.error(`${ID}: settings read failed — degrading to logger provider:`, e.message);
-    return {};
+    // F-14: a FAILED settings read is not "unconfigured". The old code returned
+    // {} here, so the provider defaulted to logger and the rail answered
+    // {ok:true} — a transient DB hiccup silently demoted a real carrier to a
+    // sandbox one (see _shared/delivery-honesty.js). Fail loudly instead.
+    console.error(`${ID}: settings read failed — refusing to send:`, e.message);
+    return { __settingsFailed: true, __settingsError: String(e?.message ?? e) };
   }
 }
 
@@ -85,6 +89,9 @@ export async function sendSms({ to, body, dedupKey, tenantId }) {
     return { ok: false, provider: 'logger', ref: null, error: 'recipient must be E.164 (+countrycode…)' };
   }
   const s = await readSettings(tenantId);
+  if (s.__settingsFailed) {
+    return { ok: false, provider: 'logger', ref: null, error: `plugin settings could not be read (${s.__settingsError ?? 'unknown error'}) — refusing to send rather than logging as delivered` };
+  }
   const provider = ['logger', 'http-generic'].includes(s.provider) ? s.provider : 'logger';
   let r;
   try {

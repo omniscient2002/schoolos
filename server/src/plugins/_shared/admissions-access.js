@@ -35,5 +35,16 @@ export const ADMIN = ['owner', 'principal', 'itadmin', 'finance', 'coordinator',
 // Later stages are closer to enrollment and more expensive to lose.
 export const FOLLOWUP_WEIGHTS = { enquiry: 1, form: 1.2, interaction: 1.5, offer: 2.5, waitlisted: 2 };
 
+// Class-applied normalisation (B-4): free text ("Grade 6", "Class 6", "6", "6-B")
+// becomes a bare grade + section so a pupil never lands in grade "Grade 6".
+// Shared by the kernel executor and the funnel capacity guard — one definition.
+export function parseGradeApplied(s) {
+  const raw = String(s ?? '').trim();
+  const m = /^(\S+)-([A-Za-z0-9]+)$/.exec(raw);
+  if (m) return { grade: m[1], section: m[2].toUpperCase() };
+  const g = raw.replace(/^(grade|class)\s+/i, '').trim();
+  return { grade: g || 'unassigned', section: 'A' };
+}
+
 // Stages that never rank / are never "open".
 export const CLOSED_STAGES = ['enrolled', 'rejected', 'withdrawn'];

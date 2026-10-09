@@ -11,7 +11,9 @@
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
 import { toE164, maskPhone } from '../_shared/phone.js';
-import { ADMIN, FULL_PII, NEXT, TERMINAL, STAGES, CLOSED_STAGES } from '../_shared/admissions-access.js';
+import { parseDob } from '../_shared/enrolment.js';
+import { ADMIN, FULL_PII, NEXT, TERMINAL, STAGES, CLOSED_STAGES, parseGradeApplied } from '../_shared/admissions-access.js';
+import { runFollowupSla } from './sla.js';
 
 const ID = 'admissions.funnel';
 
@@ -24,6 +26,9 @@ const currentSessionYear = () => {
   return `${y}-${String((y + 1) % 100).padStart(2, '0')}`;
 };
 const mmdd = (d) => `${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+// A12: the session-window day must use the IST clock like currentSessionYear above —
+// mmdd(new Date()) read UTC, so 00:00–05:30 IST evaluated "today" as yesterday.
+const mmddIST = () => mmdd(IST_NOW());
 const clamp = (v, n) => (v == null ? null : String(v).slice(0, n));
 
 export function register(app, kernel) {
@@ -46,9 +51,17 @@ export function register(app, kernel) {
 
   // ── capture enquiry (admin roles; session window + dedupe guard) ─────────────
   app.post(`/plugins/${ID}/leads`, { preHandler: [require(...ADMIN), lifecycleGate] }, async (req, reply) => {
-    const { studentName, guardianName, guardianPhone, classApplied, source, admissionYear } = req.body ?? {};
+    const { studentName, guardianName, guardianPhone, classApplied, source, admissionYear, dob } = req.body ?? {};
     if (!studentName || !guardianPhone || !classApplied) {
       return reply.code(400).send({ error: 'Student name, guardian phone and class are required' });
+    }
+    // A9: optional birth date at capture (validated once, stored on the lead) so
+    // age-eligibility can be checked at conversion instead of on paper forms.
+    let dobVal = null;
+    if (dob != null && String(dob).trim() !== '') {
+      const parsedDob = parseDob(dob);
+      if (!parsedDob.ok) return reply.code(400).send({ error: parsedDob.error });
+      dobVal = parsedDob.value;
     }
     if (!/^[\d+\-\s()]{6,15}$/.test(String(guardianPhone))) return reply.code(400).send({ error: 'Please enter a valid guardian phone number' });
     const phone = toE164(guardianPhone);
@@ -67,8 +80,13 @@ export function register(app, kernel) {
       if (ay !== currentSessionYear() && !['owner', 'itadmin'].includes(req.user.role)) {
         return reply.code(403).send({ error: `Only the school owner can record admissions for ${ay} — it is not the current session` });
       }
+      // A10: closed catalogue when configured; free text otherwise.
+      const src = String(source ?? s.default_source ?? 'walk-in').slice(0, 40);
+      if (Array.isArray(s.sources) && s.sources.length && !s.sources.map(String).includes(src)) {
+        return reply.code(400).send({ error: `Source must be one of this school's channels: ${s.sources.map(String).join(', ')}` });
+      }
       if (s.cycle_start && s.cycle_end) {
-        const today = mmdd(new Date());
+        const today = mmddIST();
         if (today < String(s.cycle_start) || today > String(s.cycle_end)) {
           const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
           const human = (md) => { const [m, d] = String(md).split('-'); return `${MONTHS[Number(m) - 1]} ${Number(d)}`; };
@@ -87,10 +105,10 @@ export function register(app, kernel) {
       await c.query('SAVEPOINT lead_insert');
       try {
         r = await c.query(
-          `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, admission_year)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+          `INSERT INTO plugin_admissions.lead (tenant_id, student_name, guardian_name, guardian_phone, class_applied, source, created_by, admission_year, dob)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
           [req.user.tenant_id, clamp(studentName, 120), clamp(guardianName, 120),
-            phone, clamp(classApplied, 40), clamp(source ?? s.default_source ?? 'walk-in', 40), req.user.id, ay]);
+            phone, clamp(classApplied, 40), src, req.user.id, ay, dobVal]);
         await c.query('RELEASE SAVEPOINT lead_insert');
       } catch (e) {
         if (e?.code === '23505') {
@@ -108,11 +126,11 @@ export function register(app, kernel) {
         VALUES ($1,$2,NULL,'enquiry',$3)`, [req.user.tenant_id, leadId, req.user.email]);
       await emitEvent(c, req.user.tenant_id,
         { type: 'admissions', label: `admission enquiry captured (${clamp(studentName, 60)})`, ref: leadId },
-        'admission.enquiry.captured', { leadId, classApplied, source: source ?? s.default_source ?? 'walk-in', admissionYear: ay });
+        'admission.enquiry.captured', { leadId, classApplied, source: src, admissionYear: ay });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'admission enquiry captured', recordType: 'AdmissionLead', recordRef: leadId,
         reason: 'lead capture', policyRef: 'DPDP consent obligations (guardian contact)', risk: 'low',
-        outcome: `enquiry created at stage enquiry (source ${source ?? s.default_source ?? 'walk-in'}, session ${ay})` });
+        outcome: `enquiry created at stage enquiry (source ${src}, session ${ay})` });
       return { ok: true, leadId, stage: 'enquiry', admissionYear: ay };
     });
   });
@@ -183,6 +201,10 @@ export function register(app, kernel) {
   app.post(`/plugins/${ID}/leads/:id/stage`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     const to = String(req.body?.to ?? '');
     if (!STAGES.includes(to)) return reply.code(400).send({ error: `"${to}" is not a stage we know` });
+    // A15: side exits end a child's application — they require a recorded reason
+    // (stored on the history row + audit). Checked AFTER terminal/lattice so a
+    // closed lead still answers 409 (immutable), not 400 (missing reason).
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const cur = (await c.query(`SELECT stage, student_name, class_applied, guardian_name, guardian_phone, admission_year, documents FROM plugin_admissions.lead WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
         [req.params.id, req.user.tenant_id])).rows[0];
@@ -191,29 +213,80 @@ export function register(app, kernel) {
       if (!(NEXT[cur.stage] ?? []).includes(to)) {
         return reply.code(409).send({ error: `This enquiry can\'t move from "${cur.stage}" to "${to}"` });
       }
+      if ((to === 'rejected' || to === 'withdrawn') && !reason) {
+        return reply.code(400).send({ error: `Moving to "${to}" needs a reason — it ends this application` });
+      }
+      // A8: seat capacity — offers stop when the grade is full (students + open
+      // offers/waitlists holding seats). The desk moves to `waitlisted` instead.
+      if (to === 'offer') {
+        const cap = Number((await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+          [req.user.tenant_id, ID])).rows[0]?.settings?.class_capacity ?? 0);
+        if (Number.isFinite(cap) && cap > 0) {
+          const { grade } = parseGradeApplied(cur.class_applied);
+          const filled = (await c.query(
+            `SELECT ((SELECT count(*)::int FROM app.students WHERE tenant_id=$1 AND status='active' AND grade=$2)
+                   + (SELECT count(*)::int FROM plugin_admissions.lead
+                       WHERE tenant_id=$1 AND class_applied=$3 AND stage IN ('offer','waitlisted') AND id<>$4)) AS n`,
+            [req.user.tenant_id, grade, cur.class_applied, req.params.id])).rows[0].n;
+          if (filled >= cap) {
+            return reply.code(409).send({ error: `Class ${cur.class_applied} is full (${filled}/${cap} seats) — move this enquiry to waitlisted instead` });
+          }
+        }
+      }
       // offer/waitlisted → enrolled: raise a KERNEL APPROVAL-GATED action (app.actions).
       // Admissions offers create core student records — a core-domain write — so it rides
       // kernel approval semantics; the plugin never writes app.students directly
       // (invariant: no_core_students_writes).
+      // A1: re-raise after a dismissal must work — the first raise keeps the exact
+      // code `students.create.<leadId>` (pinned by tests); later attempts suffix
+      // .<n>. An still-open raise is returned as-is (idempotent retry).
       let actionId = null;
       if ((cur.stage === 'offer' || cur.stage === 'waitlisted') && to === 'enrolled') {
-        const a = await c.query(
-          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
-           VALUES ($1,'students.create.'||$6::text,'approval',$2,$3,$4,'high','open','Principal','principal','Admissions §2',false,'admission.offer.accepted',$5::jsonb,'admissions.funnel') RETURNING id`,
-          [req.user.tenant_id,
+        const prior = (await c.query(
+          `SELECT id, code FROM app.actions
+            WHERE tenant_id=$1 AND status='open' AND payload->>'leadId'=$2 AND code LIKE 'students.create.%'`,
+          [req.user.tenant_id, req.params.id])).rows[0];
+        if (prior) {
+          actionId = prior.id;
+        } else {
+          const attempts = (await c.query(
+            `SELECT count(*)::int n FROM app.actions
+              WHERE tenant_id=$1 AND payload->>'leadId'=$2 AND code LIKE 'students.create.%'`,
+            [req.user.tenant_id, req.params.id])).rows[0].n;
+          const code = attempts > 0 ? `students.create.${req.params.id}.${attempts + 1}` : `students.create.${req.params.id}`;
+          const a = await c.query(
+            `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+             VALUES ($1,$2,'approval',$3,$4,$5,'high','open','Principal','principal','Admissions §2',false,'admission.offer.accepted',$6::jsonb,'admissions.funnel') RETURNING id`,
+            [req.user.tenant_id, code,
             'Admission offer accepted — create student record',
             `Lead ${cur.student_name} (class ${cur.class_applied}) accepted the offer. Approve to create the core student record.`,
             'Admissions offers create core students — core-domain write routed through kernel approval; the funnel never writes app.students directly.',
             JSON.stringify({ leadId: req.params.id, studentName: cur.student_name, classApplied: cur.class_applied,
               guardianName: cur.guardian_name, guardianPhone: cur.guardian_phone,
-              admissionYear: cur.admission_year ?? null }),
-            req.params.id]);
+              admissionYear: cur.admission_year ?? null,
+              /* G1: stamp the proposer. This action is OWNED by the principal (owner_role
+                 'principal'), and routes.js refuses to let an owning desk approve a raise that
+                 names no proposer — "Segregation of duties — this proposal was raised without
+                 an attributable proposer". The guard's own comment states the invariant it
+                 enforces: "Every human raise site stamps proposed_by." This site did not, so a
+                 coordinator's conversion was raised, routed to the principal's desk, and then
+                 unrecoverable — only the owner could clear it. Naming the raiser satisfies the
+                 invariant and keeps the SoD check meaningful: a coordinator cannot approve
+                 their own conversion, because proposed_by then equals their own user id. */
+              proposed_by: req.user.id, proposed_by_role: req.user.role })]);
         actionId = a.rows[0].id;
       }
+    }
       const u = await c.query(`UPDATE plugin_admissions.lead SET stage=$1, updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING stage`,
         [to, req.params.id, req.user.tenant_id]);
-      await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
-        VALUES ($1,$2,$3,$4,$5)`, [req.user.tenant_id, req.params.id, cur.stage, to, req.user.email]);
+      try {
+        await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor, reason)
+          VALUES ($1,$2,$3,$4,$5,$6)`, [req.user.tenant_id, req.params.id, cur.stage, to, req.user.email, reason || null]);
+      } catch {
+        // pre-152 database without the reason column — history without reason.
+        await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
+          VALUES ($1,$2,$3,$4,$5)`, [req.user.tenant_id, req.params.id, cur.stage, to, req.user.email]);
+      }
       // F-4: queue (never send) a guardian notice on offer and acceptance. Delivery is the
       // comms dispatcher's job; a school with no rail drains it honestly. Gated by the
       // `notify_guardians` setting (default true).
@@ -239,9 +312,45 @@ export function register(app, kernel) {
       }
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'admission stage transitioned', recordType: 'AdmissionLead', recordRef: req.params.id,
-        reason: 'funnel progression', policyRef: 'Platform §3 (plugin governance)', risk: to === 'enrolled' ? 'medium' : 'low',
-        outcome: `${cur.stage} → ${to}${actionId ? ' · students.create raised via kernel approval action (no plugin-direct core write)' : ''}` });
+        reason: reason || 'funnel progression', policyRef: 'Platform §3 (plugin governance)', risk: to === 'enrolled' ? 'medium' : 'low',
+        outcome: `${cur.stage} → ${to}${reason ? ` · reason: ${reason.slice(0, 120)}` : ''}${actionId ? ' · students.create raised via kernel approval action (no plugin-direct core write)' : ''}` });
       return { ok: true, from: cur.stage, to: u.rows[0].stage, actionId };
+    });
+  });
+
+  // ── repair: reopen a stranded enrolled lead (A14) ─────────────────────────
+  // Leads stranded by pre-A1 dismissals sit at `enrolled` with no student and no
+  // open action — terminal, unrecoverable through the lattice. Owner/principal may
+  // return exactly such a lead to `offer` (audited); anything else is refused so
+  // the repair cannot rewrite live conversions.
+  app.post(`/plugins/${ID}/leads/:id/reopen`, { preHandler: [require('owner', 'principal'), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (!reason) return reply.code(400).send({ error: 'A reason is required to reopen a stranded application' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const lead = (await c.query(`SELECT id, stage FROM plugin_admissions.lead WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      if (!lead) return reply.code(404).send({ error: 'We couldn\'t find that enquiry' });
+      if (lead.stage !== 'enrolled') return reply.code(409).send({ error: `Only a stranded enrolled lead can be reopened (this one is ${lead.stage})` });
+      const made = (await c.query(
+        `SELECT 1 FROM app.students WHERE tenant_id=$1 AND source='admissions' AND source_ref=$2`,
+        [req.user.tenant_id, req.params.id])).rows[0];
+      if (made) return reply.code(409).send({ error: 'This lead already has a student record — nothing to repair' });
+      const openAction = (await c.query(
+        `SELECT 1 FROM app.actions WHERE tenant_id=$1 AND status='open' AND payload->>'leadId'=$2`, [req.user.tenant_id, req.params.id])).rows[0];
+      if (openAction) return reply.code(409).send({ error: 'This lead has an open approval — decide it instead of reopening' });
+      await c.query(`UPDATE plugin_admissions.lead SET stage='offer', updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+        [req.params.id, req.user.tenant_id]);
+      try {
+        await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor, reason)
+          VALUES ($1,$2,'enrolled','offer',$3,$4)`, [req.user.tenant_id, req.params.id, req.user.email, reason]);
+      } catch {
+        await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
+          VALUES ($1,$2,'enrolled','offer',$3)`, [req.user.tenant_id, req.params.id, req.user.email]);
+      }
+      await requestAudit(c, req.user.tenant_id, ID, {
+        actor: req.user.email, action: 'stranded admission reopened', recordType: 'AdmissionLead', recordRef: req.params.id,
+        reason, policyRef: 'Platform §3 (plugin governance)', risk: 'medium', outcome: 'enrolled → offer (orphan repair)' });
+      return { ok: true, id: req.params.id, from: 'enrolled', to: 'offer' };
     });
   });
 
@@ -290,6 +399,11 @@ export function register(app, kernel) {
     }
     const label = clamp(b.label ?? 'Admission document', 80);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // A4: the id must be a real file OF THIS SCHOOL — previously any UUID-shaped
+      // string was accepted, leaving dangling (or foreign) references on the lead.
+      const own = (await c.query(`SELECT id FROM app.files WHERE id=$1 AND tenant_id=$2`,
+        [String(b.fileId), req.user.tenant_id]).catch(() => ({ rows: [] }))).rows[0];
+      if (!own) return reply.code(404).send({ error: 'That file does not exist in this school — upload through files.store first' });
       const doc = { fileId: String(b.fileId), label, attachedAt: new Date().toISOString(), by: req.user.email };
       const r = await c.query(
         `UPDATE plugin_admissions.lead SET documents = documents || $3::jsonb, updated_at=now()
@@ -316,6 +430,21 @@ export function register(app, kernel) {
         return reply.code(409).send({ error: 'An offer letter is only available once an offer has been made' });
       }
       const session = l.admission_year || currentSessionYear();
+      // A11: enclose the class fee table so the offer states the price, not just the
+      // seat. Reads the school's own plan templates for the normalised grade (best
+      // effort — no plan configured means no fee lines, never a failure).
+      let feeLines = [];
+      try {
+        const { grade } = parseGradeApplied(l.class_applied);
+        const plans = (await c.query(
+          `SELECT name, terms FROM app.fee_plan_templates WHERE tenant_id=$1 AND $2 = ANY(grades) ORDER BY name LIMIT 5`,
+          [req.user.tenant_id, grade]).catch(() => ({ rows: [] }))).rows;
+        for (const pl of plans) {
+          for (const t of (Array.isArray(pl.terms) ? pl.terms : [])) {
+            feeLines.push(`- ${pl.name} · ${t.label ?? t.term ?? ''}: Rs ${(Number(t.amount_cents ?? 0) / 100).toFixed(2)}${t.due_on ? ` (due ${t.due_on})` : ''}`);
+          }
+        }
+      } catch { feeLines = []; }
       const letter = [
         `${l.school}`,
         ``,
@@ -328,6 +457,7 @@ export function register(app, kernel) {
         `submission of the required documents.`,
         ``,
         `Please confirm acceptance so we may create the student record and complete enrollment.`,
+        ...(feeLines.length ? [``, `Fee structure for Class ${l.class_applied} (as configured by the school):`, ...feeLines] : []),
         ``,
         `Warm regards,`,
         `Admissions Office`,
@@ -338,17 +468,24 @@ export function register(app, kernel) {
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'admission offer letter generated', recordType: 'AdmissionLead', recordRef: l.id,
         reason: 'offer letter', policyRef: 'Platform §3 (plugin governance)', risk: 'low',
-        outcome: `offer letter rendered for ${l.student_name} (class ${l.class_applied}, session ${session})` });
-      return { leadId: l.id, studentName: l.student_name, classApplied: l.class_applied, admissionYear: session, letter };
+        outcome: `offer letter rendered for ${l.student_name} (class ${l.class_applied}, session ${session})${feeLines.length ? ` with ${feeLines.length} fee line(s)` : ' (no fee plan configured for this class)'}` });
+      return { leadId: l.id, studentName: l.student_name, classApplied: l.class_applied, admissionYear: session, letter, feeLines };
     });
   });
 
   // ── stage history (admin roles) ──────────────────────────────────────────────
   app.get(`/plugins/${ID}/leads/:id/history`, { preHandler: [require(...ADMIN), uuidParams('id'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const rows = (await c.query(
-        `SELECT from_stage, to_stage, actor, at FROM plugin_admissions.stage_history
-         WHERE lead_id=$1 AND tenant_id=$2 ORDER BY at ASC`, [req.params.id, req.user.tenant_id])).rows;
+      let rows;
+      try {
+        rows = (await c.query(
+          `SELECT from_stage, to_stage, actor, at, reason FROM plugin_admissions.stage_history
+           WHERE lead_id=$1 AND tenant_id=$2 ORDER BY at ASC`, [req.params.id, req.user.tenant_id])).rows;
+      } catch {
+        rows = (await c.query(
+          `SELECT from_stage, to_stage, actor, at FROM plugin_admissions.stage_history
+           WHERE lead_id=$1 AND tenant_id=$2 ORDER BY at ASC`, [req.params.id, req.user.tenant_id])).rows;
+      }
       if (!rows.length) return reply.code(404).send({ error: 'We couldn\'t find that enquiry' });
       return { history: rows };
     });
@@ -408,35 +545,24 @@ export function register(app, kernel) {
   // F-3: `stuck > 7d` was computed on read and nothing ever escalated. This sweep is the
   // escalation: it raises an in-app notification per stuck lead (one per lead per day —
   // idempotent by the day check) and emits `admission.followup.overdue` so the event spine
-  // records the chase. Safe to run from cron or a worker; it never mutates the lead.
+  // records the chase. A5: the selection/notification core lives in sla.js, shared with
+  // the day-worker step — the door only adds events + audit. Safe to run from cron or a
+  // worker; it never mutates the lead.
   app.post(`/plugins/${ID}/sla/run`, { preHandler: [require('owner', 'principal', 'itadmin'), lifecycleGate] }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const stuck = (await c.query(
-        `SELECT id, student_name, class_applied, stage, updated_at
-           FROM plugin_admissions.lead
-          WHERE tenant_id=$1 AND stage <> ALL($2::text[]) AND updated_at < now() - interval '7 days'
-          ORDER BY updated_at ASC LIMIT 200`, [req.user.tenant_id, CLOSED_STAGES])).rows;
-      let raised = 0; let skipped = 0;
-      for (const l of stuck) {
-        const already = (await c.query(
-          `SELECT 1 FROM app.notifications WHERE tenant_id=$1 AND ref=$2 AND created_at::date = current_date LIMIT 1`,
-          [req.user.tenant_id, l.id])).rows[0];
-        if (already) { skipped++; continue; }
-        await c.query(
-          `INSERT INTO app.notifications (tenant_id, "group", title, body, ref)
-           VALUES ($1,'needs-you',$2,$3,$4)`,
-          [req.user.tenant_id, `Follow up: ${l.student_name} (${l.class_applied}) at ${l.stage}`,
-            'No touchpoint for more than 7 days. Open the admissions funnel to follow up.', l.id]);
-        await emitEvent(c, req.user.tenant_id,
-          { type: 'admissions', label: `admission follow-up overdue: ${l.student_name} (${l.stage})`, ref: l.id },
-          'admission.followup.overdue', { leadId: l.id, stage: l.stage });
-        raised++;
-      }
+      const out = await runFollowupSla(c.query.bind(c), req.user.tenant_id, {
+        actor: req.user.email,
+        emit: async (topic, payload, lead) => {
+          await emitEvent(c, req.user.tenant_id,
+            { type: 'admissions', label: `admission follow-up overdue: ${lead.student_name} (${lead.stage})`, ref: payload.leadId },
+            topic, payload);
+        },
+      });
       await requestAudit(c, req.user.tenant_id, ID, {
         actor: req.user.email, action: 'admission follow-up SLA sweep', recordType: 'AdmissionLead', recordRef: 'sla',
         reason: 'follow-up SLA (>7 days without touch)', policyRef: 'Platform §3 (plugin governance)', risk: 'low',
-        outcome: `${stuck.length} stuck lead(s) scanned · ${raised} escalated · ${skipped} already chased today` });
-      return { ok: true, scanned: stuck.length, raised, skipped };
+        outcome: `${out.scanned} stuck lead(s) scanned · ${out.raised} escalated · ${out.skipped} already chased today · ${out.reminded ?? 0} interview reminder(s)` });
+      return { ok: true, scanned: out.scanned, raised: out.raised, skipped: out.skipped, reminded: out.reminded ?? 0 };
     });
   });
 }

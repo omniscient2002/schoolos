@@ -16,6 +16,8 @@
 //     information_schema probes; absent tables yield empty sections, never 500s.
 import { makeLifecycleGate } from '../_shared/lifecycle-gate.js';
 import { uuidParams } from '../_shared/uuid-param.js';
+import { servedReport } from '../_shared/exam-report.js';
+import { pluginAbsent } from '../_shared/optional-table.js';
 
 const ID = 'family.view';
 export { default as manifest } from './manifest.js';
@@ -67,14 +69,38 @@ export function register(app, kernel) {
          AND table_schema = CASE WHEN position('.' in $1) > 0 THEN split_part($1, '.', 1) ELSE 'public' END`,
       [name])).rows.length;
 
-  /* A1: the exams plugin tables are absent when the plugin is off; degrade ONLY for that case.
-     A silent `.catch(() => ({rows:[]}))` used to hide real query errors (a wrong column made every
-     parent result silently empty). Now a missing table degrades and anything else surfaces. */
-  const pluginAbsent = (e) => {
-    // 42P01 = undefined_table (plugin off). A wrong COLUMN (42703) must surface, not hide.
-    if (e?.code === '42P01' || /relation .* does not exist/i.test(String(e))) return { rows: [] };
-    throw e;
-  };
+  /* A1 (+F-18): the exams plugin tables are absent when the plugin is off;
+     degrade ONLY for that case. Now shared at ../_shared/optional-table.js so every
+     plane shares one rule instead of drifting copies. */
+
+/* F1: the grade scale the exams plugin grades on, read the same way the staff report door reads the
+     SETTINGS — one settings key, one default, so a moderated grade cannot be re-derived differently on
+     the staff plane than on the family plane.
+
+     Read through `c` (the constrained, tenant-scoped connection) rather than the owner-path helper the
+     staff door uses: `app.plugins` carries the same tenant_isolation policy as every other tenant
+     table, so the owner path bought nothing here. Every owner-path call site is counted and pinned by
+     the RLS boundary test, and "the sibling door does it this way" is not a reason to add one. */
+  const examScale = async (c, tenantId) =>
+    (await c.query(`SELECT COALESCE(settings->>'gradeScale', settings->>'grade_scale') AS gs
+                      FROM app.plugins WHERE tenant_id=$1 AND plugin_id=$2`,
+      [tenantId, 'exams.assessment'])).rows[0]?.gs ?? 'cbse_10_point';
+
+  /* F1: the ONE exam read model — an approved moderation overlay supersedes the frozen
+     snapshot, on every plane. Both parent doors below go through servedReport() exactly as
+     the staff report door does, so a moderated 90/A2 can never read to a family as 57/C1.
+     The overlay is joined in the same query: the family plane reads it with the report so
+     the two can never be served out of step. */
+  const servedExams = async (c, { studentId, tenantId, scale }) =>
+    (await c.query(
+      `SELECT e.name AS exam_name, e.term, r.snapshot, r.digest, r.created_at AS published_at,
+              (SELECT m.adjusted_snapshot FROM plugin_exams.moderation m
+                WHERE m.report_id=r.id AND m.status='approved'
+                ORDER BY m.decided_at DESC LIMIT 1) AS moderation
+         FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
+        WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
+        ORDER BY r.created_at DESC NULLS LAST LIMIT 12`, [studentId, tenantId]).catch(pluginAbsent)).rows
+      .map((r) => ({ ...r, ...servedReport(r, r.moderation ? { adjusted_snapshot: r.moderation } : null, scale) }));
 
   // ── home aggregation ────────────────────────────────────────────────────────
   app.get('/parent/home', { preHandler: [require(...GUARDIAN), lifecycleGate] }, async (req) => {
@@ -223,15 +249,14 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (!(await assertOwnChild(c, req.user.id, req.params.id)))
         return bad(reply, 'This child is not linked to your family account', 403);
-      // A1: derive pct/grade from the snapshot JSON; the row's time is created_at.
-      const rep = (await c.query(
-        `SELECT e.name AS exam_name, e.term, (r.snapshot->>'pct') AS total_pct,
-                COALESCE(r.snapshot->>'grade', r.snapshot->>'division') AS grade, r.digest, r.created_at AS published_at
-           FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
-          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
-          ORDER BY r.created_at DESC NULLS LAST LIMIT 12`, [req.params.id, req.user.tenant_id]).catch(pluginAbsent)).rows;
-      return { reports: rep.map(r => ({ exam: r.exam_name, term: r.term, pct: r.total_pct, grade: r.grade, publishedAt: r.published_at,
-        explain: r.total_pct == null ? 'Result details will appear here once the school publishes them.' :
+      // F1: served through the shared exam read model (overlay supersedes the frozen snapshot;
+      // pct is a number and the grade is the served one, never the pre-moderation value).
+      const rows = await servedExams(c, { studentId: req.params.id, tenantId: req.user.tenant_id,
+        scale: await examScale(c, req.user.tenant_id) });
+      return { reports: rows.map(r => ({ exam: r.exam_name, term: r.term, pct: r.report?.pct ?? null,
+        grade: r.report?.grade ?? r.report?.division ?? null, points: r.report?.points ?? null,
+        moderated: r.moderated, publishedAt: r.published_at,
+        explain: r.report?.pct == null ? 'Result details will appear here once the school publishes them.' :
           `This result is from ${r.exam_name}. It shows what was understood at that point — growth across results matters more than any single score.` })) };
     });
   });
@@ -263,19 +288,20 @@ export function register(app, kernel) {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (!(await assertOwnChild(c, req.user.id, req.params.id)))
         return bad(reply, 'This child is not linked to your family account', 403);
+      const child = (await c.query(`SELECT grade FROM app.students WHERE id=$1 AND tenant_id=$2`,
+        [req.params.id, req.user.tenant_id])).rows[0];
+      // F2: 'upcoming' means not yet published. The old list also carried published exams,
+      // so every finished exam appeared twice — once as a result, once as a promise.
       const upcoming = (await c.query(
         `SELECT id, name, term, class_grade FROM plugin_exams.exam
-         WHERE tenant_id=$1 AND class_grade=$2 AND status IN ('draft','published')
-         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, (await c.query(`SELECT grade FROM app.students WHERE id=$1 AND tenant_id=$2`, [req.params.id, req.user.tenant_id])).rows[0]?.grade]).catch(pluginAbsent)).rows;
-      // A1: derive pct/grade from the snapshot JSON.
-      const published = (await c.query(
-        `SELECT e.name AS exam, (r.snapshot->>'pct') AS total_pct,
-                COALESCE(r.snapshot->>'grade', r.snapshot->>'division') AS grade
-           FROM plugin_exams.report r JOIN plugin_exams.exam e ON e.id=r.exam_id
-          WHERE r.student_id=$1 AND r.tenant_id=$2 AND e.status='published'
-          ORDER BY r.created_at DESC NULLS LAST LIMIT 8`,
-        [req.params.id, req.user.tenant_id]).catch(pluginAbsent)).rows;
-      return { upcoming, published };
+         WHERE tenant_id=$1 AND class_grade=$2 AND status='draft'
+         ORDER BY created_at DESC LIMIT 8`, [req.user.tenant_id, child?.grade]).catch(pluginAbsent)).rows;
+      // F1: same shared read model as /academics — an approved overlay supersedes the snapshot.
+      const published = await servedExams(c, { studentId: req.params.id, tenantId: req.user.tenant_id,
+        scale: await examScale(c, req.user.tenant_id) });
+      return { upcoming, published: published.map(r => ({ exam: r.exam_name, term: r.term,
+        total_pct: r.report?.pct ?? null, grade: r.report?.grade ?? r.report?.division ?? null,
+        points: r.report?.points ?? null, moderated: r.moderated, publishedAt: r.published_at })) };
     });
   });
 
@@ -291,7 +317,7 @@ export function register(app, kernel) {
       if (child.bus_route) {
         route = (await c.query(
           `SELECT code, name, vehicle, capacity FROM app.routes WHERE tenant_id=$1 AND code=$2`,
-          [req.user.tenant_id, child.bus_route]).catch(() => ({ rows: [] }))).rows[0] ?? null;
+          [req.user.tenant_id, child.bus_route]).catch(pluginAbsent)).rows[0] ?? null;
       }
       return {
         child_id: req.params.id,

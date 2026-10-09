@@ -13,7 +13,20 @@ export default {
     type: 'object',
     properties: {
       default_source: { type: 'string', description: 'fallback inquiry source (walk-in, referral, website, phone)' },
-      enrollment_term: { type: 'string', description: 'term leads are being captured for (e.g. 2027-28)' },
+      /* A10: tenant-owned source catalogue. Empty/absent = free text (backward
+       * compatible); a non-empty list closes capture to those values so source
+       * reports stop rotting (`Walk-in` vs `walk in`). */
+      sources: { type: 'array', items: { type: 'string' }, description: 'allowed inquiry sources; empty means any source is accepted' },
+      /* A8: seat capacity per grade (0 = unlimited). Enforced when moving to
+       * `offer`: filled seats (active students + open offers/waitlists for the
+       * class) at capacity refuses with a waitlist suggestion. */
+      class_capacity: { type: 'integer', minimum: 0, default: 0, description: 'seats per grade; 0 means unlimited' },
+      /* A9: age bands per grade, e.g. {"1":{"min":5,"max":7}}. Empty = no check.
+       * Enforced at conversion (age as on 31 March of the admission year). */
+      age_bands: { type: 'object', description: 'minimum/maximum age per grade, e.g. {"1":{"min":5,"max":7}}; empty means no check' },
+      /* A7: `enrollment_term` was accepted by settings but read by nothing — a
+       * decorative knob. Removed (2026-10-07): stored values stay inert, new
+       * payloads carrying it are rejected as unknown, per the honesty rule. */
       /* SEC-6 (2026-09-14): these three were read by the door — `index.js:79-89` drives the admissions session
        * window and stamps the session year on every lead from them — but were NOT declared in this manifest, so
        * it did not describe the module's own settings. That gap was invisible while the settings door persisted
