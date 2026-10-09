@@ -19,13 +19,13 @@ function LiveMaintVendors() {
     <div>
       <PageHead
         title="Vendor directory"
-        sub="Contracts, SLAs and escalation contacts."
+        sub="Contracts, deadlines and escalation contacts."
       />
       <Card pad>
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="There is no vendors door on the server yet. The demo world shows fixture vendors; a live school sees nothing here until the door lands."
+          sub="There is no vendor data available yet. The demo world shows sample vendors; a live school sees nothing here until that data is available."
         />
       </Card>
     </div>

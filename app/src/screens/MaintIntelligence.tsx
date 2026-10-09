@@ -25,7 +25,7 @@ function LiveMaintIntelligence() {
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="There is no analytics door behind these forecasts yet. Showing them without a data source would be fiction, so this screen stays empty until the door lands."
+          sub="There is no analytics data behind these forecasts yet. Showing them without a data source would be fiction, so this screen stays empty until that data is available."
         />
       </Card>
     </div>

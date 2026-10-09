@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react';
 import { Badge, Card, Empty, PageHead, SkeletonCard, Tabs } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { roleLabel, classLabel } from '../../lib/labels';
 import {
   getMasteryClassLive, getMasteryStudentLive,
   type MasteryCell, type MasteryMapRow,
@@ -21,7 +22,7 @@ function ClassView({ grade, subject }: { grade: string; subject: string }) {
   const state = useAsync(() => getMasteryClassLive(grade, subject), [grade, subject]);
   return (
     <AsyncGate state={state} skeleton={<SkeletonCard lines={6} />}
-      empty={<Empty icon={<Icon.Grid size={22} />} title="No mastery data yet" sub="Labels appear as tests, homework and observations are recorded." />}>
+      empty={<Empty icon={<Icon.Grid size={22} />} title="No topic-understanding data yet" sub="Labels appear as tests, homework and observations are recorded." />}>
       {({ cells, students }) => {
         const byStudent = new Map<string, MasteryCell[]>();
         for (const c of cells) {
@@ -33,7 +34,7 @@ function ClassView({ grade, subject }: { grade: string; subject: string }) {
             <div className="u-small u-muted" style={{ marginBottom: 10 }}>
               {students} student{students === 1 ? '' : 's'} with evidence · {cells.length} labelled cell{cells.length === 1 ? '' : 's'} · sorted by name, never by score
             </div>
-            {byStudent.size === 0 ? <Empty icon={<Icon.Grid size={22} />} title="No labelled cells yet" sub="Once evidence is recorded, mastery appears here." /> : (
+            {byStudent.size === 0 ? <Empty icon={<Icon.Grid size={22} />} title="No labelled cells yet" sub="Once evidence is recorded, topic understanding appears here." /> : (
               <div className="u-col" style={{ gap: 10 }}>
                 {[...byStudent.entries()].map(([id, cs]) => (
                   <Card key={id} pad>
@@ -43,7 +44,7 @@ function ClassView({ grade, subject }: { grade: string; subject: string }) {
                         <span key={c.topicId} className="u-flex" style={{ gap: 6, alignItems: 'center', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: '5px 9px' }}>
                           <Badge tone={TONE[c.level ?? 'neutral'] ?? 'neutral'} dot>{WORD[c.level ?? ''] ?? '—'}</Badge>
                           <span className="u-small">{c.topic}</span>
-                          {c.decayed && <span className="u-xs u-faint">decayed</span>}
+                          {c.decayed && <span className="u-xs u-faint">needs fresh evidence</span>}
                         </span>
                       ))}
                     </div>
@@ -83,7 +84,7 @@ function StudentView({ grade, subject }: { grade: string; subject: string }) {
           {ids.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
       </div>
-      {state.loading ? <SkeletonCard lines={5} /> : !state.data ? <Empty icon={<Icon.Grid size={22} />} title="No mastery data yet" sub="Labels appear as evidence is recorded." /> : (
+      {state.loading ? <SkeletonCard lines={5} /> : !state.data ? <Empty icon={<Icon.Grid size={22} />} title="No topic-understanding data yet" sub="Labels appear as evidence is recorded." /> : (
         <div className="grid grid-2">
           {(state.data.map as MasteryMapRow[]).map(t => (
             <Card key={t.nodeId} pad>
@@ -95,7 +96,7 @@ function StudentView({ grade, subject }: { grade: string; subject: string }) {
                 <Badge tone={TONE[t.level ?? 'neutral'] ?? 'neutral'} dot>{t.levelLabel ?? WORD[t.level ?? ''] ?? '—'}</Badge>
               </div>
               <div className="u-small u-muted" style={{ marginTop: 8 }}>
-                {t.freshEvidenceCount} fresh · {t.expiredEvidenceCount} expired · confidence {t.confidence ?? '—'}
+                {t.freshEvidenceCount} fresh · {t.expiredEvidenceCount} expired · evidence confidence {t.confidence ?? '—'}
                 {t.decayed && ' · label decayed'}
               </div>
             </Card>
@@ -112,11 +113,11 @@ export default function MasteryMap() {
   const [view, setView] = useState('class');
   const [subject, setSubject] = useState('Mathematics');
   const [grade, setGrade] = useState('8');
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
-      <PageHead title="Mastery map" sub="Every label rests on evidence and expires without fresh work. “Needs support” describes this month's work, not the child."
-        actions={<Badge tone="outline" dot>{subject} · Class {grade}</Badge>} />
+      <PageHead title="Topic understanding map" sub="Every label rests on evidence and expires without fresh work. “Needs support” describes this month's work, not the child."
+        actions={<Badge tone="outline" dot>{subject} · {classLabel(grade)}</Badge>} />
       <div className="u-flex u-wrap" style={{ gap: 10, marginBottom: 12 }}>
         <select className="input" style={{ width: 'auto' }} value={subject} onChange={e => setSubject(e.target.value)} aria-label="Subject">
           {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}

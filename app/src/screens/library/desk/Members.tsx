@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Button, Badge, DataTable, ErrorState, Empty } from '../../../components/ui';
 import { friendly } from '../../../lib/friendlyErrors';
+import { roleLabel, humanize } from '../../../lib/labels';
 import { libraryMembers, type LibraryBorrower } from '../../../services/adminApi';
 import { inr } from './shared';
 
@@ -48,9 +49,9 @@ export default function Members() {
       ) : (
         <DataTable
           columns={[
-            { key: 'name', label: 'Member', render: (m: LibraryBorrower) => <span><b>{m.name}</b><span className="u-xs u-muted" style={{ display: 'block' }}>{m.type === 'student' ? `${m.grade}-${m.section}` : m.role}</span></span> },
+            { key: 'name', label: 'Member', render: (m: LibraryBorrower) => <span><b>{m.name}</b><span className="u-xs u-muted" style={{ display: 'block' }}>{m.type === 'student' ? `${m.grade}-${m.section}` : roleLabel(m.role)}</span></span> },
             { key: 'id', label: 'ID', render: (m: LibraryBorrower) => <code>{m.identifier}</code> },
-            { key: 'type', label: 'Type', render: (m: LibraryBorrower) => <Badge tone={m.type === 'student' ? 'info' : 'neutral'}>{m.type}</Badge> },
+            { key: 'type', label: 'Type', render: (m: LibraryBorrower) => <Badge tone={m.type === 'student' ? 'info' : 'neutral'}>{humanize(m.type)}</Badge> },
             { key: 'out', label: 'Out', render: (m: LibraryBorrower) => m.openLoans },
             { key: 'dues', label: 'Dues', render: (m: LibraryBorrower) => (m.duesCents ? <Badge tone="warning">{inr(m.duesCents)}</Badge> : '—') },
           ]}

@@ -80,6 +80,27 @@ const KIND_BADGE: Record<StudentAttentionItem['kind'], { tone: 'outline' | 'info
   other: null,
 };
 
+/* My day code: this portal's 12-char register code for today. Show it (or the slip) when the
+   teacher takes the register by codes — it dies at midnight, so yesterday's buys nothing. */
+function DayCode() {
+  const [code, setCode] = useState<{ code: string; day: string } | null>(null);
+  useEffect(() => {
+    let dead = false;
+    import('../../services/liveApi').then(({ apiGet }) =>
+      apiGet<{ code: string; day: string }>('/attendance/my-qr')
+        .then(r => { if (!dead) setCode(r); })
+        .catch(() => { if (!dead) setCode(null); }));
+    return () => { dead = true; };
+  }, []);
+  if (!code) return null;
+  return (
+    <Card headAs="h2" head="My day code" sub="Show this when the register is taken by codes.">
+      <div className="mono" style={{ fontSize: 26, fontWeight: 800, letterSpacing: 3 }}>{code.code}</div>
+      <div className="u-xs u-faint" style={{ marginTop: 4 }}>Today only — a new code every day.</div>
+    </Card>
+  );
+}
+
 export default function StudentHome2() {
   const toast = useToast();
   const live = useSession();
@@ -248,6 +269,8 @@ export default function StudentHome2() {
                   ].join(' • ')}
             </div>
           </Card>
+
+          <DayCode />
 
           {/* ---------- NEEDS ATTENTION checklist ---------- */}
           <Card headAs="h2" head="Needs your attention" sub="Tick it off when it&apos;s done — nothing nags you.">

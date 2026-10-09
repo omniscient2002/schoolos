@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../state/store';
 import { apiGet, apiExams, apiExamBulkMarks, apiExamPublish, apiExamPublishExecute, apiBoardPolicy, type ExamSummary, type BulkMarkFailure } from '../../services/liveApi';
 import { friendly } from '../../lib/friendlyErrors';
+import { statusLabel, humanize } from '../../lib/labels';
 import {
   PageHead, Card, Badge, Button, Empty, Stat, useToast, SkeletonCard, ErrorState, KeyValue, Modal,
 } from '../../components/ui';
@@ -165,7 +166,7 @@ export default function ExamMarks() {
     setBusy('publish');
     try {
       const res = await apiExamPublish(exam.id);
-      toast({ title: 'Approval raised', sub: `Kernel action ${res.actionId?.slice(0, 8)}… is waiting in the Action Center — publication proceeds only after it is approved.`, tone: 'success' });
+      toast({ title: 'Approval raised', sub: `Approval ${res.actionId?.slice(0, 8)}… is waiting in the Action Center — publication proceeds only after it is approved.`, tone: 'success' });
       exams.retry();
     } catch (e) {
       toast({ title: 'Could not raise the approval', sub: friendly(e), tone: 'error' });
@@ -214,7 +215,7 @@ export default function ExamMarks() {
               onClick={() => setExamId(e.id)}
             >
               {e.name} · {e.classGrade ? `Class ${e.classGrade}` : '—'}
-              <Badge tone={e.status === 'published' ? 'success' : 'neutral'}>{e.status ?? 'draft'}</Badge>
+              <Badge tone={e.status === 'published' ? 'success' : 'neutral'}>{statusLabel(e.status ?? 'draft')}</Badge>
             </Button>
           ))}
         </div>
@@ -234,7 +235,7 @@ export default function ExamMarks() {
               <div className="u-col" style={{ gap: 3 }}>
                 <span style={{ fontWeight: 620 }}>Publication — approval before publish</span>
                 <span className="u-small u-muted">
-                  Request raises a kernel approval in the Action Center; executing assembles deterministic report cards and freezes marks.
+                  Request raises an approval in the Action Center; executing assembles the report cards and freezes marks.
                   The person who raised it cannot execute it — a second admin must.
                 </span>
               </div>
@@ -325,12 +326,12 @@ export default function ExamMarks() {
           {/* ---- board policy ---- */}
           {policy.data && (
             <Card pad>
-              <div className="card-head"><h3>Board policy</h3><span className="u-small u-faint">GET /board-policy</span></div>
+              <div className="card-head"><h3>Exam board policy</h3></div>
               <div className="card-body">
                 <KeyValue
                   cols={1}
                   items={Object.entries(policy.data.policy ?? policy.data).slice(0, 8).map(([k, v]) => ({
-                    k,
+                    k: humanize(k),
                     v: typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—'),
                   }))}
                 />
@@ -359,7 +360,7 @@ export default function ExamMarks() {
           className="input" rows={8} value={pasteText}
           onChange={e => setPasteText(e.target.value)}
           placeholder={'ADM-2F9K, 87, 100\nADM-3T1P, 92'}
-          style={{ fontFamily: 'var(--mono, monospace)', fontSize: 12.5 }}
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}
         />
         {pasteText.trim() && (
           <div className="u-col" style={{ gap: 4, marginTop: 8, maxHeight: 160, overflowY: 'auto' }}>

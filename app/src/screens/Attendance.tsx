@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as seed from '../data/dataset';
-import { apiAttendance, apiMarkAttendance } from '../services/liveApi';
+import { apiAttendance, apiGet, apiMarkAttendance, apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { useStore } from '../state/store';
 import {
@@ -60,7 +60,20 @@ interface RosterRow {
   note?: string;
 }
 
-interface SectionOpt { id: string; grade: number; name: string; campus: string; count: number }
+/* GRADE-1: `grade` is a free-text string everywhere on the server. The school
+   authors it on the Classes screen ("e.g. 6, LKG, Nursery"), and the value comes
+   back from GET /attendance as text. This screen used to coerce it with
+   Number(), which turns every real grade name into NaN — the picker rendered
+   "Grade NaN-A" and the register for the chosen section came back empty, so a
+   school could not mark attendance at all. Kept as text; ordering uses a
+   numeric-aware comparator that falls back to natural order. */
+interface SectionOpt { id: string; grade: string; name: string; campus: string; count: number }
+
+/** "Grade 2" / "2" / "II" ordering: numeric when the grade carries a number, else natural. */
+function gradeOrder(g: string): number {
+  const m = /(\d+)/.exec(g);
+  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+}
 
 interface RegisterData {
   /** all students for the day (server rows or demo blob) — sliced client-side by section */
@@ -89,13 +102,39 @@ export default function Attendance() {
   const [sectionId, setSectionId] = useState('');
   const [tab, setTab] = useState<'mark' | 'history'>('mark');
 
+  /* Day codes: 12-char single-day tokens per pupil (print the sheet, pupils show slips or read
+     their code from the student portal). Marking consumes valid codes; yesterday's are dead. */
+  const [qrOpen, setQrOpen] = useState(false);
+  const [qrCodes, setQrCodes] = useState<{ studentId: string; name: string; code: string }[] | null>(null);
+  const [qrPaste, setQrPaste] = useState('');
+  const loadQr = async () => {
+    if (!section) { toast({ title: 'Pick a class first', tone: 'info' }); return; }
+    setQrOpen(true);
+    try {
+      const r = await apiGet<{ day: string; tokens: { studentId: string; name: string; code: string }[] }>(
+        `/attendance/qr?grade=${encodeURIComponent(section.grade)}&section=${encodeURIComponent(section.name)}`);
+      setQrCodes(r.tokens ?? []);
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); setQrCodes([]); }
+  };
+  const markQr = async () => {
+    const codes = qrPaste.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    if (!codes.length) { toast({ title: 'Paste or type the day codes', tone: 'info' }); return; }
+    try {
+      const r = await apiPost<{ marked: string[]; markedCount: number; invalid: number }>('/attendance/qr-mark', { codes });
+      toast({ title: r.markedCount ? `Marked present — ${r.marked.slice(0, 3).join(', ')}${r.marked.length > 3 ? ` +${r.marked.length - 3} more` : ''}` : 'No valid codes',
+        sub: r.invalid ? `${r.invalid} code(s) ignored (wrong class, stale day, or typo).` : undefined,
+        tone: r.markedCount ? 'success' : 'info' });
+      setQrPaste('');
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+  };
+
   /* ---- register load: the register IS the server response ---- */
   const register = useAsync<RegisterData>(async () => {
-    let server: ServerRow[] = [];
-    try {
-      const res = await apiAttendance(todayISO);
-      server = Array.isArray(res.rows) ? res.rows as ServerRow[] : [];
-    } catch { /* surfaced by the error shell below */ }
+    /* UX-05: a failed register fetch must stay a retryable error — never an
+       apparently empty live roster. Let the rejection reach useAsync so the
+       error shell renders instead of a zero-student section. */
+    const res = await apiAttendance(todayISO);
+    const server: ServerRow[] = Array.isArray(res.rows) ? res.rows as ServerRow[] : [];
 
     const byKey = new Map<string, ServerRow[]>();
     for (const r of server) {
@@ -104,12 +143,12 @@ export default function Attendance() {
       byKey.get(key)!.push(r);
     }
     const sections: SectionOpt[] = [...byKey.entries()].map(([key, list]) => ({
-      id: key, grade: Number(list[0].grade), name: String(list[0].section ?? ''), campus: session.activeCampus, count: list.length,
-    })).sort((a, b) => a.grade - b.grade || a.name.localeCompare(b.name));
+      id: key, grade: String(list[0].grade ?? ''), name: String(list[0].section ?? ''), campus: session.activeCampus, count: list.length,
+    })).sort((a, b) => gradeOrder(a.grade) - gradeOrder(b.grade) || a.name.localeCompare(b.name));
     const allRows: RosterRow[] = server.map(r => ({
       person: {
         id: r.id, name: r.name, type: 'student', campus: session.activeCampus, email: '', phone: '',
-        grade: Number(r.grade), section: String(r.section ?? ''), rollNo: r.admission_no ?? undefined,
+        grade: String(r.grade ?? ''), section: String(r.section ?? ''), rollNo: r.admission_no ?? undefined,
       } as Person,
       prefill: markFromStatus(r.status),
       note: r.note ?? undefined,
@@ -132,7 +171,7 @@ export default function Attendance() {
   }, [sections, sectionId]);
 
   const section = sections.find(s => s.id === sectionId);
-  const sectionLabel = section ? `Grade ${section.grade}-${section.name}` : '—';
+  const sectionLabel = section ? `${section.grade} · ${section.name}` : '—';
   const serverMode = register.data?.serverMode ?? false;
   const demoSection = !serverMode ? seed.sections.find(s => s.id === sectionId) : undefined;
   const classTeacher = demoSection ? seed.findPerson(demoSection.classTeacherId) : undefined;
@@ -373,7 +412,7 @@ export default function Attendance() {
           >
             {sections.map(s => (
               <option key={s.id} value={s.id}>
-                {`Grade ${s.grade}-${s.name} · ${s.count} students`}
+                {`${s.grade} · ${s.name} · ${s.count} students`}
               </option>
             ))}
           </select>
@@ -468,6 +507,9 @@ export default function Attendance() {
                   >
                     Everyone present except…
                   </Button>
+                  <Button size="sm" variant={qrOpen ? 'ai' : 'secondary'} icon={<Icon.Code size={13} />} aria-pressed={qrOpen} onClick={() => { setQrOpen(o => !o); if (!qrOpen) void loadQr(); }}>
+                    Day codes
+                  </Button>
                 </div>
                 <div className="u-flex" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="u-xs u-faint">{weekday(today)}, {fmtDate(today)}{register.data?.markedBy ? ` · marked by ${register.data.markedBy}` : ''}</span>
@@ -514,6 +556,32 @@ export default function Attendance() {
                         </button>
                       );
                     })}
+                  </div>
+                </div>
+              )}
+
+              {qrOpen && (
+                <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-2)' }}>
+                  <div className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 8 }}>
+                    Day codes — {section ? `${section.grade} · ${section.name}` : ''} (single-day, print the sheet or read from the pupil portal)
+                  </div>
+                  {qrCodes == null ? <div className="u-small u-muted">Loading codes…</div>
+                    : qrCodes.length === 0 ? <div className="u-small u-muted">No pupils on this roster.</div>
+                    : (
+                      <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                        {qrCodes.map(c => (
+                          <span key={c.studentId} className="u-small" style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: '3px 8px' }}>
+                            {c.name.split(' ')[0]} <span className="mono" style={{ fontWeight: 700 }}>{c.code}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  <div className="u-flex" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <label className="u-small" style={{ flex: 1, minWidth: 220 }}>Scanned / typed codes
+                      <input className="input mono" value={qrPaste} onChange={e => setQrPaste(e.target.value)}
+                        placeholder="paste codes separated by spaces" style={{ display: 'block', marginTop: 4, width: '100%' }} />
+                    </label>
+                    <Button size="sm" variant="primary" onClick={markQr}>Mark present</Button>
                   </div>
                 </div>
               )}

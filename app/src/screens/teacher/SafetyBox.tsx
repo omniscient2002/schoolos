@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtRelative } from '../../lib/format';
+import { statusLabel, roleLabel, humanize } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   assignSafetyReport, closeSafetyReport, getSafetySummary, listBoxAssignees, listSafetyBox,
@@ -48,7 +49,7 @@ export default function SafetyBox() {
     } finally { setBusy(null); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -63,8 +64,8 @@ export default function SafetyBox() {
               {summary.data.buckets.slice(0, 12).map((b, i) => (
                 <div key={i} className="u-between u-small" style={{ gap: 10 }}>
                   <span className="u-flex" style={{ gap: 8, alignItems: 'center' }}>
-                    <Badge tone={SEV_TONE[b.severity] ?? 'neutral'} dot>{b.severity}</Badge>
-                    <span>Class {b.classGrade} · {b.category}</span>
+                    <Badge tone={SEV_TONE[b.severity] ?? 'neutral'} dot>{statusLabel(b.severity)}</Badge>
+                    <span>Class {b.classGrade} · {humanize(b.category)}</span>
                   </span>
                   <span className="tnum">{b.count}</span>
                 </div>
@@ -86,10 +87,10 @@ export default function SafetyBox() {
                     <div className="u-between u-wrap" style={{ gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Badge tone={SEV_TONE[r.severity] ?? 'neutral'} dot>{r.severity}</Badge>
-                          <Badge tone="outline">{r.category}</Badge>
+                          <Badge tone={SEV_TONE[r.severity] ?? 'neutral'} dot>{statusLabel(r.severity)}</Badge>
+                          <Badge tone="outline">{humanize(r.category)}</Badge>
                           <span className="u-small u-muted">Class {r.classGrade}</span>
-                          {r.anonymous && <Badge tone="neutral">anonymous</Badge>}
+                          {r.anonymous && <Badge tone="neutral">Anonymous</Badge>}
                           <span className="u-xs u-faint">{fmtRelative(r.createdAt)}</span>
                         </div>
                         <p className="u-small" style={{ margin: '6px 0 0' }}>{r.detail}</p>
@@ -100,7 +101,7 @@ export default function SafetyBox() {
                           <select className="input" style={{ width: 'auto' }} value="" disabled={busy === r.reportId}
                             onChange={e => e.target.value && assign(r, e.target.value)} aria-label={`Assign report`}>
                             <option value="">Assign…</option>
-                            {assignees.map(a => <option key={a.id} value={a.id}>{a.name} ({a.role})</option>)}
+                            {assignees.map(a => <option key={a.id} value={a.id}>{a.name} ({roleLabel(a.role)})</option>)}
                           </select>
                           <Button size="sm" variant="secondary" disabled={busy === r.reportId} onClick={() => close(r)}>Close</Button>
                         </span>

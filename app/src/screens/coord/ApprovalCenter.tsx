@@ -20,6 +20,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
+import { humanize } from '../../lib/labels';
 import {
   getCoordHome, decideSubstitution, decideGenericAction,
   type CoordHome, type CoordPendingApproval,
@@ -75,7 +76,7 @@ export default function ApprovalCenter() {
       <PageHead
         back={{ to: '/coord/home', label: 'Command Center' }}
         title="Approval Center"
-        sub="Kernel actions owned by the coordinator role — substitution cover and coordination decisions in one queue, each decided with a note and an audit entry."
+        sub="Coordination decisions owned by the coordinator role — substitution cover and coordination decisions in one queue, each decided with a note and an audit entry."
         actions={<Button variant="secondary" size="sm" icon={<Icon.Refresh size={13} />} onClick={retry}>Refresh</Button>}
       />
 
@@ -94,7 +95,7 @@ export default function ApprovalCenter() {
             <Empty
               icon={<Icon.Check size={22} />}
               title="Nothing is waiting on you"
-              sub="Kernel actions owned by the coordinator land here the moment they are raised — substitutions, routing requests and coordination approvals."
+              sub="Coordination decisions owned by the coordinator land here the moment they are raised — substitutions, routing requests and coordination approvals."
             />
           </Card>
         ) : (
@@ -121,15 +122,15 @@ export default function ApprovalCenter() {
                     <Card key={a.action_id} pad>
                       <div className="u-col" style={{ gap: 8 }}>
                         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <Badge tone="outline">{isSub ? 'Substitution' : a.kind || 'Decision'}</Badge>
+                          <Badge tone="outline">{isSub ? 'Substitution' : a.kind ? humanize(a.kind) : 'Decision'}</Badge>
                           {a.age_hours >= 48 && <Badge tone="warning" dot>{ageLabel(a.age_hours)}</Badge>}
                           <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>{a.code} · waiting {ageLabel(a.age_hours)}</span>
                         </div>
                         <div style={{ fontWeight: 620, fontSize: 'var(--text-lg)', lineHeight: 1.35 }}>{a.title}</div>
                         <div className="u-xs u-faint" style={{ lineHeight: 1.55 }}>
                           {isSub
-                            ? 'Decided through the substitution door — the substitute is assigned on approval and the school is notified.'
-                            : 'Decided through the kernel decide door — any execution attached to the action runs on approval.'}
+                            ? 'Decided through the substitution process — the substitute is assigned on approval and the school is notified.'
+                            : 'Decided through the approvals process — any follow-up attached to the action runs on approval.'}
                         </div>
                         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
                           <Button size="sm" variant="primary" icon={<Icon.Check size={12} />} disabled={busyId === a.action_id}
@@ -147,7 +148,7 @@ export default function ApprovalCenter() {
             <div className="u-small u-muted" style={{ marginTop: 18, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <Icon.Info size={13} />
               <span>
-                Kernel actions owned by other roles live in the shared{' '}
+                Decisions owned by other roles live in the shared{' '}
                 <button className="u-small" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline', color: 'var(--accent-text)' }} onClick={() => navigate('/action-center')}>
                   Action Center
                 </button>.

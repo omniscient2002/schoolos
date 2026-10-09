@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Card, Empty, Modal, PageHead, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import {ParentError, ParentLoading} from '../../components/parent/states';
+import { humanize } from '../../lib/labels';
 import { friendly } from '../../lib/friendlyErrors';
 import { fmtDateShort } from '../../lib/format';
 import { getConsents, decideConsent, type ParentConsent } from '../../services/parentApi';
@@ -87,7 +88,7 @@ export default function Consents() {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 620 }}>{c.title}</div>
                       <div className="u-xs u-faint" style={{ marginTop: 2 }}>
-                        {KIND_WORD[c.kind] ?? c.kind}{c.child_name ? ` · ${c.child_name}` : ''}
+                        {KIND_WORD[c.kind] ?? humanize(c.kind)}{c.child_name ? ` · ${c.child_name}` : ''}
                       </div>
                     </div>
                     {c.due_at && <Badge tone={overdue ? 'danger' : 'warning'} dot>{overdue ? `Was due ${fmtDateShort(c.due_at)}` : `Due ${fmtDateShort(c.due_at)}`}</Badge>}
@@ -113,7 +114,7 @@ export default function Consents() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 570 }}>{c.title}</div>
                   <div className="u-xs u-faint" style={{ marginTop: 2 }}>
-                    {KIND_WORD[c.kind] ?? c.kind}{c.child_name ? ` · ${c.child_name}` : ''}
+                    {KIND_WORD[c.kind] ?? humanize(c.kind)}{c.child_name ? ` · ${c.child_name}` : ''}
                     {c.decided_at ? ` · decided ${fmtDateShort(c.decided_at)}` : ''}
                   </div>
                 </div>
@@ -134,7 +135,7 @@ export default function Consents() {
         open={!!review}
         onClose={() => { if (!busy) setReview(null); }}
         title={review?.title ?? ''}
-        sub={review ? `${KIND_WORD[review.kind] ?? review.kind}${review.child_name ? ` · ${review.child_name}` : ''}${review.due_at ? ` · due ${fmtDateShort(review.due_at)}` : ''}` : undefined}
+        sub={review ? `${KIND_WORD[review.kind] ?? humanize(review.kind)}${review.child_name ? ` · ${review.child_name}` : ''}${review.due_at ? ` · due ${fmtDateShort(review.due_at)}` : ''}` : undefined}
         footer={
           <>
             <Button variant="ghost" disabled={!!busy} onClick={() => setReview(null)}>Cancel</Button>

@@ -467,7 +467,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
             <label>{t('login.password', { fallback: 'Password' })}
               <input type="password" aria-invalid={!!error} aria-describedby={error ? 'login-error' : undefined} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
             </label>
-            <button className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+            <button type="submit" className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? 'Signing in…' : t('login.signIn', { fallback: 'Sign in' })}
             </button>
           </form>
@@ -489,7 +489,7 @@ export default function Login({ onAuthed }: { onAuthed: (session: SessionUser) =
                 </button>
               </>
             )}
-            <button className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+            <button type="submit" className="btn btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? 'Working…' : otpSent ? 'Verify & sign in' : 'Send code'}
             </button>
           </form>

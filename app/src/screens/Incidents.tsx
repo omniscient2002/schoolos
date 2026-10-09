@@ -11,6 +11,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateTime, fmtRelative } from '../lib/format';
+import { statusLabel } from '../lib/labels';
 import type { SchoolCase } from '../types/domain';
 import type { IncidentRecord } from '../types/domain';
 
@@ -74,7 +75,7 @@ export default function Incidents() {
 
   const advance = (inc: IncidentRecord, next: IncidentRecord['status']) => {
     setStatusOv(o => ({ ...o, [inc.id]: next }));
-    toast({ title: `Incident moved to ${STATUS_LABEL[next]}`, sub: `${inc.id} · ${inc.title}`, tone: 'success' });
+    toast({ title: `Incident moved to ${STATUS_LABEL[next]}`, sub: `${inc.title} · saved on this device only — not written to the server audit trail.`, tone: 'success' });
     dispatch({
       type: 'audit/add',
       entry: {
@@ -105,10 +106,10 @@ export default function Incidents() {
         actor: actorName, actorRole: session.roleId, action: 'Opened case from incident',
         recordType: 'Case', recordRef: `${id} — ${inc.title}`,
         reason: 'Incident needs coordinated follow-up across owners', aiInvolved: false, risk: 'medium',
-        outcome: 'Case opened · SLA 24h · linked to incident timeline',
+        outcome: 'Saved on this device only · linked to the incident',
       },
     });
-    toast({ title: 'Case opened from incident', sub: `${id} · SLA 24h · linked to ${inc.id}`, tone: 'success' });
+    toast({ title: 'Case opened on this device', sub: 'Saved on this device only — not sent to a server. Linked to the incident.', tone: 'info' });
     navigate(`/cases/${id}`);
   };
 
@@ -134,7 +135,7 @@ export default function Incidents() {
       <PageHead
         title="Incidents"
         sub={session.roleId === 'transport'
-          ? 'Transport-linked incidents surface first for your role. Status changes here are workspace-local in this build — the shared ledger is not connected yet.'
+          ? 'Transport-linked incidents surface first for your role. Status changes here are workspace-local in this build — the shared records are not connected yet.'
           : 'Everything that went wrong, from detection to review — with the timeline that proves what happened.'}
       />
 
@@ -176,8 +177,8 @@ export default function Incidents() {
                         <Card key={inc.id} onClick={() => setOpenId(inc.id)} className="incident-card">
                           <div style={{ borderLeft: `3px solid ${SEVERITY_COLOR[inc.severity]}`, paddingLeft: 9 }}>
                             <div className="u-flex" style={{ gap: 5, flexWrap: 'wrap', marginBottom: 5 }}>
-                              <Badge tone={KIND_TONE[inc.kind]}>{inc.kind}</Badge>
-                              <Badge tone={SEVERITY_TONE[inc.severity]}>{inc.severity}</Badge>
+                              <Badge tone={KIND_TONE[inc.kind]}>{statusLabel(inc.kind)}</Badge>
+                              <Badge tone={SEVERITY_TONE[inc.severity]}>{statusLabel(inc.severity)}</Badge>
                             </div>
                             <div className="u-small" style={{ fontWeight: 590, lineHeight: 1.35, marginBottom: 5 }}>{inc.title}</div>
                             <div className="u-xs u-faint">
@@ -203,7 +204,7 @@ export default function Incidents() {
         open={!!selected}
         onClose={() => setOpenId(null)}
         title={selected?.title ?? ''}
-        sub={selected ? `${selected.id} · ${STATUS_LABEL[selected.status]} · ${selected.severity} severity` : undefined}
+        sub={selected ? `${STATUS_LABEL[selected.status]} · ${statusLabel(selected.severity)} severity` : undefined}
         footer={selected && (
           <>
             <Dropdown
@@ -241,8 +242,8 @@ export default function Incidents() {
         {selected && (
           <div className="u-col" style={{ gap: 16 }}>
             <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
-              <Badge tone={KIND_TONE[selected.kind]}>{selected.kind}</Badge>
-              <Badge tone={SEVERITY_TONE[selected.severity]}>{selected.severity}</Badge>
+              <Badge tone={KIND_TONE[selected.kind]}>{statusLabel(selected.kind)}</Badge>
+              <Badge tone={SEVERITY_TONE[selected.severity]}>{statusLabel(selected.severity)}</Badge>
               <Badge tone="outline">{CAMPUS_LABEL[selected.campus]} campus</Badge>
               <Badge tone={isOpen(selected.status) ? 'warning' : 'success'} dot>{STATUS_LABEL[selected.status]}</Badge>
             </div>
@@ -289,7 +290,7 @@ export default function Incidents() {
 
             <div className="u-xs u-faint">
               Detected {fmtDate(selected.openedOn)} — this incident board is sample data in this build: status
-              changes update this session only and are not written to the server audit ledger.
+              changes update this session only and are not written to the server's audit trail.
             </div>
           </div>
         )}

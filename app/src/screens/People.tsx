@@ -6,9 +6,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { CampusId } from '../types/domain';
-import * as seed from '../data/dataset';
-import { apiPost, apiStudents, apiUpdateStudent, apiWithdrawStudent, apiPromoteStudent } from '../services/liveApi';
+import { apiGet, apiPost, apiStudents, apiUpdateStudent, apiWithdrawStudent, apiPromoteStudent } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { roleLabel, statusLabel, humanize } from '../lib/labels';
 import { useStore } from '../state/store';
 import {
   Avatar, Badge, Button, Card, DataTable, Empty, ErrorState, Modal, PageHead, Skeleton, Stat, useToast,
@@ -34,9 +34,6 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 type TabId = 'student' | 'teacher' | 'staff' | 'guardian';
 
 const TYPE_LABEL: Record<TabId, string> = { student: 'Students', teacher: 'Teachers', staff: 'Staff', guardian: 'Guardians' };
-const GRADES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-
-const campusShort = (id: string) => seed.campuses.find(c => c.id === id)?.shortName ?? id;
 
 function csvCell(v: string) { return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; }
 
@@ -45,20 +42,25 @@ export default function People() {
   const { session } = useStore();
   const toast = useToast();
 
-  const scopeLocked = session.campusScope !== 'all';
   const [tab, setTab] = useState<TabId>('student');
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
-  const [campus, setCampus] = useState<string>(session.activeCampus);
   const [grade, setGrade] = useState('all');
-  const [klass, setKlass] = useState('all');
+  const [klass, setKlass] = useState('');
   const [visible, setVisible] = useState(15);
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', phone: '', grade: '6', section: 'A', guardianName: '' });
+  /* P2-7: date of birth and gender were nowhere — not in the model, not in this form — even though a
+     school in India cannot enrol without them (TCS, age-based admission, transport eligibility, meal
+     schemes, statutory returns). Both are optional here, and the school may set its own admission
+     number; the door validates all three and answers with a plain 400 rather than a constraint error. */
+  const [form, setForm] = useState({ name: '', phone: '', grade: '', section: '', guardianName: '', dob: '', gender: '', admissionNo: '' });
   const [saving, setSaving] = useState(false);
   /* Directory creation authority — POST /students allows owner, principal,
      coordinator and admissions. Everyone else gets an honest disabled button. */
   const canAddStudent = ['owner', 'principal', 'coordinator', 'admissions'].includes(session.roleId);
+  /* The wider people directory door (manage teachers/staff/guardians) is
+     owner/IT-admin only — we never call it from this screen for other roles. */
+  const canManagePeople = ['owner', 'itadmin'].includes(session.roleId);
 
   /* L4-3.2 — student lifecycle row actions (live roster rows only) */
   const [editRow, setEditRow] = useState<{ id: string; name: string; guardianName: string; guardianPhone: string; busRoute: string } | null>(null);
@@ -71,18 +73,15 @@ export default function People() {
   const [promoteSection, setPromoteSection] = useState('');
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
-  /* keep campus in sync with role scope */
-  useEffect(() => { if (scopeLocked) setCampus(session.campusScope); }, [scopeLocked, session.campusScope]);
-
   /* debounced search query */
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 250);
     return () => clearTimeout(t);
   }, [query]);
 
-  /* reset dependent filters when the tab or scope changes */
-  useEffect(() => { setGrade('all'); setKlass('all'); setVisible(15); }, [tab]);
-  useEffect(() => { setVisible(15); }, [debounced, campus, grade, klass]);
+  /* reset dependent filters when the tab changes */
+  useEffect(() => { setGrade('all'); setKlass(''); setVisible(15); }, [tab]);
+  useEffect(() => { setVisible(15); }, [debounced, grade, klass]);
 
   const results = useAsync<Person[]>(
     () => {
@@ -97,7 +96,7 @@ export default function People() {
         id: String(r.id),
         name: String(r.name ?? ''),
         type: 'student' as const,
-        campus: session.campusScope as CampusId, // campus split is not in the door — column shows an em dash live
+        campus: session.campusScope as CampusId, // Person requires the field; the UI no longer shows it (no campuses exist)
         email: '',
         phone: String(r.guardian_phone ?? ''),
         grade: (Number.isFinite(Number(r.grade)) ? Number(r.grade) : String(r.grade)) as unknown as number,
@@ -109,31 +108,62 @@ export default function People() {
         guardianName: r.guardian_name ? String(r.guardian_name) : undefined,
       } as Person)));
     },
-    [debounced, campus, tab, grade],
+    [debounced, tab, grade],
   );
+
+  /* Grade choices are derived from the roster already loaded — no invented list. */
+  const gradeOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of results.data ?? []) {
+      if (p.grade != null && String(p.grade).trim()) set.add(String(p.grade));
+    }
+    return Array.from(set).sort((a, b) => (Number(a) || 0) - (Number(b) || 0) || a.localeCompare(b));
+  }, [results.data]);
 
   const rows = useMemo(() => {
     const data = results.data ?? [];
-    return klass === 'all' ? data : data.filter(p => p.classes?.includes(klass));
+    const q = klass.trim().toLowerCase();
+    if (!q) return data;
+    return data.filter(p => `${p.grade ?? ''}-${p.section ?? ''}`.toLowerCase().includes(q));
   }, [results.data, klass]);
   const shown = rows.slice(0, visible);
 
-  const counts = useMemo(() => ({ student: rows.length, teacher: 0, staff: 0, guardian: 0 }), [rows]);
+  /* P3-2 · two of the three "Not connected" cards had their data all along.
+     Staff/teachers come from `GET /school/staff` (office roles — a role that cannot read it keeps the
+     honest card rather than a fabricated number), and guardian CONTACTS are already on the roster rows
+     this screen loaded. Only the attendance rollup stays unavailable, because one day's register is not
+     an average and inventing one is what the "unavailable" prop exists to prevent. */
+  const staffQ = useAsync(() => apiGet<{ staff: { id: string; role: string }[] }>('/school/staff')
+    .then(r => (r.staff ?? []).map(u => ({ id: u.id, role: u.role })))
+    .catch(() => null as { id: string; role: string }[] | null), []);
+
+  const counts = useMemo(() => {
+    const staff = staffQ.data;
+    const guardianContacts = new Set(
+      rows.map(p => (p.guardianName ?? '').trim().toLowerCase() || (p.phone ?? '').trim()).filter(Boolean)).size;
+    return {
+      student: rows.length,
+      teacher: staff ? staff.filter(u => u.role === 'teacher').length : 0,
+      staff: staff ? staff.filter(u => u.role !== 'teacher').length : 0,
+      guardian: guardianContacts,
+    };
+  }, [rows, staffQ.data]);
+  const staffKnown = staffQ.data != null;
 
   const detailOf = (p: Person) => {
     if (p.type === 'student') return `${p.grade}-${p.section} · ${p.admissionNo ?? ''}`;
-    return p.role ?? '';
+    return p.role ? roleLabel(p.role) : '';
   };
 
   const exportCsv = () => {
     try {
-      const head = 'Name,Type,Campus,Email,Phone,Detail';
-      const lines = rows.map(p => [p.name, p.type, campusShort(p.campus), p.email, p.phone, detailOf(p)].map(csvCell).join(','));
+      const head = 'Name,Type,Email,Phone,Detail';
+      const lines = rows.map(p => [p.name, humanize(p.type), p.email, p.phone, detailOf(p)].map(csvCell).join(','));
       const blob = new Blob([`${head}\n${lines.join('\n')}`], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `meridian-directory-${tab}-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `directory-${tab}-${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast({ title: `Exported ${rows.length} records`, sub: 'CSV downloaded — opens in any spreadsheet.', tone: 'success' });
@@ -157,6 +187,9 @@ export default function People() {
         section: form.section,
         ...(form.phone.trim() ? { guardianPhone: form.phone.trim() } : {}),
         ...(form.guardianName.trim() ? { guardianName: form.guardianName.trim() } : {}),
+        ...(form.dob.trim() ? { dob: form.dob.trim() } : {}),
+        ...(form.gender ? { gender: form.gender } : {}),
+        ...(form.admissionNo.trim() ? { admissionNo: form.admissionNo.trim() } : {}),
         reason: 'Front-office intake',
       });
       toast({
@@ -165,7 +198,7 @@ export default function People() {
         tone: 'success',
       });
       setAddOpen(false);
-      setForm({ name: '', phone: '', grade: '6', section: 'A', guardianName: '' });
+      setForm({ name: '', phone: '', grade: '', section: '', guardianName: '', dob: '', gender: '', admissionNo: '' });
       results.retry();
     } catch (e) {
       toast({ title: 'Could not enrol the student', sub: friendly(e), tone: 'error' });
@@ -174,15 +207,21 @@ export default function People() {
     }
   };
 
-  const scopeWord = campus === 'all' ? 'all campuses' : campusShort(campus);
-
   const canEdit = ['owner', 'principal', 'coordinator'].includes(session.roleId);
   const canWithdraw = ['owner', 'principal'].includes(session.roleId);
+  /* GRADE-1: grades are free text ("Grade 1", "LKG", "6", "Class VIII"). These two
+     helpers used Number(), which yields NaN for every named grade — the promote
+     dialog never pre-filled a next class and sorting the roster by grade was a
+     no-op that pushed every named grade to 999. Read the number out of the label. */
+  const gradeNumber = (g: string): number | null => {
+    const m = /(\d+)/.exec(g ?? '');
+    return m ? Number(m[1]) : null;
+  };
   const nextGradeOf = (g: string): string => {
-    const n = Number(g);
     if (g === 'LKG') return 'UKG';
     if (g === 'UKG') return '1';
-    if (Number.isFinite(n) && n >= 1 && n < 10) return String(n + 1);
+    const n = gradeNumber(g);
+    if (n != null && n >= 1 && n < 10) return String(n + 1);
     return '';
   };
 
@@ -198,7 +237,7 @@ export default function People() {
         if (editRow.busRoute.trim()) patch.bus_route = editRow.busRoute.trim();
       }
       await apiUpdateStudent(editRow.id, patch);
-      toast({ title: 'Record updated', sub: `${editRow.name} — the change is on the student ledger with an audit entry.`, tone: 'success' });
+      toast({ title: 'Record updated', sub: `${editRow.name} — the change is on the student's school records with an audit entry.`, tone: 'success' });
       setEditRow(null);
       results.retry();
     } catch (e) {
@@ -249,7 +288,7 @@ export default function People() {
     <>
       <PageHead
         title="Directory"
-        sub={`Students, teachers, staff and guardians across ${scopeWord} — one record per person, verified contacts first.`}
+        sub="Students, teachers, staff and guardians — one record per person, verified contacts first."
         actions={
           <>
             <Button variant="secondary" icon={<Icon.Download size={14} />} onClick={exportCsv}>Export CSV</Button>
@@ -264,10 +303,13 @@ export default function People() {
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
-        <Stat label="Total students" value={counts.student.toLocaleString('en-IN')} sub={`${counts.student} in ${scopeWord}`} onClick={() => setTab('student')} />
-        <Stat label="Staff & teachers" value="—" sub="Teacher/staff roster door is not connected yet" onClick={() => setTab('teacher')} />
-        <Stat label="Guardians" value="—" sub="Guardian roster door is not connected yet" onClick={() => setTab('guardian')} />
-        <Stat label="Avg attendance" value="—" sub="Attendance rollup comes with the ops.bi door — see Reports" />
+        <Stat label="Total students" value={counts.student.toLocaleString('en-IN')} sub={`${counts.student} student${counts.student === 1 ? '' : 's'} in the roster`} onClick={() => setTab('student')} />
+        <Stat label="Staff & teachers" value={staffKnown ? String(counts.teacher + counts.staff) : '—'}
+          sub={staffKnown ? `${counts.teacher} teaching · ${counts.staff} other roles` : 'The staff roster is visible to the office roles'}
+          onClick={() => setTab('teacher')} />
+        <Stat label="Guardian contacts" value={counts.guardian.toLocaleString('en-IN')}
+          sub={`${counts.guardian} famil${counts.guardian === 1 ? 'y' : 'ies'} with a contact on this roster`} />
+        <Stat label="Avg attendance" unavailable="Not connected" sub="A day's register is on the Attendance screen; a term average is not read yet" />
       </div>
 
       <div style={{ marginBottom: 16 }}>
@@ -284,24 +326,21 @@ export default function People() {
                 aria-label="Search the directory"
               />
             </div>
-            <select
-              className="select" style={{ width: 180 }} value={campus}
-              onChange={e => setCampus(e.target.value)} aria-label="Filter by campus"
-              disabled
-              title={scopeLocked ? `Your role is scoped to ${campusShort(session.campusScope)}` : 'The roster door is tenant-wide — campus split is not in the door yet'}
-            >
-              {scopeLocked
-                ? <option value={session.campusScope}>{campusShort(session.campusScope)} · your scope</option>
-                : <>
-                    <option value="all">All campuses</option>
-                    {seed.campuses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </>}
-            </select>
             {tab === 'student' && (
-              <select className="select" style={{ width: 140 }} value={grade} onChange={e => setGrade(e.target.value)} aria-label="Filter by grade">
-                <option value="all">All grades</option>
-                {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
-              </select>
+              <>
+                <select className="select" style={{ width: 140 }} value={grade} onChange={e => setGrade(e.target.value)} aria-label="Filter by grade">
+                  <option value="all">All grades</option>
+                  {gradeOptions.map(g => <option key={g} value={g}>Grade {g}</option>)}
+                </select>
+                <input
+                  className="input"
+                  style={{ width: 170 }}
+                  value={klass}
+                  onChange={e => setKlass(e.target.value)}
+                  placeholder="Filter by class, e.g. 6-A"
+                  aria-label="Filter by class"
+                />
+              </>
             )}
           </div>
           <div style={{ marginTop: 12 }}>
@@ -312,7 +351,7 @@ export default function People() {
 
       <Card pad={false} className="u-col">
         <div className="card-head">
-          <h3>{TYPE_LABEL[tab]} · {scopeWord}</h3>
+          <h3>{TYPE_LABEL[tab]}</h3>
           <span className="u-small u-faint">
             {results.loading
               ? 'Searching…'
@@ -336,15 +375,27 @@ export default function People() {
               onRetry={results.retry}
             />
           ) : tab !== 'student' ? (
-            <Empty icon={<Icon.Users size={22} />} title="Roster door not connected yet"
-              sub="The server exposes the student roster (GET /students). Teacher, staff and guardian roster doors do not exist yet — this tab stays empty rather than showing seeded people as if they were real." />
+            <Empty
+              icon={<Icon.Users size={22} />}
+              title={`${TYPE_LABEL[tab]} directory`}
+              sub={
+                canManagePeople
+                  ? 'Directory management for teachers, staff and guardians lives under Manage people. Open it to view and maintain those records.'
+                  : 'Teacher, staff and guardian directories are not available to your role yet. The student roster is live here — ask an owner or IT administrator for the wider directory.'
+              }
+              action={
+                canManagePeople
+                  ? <Button variant="secondary" icon={<Icon.Users size={14} />} onClick={() => navigate('/people-admin')}>Open Manage people</Button>
+                  : undefined
+              }
+            />
           ) : rows.length === 0 ? (
             <Empty
               icon={<Icon.Search size={26} />}
-              title={debounced ? `No people match “${debounced}”` : `No ${TYPE_LABEL[tab].toLowerCase()} in ${scopeWord}`}
-              sub="Try a shorter name, or clear the campus, grade and class filters."
+              title={debounced || klass.trim() ? 'No people match your filters' : `No ${TYPE_LABEL[tab].toLowerCase()} in the roster`}
+              sub="Try a shorter name, or clear the grade and class filters."
               action={
-                <Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { setQuery(''); setDebounced(''); setGrade('all'); setKlass('all'); }}>
+                <Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { setQuery(''); setDebounced(''); setGrade('all'); setKlass(''); }}>
                   Clear search & filters
                 </Button>
               }
@@ -352,7 +403,7 @@ export default function People() {
           ) : (
             <>
               <DataTable<Person>
-                caption="Student and staff directory — filter by campus or grade"
+                caption="Student directory — search and filter the roster"
                 rows={shown}
                 rowKey={p => p.id}
                 onRowClick={p => navigate(`/people/${p.id}`)}
@@ -370,12 +421,11 @@ export default function People() {
                     ),
                   },
                   ...(tab === 'student' ? [
-                    { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => Number(p.grade) || 999, render: (p: Person) => <span className="tnum">{p.grade != null ? String(p.grade) : '—'} · {p.section ?? '—'}</span> },
+                    { key: 'grade', label: 'Grade · Sec', sortable: true, sortValue: (p: Person) => gradeNumber(String(p.grade ?? '')) ?? 999, render: (p: Person) => <span className="tnum">{p.grade != null ? String(p.grade) : '—'} · {p.section ?? '—'}</span> },
                     { key: 'guardian', label: 'Guardian', render: (p: Person) => <span className="u-truncate" style={{ maxWidth: 180, display: 'inline-block' }}>{(p as unknown as { guardianName?: string }).guardianName ?? '—'}{p.phone ? <span className="u-xs u-faint"> · {p.phone}</span> : null}</span> },
                     { key: 'bus', label: 'Bus route', render: (p: Person) => p.busRoute ? <Badge tone="info">{p.busRoute}</Badge> : <span className="u-faint">—</span> },
                     { key: 'adm', label: 'Admission no.', render: (p: Person) => <span className="mono u-small">{p.admissionNo ?? '—'}</span> },
                   ] : []),
-                  { key: 'campus', label: 'Campus', render: () => <span className="u-small u-muted">—</span> },
                   ...(tab === 'student' ? [{
                     key: 'actions', label: '', align: 'right' as const, render: (p: Person) => (
                       <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
@@ -427,16 +477,33 @@ export default function People() {
           <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
             <div className="field u-grow" style={{ minWidth: 120 }}>
               <label htmlFor="np-grade">Grade</label>
-              <select id="np-grade" className="select" value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value }))}>
-                {GRADES.map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
-              </select>
+              <input id="np-grade" className="input" value={form.grade} onChange={e => setForm(f => ({ ...f, grade: e.target.value }))} placeholder="e.g. 6" />
             </div>
             <div className="field u-grow" style={{ minWidth: 120 }}>
               <label htmlFor="np-section">Section</label>
-              <select id="np-section" className="select" value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))}>
-                {['A', 'B', 'C'].map(s => <option key={s} value={s}>{s}</option>)}
+              <input id="np-section" className="input" value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))} placeholder="e.g. A" />
+            </div>
+          </div>
+          <div className="u-flex" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div className="field u-grow" style={{ minWidth: 150 }}>
+              <label htmlFor="np-dob">Date of birth</label>
+              <input id="np-dob" type="date" className="input" value={form.dob} onChange={e => setForm(f => ({ ...f, dob: e.target.value }))} />
+              <span className="hint">Optional, but the register needs it — and it drives age-based admission and transport eligibility.</span>
+            </div>
+            <div className="field u-grow" style={{ minWidth: 140 }}>
+              <label htmlFor="np-gender">Gender</label>
+              <select id="np-gender" className="input" value={form.gender} onChange={e => setForm(f => ({ ...f, gender: e.target.value }))}>
+                <option value="">Not stated</option>
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="other">Other</option>
               </select>
             </div>
+          </div>
+          <div className="field">
+            <label htmlFor="np-admno">Admission number (optional)</label>
+            <input id="np-admno" className="input" value={form.admissionNo} onChange={e => setForm(f => ({ ...f, admissionNo: e.target.value }))} placeholder="e.g. 2026-0147" />
+            <span className="hint">Leave blank and the school gets a generated number. Your own series is what appears on report cards and receipts.</span>
           </div>
           <div className="field">
             <label htmlFor="np-guardian">Guardian name (optional)</label>
@@ -541,7 +608,7 @@ export default function People() {
             </div>
           </div>
           <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-            What happens on the server: status becomes <b>transferred</b> (effective the chosen date), the bus seat is released,
+            What happens on the server: status becomes <b>{statusLabel('transferred')}</b> (effective the chosen date), the bus seat is released,
             and attendance, fee records and guardian links are kept. This cannot be undone from the app — re-admission creates a fresh record.
           </div>
         </div>

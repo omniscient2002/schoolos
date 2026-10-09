@@ -31,6 +31,7 @@ import { apiRequest } from '../../services/liveApi';
 import { useSession } from '../../App';
 import { canSurface } from '../../lib/effective';
 import { useRoleOrGrant } from '../../lib/access';
+import { statusLabel, humanize } from '../../lib/labels';
 
 /* authorized staff (plan: "counselor sees wellbeing routing"). The server
    decides who actually sees rows — this is a UI mirror, not authority. */
@@ -164,7 +165,7 @@ export default function WellbeingQueue() {
         <PageHead title="Wellbeing requests" sub="What students have asked the counselor team to know." />
         <ErrorState title="Wellbeing requests did not load" sub={error} onRetry={() => setTick(t => t + 1)} />
         <p className="u-small u-faint" style={{ marginTop: 10 }}>
-          Requests students raise in the app are routed to the counselor team. Until this list door is live, students can always use the physical support routes —
+          Requests students raise in the app are routed to the counselor team. Until this feature is live, students can always use the physical support routes —
           meet the counselor directly, tell the class teacher, or drop a note. Nothing a student shares is ever lost.
         </p>
       </div>
@@ -229,8 +230,8 @@ export default function WellbeingQueue() {
                 render: r => <span style={{ fontWeight: 570 }}>{r.studentName}</span>,
               },
               {
-                key: 'category', label: 'Category', sortable: true, sortValue: r => CATEGORY_LABEL[r.category] ?? r.category,
-                render: r => <Badge tone={CATEGORY_TONE[r.category] ?? 'neutral'}>{CATEGORY_LABEL[r.category] ?? r.category}</Badge>,
+                key: 'category', label: 'Category', sortable: true, sortValue: r => CATEGORY_LABEL[r.category] ?? humanize(r.category),
+                render: r => <Badge tone={CATEGORY_TONE[r.category] ?? 'neutral'}>{CATEGORY_LABEL[r.category] ?? humanize(r.category)}</Badge>,
               },
               {
                 key: 'detail', label: 'What they wrote', render: r => (
@@ -245,7 +246,7 @@ export default function WellbeingQueue() {
               },
               {
                 key: 'status', label: 'Status', sortable: true,
-                render: r => <Badge tone={STATUS_META[r.status]?.tone ?? 'neutral'} dot={NEWISH.has(r.status)}>{STATUS_META[r.status]?.label ?? r.status}</Badge>,
+                render: r => <Badge tone={STATUS_META[r.status]?.tone ?? 'neutral'} dot={NEWISH.has(r.status)}>{STATUS_META[r.status]?.label ?? statusLabel(r.status)}</Badge>,
               },
             ]}
           />

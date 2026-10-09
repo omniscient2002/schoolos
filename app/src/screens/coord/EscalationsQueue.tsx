@@ -15,6 +15,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
+import { statusLabel, humanize } from '../../lib/labels';
 import { getEscalations, type CoordEscalations, type CoordEscalation } from '../../services/coordApi';
 import { useCoordAccess, useCoordData, CoordDenied, CoordBanner } from './shared';
 
@@ -37,11 +38,11 @@ function slaLeft(e: CoordEscalation): { label: string; tone: 'danger' | 'warning
   if (!e.sla_at) return null;
   const ms = new Date(e.sla_at).getTime() - Date.now();
   if (Number.isNaN(ms)) return null;
-  if (ms <= 0) return { label: 'SLA passed — prioritise', tone: 'danger' };
+  if (ms <= 0) return { label: 'Deadline passed — prioritise', tone: 'danger' };
   const h = ms / 3600000;
   return h < 24
-    ? { label: `${Math.max(1, Math.round(h))}h to SLA`, tone: 'warning' }
-    : { label: `${Math.round(h / 24)}d to SLA`, tone: 'neutral' };
+    ? { label: `${Math.max(1, Math.round(h))}h to deadline`, tone: 'warning' }
+    : { label: `${Math.round(h / 24)}d to deadline`, tone: 'neutral' };
 }
 
 function EscalationCard({ e, onHandoff }: { e: CoordEscalation; onHandoff: (e: CoordEscalation) => void }) {
@@ -49,7 +50,7 @@ function EscalationCard({ e, onHandoff }: { e: CoordEscalation; onHandoff: (e: C
   const hasIdentity = !!e.student;
   const timeline = (e.timeline ?? []).map(t => ({
     time: fmtWhen(t.at),
-    title: t.to,
+    title: statusLabel(t.to),
     body: t.note ?? undefined,
   }));
 
@@ -58,14 +59,14 @@ function EscalationCard({ e, onHandoff }: { e: CoordEscalation; onHandoff: (e: C
       <div className="u-col" style={{ gap: 10 }}>
         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <Badge tone="outline">{e.source === 'family_request' ? 'Family request' : 'Teacher concern'}</Badge>
-          {e.urgency && <Badge tone={urgencyTone(e.urgency)} dot>{e.urgency} urgency</Badge>}
-          <Badge tone={statusTone(e.status)}>{e.status}</Badge>
+          {e.urgency && <Badge tone={urgencyTone(e.urgency)} dot>{statusLabel(e.urgency)} urgency</Badge>}
+          <Badge tone={statusTone(e.status)}>{statusLabel(e.status)}</Badge>
           {sla && <Badge tone={sla.tone === 'danger' ? 'danger' : sla.tone === 'warning' ? 'warning' : 'neutral'}>{sla.label}</Badge>}
           <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>raised {fmtWhen(e.created_at)}</span>
         </div>
 
         <div style={{ fontWeight: 620, fontSize: 'var(--text-lg)', lineHeight: 1.35 }}>
-          {e.title ?? `${e.category} — ${e.student ?? 'a routed concern'}`}
+          {e.title ?? `${humanize(e.category)} — ${e.student ?? 'a routed concern'}`}
         </div>
 
         <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
@@ -141,7 +142,7 @@ export default function EscalationsQueue() {
       <Modal
         open={!!handoffFor} onClose={() => setHandoffFor(null)}
         title="Resolve with a handoff note"
-        sub={handoffFor ? (handoffFor.title ?? `${handoffFor.category} — ${handoffFor.student ?? 'routed concern'}`) : undefined}
+        sub={handoffFor ? (handoffFor.title ?? `${humanize(handoffFor.category)} — ${handoffFor.student ?? 'routed concern'}`) : undefined}
       >
         {handoffFor && (
           <>
@@ -154,7 +155,7 @@ export default function EscalationsQueue() {
                 <div className="u-xs" style={{ fontWeight: 640, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>Already on the timeline</div>
                 <div className="u-col" style={{ gap: 4 }}>
                   {handoffFor.timeline.map((t, i) => (
-                    <div key={i} className="u-xs u-faint">· {fmtWhen(t.at)} — {t.to}{t.note ? `: ${t.note}` : ''}</div>
+                    <div key={i} className="u-xs u-faint">· {fmtWhen(t.at)} — {statusLabel(t.to)}{t.note ? `: ${t.note}` : ''}</div>
                   ))}
                 </div>
               </div>

@@ -1,406 +1,461 @@
 /* ============================================================
-   HR — staff operations (route /operations/hr). Leave requests
-   with approve/reject and audit, the attendance strip, the
-   Ms. Sarita Mishra substitution case with ranked candidates,
-   and staff certificate expiry watch.
-   ============================================================ */
-import { useEffect, useMemo, useState } from 'react';
-import { useStore } from '../state/store';
-import * as seed from '../data/dataset';
-import { actionService } from '../demo/seedServices';
-import {
-  PageHead, Section, Card, Stat, Badge, Avatar, DataTable, Button, useToast,
-  Empty, ErrorState, SkeletonCard, KeyValue, Timeline, SampleNote} from '../components/ui';
-import { AiTraceCard } from '../components/Ai';
-import { Icon } from '../components/Icon';
-import { fmtDate, fmtDateShort, fmtRelative } from '../lib/format';
-import { makeRng } from '../lib/rng';
+   HR — staff leave and today's duty roster (hr.leave).
 
-/* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
+   This screen used to render a SAMPLE leave world: request cards with
+   approve/reject buttons, a substitution action and audit rows that existed only
+   in the session. It said so, and it was honest — but the product has had the
+   `hr.leave` add-on the whole time, with four live doors, and a school that
+   switched it on got nothing.
+
+   So the screen is now that add-on, in the shape the add-on actually has. The
+   important thing to notice is the difference in MODEL:
+
+     · An absence here is a FACT, not a request. Marking leave publishes
+       `staff.leave.marked.v1`, which is what the timetable's absence feed
+       consumes; cancelling it withdraws the fact. There is no approve/reject
+       step, because "who is away on the 14th" is not a negotiation — and a
+       screen that offers an approval button for a decision the server does not
+       model is the P2-10 defect in a different costume.
+     · The duty roster is absent × on-duty for a chosen date, straight from the
+       server, and it is the thing a coordinator actually needs before a
+       timetable is set.
+
+   Everything the screen shows is the school's record; nothing here is demo data.
+   ============================================================ */
+import { useEffect, useState } from 'react';
+import { Badge, Button, Card, DataTable, Empty, ErrorState, Modal, PageHead, Section, Stat, useToast } from '../components/ui';
+import { Icon } from '../components/Icon';
+import { useRoleOrGrant } from '../lib/access';
+import { friendly } from '../lib/friendlyErrors';
+import { statusLabel } from '../lib/labels';
+import { apiCancelLeave, apiDutyRoster, apiMarkLeave, apiLeaves, type LiveLeaveRow } from '../services/liveApi';
+
+/* The vocabulary is the door's: anything else is a 400, so the picker offers
+   exactly these and the label is the one the door knows. */
+const LEAVE_KINDS: { value: string; label: string }[] = [
+  { value: 'sick', label: 'Sick' },
+  { value: 'casual', label: 'Casual' },
+  { value: 'duty', label: 'On duty (posted elsewhere)' },
+  { value: 'comp', label: 'Compensatory off' },
+  { value: 'unpaid', label: 'Unpaid' },
+  { value: 'training', label: 'Training' },
+];
+const kindLabel = (k: string) => LEAVE_KINDS.find(x => x.value === k)?.label ?? statusLabel(k);
+
+/* IST, because "today" for a school is the Indian calendar day — the same clock
+   the door validates against when it refuses a past date. */
+const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
-  const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+  const [state, setState] = useState<{ data: T | null; loading: boolean; error: unknown }>({ data: null, loading: true, error: null });
   const [tick, setTick] = useState(0);
   useEffect(() => {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
-    fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+    fn().then(d => { if (live) setState({ data: d, loading: false, error: null }); })
+      .catch(e => { if (live) setState({ data: null, loading: false, error: e }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
   return { ...state, retry: () => setTick(t => t + 1) };
 }
 
-/* ============================================================
-   Leave requests — local demo data (makeRng 6060), teacher
-   names pulled from seed.teachers so the roster stays canonical.
-   ============================================================ */
-type LeaveType = 'sick' | 'casual' | 'on-duty';
-
-interface LeaveRequest {
-  id: string; teacherId: string; teacherName: string; type: LeaveType;
-  from: Date; to: Date; status: 'pending' | 'approved' | 'rejected';
-  substituteNeeded: boolean; reason: string; appliedOn: Date;
-}
-
-function buildLeaveRequests(): LeaveRequest[] {
-  const rng = makeRng(6060);
-  const pool = seed.teachers.slice(10, 18);
-  const defs: { type: LeaveType; daysAhead: number; span: number; status: LeaveRequest['status']; sub: boolean; reason: string }[] = [
-    { type: 'casual', daysAhead: 1, span: 2, status: 'pending', sub: true, reason: 'Family function out of town' },
-    { type: 'sick', daysAhead: 0, span: 1, status: 'approved', sub: false, reason: 'Fever — reported at 07:10' },
-    { type: 'on-duty', daysAhead: 3, span: 1, status: 'approved', sub: false, reason: 'CBSE workshop — district office' },
-    { type: 'casual', daysAhead: 6, span: 1, status: 'pending', sub: false, reason: 'Bank + property paperwork' },
-    { type: 'sick', daysAhead: -2, span: 2, status: 'approved', sub: true, reason: 'Viral — recovered, back tomorrow' },
-    { type: 'on-duty', daysAhead: 8, span: 2, status: 'pending', sub: true, reason: 'Science exhibition procurement' },
-    { type: 'casual', daysAhead: 11, span: 3, status: 'pending', sub: true, reason: 'Sister\'s wedding' },
-    { type: 'sick', daysAhead: -9, span: 1, status: 'rejected', sub: false, reason: 'Requested during exam duty — moved to next week' }];
-  /* Empty-world law: no teachers → no synthetic leave rows. */
-  if (!pool.length) return [];
-  return defs.map((d, i) => {
-    const t = pool[i % pool.length];
-    return {
-      id: `lv_${i + 1}`,
-      teacherId: t.id,
-      teacherName: t.name,
-      type: d.type,
-      from: rng.date(d.daysAhead, 8, 0),
-      to: rng.date(d.daysAhead + d.span - 1, 16, 0),
-      status: d.status,
-      substituteNeeded: d.sub,
-      reason: d.reason,
-      appliedOn: rng.date(d.daysAhead - 2, 9, 30)};
-  });
-}
-
-const INITIAL_LEAVES = buildLeaveRequests();
-
-/* staff certificates — seed.documents has no staff owner records,
-   so the demo carries four local certs with expiry badges */
-interface StaffDoc { id: string; title: string; owner: string; expiresOn: Date; }
-function buildStaffDocs(): StaffDoc[] {
-  const rng = makeRng(6161);
-  return [
-    { id: 'sdoc_1', title: 'First-aid certification — Nurse', owner: seed.staff.find(s => s.designation === 'Nurse')?.name ?? 'Staff', expiresOn: rng.date(9, 9) },
-    { id: 'sdoc_2', title: 'Bus driver licences (batch)', owner: 'Transport — 10 drivers', expiresOn: rng.date(48, 9) },
-    { id: 'sdoc_3', title: 'Lab chemical handling cert', owner: seed.staff.find(s => s.designation === 'Lab Assistant')?.name ?? 'Staff', expiresOn: rng.date(21, 9) },
-    { id: 'sdoc_4', title: 'Fire-warden training', owner: seed.staff.find(s => s.designation === 'Admin Officer')?.name ?? 'Staff', expiresOn: rng.date(120, 9) }];
-}
-const STAFF_DOCS = buildStaffDocs();
-
-const SUB_TRACE = {
-  trigger: 'Leave approval created an uncovered-period alert (act_3)',
-  policy: 'Approvals §1.2 · AI ranks logistics only; the assignment is the coordinator\'s decision',
-  dataUsed: ['approved leave records', 'timetable free periods', 'subject roster'],
-  reasoningRole: 'Proposer (ranks candidates; assigns nothing)',
-  action: 'Ranked two candidates by free periods and subject match — awaiting approval',
-  approvalStatus: 'APPROVAL REQUIRED — Academic Coordinator',
-  verification: 'Free periods recomputed against tomorrow\'s timetable after ranking'};
-
-function leaveTypeBadge(t: LeaveType) {
-  if (t === 'sick') return <Badge tone="warning" dot>Sick</Badge>;
-  if (t === 'on-duty') return <Badge tone="info" dot>On duty</Badge>;
-  return <Badge tone="outline">Casual</Badge>;
-}
-
-/* ============================================================ */
+interface StaffRow { id: string; name: string; role: string }
 
 export default function HR() {
-  const { session, domain, dispatch, actorName } = useStore();
   const toast = useToast();
-  const isPrincipal = session.roleId === 'principal';
-  const isCoordinator = session.roleId === 'coordinator';
-  const canDecide = isPrincipal || isCoordinator;
+  const [date, setDate] = useState(istToday());
+  const [staff, setStaff] = useState<StaffRow[]>([]);
+  /* Staff QR: the office shows today's code; anyone marks themselves present by scanning.
+     The token is an HMAC of tenant+day — yesterday's screenshot buys nothing. */
+  const [qr, setQr] = useState<{ token: string; day: string } | null>(null);
+  const showQr = async () => {
+    setBusy(true);
+    try {
+      const { staffQr } = await import('../services/complianceApi');
+      setQr(await staffQr());
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  const markMe = async () => {
+    if (!qr) { toast({ title: 'Show the code first', tone: 'info' }); return; }
+    setBusy(true);
+    try {
+      const { staffScan } = await import('../services/complianceApi');
+      const r = await staffScan(qr.token);
+      toast({ title: r.already ? 'Already marked for today' : 'Marked present', sub: r.day, tone: 'success' });
+      roster.retry();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  const [form, setForm] = useState({ staffId: '', kind: 'sick', reason: '' });
+  const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState<string | null>(null);
 
-  const [leaves, setLeaves] = useState(INITIAL_LEAVES);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [assignedSub, setAssignedSub] = useState<string | null>(null);
-
-  const actionItems = useAsync(() => actionService.list(), []);
-  const act3 = useMemo(() => actionItems.data?.find(a => a.id === 'act_3'), [actionItems.data]);
-
-  const pendingCount = leaves.filter(l => l.status === 'pending').length;
-  /* FE-5: this HR board is seed data — the leave list, the substitution action (`act_3`) and the audit
-     rows it writes live in this session only. There is no HR write door yet, so a decision here does NOT
-     reach the server Action Center or the immutable ledger; the copy says so rather than claiming shared
-     state. */
-  const act3Open = domain.actions.find(a => a.id === 'act_3')?.status === 'open';
-  const subsPending = leaves.filter(l => l.status === 'pending' && l.substituteNeeded).length + (act3Open ? 1 : 0);
-
-  const decide = (leave: LeaveRequest, decision: 'approved' | 'rejected') => {
-    setBusyId(leave.id);
-    setTimeout(() => {
-      setLeaves(prev => prev.map(l => l.id === leave.id ? { ...l, status: decision } : l));
-      setBusyId(null);
-      const createsTask = decision === 'approved' && leave.substituteNeeded;
-      dispatch({
-        type: 'audit/add',
-        entry: {
-          actor: actorName, actorRole: session.roleId,
-          action: `${decision === 'approved' ? 'Approved' : 'Rejected'} leave — ${leave.teacherName}`,
-          recordType: 'Leave request', recordRef: `${leave.id} · ${leave.type} · ${fmtDateShort(leave.from)}–${fmtDateShort(leave.to)}`,
-          reason: leave.reason,
-          policyRef: 'HR policy §2.1',
-          aiInvolved: false,
-          risk: leave.substituteNeeded && decision === 'approved' ? 'medium' : 'low',
-          outcome: createsTask
-            ? 'Approved · cover task created for Academic Coordinator (timetable uncovered periods)'
-            : decision === 'approved' ? 'Approved · no cover required' : 'Rejected · applicant notified with reason'}});
-      if (createsTask) {
-        dispatch({
-          type: 'event/add',
-          e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.cover.task', label: `Cover task created — ${leave.teacherName} out ${fmtDateShort(leave.from)}–${fmtDateShort(leave.to)}`, severity: 'info', ref: '/operations/hr' }});
-        toast({
-          title: 'Leave approved — cover task created',
-          sub: `${leave.teacherName} needs a substitute. Task assigned to the Academic Coordinator with the uncovered periods.`,
-          tone: 'success'});
-      } else {
-        toast({
-          title: decision === 'approved' ? 'Leave approved' : 'Leave rejected',
-          sub: decision === 'approved'
-            ? `${leave.teacherName} — ${fmtDateShort(leave.from)} to ${fmtDateShort(leave.to)}.`
-            : `${leave.teacherName} notified with the recorded reason.`,
-          tone: decision === 'approved' ? 'success' : 'info'});
-      }
-    }, 300);
+  /* CPD ledger: office records training hours; everyone else reads their own. Reuses the
+     staff picker above (office tier), so the write can never 403 where the picker succeeded. */
+  const [trainings, setTrainings] = useState<{ id: string; title: string; hours: number; provider?: string | null; completed_on?: string | null; staff_name?: string }[] | null>(null);
+  const [tScope, setTScope] = useState('');
+  const [tOwn, setTOwn] = useState<number | null>(null);
+  const [tOpen, setTOpen] = useState(false);
+  const [tForm, setTForm] = useState({ staffId: '', title: '', hours: '', provider: '', completedOn: '' });
+  const refreshTrainings = () => {
+    import('../services/complianceApi').then(({ trainingsList }) => trainingsList()
+      .then(r => { setTrainings(r.trainings); setTScope(r.scoped); setTOwn(r.ownHours); })
+      .catch(() => setTrainings([])));
+  };
+  useEffect(() => { refreshTrainings(); }, []);
+  const recordTraining = async () => {
+    if (!tForm.staffId) { toast({ title: 'Pick a staff member first', tone: 'info' }); return; }
+    if (!tForm.title.trim()) { toast({ title: 'Name the training', tone: 'info' }); return; }
+    const hours = Number(tForm.hours);
+    if (!Number.isFinite(hours) || hours < 0 || hours > 500) { toast({ title: 'Hours must be 0–500', tone: 'info' }); return; }
+    setBusy(true);
+    try {
+      const { trainingsAdd } = await import('../services/complianceApi');
+      await trainingsAdd({ userId: tForm.staffId, title: tForm.title.trim(), hours,
+        ...(tForm.provider.trim() ? { provider: tForm.provider.trim() } : {}),
+        ...(tForm.completedOn ? { completedOn: tForm.completedOn } : {}) });
+      toast({ title: 'Training recorded', sub: `${hours}h credited.`, tone: 'success' });
+      setTForm({ staffId: '', title: '', hours: '', provider: '', completedOn: '' });
+      setTOpen(false);
+      refreshTrainings();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(false); }
   };
 
-  const assignSubstitute = (candidate: string) => {
-    setAssignedSub(candidate);
-    dispatch({
-      type: 'action/decide',
-      id: 'act_3',
-      decision: 'approved',
-      actor: actorName,
-      role: session.roleId,
-      note: `Substitute assigned: ${candidate}`});
-    dispatch({
-      type: 'audit/add',
-      entry: {
-        actor: actorName, actorRole: session.roleId,
-        action: 'Assigned substitute', recordType: 'Substitution', recordRef: `Ms. Sarita Mishra (7-A) → ${candidate}`,
-        reason: 'Ranked best fit by free periods and subject match (AI-ranked, human-approved)',
-        policyRef: 'Approvals §1.2',
-        aiInvolved: true,
-        risk: 'low',
-        outcome: 'Substitute pack generated — timetable, seating, medical notes'}});
-    dispatch({
-      type: 'event/add',
-      e: { id: `ev_${Date.now()}`, on: new Date(), type: 'hr.substitute.assigned', label: `Substitute assigned for 7-A — ${candidate}`, severity: 'info', ref: '/operations/hr' }});
-    toast({ title: 'Substitute pack generated', sub: 'Timetable, seating, medical notes', tone: 'success' });
+  /* The two authority tiers this screen has, each read off the door it will call:
+     marking and cancelling leave are OFFICE (owner/principal/IT admin); the roster
+     is the wider coordination desk. A coordinator can see who is away and cannot
+     mark someone away — and the buttons say so before anyone is refused. */
+  const canMark = useRoleOrGrant(['owner', 'principal', 'itadmin'],
+    ['POST /plugins/hr.leave/leave', 'POST /plugins/hr.leave/leave/:id/cancel']);
+  const canRead = useRoleOrGrant(['owner', 'principal', 'itadmin', 'coordinator', 'teacher'], ['GET /plugins/hr.leave/leave']);
+  /* Presence marking is the wider office tier (coordinators included): recording that someone
+     IS here is not the same authority as recording leave, and the doors say so. */
+  const canMarkPresence = useRoleOrGrant(['owner', 'principal', 'itadmin', 'coordinator'], ['POST /staff-attendance/mark']);
+  const [presenceForm, setPresenceForm] = useState({ staffId: '', day: istToday() });
+  const markPresence = async () => {
+    if (!presenceForm.staffId) { toast({ title: 'Pick a staff member first', tone: 'info' }); return; }
+    if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(presenceForm.day)) { toast({ title: 'Day must be YYYY-MM-DD', tone: 'info' }); return; }
+    setBusy(true);
+    try {
+      const { staffMark } = await import('../services/complianceApi');
+      await staffMark(presenceForm.staffId, presenceForm.day);
+      toast({ title: 'Marked present', sub: `${presenceForm.day} — one row per person per day, so marking twice is a no-op.`, tone: 'success' });
+      roster.retry();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(false); }
   };
 
-  /* attendance strip */
-  const present = 69, onLeave = 3, onDuty = 2;
+  const roster = useAsync(() => apiDutyRoster(date), [date]);
+  const ledger = useAsync(() => apiLeaves(), []);
 
-  const candidates = [
-    { name: 'Mr. Naveen Kaul', subject: 'Mathematics', freePeriods: 3, why: 'Teaches 8-C tomorrow; Mathematics aligns with Ms. Mishra\'s 7-A load.' },
-    { name: 'Ms. Swati Rao', subject: 'Science', freePeriods: 4, why: 'Widest availability; Science covers two of the five affected periods.' }];
+  useEffect(() => {
+    if (!canMark && !canMarkPresence) return;
+    let dead = false;
+    /* The picker is the school's own staff list. `/school/staff` is an OFFICE door, which is
+       exactly the tier that may mark leave — so this fetch cannot 403 where the write can succeed. */
+    import('../services/liveApi').then(({ apiGet }) => apiGet<{ staff: StaffRow[] }>('/school/staff'))
+      .then(r => { if (!dead) setStaff((r.staff ?? []).filter(u => u.role !== 'student')); })
+      .catch(() => { /* the picker degrades to a typed id; the door still validates */ });
+    return () => { dead = true; };
+  }, [canMark, canMarkPresence]);
+
+  const marked = ledger.data?.leaves ?? [];
+  const active = marked.filter(l => l.status === 'marked');
+  const upcoming = active.filter(l => l.leaveDate >= istToday());
+
+  const mark = async () => {
+    if (!form.staffId) { toast({ title: 'Pick a staff member first', tone: 'info' }); return; }
+    setBusy(true);
+    try {
+      const r = await apiMarkLeave({
+        staffId: form.staffId, leaveDate: date, kind: form.kind,
+        ...(form.reason.trim() ? { reason: form.reason.trim() } : {}),
+      });
+      toast({
+        title: `Leave marked — ${r.staffName}`,
+        sub: `${kindLabel(form.kind)} on ${date}. The timetable's absence feed has it now.`,
+        tone: 'success',
+      });
+      setForm(f => ({ ...f, reason: '' }));
+      ledger.retry();
+      roster.retry();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+
+  const cancel = async (l: LiveLeaveRow) => {
+    if (!window.confirm(`Cancel ${l.staffName}'s ${kindLabel(l.kind).toLowerCase()} leave on ${l.leaveDate}? The absence is withdrawn from the timetable.`)) return;
+    setCancelling(l.leaveId);
+    try {
+      await apiCancelLeave(l.leaveId);
+      toast({ title: `Leave cancelled — ${l.staffName}`, sub: 'The absence fact is withdrawn.', tone: 'success' });
+      ledger.retry();
+      roster.retry();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setCancelling(null); }
+  };
+
+  if (!canRead) {
+    return (
+      <Card>
+        <Empty icon={<Icon.People size={24} />} title="Not for your role"
+          sub="Staff leave is visible to the school office and the coordination desk." />
+      </Card>
+    );
+  }
 
   return (
     <div>
-      <SampleNote>Sample HR data — leave requests, staff documents and attendance figures are illustrative in this build, not read from your school’s records.</SampleNote>
       <PageHead
-        title="HR — Staff"
-        sub={canDecide
-          ? 'Leave, substitutions and staff certificates. Decisions here are workspace-local in this build — the shared approval ledger is not connected yet.'
-          : 'Leave, substitutions and staff certificates. Decisions belong to the coordinator and principal roles.'}
-        back={{ to: '/operations', label: 'Operations' }}
+        title="HR"
+        sub="Who is away, and who is on duty. An absence marked here reaches the timetable immediately — it is a fact, not a request."
+        actions={
+          <div className="u-inline" style={{ gap: 8 }}>
+            <input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} aria-label="Roster date" style={{ maxWidth: 170 }} />
+            <Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { roster.retry(); ledger.retry(); }}>Refresh</Button>
+          </div>
+        }
       />
 
-      {/* ---- Stats ---- */}
-      <div className="grid grid-4" style={{ marginBottom: 24 }}>
-        <Stat label="Total staff" value={72} sub="52 teachers · 20 admin staff" />
-        <Stat label="Present today" value={69} sub={`${onDuty} of them out on duty`} />
-        <Stat label="On leave" value={onLeave} sub="1 sick · 2 pre-approved" />
-        <Stat label="Substitutions pending" value={subsPending} sub={act3Open ? 'Ms. Sarita Mishra (7-A) — awaiting assignment' : 'All covers assigned'} />
+      <div className="grid grid-4" style={{ marginBottom: 20 }}>
+        <Stat label="Absent on this date" value={roster.loading ? '—' : roster.data?.absent.length}
+          sub={roster.data ? `${roster.data.onDuty.length} on duty` : 'From the duty roster'} />
+        <Stat label="Leave records" value={marked.length} sub={`${active.length} active · ${marked.length - active.length} cancelled`} />
+        <Stat label="Upcoming" value={upcoming.length} sub="Marked for today or later" />
+        <Stat label="Office authority" value={canMark ? 'Yours' : 'Not yours'}
+          sub={canMark ? 'You can mark and cancel leave' : 'Marking is the owner/principal/IT admin step'} />
       </div>
 
-      {/* ---- Attendance strip ---- */}
-      <Card pad style={{ marginBottom: 28 }}>
-        <div className="u-between" style={{ gap: 14, flexWrap: 'wrap' }}>
-          <div className="u-flex" style={{ gap: 18, flexWrap: 'wrap' }}>
-            <span className="u-flex" style={{ gap: 7 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--success)' }} /> <span className="u-small"><strong className="tnum">{present}</strong> present</span></span>
-            <span className="u-flex" style={{ gap: 7 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--warning)' }} /> <span className="u-small"><strong className="tnum">{onLeave}</strong> on leave</span></span>
-            <span className="u-flex" style={{ gap: 7 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--info)' }} /> <span className="u-small"><strong className="tnum">{onDuty}</strong> on duty (OD)</span></span>
-            <span className="u-flex" style={{ gap: 7 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: 'var(--border-strong)' }} /> <span className="u-small"><strong className="tnum">0</strong> unmarked</span></span>
+      {/* ---- Mark leave ---- */}
+      {canMark ? (
+        <Card head="Mark leave" sub="One person, one day. The office records absence; the timetable picks it up as an absence feed."
+          style={{ marginBottom: 20 }}>
+          <div className="u-flex u-gap-2 u-wrap" style={{ alignItems: 'flex-end' }}>
+            <label className="u-small">Staff member
+              <select className="input" value={form.staffId} onChange={e => setForm(f => ({ ...f, staffId: e.target.value }))} aria-label="Staff member" style={{ minWidth: 200, display: 'block', marginTop: 4 }}>
+                <option value="">Choose…</option>
+                {staff.map(u => <option key={u.id} value={u.id}>{u.name} · {statusLabel(u.role)}</option>)}
+              </select>
+            </label>
+            <label className="u-small">Type
+              <select className="input" value={form.kind} onChange={e => setForm(f => ({ ...f, kind: e.target.value }))} aria-label="Leave type" style={{ minWidth: 190, display: 'block', marginTop: 4 }}>
+                {LEAVE_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+              </select>
+            </label>
+            <label className="u-small">Reason (optional)
+              <input className="input" value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
+                placeholder="e.g. medical appointment" aria-label="Reason" style={{ minWidth: 220, display: 'block', marginTop: 4 }} />
+            </label>
+            <Button variant="primary" disabled={busy || !form.staffId} onClick={mark}>{busy ? 'Marking…' : `Mark ${form.staffId ? 'leave' : ''}`}</Button>
           </div>
-          <span className="u-xs u-faint">{fmtDate(new Date())} · staff register auto-closes at 09:00</span>
-        </div>
-      </Card>
-
-      {/* ---- Leave requests ---- */}
-      <Section
-        title="Leave requests"
-        sub={`${leaves.length} requests this cycle · ${pendingCount} pending decision. Approving a request that needs cover creates a coordinator task automatically.`}
-        style={{ marginBottom: 28 }}
-      >
-        <Card>
-          <DataTable
-            rows={leaves}
-            rowKey={l => l.id}
-            empty={<Empty icon={<Icon.People size={22} />} title="No leave requests" />}
-            columns={[
-              {
-                key: 'teacher', label: 'Staff', render: l => (
-                  <div className="u-flex" style={{ gap: 9 }}>
-                    <Avatar name={l.teacherName} size="sm" />
-                    <div>
-                      <div style={{ fontWeight: 580 }}>{l.teacherName}</div>
-                      <div className="u-xs u-faint">applied {fmtRelative(l.appliedOn)}</div>
-                    </div>
-                  </div>
-                )},
-              { key: 'type', label: 'Type', render: l => leaveTypeBadge(l.type) },
-              {
-                key: 'dates', label: 'Dates', render: l => (
-                  <span className="u-small">{fmtDateShort(l.from)} → {fmtDateShort(l.to)} <span className="u-faint">({Math.max(1, Math.round((l.to.getTime() - l.from.getTime()) / 86400000) + 1)}d)</span></span>
-                )},
-              { key: 'reason', label: 'Reason', render: l => <span className="u-small u-muted">{l.reason}</span> },
-              {
-                key: 'sub', label: 'Cover', render: l => l.substituteNeeded
-                  ? <Badge tone="ai" dot>Substitute needed</Badge>
-                  : <span className="u-xs u-faint">No cover</span>},
-              {
-                key: 'status', label: 'Status', align: 'right', render: l => l.status === 'approved'
-                  ? <Badge tone="success" dot>Approved</Badge>
-                  : l.status === 'rejected'
-                    ? <Badge tone="danger" dot>Rejected</Badge>
-                    : <Badge tone="warning" dot>Pending</Badge>},
-              {
-                key: 'actions', label: '', align: 'right', render: l => l.status !== 'pending' ? (
-                  <span className="u-xs u-faint">—</span>
-                ) : (
-                  <span className="u-flex" style={{ gap: 6, justifyContent: 'flex-end' }}>
-                    <Button size="sm" variant="primary" icon={<Icon.Check size={12} />} loading={busyId === l.id} disabled={!canDecide} onClick={() => decide(l, 'approved')}>Approve</Button>
-                    <Button size="sm" variant="danger-ghost" icon={<Icon.X size={12} />} loading={busyId === l.id} disabled={!canDecide} onClick={() => decide(l, 'rejected')}>Reject</Button>
-                  </span>
-                )}]}
-          />
+          <div className="u-xs u-faint" style={{ marginTop: 8 }}>
+            Marks it for <strong>{date}</strong>. Leave cannot be marked in the past — the door refuses it, and
+            the same person cannot be marked twice for one day.
+          </div>
         </Card>
+      ) : null}
+
+      {/* ---- Staff QR presence ---- */}
+      <Section title="Today's presence code" sub="The office shows it; staff scan it (or tap below). One row per person per day — scanning twice is a no-op.">
+        <div className="u-flex u-gap-2 u-wrap" style={{ alignItems: 'flex-end' }}>
+          {canMark && <Button variant="secondary" disabled={busy} onClick={showQr}>{busy ? '…' : 'Show today’s code'}</Button>}
+          <Button variant="primary" disabled={busy || !qr} onClick={markMe}>{busy ? 'Marking…' : 'Mark me present'}</Button>
+          {qr && <span className="u-small mono" style={{ wordBreak: 'break-all' }}>{qr.token.slice(0, 24)}… <span className="u-faint">({qr.day}, single-day)</span></span>}
+        </div>
+        {!canMark && <div className="u-xs u-faint" style={{ marginTop: 8 }}>The office displays the code; ask them to show it.</div>}
+        {canMarkPresence && (
+          <div className="u-flex u-gap-2 u-wrap" style={{ alignItems: 'flex-end', marginTop: 10 }}>
+            <label className="u-small">Staff member
+              <select className="input" value={presenceForm.staffId} onChange={e => setPresenceForm(f => ({ ...f, staffId: e.target.value }))} aria-label="Staff member to mark present" style={{ minWidth: 200, display: 'block', marginTop: 4 }}>
+                <option value="">Choose…</option>
+                {staff.map(u => <option key={u.id} value={u.id}>{u.name} · {statusLabel(u.role)}</option>)}
+              </select>
+            </label>
+            <label className="u-small">Day
+              <input className="input" type="date" value={presenceForm.day} onChange={e => setPresenceForm(f => ({ ...f, day: e.target.value }))} aria-label="Presence day" style={{ display: 'block', marginTop: 4 }} />
+            </label>
+            <Button variant="ghost" size="sm" disabled={busy || !presenceForm.staffId} onClick={markPresence}>{busy ? 'Marking…' : 'Mark present (office)'}</Button>
+          </div>
+        )}
       </Section>
 
-      {/* ---- Substitutions ---- */}
-      <Section
-        title="Substitutions"
-        sub="AI ranks candidates by free periods and subject match; the assignment is always a human decision (Approvals §1.2)."
-        style={{ marginBottom: 28 }}
-      >
-        <div className="grid grid-2" style={{ alignItems: 'start' }}>
-          <Card pad>
-            {actionItems.loading ? (
-              <SkeletonCard lines={4} />
-            ) : actionItems.error ? (
-              <ErrorState title="Could not load the substitution case" sub={actionItems.error} onRetry={actionItems.retry} />
-            ) : !act3 ? (
-              <Empty icon={<Icon.Clipboard size={20} />} title="No open substitution case" sub="The approval queue has no pending substitution right now." />
-            ) : (
-              <div className="u-col" style={{ gap: 12 }}>
-                <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <Badge tone="warning" dot>act_3 · approval</Badge>
-                  <Badge tone="danger">{act3.priority} priority</Badge>
-                  {act3.deadline && <span className="u-xs u-faint">needed by {fmtRelative(act3.deadline)}</span>}
-                </div>
-                <div style={{ fontWeight: 630, fontSize: 'var(--text-lg)' }}>{act3.title}</div>
-                <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>{act3.detail}</div>
-                <KeyValue
-                  cols={1}
-                  items={[
-                    { k: 'Leave', v: <span className="u-small">Family function · approved per HR policy §2.1 · 2 days from {fmtDateShort(new Date(Date.now() + 86400000))}</span> },
-                    { k: 'Impact', v: <span className="u-small">5 periods across 7-A and 8-C tomorrow morning</span> },
-                    { k: 'Evidence', v: act3.evidence.map(e => e.detail).join(' · ') }]}
-                />
-                {assignedSub && (
-                  <div className="u-flex" style={{ gap: 8, padding: '9px 12px', background: 'var(--success-weak)', borderRadius: 'var(--r-md)' }}>
-                    <Icon.Check size={14} style={{ color: 'var(--success)', flexShrink: 0, marginTop: 1 }} />
-                    <span className="u-small"><strong>{assignedSub}</strong> assigned. Substitute pack generated — timetable, seating, medical notes. Approval act_3 closed and audited.</span>
-                  </div>
-                )}
-                <AiTraceCard trace={SUB_TRACE} />
-              </div>
-            )}
-          </Card>
-
-          <Card pad>
-            <div className="u-col" style={{ gap: 12 }}>
-              <div className="u-upper">Ranked candidates — tomorrow</div>
-              {candidates.map((c, i) => (
-                <div key={c.name} className="u-between" style={{ gap: 10, padding: '11px 12px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: i === 0 ? 'var(--accent-weak)' : 'var(--surface)' }}>
-                  <div className="u-flex" style={{ gap: 10, minWidth: 0 }}>
-                    <Avatar name={c.name} />
-                    <div style={{ minWidth: 0 }}>
-                      <div className="u-flex" style={{ gap: 7, flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 590 }}>{c.name}</span>
-                        {i === 0 && <Badge tone="accent">Best fit</Badge>}
-                      </div>
-                      <div className="u-xs u-muted" style={{ marginTop: 2 }}>{c.subject} · {c.freePeriods} free periods tomorrow</div>
-                      <div className="u-xs u-faint" style={{ marginTop: 2 }}>{c.why}</div>
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={i === 0 ? 'primary' : 'secondary'}
-                    disabled={!canDecide || !!assignedSub}
-                    onClick={() => assignSubstitute(c.name)}
-                  >
-                    Assign
-                  </Button>
-                </div>
-              ))}
-              {!canDecide && (
-                <div className="u-small u-muted">
-                  Assignments are made by the Academic Coordinator or Principal. Sign in as them to decide.
-                </div>
-              )}
-              <Timeline
-                items={[
-                  { time: '09:05', title: 'AI ranked candidates', body: 'Free periods recomputed against tomorrow\'s timetable; subject match weighted first.', dot: 'ai' },
-                  { time: '09:05', title: 'Coordinator notified', body: 'Approval created with a 16:00 deadline today.', dot: 'accent' },
-                  ...(assignedSub ? [{ time: fmtTime(), title: `Substitute assigned — ${assignedSub}`, body: 'Pack generated: timetable, seating, medical notes. Guardians of 7-A informed via class group.', dot: 'accent' as const }] : [])]}
-              />
+      {/* ---- Duty roster ---- */}
+      <Section title={`Duty roster — ${date}`} sub="Absent on the left, on duty on the right. Both are the server's answer for this date.">
+        {(roster.data as { blocked?: { staffId: string; name: string; role: string }[] } | null)?.blocked?.length ? (
+          <Card pad style={{ marginBottom: 12, borderColor: 'var(--status-critical)' }}>
+            <div style={{ fontWeight: 620, marginBottom: 6 }}>
+              {(roster.data as { blocked: unknown[] }).blocked.length} off the roster — verification expired
+            </div>
+            <div className="u-small u-muted">
+              {(roster.data as { blocked: { name: string; role: string }[] }).blocked
+                .map(b => `${b.name} (${statusLabel(b.role)})`).join(' · ')} — re-verify on the Safety audit desk to bring them back.
             </div>
           </Card>
-        </div>
-      </Section>
-
-      {/* ---- Staff certificates ---- */}
-      <Section
-        title="Staff certificate expiry"
-        sub="Staff certifications on the compliance register. The registry (Documents) holds no staff-owned records yet — these four are tracked here until they move across."
-        style={{ marginBottom: 28 }}
-      >
-        <div className="grid grid-4">
-          {STAFF_DOCS.map(d => {
-            const days = Math.round((d.expiresOn.getTime() - Date.now()) / 86400000);
-            return (
-              <Card key={d.id} pad>
-                <div className="u-col" style={{ gap: 7 }}>
-                  <span style={{ fontWeight: 590 }}>{d.title}</span>
-                  <span className="u-xs u-muted">{d.owner}</span>
-                  <span className="u-xs u-faint">expires {fmtDate(d.expiresOn)}</span>
-                  <div>
-                    {days < 0
-                      ? <Badge tone="danger" dot>Expired</Badge>
-                      : days <= 30
-                        ? <Badge tone="warning" dot>{days} days left</Badge>
-                        : <Badge tone="success" dot>{days} days left</Badge>}
+        ) : null}
+        {roster.loading ? <Card pad><div className="u-small u-muted">Reading the roster…</div></Card>
+          : roster.error ? <ErrorState title="Could not read the duty roster" sub={friendly(roster.error)} onRetry={roster.retry} />
+            : (
+              <div className="grid grid-2" style={{ gap: 16, alignItems: 'start' }}>
+                <Card pad={false}>
+                  <div className="card-head"><h3>Absent</h3><span className="u-small u-faint">{roster.data?.absent.length ?? 0}</span></div>
+                  {(roster.data?.absent.length ?? 0) === 0 ? (
+                    <div style={{ padding: 'var(--s-5)' }}>
+                      <Empty title="Nobody is marked away" sub="Everyone active in the school is on duty for this date." />
+                    </div>
+                  ) : (
+                    <DataTable
+                      columns={[
+                        { key: 'name', label: 'Name', render: (a: { name: string }) => <span style={{ fontWeight: 570 }}>{a.name}</span> },
+                        { key: 'role', label: 'Role', render: (a: { role: string }) => <span className="u-small u-muted">{statusLabel(a.role)}</span> },
+                        { key: 'kind', label: 'Type', render: (a: { kind: string }) => <Badge tone={a.kind === 'sick' ? 'warning' : 'outline'}>{kindLabel(a.kind)}</Badge> },
+                        { key: 'reason', label: 'Reason', render: (a: { reason?: string | null }) => <span className="u-xs u-faint">{a.reason || '—'}</span> },
+                        ...(canMark ? [{
+                          key: 'act', label: '', render: (a: { leaveId: string }) => (
+                            <Button size="sm" variant="ghost" disabled={cancelling === a.leaveId}
+                              onClick={() => {
+                                const row = (roster.data?.absent ?? []).find(x => x.leaveId === a.leaveId);
+                                if (row) void cancel({
+                                  leaveId: row.leaveId, staffId: row.staffId, staffName: row.name,
+                                  leaveDate: date, kind: row.kind, status: 'marked', reason: row.reason ?? null,
+                                });
+                              }}>{cancelling === a.leaveId ? '…' : 'Cancel'}</Button>
+                          ),
+                        }] : []),
+                      ]}
+                      rows={roster.data?.absent ?? []}
+                      rowKey={(a: { leaveId: string }) => a.leaveId}
+                    />
+                  )}
+                </Card>
+                <Card pad={false}>
+                  <div className="card-head"><h3>On duty</h3><span className="u-small u-faint">{roster.data?.onDuty.length ?? 0}</span></div>
+                  <div className="u-flex u-gap-2 u-wrap" style={{ padding: 'var(--s-5)' }}>
+                    {(roster.data?.onDuty ?? []).map(d => (
+                      <span key={d.staffId} className="u-small">
+                        <Badge tone="success" dot>{d.name}</Badge>
+                      </span>
+                    ))}
+                    {(roster.data?.onDuty.length ?? 0) === 0 && <span className="u-small u-muted">No active staff on the roster for this date.</span>}
                   </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+                </Card>
+              </div>
+            )}
       </Section>
 
-      <div style={{ height: 12 }} />
-      <div className="u-small u-muted">
-        This HR board is sample data in this build: decisions update this session only and are not written to
-        the server Action Center or the audit ledger (no HR write door exists yet).
-      </div>
+      {/* ---- The ledger ---- */}
+      <Section title="Leave ledger" sub="Every marked absence, newest first. Cancelled rows stay on the record — absence is a fact that was true on that day.">
+        {ledger.loading ? <Card pad><div className="u-small u-muted">Reading the ledger…</div></Card>
+          : ledger.error ? <ErrorState title="Could not read the leave ledger" sub={friendly(ledger.error)} onRetry={ledger.retry} />
+            : marked.length === 0 ? (
+              <Card pad>
+                <Empty title="No leave marked yet"
+                  sub={canMark ? 'Use “Mark leave” above — the first absence is what puts the add-on to work.' : 'The office records absence here; nothing has been marked so far.'} />
+              </Card>
+            ) : (
+              <Card pad={false}>
+                <DataTable<LiveLeaveRow>
+                  columns={[
+                    { key: 'staff', label: 'Staff', render: l => <span style={{ fontWeight: 570 }}>{l.staffName}</span> },
+                    { key: 'date', label: 'Date', render: l => <span className="u-small">{l.leaveDate}</span> },
+                    { key: 'kind', label: 'Type', render: l => <Badge tone={l.kind === 'sick' ? 'warning' : 'outline'}>{kindLabel(l.kind)}</Badge> },
+                    { key: 'reason', label: 'Reason', render: l => <span className="u-xs u-faint">{l.reason || '—'}</span> },
+                    { key: 'status', label: 'Status', render: l => <Badge tone={l.status === 'marked' ? 'success' : 'neutral'} dot>{statusLabel(l.status)}</Badge> },
+                    ...(canMark ? [{
+                      key: 'act', label: '', render: (l: LiveLeaveRow) => (l.status === 'marked'
+                        ? <Button size="sm" variant="ghost" disabled={cancelling === l.leaveId} onClick={() => { void cancel(l); }}>{cancelling === l.leaveId ? '…' : 'Cancel'}</Button>
+                        : <span className="u-xs u-faint">withdrawn</span>),
+                    }] : []),
+                  ]}
+                  rows={marked}
+                  rowKey={l => l.leaveId}
+                />
+              </Card>
+            )}
+      </Section>
+
+      {/* ---- Training (CPD) ledger ---- */}      <Section title="Training & development" sub={tScope === 'school' ? 'Every recorded hour, newest first. The office records; hours belong to the person.' : 'Your recorded training hours.'}>
+        {canMark && (
+          <div style={{ marginBottom: 12 }}>
+            <Button variant="secondary" icon={<Icon.Plus size={14} />} onClick={() => setTOpen(true)}>Record training</Button>
+          </div>
+        )}
+        {trainings == null ? <Card pad><div className="u-small u-muted">Reading training…</div></Card>
+          : trainings.length === 0 ? (
+            <Card pad>
+              <Empty title={tScope === 'school' ? 'No training recorded yet' : 'No training on your record yet'}
+                sub={tScope === 'school' ? 'Record NISHTHA modules, TET prep and in-house hours — the CPD evidence.' : 'The office records training here; nothing is on your record so far.'} />
+            </Card>
+          ) : (
+            <Card pad={false}>
+              <DataTable<{ id: string; title: string; hours: number; provider?: string | null; completed_on?: string | null; staff_name?: string }>
+                columns={[
+                  ...(tScope === 'school' ? [{ key: 'who', label: 'Staff', render: (t: { staff_name?: string }) => <span style={{ fontWeight: 570 }}>{t.staff_name ?? '—'}</span> }] : []),
+                  { key: 'what', label: 'Training', render: (t: { title: string }) => <span style={{ fontWeight: 570 }}>{t.title}</span> },
+                  { key: 'hours', label: 'Hours', width: 90, render: (t: { hours: number }) => <span className="tnum u-small">{t.hours}</span> },
+                  { key: 'by', label: 'Provider', render: (t: { provider?: string | null }) => <span className="u-xs u-faint">{t.provider || '—'}</span> },
+                  { key: 'when', label: 'Completed', width: 130, render: (t: { completed_on?: string | null }) => <span className="u-small">{t.completed_on ? new Date(t.completed_on).toLocaleDateString() : <span className="u-faint">—</span>}</span> },
+                ]}
+                rows={trainings}
+                rowKey={t => t.id}
+              />
+            </Card>
+          )}
+        {tScope !== 'school' && tOwn != null && (
+          <div className="u-small u-muted" style={{ marginTop: 8 }}>Your total: <strong>{tOwn}h</strong> on record.</div>
+        )}
+      </Section>
+
+      {canMark && (
+        <Modal
+          open={tOpen}
+          onClose={() => setTOpen(false)}
+          title="Record training"
+          sub="Hours belong to the person — NISHTHA, TET prep, in-house."
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setTOpen(false)} disabled={busy}>Cancel</Button>
+              <Button variant="primary" disabled={busy || !tForm.staffId || !tForm.title.trim()} onClick={recordTraining}>
+                {busy ? 'Recording…' : 'Record it'}
+              </Button>
+            </>
+          }
+        >
+          <div className="u-col" style={{ gap: 12 }}>
+            <div>
+              <label className="u-xs" htmlFor="tr-staff">Staff member</label>
+              <select id="tr-staff" className="input" style={{ width: '100%', marginTop: 5 }} value={tForm.staffId} onChange={e => setTForm(f => ({ ...f, staffId: e.target.value }))}>
+                <option value="">Choose…</option>
+                {staff.map(u => <option key={u.id} value={u.id}>{u.name} · {statusLabel(u.role)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="u-xs" htmlFor="tr-title">Training</label>
+              <input id="tr-title" className="input" style={{ width: '100%', marginTop: 5 }} value={tForm.title}
+                onChange={e => setTForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. NISHTHA FLN module 4" />
+            </div>
+            <div className="grid grid-2" style={{ gap: 12 }}>
+              <div>
+                <label className="u-xs" htmlFor="tr-hours">Hours</label>
+                <input id="tr-hours" className="input" type="number" min={0} max={500} step={0.5} style={{ width: '100%', marginTop: 5 }} value={tForm.hours}
+                  onChange={e => setTForm(f => ({ ...f, hours: e.target.value }))} />
+              </div>
+              <div>
+                <label className="u-xs" htmlFor="tr-date">Completed on (optional)</label>
+                <input id="tr-date" className="input" type="date" style={{ width: '100%', marginTop: 5 }} value={tForm.completedOn}
+                  onChange={e => setTForm(f => ({ ...f, completedOn: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <label className="u-xs" htmlFor="tr-by">Provider (optional)</label>
+              <input id="tr-by" className="input" style={{ width: '100%', marginTop: 5 }} value={tForm.provider}
+                onChange={e => setTForm(f => ({ ...f, provider: e.target.value }))} placeholder="e.g. DIKSHA" />
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
-}
-
-function fmtTime() {
-  return new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
 }

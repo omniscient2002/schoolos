@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Button, Badge, DataTable, ErrorState, Empty, useToast } from '../../../components/ui';
 import { friendly } from '../../../lib/friendlyErrors';
+import { statusLabel } from '../../../lib/labels';
 import { libraryHolds, libraryFulfilHold, libraryCancelHold, type LibraryReservation } from '../../../services/adminApi';
 import { fmtDate } from './shared';
 
@@ -34,7 +35,7 @@ export default function Holds() {
             { key: 'book', label: 'Book', render: (h: LibraryReservation) => <span><b>{h.title ?? '—'}</b><span className="u-xs u-muted" style={{ display: 'block' }}><code>{h.book_code ?? ''}</code></span></span> },
             { key: 'who', label: 'Borrower', render: (h: LibraryReservation) => h.borrower_name ?? '—' },
             { key: 'queue', label: 'Queue', render: (h: LibraryReservation) => h.queue_no ?? '—' },
-            { key: 'status', label: 'Status', render: (h: LibraryReservation) => <Badge tone={h.status === 'ready' ? 'success' : 'info'}>{h.status}</Badge> },
+            { key: 'status', label: 'Status', render: (h: LibraryReservation) => <Badge tone={h.status === 'ready' ? 'success' : 'info'}>{statusLabel(h.status)}</Badge> },
             { key: 'expires', label: 'Collect by', render: (h: LibraryReservation) => h.status === 'ready' ? fmtDate(h.expires_at) : '—' },
             { key: 'act', label: '', render: (h: LibraryReservation) => (
               <>

@@ -11,6 +11,7 @@ import { BUILT_IN_CAPABILITIES } from '../plugins/pluginRegistry';
 import PluginSettingsForm from '../plugins/PluginSettingsForm';
 import { LIVE_API, apiEnablePlugin, apiDisablePlugin } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { humanize } from '../lib/labels';
 
 /* Live mode renders SERVER manifest names/descriptions verbatim; those are
    contract prose, not copy. This display-only map keeps the cards plain for
@@ -58,7 +59,7 @@ export default function Plugins() {
   return (
     <div style={{ maxWidth: 980, margin: '0 auto' }}>
       <PageHead
-        title="Plugin Manager"
+        title="Add-ons"
         sub="Every extra feature is a simple on/off switch — core features are always on"
         actions={<Badge tone="outline" dot>{enabledCount} of {all.length} enabled</Badge>}
       />
@@ -66,8 +67,8 @@ export default function Plugins() {
       <Card head="Always on" sub="The essential parts of SchoolOS — attendance, enrollment, fees, approvals and records. These are always on." style={{ marginBottom: 'var(--s-4)' }}>
         <KeyValue items={[
           { k: 'The essentials', v: 'Attendance · Enrollment · Fees & payments · Approvals · Activity log' },
-          { k: 'Trust', v: 'Guardian verification · Communication receipts · Role scoping (RLS)' },
-          { k: 'Platform', v: 'This Plugin Manager · entitlements · plugin audit' },
+          { k: 'Trust', v: 'Guardian verification · Communication receipts · Role-based access' },
+          { k: 'Platform', v: 'This add-ons manager · entitlements · add-on audit' },
         ]} cols={1} />
       </Card>
 
@@ -107,10 +108,10 @@ export default function Plugins() {
 
                 <div className="u-inline" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {p.permissions.map(per => (
-                    <span key={per} title={PERMISSION_INFO[per]} className="u-xs u-mono" style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{per}</span>
+                    <span key={per} title={PERMISSION_INFO[per]} className="u-xs u-mono" style={{ padding: '3px 8px', borderRadius: 999, border: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{humanize(per)}</span>
                   ))}
                 </div>
-                <div className="u-xs u-faint">Shows up in: {p.slots.join(' · ')}{p.eventSubscriptions?.length ? ` · reacts to: ${p.eventSubscriptions.join(', ')}` : ''}</div>
+                <div className="u-xs u-faint">Shows up in: {p.slots.map(humanize).join(' · ')}{p.eventSubscriptions?.length ? ` · reacts to: ${p.eventSubscriptions.map(humanize).join(', ')}` : ''}</div>
 
                 {/* L5-5.2: schema-driven settings (paired with L3-5.1's contract).
                     Rendered from the SERVER manifest's settingsSchema; the form
@@ -166,7 +167,7 @@ export default function Plugins() {
         <Empty
           icon={<Icon.Lock size={20} />}
           title="The marketplace gate is closed by design"
-          sub="Out-of-process plugins arrive only with signed requests, scoped tokens, an egress allowlist and the same audit contract. The seam is ready; the review process is what ships next."
+          sub="Out-of-process add-ons arrive only with signed requests, scoped tokens, an egress allowlist and the same audit contract. The seam is ready; the review process is what ships next."
         />
       </Card>
     </div>

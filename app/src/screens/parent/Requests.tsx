@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import {ParentError, ParentLoading} from '../../components/parent/states';
+import { statusLabel, humanize } from '../../lib/labels';
 import { friendly } from '../../lib/friendlyErrors';
 import { fmtDateShort, fmtTime } from '../../lib/format';
 import { getRequests, createRequest, reportDiscrepancy, type FamilyRequest, type RequestCategory } from '../../services/parentApi';
@@ -160,7 +161,7 @@ export default function Requests() {
                 title="No requests yet"
                 sub="Certificate copies, transport changes, corrections — ask here and follow the progress."
                 titleAs="h3"
-                action={<a href="#new-request" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Send your first request</a>}
+                action={<a href="#new-request" className="btn btn-secondary btn-sm">Send your first request</a>}
               />
             ) : (
               <div className="u-col" style={{ gap: 12 }}>
@@ -170,11 +171,11 @@ export default function Requests() {
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: 600 }}>{r.title}</div>
                         <div className="u-xs u-faint" style={{ marginTop: 2 }}>
-                          {CATEGORIES.find(c => c.id === r.category)?.label ?? r.category}{r.child_name ? ` · ${r.child_name}` : ''} · asked {fmtDateShort(r.created_at)}
+                          {CATEGORIES.find(c => c.id === r.category)?.label ?? humanize(r.category)}{r.child_name ? ` · ${r.child_name}` : ''} · asked {fmtDateShort(r.created_at)}
                         </div>
                       </div>
                       <Badge tone={r.status === 'resolved' || r.status === 'closed' ? 'success' : r.status === 'waiting_parent' ? 'warning' : 'info'} dot>
-                        {STATUS_WORD[r.status] ?? r.status}
+                        {STATUS_WORD[r.status] ?? statusLabel(r.status)}
                       </Badge>
                     </div>
                     {/* status timeline — one filled step per office event */}
@@ -186,7 +187,7 @@ export default function Requests() {
                           <span style={{ minWidth: 0 }}>
                             <span className="u-small" style={{ display: 'block', fontWeight: i === all.length - 1 ? 620 : 520 }}>
                               {/* server sends `to` (to_status); DTO said `status` */}
-                              {STATUS_WORD[(ev as { to?: string }).to ?? ev.status] ?? (ev as { to?: string }).to ?? ev.status}
+                              {STATUS_WORD[(ev as { to?: string }).to ?? ev.status] ?? statusLabel((ev as { to?: string }).to ?? ev.status)}
                             </span>
                             <span className="u-xs u-faint">
                               {fmtDateShort(ev.at)} · {fmtTime(ev.at)}{ev.note ? ` — ${ev.note}` : ''}

@@ -16,6 +16,7 @@ import { PageHead, Card, Badge, Button, ErrorState, SkeletonCard, useToast, KeyV
 import { Icon } from '../components/Icon';
 import { PriorityBadge, WOStatusChip, woStatusLabel } from '../components/Maint';
 import { fmtDateTime, fmtRelative } from '../lib/format';
+import { statusLabel } from '../lib/labels';
 import type { MaintPriority, WOStatus } from '../types/domain';
 
 /* standard async hook (APP-SPEC pattern, local copy) */
@@ -83,7 +84,7 @@ function LiveDetail() {
     setBusy(to);
     try {
       await apiWorkOrderStatus(wo.id, to, costCents);
-      toast({ title: `${wo.code} → ${woStatusLabel(to as WOStatus)}`, sub: 'Recorded on the server — the work-order board reflects it immediately.', tone: 'success' });
+      toast({ title: `${wo.code} → ${woStatusLabel(to as WOStatus)}`, sub: 'Recorded — the job board reflects it immediately.', tone: 'success' });
       setCostRupees('');
       wos.retry();
     } catch (e) {
@@ -105,7 +106,7 @@ function LiveDetail() {
     return (
       <>
         <PageHead title="Work order" back={{ to: '/maintenance/work-orders', label: 'Work-order board' }} />
-        <ErrorState title="Could not load this work order" sub={friendly(wos.error)} onRetry={wos.retry} />
+        <ErrorState title="Could not load this job" sub={friendly(wos.error)} onRetry={wos.retry} />
       </>
     );
   }
@@ -114,8 +115,8 @@ function LiveDetail() {
       <>
         <PageHead title="Work order" back={{ to: '/maintenance/work-orders', label: 'Work-order board' }} />
         <ErrorState
-          title="Work order not found"
-          sub={id ? `No work order with id “${id.slice(0, 13)}…” exists on the server.` : 'Open a work order from the board.'}
+          title="Job not found"
+          sub={id ? `No job with id “${id.slice(0, 13)}…” exists.` : 'Open a job from the board.'}
         />
         <div style={{ textAlign: 'center', marginTop: 4 }}>
           <Button variant="secondary" icon={<Icon.ChevronLeft size={14} />} onClick={() => navigate('/maintenance/work-orders')}>Back to the board</Button>
@@ -182,11 +183,11 @@ function LiveDetail() {
                   { k: 'Asset', v: wo.assetCode ? `${wo.assetName ?? ''} (${wo.assetCode})`.trim() : 'None linked — general facilities work' },
                   { k: 'Cost recorded', v: wo.cost != null ? `₹${wo.cost.toLocaleString('en-IN')}` : '—' },
                   {
-                    k: 'SLA', v: wo.slaDue
+                    k: 'Deadline', v: wo.slaDue
                       ? (wo.breached
                         ? <Badge tone="danger" dot>Breached{dueMins != null && dueMins < 0 ? ` ${Math.abs(dueMins)}m ago` : ''}</Badge>
                         : <span className="u-inline" style={{ gap: 8 }}><Badge tone={dueMins != null && dueMins <= 240 ? 'warning' : 'info'} dot>{dueMins != null && dueMins >= 0 ? `${Math.round(dueMins / 60)}h left` : 'Due now'}</Badge><span className="u-small u-muted">due {fmtDateTime(wo.slaDue)}</span></span>)
-                      : 'No SLA window on the record',
+                      : 'No deadline on the record',
                   },
                   ...(wo.slaPolicy ? [{ k: 'Policy for this priority', v: `respond ${wo.slaPolicy.responseMins} min · resolve ${wo.slaPolicy.resolveHours}h` }] : []),
                 ]}
@@ -197,26 +198,26 @@ function LiveDetail() {
           <Card>
             <div className="card-head"><h3>On the record</h3></div>
             <div className="card-body u-col" style={{ gap: 8 }}>
-              <span className="u-small u-muted">Timeline events, technician assignment and parts used are written server-side but not exposed by the work-order read door yet — they appear here the moment the door returns them.</span>
+              <span className="u-small u-muted">Timeline events, technician assignment and parts used are recorded on the school's side but not available here yet — they appear here the moment they are.</span>
             </div>
           </Card>
         </div>
 
         <div className="u-col" style={{ gap: 16 }}>
           <Card>
-            <div className="card-head"><h3>Advance this job</h3><span className="u-small u-faint">server state machine</span></div>
+            <div className="card-head"><h3>Advance this job</h3><span className="u-small u-faint">one step at a time</span></div>
             <div className="card-body u-col" style={{ gap: 12 }}>
               {!canTransition ? (
                 <span className="u-small u-muted">Transitions are done by technicians, facilities, the coordinator, the principal or the owner — your role can view this job.</span>
               ) : !open ? (
-                <span className="u-small u-muted">This job is {wo.status} — no further transitions.</span>
+                <span className="u-small u-muted">This job is {statusLabel(wo.status)} — no further transitions.</span>
               ) : (
                 <>
                   {isResolving && (
                     <div className="field" style={{ marginBottom: 0 }}>
                       <label htmlFor="wo-cost">Final cost in ₹ (optional)</label>
                       <input id="wo-cost" className="input" inputMode="decimal" value={costRupees} onChange={e => setCostRupees(e.target.value)} placeholder="e.g. 1250" />
-                      <span className="hint">Recorded on the ledger when the job is resolved.</span>
+                      <span className="hint">Recorded in the school records when the job is resolved.</span>
                     </div>
                   )}
                   <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -235,7 +236,7 @@ function LiveDetail() {
                     {next === 'closed' && (
                       <Button variant="primary" icon={<Icon.Check size={14} />} loading={busy === 'closed'} disabled={!!busy}
                         onClick={() => transition('closed')}>
-                        Close work order
+                        Close job
                       </Button>
                     )}
                     {wo.status === 'reported' && (
@@ -245,7 +246,7 @@ function LiveDetail() {
                       </Button>
                     )}
                   </div>
-                  <span className="u-xs u-faint">Transitions must follow the flow (reported → … → closed); the server refuses skips with an honest error. Cancel is allowed only while reported.</span>
+                  <span className="u-xs u-faint">Transitions must follow the flow ({statusLabel('reported')} → … → {statusLabel('closed')}); the system refuses skips with an honest error. Cancel is allowed only while it's still {statusLabel('reported').toLowerCase()}.</span>
                 </>
               )}
             </div>

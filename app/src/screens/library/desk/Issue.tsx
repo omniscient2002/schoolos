@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Card, Button, Badge, Section, useToast, KeyValue } from '../../../components/ui';
 import { DeskIcon as Icon } from './shared';
 import { friendly } from '../../../lib/friendlyErrors';
+import { roleLabel } from '../../../lib/labels';
 import { libraryIssue, libraryDeskSettingsGet, type LibraryBook, type LibraryBorrower, type LibraryDeskSettings } from '../../../services/adminApi';
 import { BookPicker, BorrowerPicker, fmtDate, todayISO } from './shared';
 
@@ -76,7 +77,7 @@ export default function Issue() {
               <span>
                 <b>{borrower.name}</b>
                 <span className="u-xs u-muted" style={{ display: 'block' }}>
-                  {borrower.type === 'student' ? `${borrower.grade}-${borrower.section} · ${borrower.identifier}` : `${borrower.role} · ${borrower.identifier}`}
+                  {borrower.type === 'student' ? `${borrower.grade}-${borrower.section} · ${borrower.identifier}` : `${borrower.role ? roleLabel(borrower.role) : ''} · ${borrower.identifier}`}
                 </span>
                 <Badge tone={borrower.duesCents ? 'warning' : 'neutral'}>{borrower.openLoans} out{borrower.duesCents ? ` · ${borrower.duesCents / 100} due` : ''}</Badge>
               </span>

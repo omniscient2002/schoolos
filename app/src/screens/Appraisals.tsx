@@ -9,6 +9,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { Badge, Button, Card, Empty, ErrorState, Modal, PageHead, Section, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDate } from '../lib/format';
+import { roleLabel, statusLabel } from '../lib/labels';
 
 interface Appraisal { id: string; staff_user_id: string; staff_name: string; staff_role: string; cycle: string; rating: number | null; strengths: string | null; improvements: string | null; status: string; updated_at: string }
 interface Staff { id: string; name: string; role: string }
@@ -76,8 +77,8 @@ export default function Appraisals() {
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                           <span style={{ fontWeight: 580 }}>{s.name}</span>
-                          <Badge tone="outline">{s.role}</Badge>
-                          {a ? <Badge tone={STATUS_TONE[a.status] ?? 'neutral'} dot>{a.status}</Badge> : <span className="u-xs u-faint">not appraised</span>}
+                          <Badge tone="outline">{roleLabel(s.role)}</Badge>
+                          {a ? <Badge tone={STATUS_TONE[a.status] ?? 'neutral'} dot>{statusLabel(a.status)}</Badge> : <span className="u-xs u-faint">not appraised</span>}
                           {a?.rating != null && <span className="u-small u-muted">Rating {a.rating}/5</span>}
                         </div>
                         {a?.updated_at && <div className="u-xs u-faint">updated {fmtDate(new Date(a.updated_at))}</div>}

@@ -8,6 +8,7 @@ import { apiCertificates, apiRequestCertificate, apiSignCertificate, apiCertific
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, DataTable, Empty, ErrorState, Section, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
+import { humanize, statusLabel } from '../lib/labels';
 
 interface Cert { id: string; kind: string; student_id: string; serial: string; status: string; action_id?: string | null; signed_at?: string | null }
 interface Student { id: string; name: string; grade?: string; section?: string }
@@ -45,12 +46,12 @@ export default function Certificates() {
   };
   const artifact = (id: string) => {
     apiCertificateArtifact(id)
-      .then(r => toast({ title: 'Artifact generated', sub: `${r.artifact.filename} · sha256 ${r.artifact.sha256.slice(0, 12)}…`, tone: 'success' }))
-      .catch(e => toast({ title: 'No artifact yet', sub: friendly(e), tone: 'error' }));
+      .then(r => toast({ title: 'File generated', sub: `${r.artifact.filename} · security fingerprint ${r.artifact.sha256.slice(0, 12)}…`, tone: 'success' }))
+      .catch(e => toast({ title: 'No file yet', sub: friendly(e), tone: 'error' }));
   };
 
   const list = rows ?? [];
-  const studentName = (id: string) => students.find(s => s.id === id)?.name ?? id.slice(0, 8);
+  const studentName = (id: string) => students.find(s => s.id === id)?.name ?? 'Student';
 
   return (
     <>
@@ -83,13 +84,13 @@ export default function Certificates() {
             <DataTable<Cert>
               columns={[
                 { key: 'serial', label: 'Serial', render: r => <span className="mono u-small">{r.serial}</span> },
-                { key: 'kind', label: 'Kind', render: r => KIND[r.kind] ?? r.kind },
+                { key: 'kind', label: 'Kind', render: r => KIND[r.kind] ?? humanize(r.kind) },
                 { key: 'student', label: 'Student', render: r => studentName(r.student_id) },
-                { key: 'status', label: 'Status', render: r => <Badge tone={r.status === 'issued' ? 'success' : 'warning'} dot>{r.status}</Badge> },
+                { key: 'status', label: 'Status', render: r => <Badge tone={r.status === 'issued' ? 'success' : 'warning'} dot>{statusLabel(r.status)}</Badge> },
                 { key: 'act', label: '', render: r => r.status === 'pending_approval' ? <Button size="sm" variant="secondary" onClick={() => sign(r.id)}>Sign</Button> : (
                   <span className="u-flex" style={{ gap: 8, alignItems: 'center', justifyContent: 'flex-end' }}>
                     <span className="u-xs u-faint">signed</span>
-                    <Button size="sm" variant="ghost" onClick={() => artifact(r.id)}>Artifact</Button>
+                    <Button size="sm" variant="ghost" onClick={() => artifact(r.id)}>File info</Button>
                   </span>
                 ) },
               ]}

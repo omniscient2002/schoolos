@@ -14,6 +14,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
+import { statusLabel, humanize } from '../../lib/labels';
 import {
   getCoordHome, copilotLite, type CoordHome as CoordHomeData, type CoordCopilotAnswer,
 } from '../../services/coordApi';
@@ -47,7 +48,7 @@ function AskBox() {
       <div className="u-flex" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
         <Icon.Sparkle size={14} style={{ color: 'var(--accent)' }} />
         <span className="u-small" style={{ fontWeight: 620 }}>Ask the coordinator desk</span>
-        <Badge tone="outline">deterministic · no AI model</Badge>
+        <Badge tone="outline">No AI model — answers from your records</Badge>
       </div>
       <div className="u-flex" style={{ gap: 8 }}>
         <input
@@ -65,7 +66,7 @@ function AskBox() {
         <div className="u-col" style={{ gap: 8, marginTop: 12 }}>
           <div className="u-small" style={{ lineHeight: 1.65 }}>{ans.answer}</div>
           <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
-            <Badge tone="info">{ans.intent}</Badge>
+            <Badge tone="info">{humanize(ans.intent)}</Badge>
             {ans.sources.map((s, i) => <Badge key={i} tone="outline">{s.ref}</Badge>)}
             <Badge tone="neutral">{ans.budget.used}/{ans.budget.cap} this month</Badge>
           </div>
@@ -125,7 +126,7 @@ export default function CoordHome() {
     {
       to: '/coord/escalations', icon: <Icon.Flag size={16} />, label: 'Open escalations',
       value: h?.open_issues.length ?? 0,
-      sub: (h?.open_issues.length ?? 0) ? h!.open_issues.slice(0, 2).map(i => i.category).join(' · ') : 'No open concerns on the desk',
+      sub: (h?.open_issues.length ?? 0) ? h!.open_issues.slice(0, 2).map(i => humanize(i.category)).join(' · ') : 'No open concerns on the desk',
       alert: (h?.open_issues.length ?? 0) > 0,
     },
   ];
@@ -175,7 +176,7 @@ export default function CoordHome() {
             ) : (
               <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
                 {h.staffing_today.map(s => {
-                  const m = STAFF_META[s.status] ?? { label: s.status, tone: 'neutral' as const };
+                  const m = STAFF_META[s.status] ?? { label: statusLabel(s.status), tone: 'neutral' as const };
                   return <Badge key={s.teacher} tone={m.tone}>{s.teacher}{s.status !== 'present' ? ` · ${m.label}` : ''}</Badge>;
                 })}
               </div>

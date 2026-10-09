@@ -5,8 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { Card, Button, Badge, ErrorState, SkeletonCard, Empty } from '../../../components/ui';
 import { DeskIcon as Icon } from './shared';
 import { friendly } from '../../../lib/friendlyErrors';
+import { statusLabel } from '../../../lib/labels';
 import { libraryDeskOverview, type LibraryDeskOverview } from '../../../services/adminApi';
-import { inr, Kpi } from './shared';
+import { inr, Kpi, fmtDate } from './shared';
 
 export default function Dashboard() {
   const nav = useNavigate();
@@ -57,9 +58,8 @@ export default function Dashboard() {
           {needs.length ? (
             <div style={{ display: 'grid', gap: 6 }}>
               {needs.map((x) => (
-                <button key={x.label} type="button" onClick={() => nav(x.to)}
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 10px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'transparent', cursor: 'pointer' }}>
-                  <span style={{ fontSize: 13.5 }}>{x.label}</span>
+                <button key={x.label} type="button" onClick={() => nav(x.to)} className="row-action">
+                  <span>{x.label}</span>
                   <Badge tone={x.tone}>{x.n}</Badge>
                 </button>
               ))}
@@ -74,11 +74,11 @@ export default function Dashboard() {
             {data.recent.map((r) => (
               <div key={r.id} className="u-between" style={{ padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 13 }}>
                 <span>
-                  <Badge tone={r.status === 'issued' ? 'info' : r.status === 'lost' ? 'danger' : 'success'}>{r.status}</Badge>
+                  <Badge tone={r.status === 'issued' ? 'info' : r.status === 'lost' ? 'danger' : 'success'}>{statusLabel(r.status)}</Badge>
                   <span style={{ marginLeft: 8 }}><b>{r.book_title}</b> <span className="u-muted">({r.book_code})</span></span>
                 </span>
                 <span className="u-muted">
-                  {r.borrower ?? '—'} · {r.status === 'issued' ? `due ${new Date(r.due_on).toLocaleDateString()}` : `returned ${r.returned_at ? new Date(r.returned_at).toLocaleDateString() : ''}`}
+                  {r.borrower ?? '—'} · {r.status === 'issued' ? `due ${fmtDate(r.due_on)}` : `returned ${r.returned_at ? fmtDate(r.returned_at) : ''}`}
                   {r.fine_cents ? ` · ${inr(r.fine_cents)}` : ''}
                 </span>
               </div>

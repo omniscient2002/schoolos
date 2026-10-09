@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Card, Empty, Progress, Stat, useToast } from '../../../components/ui';
 import { Icon } from '../../../components/Icon';
 import { ParentError, ParentLoading } from '../../../components/parent/states';
+import { statusLabel } from '../../../lib/labels';
 import { friendly } from '../../../lib/friendlyErrors';
 import { fmtDate } from '../../../lib/format';
 import { createLeaveRequest, getAttendance } from '../../../services/parentApi';
@@ -116,7 +117,7 @@ export default function Attendance({ childId }: { childId: string }) {
             {history.slice(0, 30).map((r, i) => (
               <div key={`${r.date}-${i}`} className="u-between u-flex" style={{ gap: 10, padding: '8px 0', borderBottom: i === Math.min(history.length, 30) - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
                 <span className="u-small">{fmtDate(r.date)}</span>
-                <Badge tone={attTone(r.status)} dot={!!r.status}>{r.status ? (ATT_WORD[r.status] ?? r.status) : 'Not marked'}</Badge>
+                <Badge tone={attTone(r.status)} dot={!!r.status}>{r.status ? (ATT_WORD[r.status] ?? statusLabel(r.status)) : 'Not marked'}</Badge>
               </div>
             ))}
             {history.length > 30 && <div className="u-xs u-faint" style={{ marginTop: 6 }}>Showing the last 30 days.</div>}

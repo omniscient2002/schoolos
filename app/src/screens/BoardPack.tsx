@@ -11,6 +11,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, ErrorState, Section, Stat, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtMoney } from '../lib/format';
+import { humanize } from '../lib/labels';
 
 interface Pack {
   students?: number;
@@ -47,7 +48,7 @@ export default function BoardPack() {
     apiBoardPackSnapshot(kind)
       .then(r => toast({
         title: r.already ? 'That exact snapshot already exists' : (kind === 'inspection_pack' ? 'Inspection pack saved' : 'Board pack snapshot saved'),
-        sub: `Content hash ${String(r.content_hash).slice(0, 12)}…`, tone: 'success',
+        sub: `Security fingerprint ${String(r.content_hash).slice(0, 12)}…`, tone: 'success',
       }))
       .catch(e => toast({ title: 'Could not snapshot', sub: friendly(e), tone: 'error' }))
       .finally(() => setBusy(false));
@@ -81,10 +82,10 @@ export default function BoardPack() {
             <Section title="Money" sub="Billed, collected and outstanding across the school." style={{ marginBottom: 4 }}>
               <Card pad>
                 <div className="grid grid-4">
-                  <Stat label="Billed" value={fmtMoney(Math.round((pack?.fees?.billed ?? 0) / 100))} sub="All obligations" />
+                  <Stat label="Billed" value={fmtMoney(Math.round((pack?.fees?.billed ?? 0) / 100))} sub="All fees due" />
                   <Stat label="Collected" value={fmtMoney(Math.round((pack?.fees?.collected ?? 0) / 100))} sub={collectionPct != null ? `${collectionPct}% of billed` : 'No billing yet'} />
                   <Stat label="Outstanding" value={fmtMoney(Math.round((pack?.fees?.outstanding ?? 0) / 100))} sub="Unpaid" />
-                  <Stat label="Open obligations" value={pack?.fees?.open_obligations ?? 0} sub="Pending or partial" />
+                  <Stat label="Open fee dues" value={pack?.fees?.open_obligations ?? 0} sub="Pending or partial" />
                 </div>
               </Card>
             </Section>
@@ -92,7 +93,7 @@ export default function BoardPack() {
             <div className="grid grid-3" style={{ marginTop: 14 }}>
               <Card pad><Stat label="Admissions" value={pack?.admissions_open_leads ?? 0} sub="Open leads in the funnel" /></Card>
               <Card pad><Stat label="Safety" value={pack?.safety_open ?? 0} sub="Open safety-box reports" /></Card>
-              <Card pad><Stat label="Snapshot integrity" value="Append-only" sub="Each save is content-hashed and immutable" /></Card>
+              <Card pad><Stat label="Snapshot integrity" value="Protected" sub="Each save gets a security fingerprint and cannot be changed" /></Card>
             </div>
 
             {pack?.attendance_today?.marked === 0 && (
@@ -103,7 +104,7 @@ export default function BoardPack() {
           </>
         )}
 
-      <Section title="Saved snapshots" sub="Append-only, content-hashed board and inspection packs." style={{ marginTop: 18 }}>
+      <Section title="Saved snapshots" sub="Board and inspection packs saved with a security fingerprint." style={{ marginTop: 18 }}>
         <Card pad>
           {snaps === null ? (
             <Button variant="secondary" icon={<Icon.Clipboard size={13} />} onClick={loadSnaps}>Load saved snapshots</Button>
@@ -114,15 +115,15 @@ export default function BoardPack() {
               {snaps.map(s => (
                 <div key={String(s.id)} className="u-between u-wrap" style={{ gap: 10, alignItems: 'center' }}>
                   <div>
-                    <div style={{ fontWeight: 570 }}>{String(s.kind)} · {String(s.period)}</div>
-                    <div className="u-xs u-faint mono">{String(s.content_hash).slice(0, 16)}… · {new Date(String(s.created_at)).toLocaleString()}</div>
+                    <div style={{ fontWeight: 570 }}>{humanize(s.kind)} · {String(s.period)}</div>
+                    <div className="u-xs u-faint mono">Fingerprint {String(s.content_hash).slice(0, 16)}… · {new Date(String(s.created_at)).toLocaleString()}</div>
                   </div>
                   <Button size="sm" variant="ghost" onClick={() => viewSnap(String(s.id))}>Verify</Button>
                 </div>
               ))}
               {viewing && (
                 <div className="u-small" style={{ marginTop: 6, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                  <b>{viewing.hash_ok ? 'Hash verified' : 'Hash mismatch'}</b> — {viewing.id}
+                  <b>{viewing.hash_ok ? 'Fingerprint verified' : 'Fingerprint mismatch'}</b>
                   {viewing.created_at ? ` · ${new Date(viewing.created_at).toLocaleString()}` : ''}
                 </div>
               )}

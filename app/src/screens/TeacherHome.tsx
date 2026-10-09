@@ -102,7 +102,7 @@ function NeedRow({ need, divider, onOpen }: { need: TeacherNeed; divider: boolea
   const open = () => onOpen(need.to, need);
   return (
     <div
-      className={`attention-row ${divider ? 'divider' : ''}`}
+      className={`attention-row ${divider ? 'sep' : ''}`}
       role="button"
       tabIndex={0}
       onClick={open}
@@ -165,8 +165,9 @@ function NextRow({ c }: { c: TeacherHomeAggregate['next'][number] }) {
 
 /* ---------- brief banner (17:00 eod + weekly surface) ---------- */
 function BriefBanner({ brief, onClose }: { brief: TeacherBrief; onClose: () => void }) {
+  const when = brief.when === 'eod' ? 'today' : 'this week';
   return (
-    <Card pad className="t-brief-banner" headAs="h2" head={`Your ${brief.span} brief`}>
+    <Card pad className="t-brief-banner" headAs="h2" head={`Your ${when} brief`}>
       <div className="u-flex" style={{ gap: 12, alignItems: 'flex-start' }}>
         <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--ai-weak)', color: 'var(--ai-text)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
           <Icon.Sunrise size={17} />
@@ -174,17 +175,11 @@ function BriefBanner({ brief, onClose }: { brief: TeacherBrief; onClose: () => v
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 640 }}>Your day in plain words</span>
-            <Badge tone="ai">{brief.span} brief</Badge>
+            <Badge tone="ai">{when} brief</Badge>
             <span className="u-xs u-faint">Reads in under a minute</span>
           </div>
-          <div className="t-brief-grid">
-            {brief.sections.map(s => (
-              <div key={s.heading}>
-                <div className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }}>{s.heading}</div>
-                {s.lines.map((l, i) => <div key={i} className="u-small" style={{ marginTop: 3, lineHeight: 1.55 }}>{l}</div>)}
-              </div>
-            ))}
-          </div>
+          <BriefSentences brief={brief} />
+          <BriefFacts brief={brief} />
         </div>
         <button className="iconbtn" onClick={onClose} aria-label="Close the brief"><Icon.X size={16} /></button>
       </div>
@@ -192,18 +187,58 @@ function BriefBanner({ brief, onClose }: { brief: TeacherBrief; onClose: () => v
   );
 }
 
+/* The brief is a deterministic aggregate, not prose written for a person, so
+   it is rendered as what it is: the server's own sentences verbatim, then the
+   numbers behind them. A block that is not available is SAID to be unavailable
+   — a silent zero would read as "you have nothing due", which is a different
+   and false claim. */
+function briefCounts(brief: TeacherBrief) {
+  const t = brief.timetable.available
+    ? [{ k: 'Periods today', v: String(brief.timetable.teachingToday) }]
+    : [{ k: 'Periods today', v: null as string | null, why: 'timetable' }];
+  const h = brief.homework.available
+    ? [{ k: 'Homework set', v: String(brief.homework.openHomework) }, { k: 'To review', v: String(brief.homework.pendingSubmissions) }]
+    : [{ k: 'Homework set', v: null, why: 'homework' }];
+  const c = brief.concerns.available
+    ? [{ k: 'Open concerns', v: String(brief.concerns.open) }]
+    : [{ k: 'Open concerns', v: null, why: 'concerns' }];
+  const p = brief.curriculumPace.available && brief.curriculumPace.rows.length
+    ? [{ k: 'Curriculum pace', v: `${Math.round(brief.curriculumPace.rows.reduce((s, r) => s + r.pacePct, 0) / brief.curriculumPace.rows.length)}%` }]
+    : [{ k: 'Curriculum pace', v: null, why: 'curriculum' }];
+  return [...t, ...h, ...c, ...p];
+}
+
+function BriefFacts({ brief }: { brief: TeacherBrief }) {
+  return (
+    <div className="t-brief-facts">
+      {briefCounts(brief).map((c, i) => (
+        <div key={i} className="t-brief-fact">
+          <span className="t-brief-fact-k">{c.k}</span>
+          <span className={`t-brief-fact-v${c.v === null ? ' na' : ''}`}>{c.v ?? 'Not available'}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BriefSentences({ brief }: { brief: TeacherBrief }) {
+  return (
+    <div className="t-brief-sentences">
+      {brief.sentences.map((s, i) => <p key={i} className="u-small">{s}</p>)}
+    </div>
+  );
+}
+
 function WeeklyBriefCard({ brief }: { brief: TeacherBrief }) {
   return (
-    <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Calendar size={14} /> Weekly brief</span>} sub="The week in plain words — pace, workload, what to watch" pad>
-      <div className="u-col" style={{ gap: 10 }}>
-        {brief.sections.map(s => (
-          <div key={s.heading}>
-            <div className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }}>{s.heading}</div>
-            {s.lines.map((l, i) => <div key={i} className="u-small" style={{ marginTop: 2, lineHeight: 1.55 }}>{l}</div>)}
-          </div>
-        ))}
-      </div>
-      <div className="u-xs u-faint" style={{ marginTop: 10, lineHeight: 1.5 }}>
+    <Card
+      head={<span className="u-flex" style={{ gap: 7 }}><Icon.Calendar size={14} /> Weekly brief</span>}
+      sub="The week in plain words — pace, workload, what to watch"
+      pad
+    >
+      <BriefSentences brief={brief} />
+      <BriefFacts brief={brief} />
+      <div className="u-xs u-faint" style={{ marginTop: 'var(--s-4)', lineHeight: 1.5 }}>
         Assembled from your own records only. Suggestions only — nothing acts without you.
       </div>
     </Card>
@@ -413,7 +448,7 @@ export default function TeacherHome() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 600, lineHeight: 1.35 }}>{s.title}</div>
                         <div className="u-xs u-muted" style={{ marginTop: 3, lineHeight: 1.5 }}>{s.reason}</div>
-                        <div className="u-xs u-faint" style={{ marginTop: 5 }}><Icon.Clock size={11} style={{ verticalAlign: -1 }} /> {s.estimate} · opens {s.to.replace('/teacher/', '').replace('/', ' · ')}</div>
+                        <div className="u-xs u-faint" style={{ marginTop: 5 }}><Icon.Clock size={11} style={{ verticalAlign: -1 }} /> {s.estimate}</div>
                       </div>
                     </div>
                   </Card>

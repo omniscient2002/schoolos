@@ -19,6 +19,7 @@ import {
   Drawer, Modal, Section,
 } from '../components/ui';
 import { fmtRelative } from '../lib/format';
+import { humanize } from '../lib/labels';
 import { friendly } from '../lib/friendlyErrors';
 import { SegmentedBar } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -141,8 +142,8 @@ export default function FunnelBoard() {
         type: 'audit/add',
         entry: {
           actor: actorName, actorRole: session.roleId, action: `Funnel stage → ${stageLabel(r.to)}`,
-          recordType: 'Admission lead (plugin)', recordRef: id,
-          reason: 'admissions.funnel stage transition', policyRef: 'Platform §3 (plugin governance)',
+          recordType: 'Admission lead', recordRef: id,
+          reason: 'Admissions stage transition', policyRef: 'Platform §3 (add-on governance)',
           aiInvolved: false, risk: r.to === 'enrolled' ? 'medium' : 'low',
           outcome: `${r.from} → ${r.to}${r.actionId ? ' · enrollment approval sent to the Principal' : ''}`,
         },
@@ -251,7 +252,7 @@ export default function FunnelBoard() {
   };
 
   if (!LIVE_API) {
-    return <Card pad><Empty icon={<Icon.Database size={22} />} title="Live API not enabled" sub="The admissions.funnel board reads the server plugin doors — run with VITE_LIVE_API=1." /></Card>;
+    return <Card pad><Empty icon={<Icon.Database size={22} />} title="Live connection not enabled" sub="The admissions funnel needs the live school connection, which is not switched on in this preview." /></Card>;
   }
   if (loading) return <SkeletonCard lines={8} />;
   if (error) return <ErrorState title="Could not load the funnel" sub={error} onRetry={() => setTick(t => t + 1)} />;
@@ -285,7 +286,7 @@ export default function FunnelBoard() {
         </Card>
       )}
 
-      <div className="grid grid-5" style={{ gridTemplateColumns: 'repeat(6, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>
+      <div className="grid grid-6" style={{ marginBottom: 'var(--s-6)' }}>
         <Stat label="Total enquiries" value={summary?.total ?? leads.length} sub="All stages, this session" />
         {PATH.slice(1, 5).map(s => <Stat key={s.id} label={s.label} value={stageCount(s.id)} sub={`Leads at ${s.label.toLowerCase()}`} />)}
         <Stat label="Enrolled" value={stageCount('enrolled')} sub="Offer accepted this cycle" />
@@ -386,7 +387,7 @@ export default function FunnelBoard() {
           <div style={{ height: 20 }} />
           <div className="u-small u-muted">
             Stage moves are validated server-side against the lattice (enquiry → form → interaction → offer → waitlisted → enrolled, side exits rejected/withdrawn).
-            Terminal stages are immutable. Accepting an offer raises <strong>students.create</strong> as a kernel approval action for the Principal — the plugin never writes core student records.
+            Terminal stages are immutable. Accepting an offer raises an approval to create the student record for the Principal — the add-on never writes core student records.
             {masked && ' Guardian contact details are masked for your role (DPDP masking tiers by server truth).'}
           </div>
         </>
@@ -480,7 +481,7 @@ export default function FunnelBoard() {
                 <ol style={{ margin: 0, paddingLeft: 18 }} className="u-col">
                   {activities.map(a => (
                     <li key={a.id} className="u-small" style={{ padding: '3px 0' }}>
-                      <span style={{ fontWeight: 570, textTransform: 'capitalize' }}>{a.kind}</span>
+                      <span style={{ fontWeight: 570 }}>{humanize(a.kind)}</span>
                       {a.scheduled_at && <span className="u-faint"> · {fmtRelative(a.scheduled_at)}</span>}
                       {a.outcome && <span className="u-faint"> · {a.outcome}</span>}
                       {a.notes && <span className="u-faint"> · {a.notes}</span>}

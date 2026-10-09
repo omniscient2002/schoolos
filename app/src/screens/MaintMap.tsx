@@ -24,7 +24,7 @@ function LiveMaintMap() {
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="The map needs an assets-with-location door that does not exist yet. The demo world plots fixture assets; a live school sees no map rather than a guessed layout."
+          sub="The map needs location data that isn't available yet. The demo world plots sample assets; a live school sees no map rather than a guessed layout."
         />
       </Card>
     </div>

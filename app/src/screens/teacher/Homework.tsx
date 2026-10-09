@@ -20,6 +20,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { fmtDate, fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
+import { roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   createHomework, listHomework, listSubmissions,
@@ -137,7 +138,7 @@ export default function Homework() {
     };
   }, [list.data]);
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div>
@@ -330,9 +331,9 @@ export default function Homework() {
               ) : (
                 /* D-6/D-8: no live breakdown exists — say so instead of zeros. */
                 <>
-                  <Stat label="Waiting for you" value="—" sub="Per-status split is not in the live door yet" />
-                  <Stat label="Late" value="—" sub="Per-status split is not in the live door yet" />
-                  <Stat label="Not yet in" value="—" sub="Per-status split is not in the live door yet" />
+                  <Stat label="Waiting for you" unavailable="Not available" sub="The per-status split is not available yet" />
+                  <Stat label="Late" unavailable="Not available" sub="The per-status split is not available yet" />
+                  <Stat label="Not yet in" unavailable="Not available" sub="The per-status split is not available yet" />
                 </>
               )}
             </div>

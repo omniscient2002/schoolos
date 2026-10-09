@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { PageHead, Card, Badge, Button, ErrorState, SkeletonCard } from '../../components/ui';
 import { friendly } from '../../lib/friendlyErrors';
+import { pluginLabel } from '../../lib/labels';
 import { libraryOps } from '../../services/adminApi';
 
 const inr = (c: number) => `₹${(c / 100).toFixed(2)}`;
@@ -29,7 +30,7 @@ export default function LibraryInsights() {
 
   return (
     <div style={{ maxWidth: 1080, margin: '0 auto' }}>
-      <PageHead title="Library — operations" sub="Circulation, collection and demand at a glance (aggregates only)" actions={<Badge tone="accent" dot>library</Badge>} />
+      <PageHead title="Library — operations" sub="Circulation, collection and demand at a glance (aggregates only)" actions={<Badge tone="accent" dot>{pluginLabel('library')}</Badge>} />
       <div style={{ display: 'flex', gap: 6, marginBottom: 'var(--s-4)' }}>
         {[7, 30, 90, 365].map((d) => <Button key={d} variant={days === d ? 'primary' : 'secondary'} onClick={() => setDays(d)}>{d === 365 ? '1y' : `${d}d`}</Button>)}
       </div>

@@ -19,6 +19,7 @@ import {
   PageHead, Card, Stat, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable, Modal, Dropdown,
 } from '../components/ui';
 import { fmtRelative } from '../lib/format';
+import { humanize } from '../lib/labels';
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import {
@@ -199,14 +200,14 @@ export default function VisitorsBoard() {
   }, []);
 
   if (!LIVE_API) {
-    return <Card pad><Empty icon={<Icon.Database size={22} />} title="Live API not enabled" sub="The gate-pass desk reads the ops.visitors plugin doors — run with VITE_LIVE_API=1." /></Card>;
+    return <Card pad><Empty icon={<Icon.Database size={22} />} title="Live connection not enabled" sub="The gate-pass desk needs the live school connection, which is not switched on in this preview." /></Card>;
   }
   if (!desk) {
     /* server truth: every visitors door 403s non-DESK roles — no masked tier exists */
     return (
       <div>
         <PageHead title="Visitors" sub="Campus gate pass." />
-        <Empty icon={<Icon.Lock size={22} />} title="Front-desk surface" sub="Gate-pass records are restricted to front-desk roles (owner, principal, IT admin, coordinator). The server rejects every door for other roles — there is no masked view of visitor PII." />
+        <Empty icon={<Icon.Lock size={22} />} title="Front-desk surface" sub="Gate-pass records are restricted to front-desk roles (owner, principal, IT admin, coordinator). There is no masked view of visitor details for other roles." />
       </div>
     );
   }
@@ -225,7 +226,11 @@ export default function VisitorsBoard() {
         actions={<Button variant="primary" icon={<Icon.Users size={14} />} onClick={() => setLogOpen(true)}>Log visitor</Button>}
       />
 
-      <div className="grid grid-4" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>
+      {/* The column count comes from the stylesheet's responsive grid, not an
+          inline repeat(): a frozen repeat(4) gave four KPI tiles ~80px each
+          on a 390px phone, and an inline value cannot be overridden by a media
+          query. grid-4 reflows 4 → 2 on its own. */}
+      <div className="grid grid-4" style={{ marginBottom: 'var(--s-6)' }}>
         <Stat label="Expected" value={stats.expected} sub="Logged, not yet on campus" />
         <Stat label="On campus" value={stats.onCampus} sub="Checked in, incl. pickup flows" />
         <Stat label="Pickup OTP pending" value={stats.pendingOtp} sub="Awaiting guardian code" />
@@ -244,7 +249,7 @@ export default function VisitorsBoard() {
         <Empty icon={<Icon.Shield size={22} />} title="No visitors logged" sub="Log a visitor at the gate to issue a badge. Student pickups require a student link for guardian verification." />
       ) : (
         <DataTable<ApiVisitorVisit>
-          caption="Gate-pass log — visitor PII is front-desk only (server rejects every door for other roles)"
+          caption="Gate-pass log — visitor details are front-desk only"
           rows={visits ?? []}
           rowKey={v => v.id}
           columns={[
@@ -261,13 +266,13 @@ export default function VisitorsBoard() {
               key: 'purpose', label: 'Purpose', sortable: true,
               render: v => (
                 <div>
-                  <div className="u-small">{v.purpose}</div>
+                  <div className="u-small">{humanize(v.purpose)}</div>
                   {v.detail && <div className="u-xs u-faint">{v.detail}</div>}
                 </div>
               ),
             },
             { key: 'student', label: 'Student', render: v => v.studentName ? <span className="u-small">{v.studentName}</span> : <span className="u-faint u-small">—</span> },
-            { key: 'badge', label: 'Badge', sortable: true, render: v => <span className="u-small" style={{ fontFamily: 'var(--mono, monospace)', letterSpacing: 0.4 }}>{v.badge}</span> },
+            { key: 'badge', label: 'Badge', sortable: true, render: v => <span className="u-small" style={{ fontFamily: 'var(--font-mono)', letterSpacing: 0.4 }}>{v.badge}</span> },
             { key: 'status', label: 'Status', sortable: true, render: v => <Badge tone={STATUS_META[v.status]?.tone ?? 'neutral'}>{STATUS_META[v.status]?.label ?? v.status}</Badge> },
             {
               /* THE HEADLINE: fail-closed release state, visible BEFORE any click */

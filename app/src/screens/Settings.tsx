@@ -10,6 +10,7 @@ import { KNOWN_ROLES } from '../lib/roles';
 import MfaSection from './account/MfaSection';
 import { t, useLang, setLang, LANGS, isPartial } from '../i18n';
 import { storedTheme, setTheme, type ThemeChoice } from '../lib/theme';
+import { roleLabel, statusLabel, humanize } from '../lib/labels';
 
 const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
   { id: 'system', label: 'System' },
@@ -17,27 +18,19 @@ const THEME_OPTS: { id: ThemeChoice; label: string }[] = [
   { id: 'dark', label: 'Dark' },
 ];
 
-/* The roles the product ships (mirrors lib/roles KNOWN_ROLES) with a plain-language
-   purpose. Reference only — the server is the authority on what a role may reach. */
-const ROLE_LABELS: Record<string, string> = {
-  owner: 'Owner', principal: 'Principal', teacher: 'Teacher', coordinator: 'Coordinator',
-  counselor: 'Counsellor (wellbeing)', finance: 'Accounts (Finance)',
-  finance_head: 'Finance head (approver)', finance_clerk: 'Finance clerk (maker)',
-  admissions: 'Admissions desk',
-  transport: 'Transport in-charge', itadmin: 'IT admin', facilities: 'Facilities',
-  technician: 'Technician', parent: 'Parent', student: 'Student', librarian: 'Librarian',
-};
+/* The plain-language purpose of each built-in role (titles come from lib/labels).
+   Reference only — the server is the authority on what a role may reach. */
 const ROLE_PURPOSE: Record<string, string> = {
-  owner: 'Runs the school and its modules; full configuration.',
+  owner: 'Runs the school and its add-ons; full configuration.',
   principal: 'Day-to-day leadership — briefings, approvals and people.',
   coordinator: 'Timetable, substitutions and workload fairness.',
   counselor: 'The wellbeing queue and safeguarding notes only.',
   finance: 'Fee plans, collection and reconciliation.',
-  finance_head: 'Approves refunds and concessions; runs reconciliation and dunning.',
+  finance_head: 'Approves refunds and concessions; runs reconciliation and fee reminders.',
   finance_clerk: 'Collects payments and proposes refunds; cannot approve them.',
   admissions: 'Enquiries, follow-ups and the admissions funnel.',
   transport: 'Routes, fleet and transport incidents.',
-  itadmin: 'Accounts, roles, modules and platform settings.',
+  itadmin: 'Accounts, roles, add-ons and platform settings.',
   facilities: 'Maintenance board, work orders and reports.',
   technician: 'Assigned jobs and the asset workspace.',
   teacher: 'Own classes, homework, submissions and leave.',
@@ -63,7 +56,7 @@ export default function Settings() {
     if (!subjectRef) { toast({ title: 'Phone number required', sub: 'Data requests are filed against the guardian phone number on record.', tone: 'error' }); return; }
     setDsrBusy(true);
     apiPost<{ id?: string; sla_due_at?: string }>('/plugins/pack.dpdp/dsr', { kind, subjectRef })
-      .then(() => toast({ title: `${kind === 'export' ? 'Data export' : 'Data erasure'} request filed`, sub: 'Recorded with the school’s data-protection workflow and an SLA due date.', tone: 'success' }))
+      .then(() => toast({ title: `${kind === 'export' ? 'Data export' : 'Data erasure'} request filed`, sub: 'Recorded with the school’s data-protection workflow and a deadline.', tone: 'success' }))
       .catch(e => toast({ title: 'Request not filed', sub: friendly(e), tone: 'error' }))
       .finally(() => setDsrBusy(false));
   };
@@ -75,7 +68,7 @@ export default function Settings() {
 
   return (
     <>
-      <PageHead title="Settings" sub={`Signed in as ${actorName} · ${ROLE_LABELS[session.roleId] ?? session.roleId}`}
+      <PageHead title="Settings" sub={`Signed in as ${actorName} · ${roleLabel(session.roleId)}`}
         actions={<Button variant="secondary" icon={<Icon.Download size={14} />} onClick={() => toast({ title: 'Not connected', sub: 'Configuration export requires server support — nothing was downloaded.', tone: 'info' })}>Export configuration</Button>} />
 
       <Tabs active={tab} onChange={setTab} tabs={[
@@ -155,7 +148,7 @@ export default function Settings() {
                   <Badge tone="outline">WCAG 2.2 AA</Badge>
                 </div>
                 <p className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-                  The pack pins regulatory defaults: quiet hours, consent for under-18 data processing, retention schedules, and inspection export formats. School-level entries in the Constitution layer on top and never weaken the floor.
+                  The pack pins regulatory defaults: quiet hours, consent for under-18 data processing, retention schedules, and inspection export formats. School-level entries in school policy layer on top and never weaken the floor.
                 </p>
                 <div style={{ marginTop: 10 }}><Button size="sm" variant="secondary" onClick={() => navigate('/constitution')}>View school policies</Button></div>
               </div>
@@ -220,11 +213,11 @@ export default function Settings() {
                 ]} />
               </div>
             </Card>
-            <Card head="Guardrails from the Constitution">
+            <Card head="Guardrails from school policy">
               <div style={{ padding: 'var(--s-5)' }} className="u-col u-gap-2">
                 {seed.policies.filter(p => p.category === 'Communication').map(p => (
                   <div key={p.id} className="u-flex" style={{ gap: 10, alignItems: 'flex-start' }}>
-                    <Badge tone={p.posture === 'AUTO' ? 'success' : p.posture === 'APPROVAL REQUIRED' ? 'warning' : 'danger'}>{p.posture}</Badge>
+                    <Badge tone={p.posture === 'AUTO' ? 'success' : p.posture === 'APPROVAL REQUIRED' ? 'warning' : 'danger'}>{statusLabel(p.posture)}</Badge>
                     <div><div style={{ fontWeight: 570 }}>{p.title}</div><div className="u-small u-muted">{p.statement}</div></div>
                   </div>
                 ))}
@@ -248,7 +241,7 @@ export default function Settings() {
                     </div>
                     <div className="u-flex" style={{ gap: 10, alignItems: 'center' }}>
                       <span className="u-xs u-faint u-hide-mobile">{t.policy} · sample ~{t.uses} sends / mo</span>
-                      <Button size="sm" variant="ghost" onClick={() => toast({ title: `${t.name} — preview`, sub: 'Template opens with live placeholders resolved for your class', tone: 'info' })}>Preview</Button>
+                      <Button size="sm" variant="ghost" onClick={() => toast({ title: `${t.name} — preview`, sub: 'Template preview is not connected yet — no template was opened.', tone: 'info' })}>Preview</Button>
                     </div>
                   </div>
                 ))}
@@ -304,7 +297,7 @@ export default function Settings() {
             </Card>
             <Card head="Your data rights">
               <div style={{ padding: 'var(--s-5)' }} className="u-col u-gap-2">
-                <div className="u-small u-muted">File a data-protection request for a guardian by phone number. Requests go to the school's DPDP workflow with an SLA due date — filed by data-protection operators (owner, principal, IT admin, coordinator).</div>
+                <div className="u-small u-muted">File a data-protection request for a guardian by phone number. Requests go to the school's DPDP workflow with a deadline — filed by data-protection operators (owner, principal, IT admin, coordinator).</div>
                 <label className="u-small">Guardian phone on record
                   <input type="tel" value={dsrPhone} onChange={e => setDsrPhone(e.target.value)} placeholder="+91 98450 00101" style={{ width: '100%' }} />
                 </label>
@@ -339,7 +332,7 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
   }, []);
 
   return (
-    <Section title="Roles & access" sub="The roles this school can assign, and the custom roles it has created. The server decides every door; this is a read-only view.">
+    <Section title="Roles & access" sub="The roles this school can assign, and the custom roles it has created. The server decides every feature; this is a read-only view.">
       <div className="grid grid-2" style={{ alignItems: 'start' }}>
         <Card head="Built-in roles">
           <div style={{ padding: 'var(--s-3) var(--s-5) var(--s-4)' }}>
@@ -347,7 +340,7 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
               <div key={r} className="u-flex" style={{ gap: 12, padding: '11px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'flex-start' }}>
                 <Icon.Key size={14} style={{ color: 'var(--text-3)', marginTop: 3, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 590 }}>{ROLE_LABELS[r] ?? r}</div>
+                  <div style={{ fontWeight: 590 }}>{roleLabel(r)}</div>
                   <div className="u-small u-muted">{ROLE_PURPOSE[r] ?? ''}</div>
                 </div>
                 <Badge tone="outline">Built-in</Badge>
@@ -372,7 +365,7 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
                 icon={<Icon.Key size={20} />}
                 title="No custom roles yet"
                 sub={canManage
-                  ? 'Create one under Roles & access administration — a built-in base plus an allow/deny mask over real doors.'
+                  ? 'Create one under Roles & access administration — a starting role plus allow/deny permissions over real features.'
                   : 'The school owner or IT admin can create custom roles.'}
               />
             )}
@@ -382,7 +375,7 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 590 }}>
                     {role.label}{' '}
-                    <span className="u-xs u-faint">· base {ROLE_LABELS[role.base_role] ?? role.base_role}</span>
+                    <span className="u-xs u-faint">· starting role {roleLabel(role.base_role)}</span>
                   </div>
                   <div className="u-xs u-faint">
                     {role.permissions.allow.length} granted · {role.permissions.deny.length} refused ·{' '}
@@ -396,7 +389,7 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
         </Card>
       </div>
       <div className="u-small u-muted" style={{ marginTop: 10 }}>
-        A custom role is a built-in base plus an allow/deny mask over real doors — it is not gated behind an
+        A custom role is a starting role plus allow/deny permissions over real features — it is not gated behind an
         enterprise pack. {canManage ? 'Manage them under ' : 'Only the owner or IT admin can manage them under '}
         <button
           onClick={onManage}
@@ -407,6 +400,8 @@ function RoleAccessTab({ canManage, onManage }: { canManage: boolean; onManage: 
     </Section>
   );
 }
+
+const CHANNEL_LABELS: Record<string, string> = { push: 'Push', whatsapp: 'WhatsApp', email: 'Email' };
 
 function NotificationRow({ label, desc, push, whatsapp, email, canEdit }: { label: string; desc: string; push: boolean; whatsapp: boolean; email: boolean; canEdit: boolean }) {
   const toast = useToast();
@@ -430,8 +425,8 @@ function NotificationRow({ label, desc, push, whatsapp, email, canEdit }: { labe
       <div className="u-flex u-gap-3 u-hide-mobile" style={{ alignItems: 'center' }}>
         {(['push', 'whatsapp', 'email'] as const).map(k => (
           <label key={k} className="u-flex u-xs u-faint" style={{ gap: 5, alignItems: 'center', cursor: canEdit ? 'pointer' : 'not-allowed' }}>
-            <input type="checkbox" className="checkbox" checked={state[k]} onChange={() => flip(k)} aria-label={`${label} via ${k}`} />
-            {k}
+            <input type="checkbox" className="checkbox" checked={state[k]} onChange={() => flip(k)} aria-label={`${label} via ${CHANNEL_LABELS[k] ?? humanize(k)}`} />
+            {CHANNEL_LABELS[k] ?? humanize(k)}
           </label>
         ))}
       </div>

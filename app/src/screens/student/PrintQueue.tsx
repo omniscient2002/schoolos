@@ -27,6 +27,7 @@ import { apiRequest } from '../../services/liveApi';
 import { useSession } from '../../App';
 import { canSurface } from '../../lib/effective';
 import { useRoleOrGrant } from '../../lib/access';
+import { humanize, statusLabel, roleLabel } from '../../lib/labels';
 
 /* staff surface: teacher/office/coordinator/principal (the plan: "teacher/office
    see print queue"). Owner + IT admin mirror the house DESK set (VisitorsBoard);
@@ -103,7 +104,7 @@ function SheetBody({ kind, payload }: { kind: string; payload: unknown }) {
   const scalarEntries = Object.entries(p).filter(([k, v]) => !['items', 'lines', 'text', 'body', 'note', 'title', 'heading'].includes(k) && v != null && typeof v !== 'object');
   return (
     <div className="u-col" style={{ gap: 12 }}>
-      <div style={{ fontWeight: 640, fontSize: 'var(--text-lg)' }}>{title ?? (KIND_LABEL[kind] ?? kind)}</div>
+      <div style={{ fontWeight: 640, fontSize: 'var(--text-lg)' }}>{title ?? (KIND_LABEL[kind] ?? humanize(kind))}</div>
       {items && (
         <ul style={{ margin: 0, paddingLeft: 18 }} className="u-col" >
           {items.map((it, i) => (
@@ -116,14 +117,14 @@ function SheetBody({ kind, payload }: { kind: string; payload: unknown }) {
         <div className="u-col" style={{ gap: 4 }}>
           {scalarEntries.map(([k, v]) => (
             <div key={k} className="u-small u-between" style={{ gap: 10 }}>
-              <span className="u-muted" style={{ textTransform: 'capitalize' }}>{k.replace(/_/g, ' ')}</span>
+              <span className="u-muted">{humanize(k)}</span>
               <span style={{ fontWeight: 550, textAlign: 'right' }}>{String(v)}</span>
             </div>
           ))}
         </div>
       )}
       {!title && !items && !text && scalarEntries.length === 0 && (
-        <p className="u-small u-muted" style={{ margin: 0 }}>This request carries no printable detail — print the {KIND_LABEL[kind] ?? kind} from the student's record.</p>
+        <p className="u-small u-muted" style={{ margin: 0 }}>This request carries no printable detail — print the {KIND_LABEL[kind] ?? humanize(kind)} from the student's record.</p>
       )}
     </div>
   );
@@ -160,7 +161,7 @@ export default function PrintQueue() {
     setBusyId(j.id);
     try {
       await staffCall(`/student/print/${encodeURIComponent(j.id)}/done`, { method: 'POST', body: '{}' });
-      toast({ title: `${j.studentName}'s ${KIND_LABEL[j.kind] ?? j.kind} marked printed`, sub: 'Recorded on the print log — nothing else to do.', tone: 'success' });
+      toast({ title: `${j.studentName}'s ${KIND_LABEL[j.kind] ?? humanize(j.kind)} marked printed`, sub: 'Recorded on the print log — nothing else to do.', tone: 'success' });
       setTick(t => t + 1);
     } catch (e) {
       /* server law surfaces verbatim */
@@ -194,7 +195,7 @@ export default function PrintQueue() {
     return (
       <div>
         <PageHead title="Print queue" sub="The office desk behind the student Print Center." />
-        <Empty icon={<Icon.Lock size={22} />} title="Staff surface" sub="Print requests show for office and teaching staff (teacher, coordinator, principal, owner, IT admin). The server checks every request — nothing here is public." />
+        <Empty icon={<Icon.Lock size={22} />} title="Staff surface" sub={`Print requests show for office and teaching staff (${STAFF_ROLES.map(roleLabel).join(', ')}). The server checks every request — nothing here is public.`} />
       </div>
     );
   }
@@ -206,7 +207,7 @@ export default function PrintQueue() {
         <PageHead title="Print queue" sub="The office desk behind the student Print Center." />
         <ErrorState title="Could not load the print queue" sub={error} onRetry={() => setTick(t => t + 1)} />
         <p className="u-small u-faint" style={{ marginTop: 10 }}>
-          Students queue printouts from school computers — the requests are recorded on the server, so nothing is lost while this door is unreachable.
+          Students queue printouts from school computers — the requests are recorded on the server, so nothing is lost while this feature is unreachable.
         </p>
       </div>
     );
@@ -270,8 +271,8 @@ export default function PrintQueue() {
               ),
             },
             {
-              key: 'kind', label: 'What they need', sortable: true, sortValue: j => KIND_LABEL[j.kind] ?? j.kind,
-              render: j => <span className="u-small">{KIND_LABEL[j.kind] ?? j.kind}</span>,
+              key: 'kind', label: 'What they need', sortable: true, sortValue: j => KIND_LABEL[j.kind] ?? humanize(j.kind),
+              render: j => <span className="u-small">{KIND_LABEL[j.kind] ?? humanize(j.kind)}</span>,
             },
             {
               key: 'requested', label: 'Requested', sortable: true, sortValue: j => j.requestedAt ? new Date(j.requestedAt).getTime() : 0,
@@ -281,14 +282,14 @@ export default function PrintQueue() {
             },
             {
               key: 'status', label: 'Status', sortable: true,
-              render: j => <Badge tone={STATUS_META[j.status]?.tone ?? 'neutral'} dot={j.status === 'queued'}>{STATUS_META[j.status]?.label ?? j.status}</Badge>,
+              render: j => <Badge tone={STATUS_META[j.status]?.tone ?? 'neutral'} dot={j.status === 'queued'}>{STATUS_META[j.status]?.label ?? statusLabel(j.status)}</Badge>,
             },
             {
               key: 'actions', label: 'Actions', align: 'right',
               render: j => (
                 <span className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
                   <Button size="sm" variant="ghost" icon={<Icon.Eye size={13} />}
-                    aria-label={`View sheet — ${j.studentName}, ${KIND_LABEL[j.kind] ?? j.kind}`}
+                    aria-label={`View sheet — ${j.studentName}, ${KIND_LABEL[j.kind] ?? humanize(j.kind)}`}
                     onClick={() => setSheet(j)}>
                     View sheet
                   </Button>
@@ -298,7 +299,7 @@ export default function PrintQueue() {
                       <Button
                         size="sm" variant="primary" icon={<Icon.Check size={13} />}
                         disabled={busyId === j.id}
-                        aria-label={`Mark printed — ${j.studentName}, ${KIND_LABEL[j.kind] ?? j.kind}`}
+                        aria-label={`Mark printed — ${j.studentName}, ${KIND_LABEL[j.kind] ?? humanize(j.kind)}`}
                         onClick={() => markPrinted(j)}
                       >
                         {busyId === j.id ? 'Marking…' : 'Mark printed'}
@@ -315,7 +316,7 @@ export default function PrintQueue() {
       <Drawer
         open={sheet !== null}
         onClose={() => setSheet(null)}
-        title={sheet ? `${sheet.studentName} — ${KIND_LABEL[sheet.kind] ?? sheet.kind}` : 'Print sheet'}
+        title={sheet ? `${sheet.studentName} — ${KIND_LABEL[sheet.kind] ?? humanize(sheet.kind)}` : 'Print sheet'}
         sub={sheet?.requestedAt ? `Requested ${fmtRelative(sheet.requestedAt)}` : undefined}
       >
         {sheet && <SheetBody kind={sheet.kind} payload={sheet.payload} />}

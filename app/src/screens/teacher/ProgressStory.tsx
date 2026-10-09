@@ -8,8 +8,8 @@
    intervention log). What happened, in order, in words a
    parent could read aloud.
 
-   Door: GET /progress/story/:studentId — PROPOSED (frozen with
-   TS-3 before W2; see fixtures header).
+   Door: GET /progress/story/:studentId — server door in
+   teacher.copilot (staff-gated); this screen is the caller.
    ============================================================ */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';

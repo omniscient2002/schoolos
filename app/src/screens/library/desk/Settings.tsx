@@ -77,7 +77,14 @@ export default function Settings() {
       const nums = (v: unknown) => String(v ?? '').split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n));
       body.due_reminder_days_before = nums(form.due_reminder_days_before);
       body.notify_channels = String(form.notify_channels ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-      body.quiet_hours_ist = nums(form.quiet_hours_ist).slice(0, 2);
+      /* QUIET-1: quiet_hours_ist must be exactly [startHour, endHour]. An EMPTY box used
+         to become `[0]` (Number('') === 0) — a one-element array — so simply not touching
+         the optional "Quiet hours" field failed the whole save with
+         "quiet_hours_ist must be [startHour, endHour] (0–23)" and NONE of the other 20
+         settings on this screen were persisted. Only send a pair, and only when there is one. */
+      const quiet = nums(form.quiet_hours_ist).slice(0, 2);
+      if (quiet.length === 2) body.quiet_hours_ist = quiet;
+      else delete body.quiet_hours_ist;
       await libraryDeskSettingsSave(body as Partial<LibraryDeskSettings>);
       toast({ title: 'Library settings saved', sub: 'New loans and fines follow this policy from now on.', tone: 'success' });
     } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
@@ -141,7 +148,7 @@ export default function Settings() {
       <Card headAs="h2" head="Identifier scheme">
         <div className="u-muted" style={{ fontSize: 13.5 }}>
           How books are labelled (accession / barcode / ISBN / QR, prefix, padding) is the school's catalog
-          standard — the owner or principal sets it in <b>Modules → Library</b>. Ask them to change it.
+          standard — the owner or principal sets it in <b>Add-ons → Library</b>. Ask them to change it.
         </div>
       </Card>
 

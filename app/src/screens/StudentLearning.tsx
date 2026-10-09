@@ -145,7 +145,7 @@ export default function StudentLearning() {
         <div className="u-col" style={{ gap: 16 }}>
           <Card head="This term, by subject">
             {/* Honesty: no results door is connected in this build; the per-subject numbers are illustrative. */}
-            <SampleNote>Sample progress — no results door is connected in this build, so these per-subject figures are illustrative and not read from your marks.</SampleNote>
+            <SampleNote>Sample progress — this feature is not connected in this build, so these per-subject figures are illustrative and not read from your marks.</SampleNote>
             <div className="u-col" style={{ gap: 14 }}>
               {PROGRESS.map(p => (
                 <div key={p.subject}>

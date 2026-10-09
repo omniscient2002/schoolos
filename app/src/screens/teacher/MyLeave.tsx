@@ -17,6 +17,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate, fmtDateTime } from '../../lib/format';
+import { roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   createLeave, listMyLeave,
@@ -87,7 +88,7 @@ export default function MyLeave() {
     .filter(r => r.status !== 'rejected' && new Date(r.to_date).getTime() >= Date.now() - 86400000)
     .sort((a, b) => a.from_date.localeCompare(b.from_date)), [mine.data]);
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div>
@@ -174,7 +175,7 @@ export default function MyLeave() {
               icon={<Icon.Calendar size={22} />}
               title="No leave taken"
               sub="Your requests and their outcomes will be listed here, with balances above always up to date."
-              action={<a href="#apply-leave" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Request leave</a>}
+              action={<a href="#apply-leave" className="btn btn-secondary btn-sm">Request leave</a>}
             />
           }
         >

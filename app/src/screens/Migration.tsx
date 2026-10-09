@@ -9,7 +9,10 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../state/store';
 import { apiMigrationSources, apiMigrationCreateSource, apiMigrationStage, apiMigrationStageRows, apiMigrationValidate, apiMigrationCommit, apiMigrationActivate, type TrustReceipt } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { humanize, statusLabel } from '../lib/labels';
 import { PageHead, Card, Badge, Button, useToast, KeyValue, SkeletonCard, ErrorState } from '../components/ui';
+import { useKernel } from '../plugins/useKernel';
+import ImportMapper from './migration/ImportMapper';
 
 
 export default function Migration() {
@@ -49,6 +52,7 @@ const rupees = (cents: string | number) => {
 function LiveMigration() {
   const toast = useToast();
   const { session } = useStore();
+  const { isEnabled } = useKernel();
   const [name, setName] = useState('');
   const [kind, setKind] = useState('students');
   const [selected, setSelected] = useState<string | null>(null);
@@ -99,7 +103,7 @@ function LiveMigration() {
     setBusy('stage');
     try {
       const res = await apiMigrationStageRows(String(sel.id), rows);
-      toast({ title: `${res.staged} row(s) staged`, sub: `${res.total} total in the source — staged rows live in the migration area, not the live ledger.`, tone: 'success' });
+      toast({ title: `${res.staged} row(s) staged`, sub: `${res.total} total in the source — staged rows live in the migration area, not the live school records.`, tone: 'success' });
       sources.retry();
     } catch (e) {
       toast({ title: 'Staging refused', sub: friendly(e), tone: 'error' });
@@ -127,7 +131,7 @@ function LiveMigration() {
     setBusy(`stage-${to}`);
     try {
       await apiMigrationStage(String(sel.id), to);
-      toast({ title: `Dry-run marker set: ${to}`, sub: 'Bookkeeping only — no live data changed.', tone: 'info' });
+      toast({ title: `Dry-run marker set: ${humanize(to)}`, sub: 'Bookkeeping only — no live data changed.', tone: 'info' });
       sources.retry();
     } catch (e) {
       toast({ title: 'Could not set the marker', sub: friendly(e), tone: 'error' });
@@ -140,7 +144,7 @@ function LiveMigration() {
     try {
       const res = await apiMigrationCommit(String(sel.id));
       setCommitResult({ created: res.created, skipped: res.skipped, imported: res.imported });
-      toast({ title: `Committed — ${res.imported} record(s) created`, sub: `${res.skipped} skipped (duplicates). The source is now verified; the live ledger changed and every row is audited.`, tone: 'success' });
+      toast({ title: `Committed — ${res.imported} record(s) created`, sub: `${res.skipped} skipped (duplicates). The source is now verified; your school records changed and every row is audited.`, tone: 'success' });
       sources.retry();
     } catch (e) {
       toast({ title: 'Commit refused', sub: friendly(e), tone: 'error' });
@@ -152,7 +156,7 @@ function LiveMigration() {
     try {
       const res = await apiMigrationActivate();
       setReceipt(res.trustReceipt as unknown as TrustReceipt);
-      toast({ title: 'Cutover recorded', sub: 'The trust receipt below is computed from the ledger — check the difference figure.', tone: 'success' });
+      toast({ title: 'Cutover recorded', sub: 'The trust receipt below is computed from your school records — check the difference figure.', tone: 'success' });
       sources.retry();
     } catch (e) {
       toast({ title: 'Activation refused', sub: friendly(e), tone: 'error' });
@@ -174,7 +178,7 @@ function LiveMigration() {
             <div className="u-flex u-wrap" style={{ gap: 8 }}>
               <input className="input" style={{ flex: 2, minWidth: 200 }} placeholder="Source name — e.g. Excel “Master 2026-27”" value={name} onChange={e => setName(e.target.value)} aria-label="Source name" />
               <select className="select" style={{ width: 150 }} value={kind} onChange={e => setKind(e.target.value)} aria-label="Kind">
-                {['students', 'fees', 'admissions', 'transport', 'assets'].map(k => <option key={k} value={k}>{k}</option>)}
+                {['students', 'fees', 'admissions', 'transport', 'assets'].map(k => <option key={k} value={k}>{humanize(k)}</option>)}
               </select>
               <Button variant="primary" loading={busy === 'create'} disabled={!!busy || !name.trim()} onClick={createSource}>Connect</Button>
             </div>
@@ -196,9 +200,9 @@ function LiveMigration() {
                 >
                   <span className="u-col" style={{ gap: 2 }}>
                     <span style={{ fontWeight: 600 }}>{String(src.name)}</span>
-                    <span className="u-xs u-faint">{String(src.kind)} · {Number(src.row_count ?? 0)} rows staged · {Number(src.imported ?? 0)} imported · {Number(src.flagged ?? 0)} flagged</span>
+                    <span className="u-xs u-faint">{humanize(src.kind)} · {Number(src.row_count ?? 0)} rows staged · {Number(src.imported ?? 0)} imported · {Number(src.flagged ?? 0)} flagged</span>
                   </span>
-                  <Badge tone={src.status === 'verified' || src.status === 'activated' ? 'success' : 'info'}>{String(src.status)}</Badge>
+                  <Badge tone={src.status === 'verified' || src.status === 'activated' ? 'success' : 'info'}>{statusLabel(String(src.status))}</Badge>
                 </button>
               ))}
             </div>
@@ -206,27 +210,32 @@ function LiveMigration() {
         </div>
       </Card>
 
+      {/* ---- understand a file before anything is staged (ops.import) ---- */}
+      {isEnabled('ops.import') && (
+        <ImportMapper sources={list} onStaged={sources.retry} />
+      )}
+
       {/* ---- work a source ---- */}
       {sel && sel.status !== 'verified' && sel.status !== 'activated' && (
         <Card pad>
-          <div className="card-head"><h3>2 · Stage, validate, commit — {String(sel.name)}</h3><Badge tone="info">{String(sel.status)}</Badge></div>
+          <div className="card-head"><h3>2 · Stage, validate, commit — {String(sel.name)}</h3><Badge tone="info">{statusLabel(String(sel.status))}</Badge></div>
           <div className="card-body u-col" style={{ gap: 12 }}>
             <div className="field" style={{ marginBottom: 0 }}>
               <label htmlFor="mig-rows">Rows — JSON array of {'{ rowNo, data }'}; data needs name, grade, section (fees optional: [{'{'}term, label, amountCents{'}'}])</label>
               <textarea id="mig-rows" className="input" rows={6} value={rowsText} onChange={e => setRowsText(e.target.value)}
                 placeholder={'[{"rowNo":1,"data":{"name":"Meera Nair","grade":"5","section":"A"}}]'}
-                style={{ fontFamily: 'var(--mono, monospace)', fontSize: 12 }} />
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} />
             </div>
             <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
               <Button size="sm" variant="secondary" loading={busy === 'stage'} disabled={!!busy} onClick={stageRows}>Stage rows (≤5000)</Button>
               <Button size="sm" variant="secondary" loading={busy === 'validate'} disabled={!!busy} onClick={runValidate}>Validate</Button>
               {(['analyzed', 'mapped', 'health-check', 'shadow'] as const).map(st => (
                 <Button key={st} size="sm" variant="ghost" loading={busy === `stage-${st}`} disabled={!!busy} onClick={() => markStage(st)}>
-                  Mark {st}
+                  Mark {humanize(st)}
                 </Button>
               ))}
               <Button size="sm" variant="primary" loading={busy === 'commit'} disabled={!!busy || !!validate && validate.errors > 0} onClick={commit}>
-                Commit to the live ledger
+                Commit to school records
               </Button>
             </div>
             {validate && (
@@ -265,19 +274,19 @@ function LiveMigration() {
               <KeyValue
                 cols={1}
                 items={[
-                  { k: 'Rows in the ledger', v: String(receipt.totalRows) },
+                  { k: 'Rows on record', v: String(receipt.totalRows) },
                   { k: 'Imported', v: String(receipt.imported) },
                   { k: 'Flagged for follow-up', v: String(receipt.flagged) },
                   { k: 'Skipped', v: String(receipt.skipped) },
-                  { k: 'Fee ledger total', v: rupees(receipt.feeTotalCents) },
-                  { k: 'Fee ledger paid', v: rupees(receipt.feePaidCents) },
-                  { k: 'Difference (computed from the ledger)', v: <b style={{ color: receipt.differenceCents === '0' ? 'var(--success-text, var(--accent-text))' : 'var(--warning-text, var(--text-1))' }}>{rupees(receipt.differenceCents)}</b> },
+                  { k: 'Total fees recorded', v: rupees(receipt.feeTotalCents) },
+                  { k: 'Fees recorded as paid', v: rupees(receipt.feePaidCents) },
+                  { k: 'Difference (computed from school records)', v: <b style={{ color: receipt.differenceCents === '0' ? 'var(--success-text, var(--accent-text))' : 'var(--warning-text, var(--text-1))' }}>{rupees(receipt.differenceCents)}</b> },
                   { k: 'Rollback window', v: `${receipt.rollbackDays} days` },
                 ]}
               />
               <span className="u-xs u-faint">
-                This receipt is computed from the live ledger at activation time — the difference figure is the ledger's own arithmetic, not an estimate.
-                {receipt.differenceCents !== '0' && ' A non-zero difference means fees and payments do not reconcile yet — open reconciliation before treating the money ledger as closed.'}
+                This receipt is computed from your school records at activation time — the difference figure is the records' own arithmetic, not an estimate.
+                {receipt.differenceCents !== '0' && ' A non-zero difference means fees and payments do not reconcile yet — open reconciliation before treating the fee records as closed.'}
               </span>
             </div>
           )}

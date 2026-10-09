@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Button, Badge, DataTable, ErrorState, Empty, Modal, useToast } from '../../../components/ui';
 import { friendly } from '../../../lib/friendlyErrors';
+import { statusLabel } from '../../../lib/labels';
 import { libraryAcquisitions, libraryDecideAcq, type LibraryAcq } from '../../../services/adminApi';
 import { fmtDate, inr } from './shared';
 
@@ -32,7 +33,7 @@ export default function Requests() {
   return (
     <Card headAs="h2" head="Purchase requests" sub="Sorted by demand — approve, order, or add to the catalog"
       actions={<select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Request status" style={{ width: 170 }}>
-        {['requested', 'approved', 'ordered', 'added', 'rejected', ''].map((s) => <option key={s || 'all'} value={s}>{s || 'all'}</option>)}
+        {['requested', 'approved', 'ordered', 'added', 'rejected', ''].map((s) => <option key={s || 'all'} value={s}>{s ? statusLabel(s) : 'All'}</option>)}
       </select>}>
       {rows === null ? <Empty title="Loading…" /> : rows.length === 0 ? (
         <Empty title="No requests" sub="Borrower suggestions appear here." />
@@ -43,7 +44,7 @@ export default function Requests() {
             { key: 'votes', label: 'Votes', render: (r: LibraryAcq) => r.vote_count },
             { key: 'when', label: 'Asked', render: (r: LibraryAcq) => fmtDate(r.created_at) },
             { key: 'vendor', label: 'Vendor', render: (r: LibraryAcq & { vendor?: string; cost_cents?: number }) => r.vendor ? `${r.vendor}${r.cost_cents ? ` · ${inr(r.cost_cents)}` : ''}` : '—' },
-            { key: 'status', label: 'Status', render: (r: LibraryAcq) => <Badge tone={r.status === 'added' ? 'success' : r.status === 'rejected' ? 'danger' : 'info'}>{r.status}</Badge> },
+            { key: 'status', label: 'Status', render: (r: LibraryAcq) => <Badge tone={r.status === 'added' ? 'success' : r.status === 'rejected' ? 'danger' : 'info'}>{statusLabel(r.status)}</Badge> },
             { key: 'act', label: '', render: (r: LibraryAcq) => (
               <>
                 <Button variant="ghost" onClick={async () => { if (await decide(r, 'approve')) toast({ title: 'Approved', tone: 'success' }); }}>Approve</Button>

@@ -11,6 +11,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { AiTraceCard, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateTime, fmtRelative } from '../lib/format';
+import { statusLabel } from '../lib/labels';
 import type { AiTrace, DecisionRecord } from '../types/domain';
 
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
@@ -30,8 +31,6 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 
 const STATUS_TONE: Record<DecisionRecord['status'], 'success' | 'warning' | 'info'> = {
   validated: 'success', 'review-due': 'warning', open: 'info'};
-const STATUS_LABEL: Record<DecisionRecord['status'], string> = {
-  validated: 'validated', 'review-due': 'review due', open: 'open'};
 const KIND_LABEL = { decision: 'Decision', meeting: 'Meeting', incident: 'Incident' } as const;
 
 function reviewLabel(d: Date): { text: string; overdue: boolean } {
@@ -93,7 +92,7 @@ export default function Memory() {
         recordType: 'Decision', recordRef: `${d.id} — ${d.title}`,
         reason: 'Outcome recorded after review', policyRef: d.policy,
         aiInvolved: false, risk: 'low', outcome: 'Expected vs actual reconciled — memory updated'}});
-    toast({ title: 'Outcome recorded on this device', sub: `${d.id} · reconciled locally — decision memory is not connected to school records and no review is scheduled automatically.`, tone: 'info' });
+    toast({ title: 'Outcome recorded on this device', sub: `${d.title} · reconciled locally — decision memory is not connected to school records and no review is scheduled automatically.`, tone: 'info' });
     setRecordId(null);
   };
 
@@ -126,7 +125,7 @@ export default function Memory() {
         title="AI memory"
         sub={session.roleId === 'owner'
           ? 'What your assistant remembers — every decision the group makes, its expected outcome, and what actually happened.'
-          : 'What your assistant remembers. Decisions carry expected outcomes — memory compares them to what actually happened and schedules the review.'}
+          : 'What your assistant remembers. Decisions carry expected outcomes — memory compares them to what actually happened.'}
       />
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
@@ -147,8 +146,8 @@ export default function Memory() {
               <EvidenceChain
                 title="Decision → expected outcome → telemetry → review"
                 steps={[
-                  { label: 'Decision recorded', detail: '“Bus 14 pre-route inspection” · approved by Principal · dec_4', source: 'AI memory · decisions' },
-                  { label: 'Expected outcome set', detail: 'Zero route delays for 4 weeks · review scheduled automatically', source: 'Decision record dec_4' },
+                  { label: 'Decision recorded', detail: '“Bus 14 pre-route inspection” · approved by the Principal', source: 'AI memory · decisions' },
+                  { label: 'Expected outcome set', detail: 'Zero route delays for 4 weeks · review scheduled automatically', source: 'Decision record' },
                   { label: 'Telemetry compared', detail: 'Route 7 delays since decision: 0 · complaints for 2 days: 0', source: 'Transport + case telemetry', refType: 'transport' },
                   { label: 'Review', detail: 'Runs in 27 days — evidence pack assembled automatically from the same records', source: 'Memory review scheduler' }]}
               />
@@ -212,12 +211,12 @@ export default function Memory() {
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: 620, fontSize: 'var(--text-md)', lineHeight: 1.35 }}>{d.title}</div>
                         <div className="u-xs u-faint" style={{ marginTop: 2 }}>
-                          <span className="mono">{d.id}</span> · decided {fmtDate(d.decidedOn)} ({fmtRelative(d.decidedOn)}) · approver: {d.approver}
+                          decided {fmtDate(d.decidedOn)} ({fmtRelative(d.decidedOn)}) · approver: {d.approver}
                         </div>
                       </div>
                       <span className="u-flex" style={{ gap: 6, flexShrink: 0 }}>
                         {rv && <Badge tone={rv.overdue ? 'danger' : 'outline'}>{rv.text}</Badge>}
-                        <Badge tone={STATUS_TONE[d.status]} dot>{STATUS_LABEL[d.status]}</Badge>
+                        <Badge tone={STATUS_TONE[d.status]} dot>{statusLabel(d.status)}</Badge>
                       </span>
                     </div>
                     <div className="u-small u-muted" style={{ marginBottom: 8 }}>{d.context}</div>
@@ -266,7 +265,7 @@ export default function Memory() {
 
       {/* ---------- Meetings ---------- */}
       {tab === 'meetings' && (
-        <Section title="Meeting notes" sub="Captured, summarised and turned into decisions and tasks — with owners.">
+        <Section title="Meeting notes" sub="Captured and summarised with owners noted — task creation is not connected yet.">
           {everything.loading && <div className="grid grid-2"><SkeletonCard lines={5} /><SkeletonCard lines={5} /></div>}
           {everything.error && <ErrorState title="Could not load meetings" sub={everything.error} onRetry={everything.retry} />}
           {!everything.loading && !everything.error && meetings.length === 0 && (
@@ -304,7 +303,7 @@ export default function Memory() {
                             <Avatar name={owner} size="sm" />
                             <span style={{ minWidth: 0 }}><b>{owner}</b> · <span className="u-muted">{rest}</span></span>
                           </div>
-                          <Button variant="secondary" size="sm" onClick={() => createTask(item, m.id)}>Create task</Button>
+                          <Button variant="secondary" size="sm" onClick={() => createTask(item, m.id)}>Note owner</Button>
                         </div>
                       );
                     })}
@@ -370,7 +369,7 @@ export default function Memory() {
         open={!!recording}
         onClose={() => setRecordId(null)}
         title="Record what happened"
-        sub={recording ? `${recording.id} · ${recording.title}` : undefined}
+        sub={recording ? recording.title : undefined}
         footer={
           <>
             <Button variant="ghost" onClick={() => setRecordId(null)}>Cancel</Button>

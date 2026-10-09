@@ -1,119 +1,131 @@
 /* ============================================================
-   Operations — the operations hub. One live card per domain
-   (every summary recomputed from records), the daily briefing,
-   plus the group asset register and vendor contracts.
-   ============================================================ */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useStore } from '../state/store';
-import * as seed from '../data/dataset';
-import { feeService } from '../demo/seedServices';
-import {
-  PageHead, Section, Card, Stat, Badge, DataTable, Button, useToast,
-  Empty, ErrorState, SkeletonCard, SampleNote} from '../components/ui';
-import { EvidenceChain, AiTraceCard } from '../components/Ai';
-import { Icon } from '../components/Icon';
-import { fmtMoneyShort, fmtPct, fmtDateShort, fmtRelative } from '../lib/format';
-import { makeRng } from '../lib/rng';
+   Operations — the operations hub. One card per domain, every
+   figure recomputed from the school's OWN records, and a summary
+   built from the same reads it names.
 
-/* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
-function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
-  const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
+   P2-9, second half. The board and the case queue were made live in the
+   first pass; this pass removes the rest of the sample world from this
+   screen:
+
+     · the asset register was a synthetic fleet (ten invented buses, two
+       invented lab assets, invented service dates) while `GET /assets`
+       sat unread — the register now renders the school's own assets;
+     · the vendor register was five invented contracts plus a renewal
+       workflow (`wf_5`) that exists in no table. There is no vendor
+       model on the server, so the section says so and points at the
+       vendor directory, which says the same thing;
+     · the "Operations briefing" was a paragraph about Bus 14 running
+       13 minutes late with a real-looking 82.3% collection figure — a
+       fabricated number wearing the school's records. It is now
+       arithmetic over the reads below it, and it is not dressed as AI:
+       the sparkle implied a model that never ran.
+
+   The one domain with no server model left is Incidents: there is no
+   `app.incidents` table and no door, so its card states that instead of
+   counting sample rows. Empty-world law: a card with nothing behind it
+   says nothing.
+   ============================================================ */
+import { useMemo, useRef, useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { PageHead, Section, Card, Stat, Badge, DataTable, Button, useToast, Empty, ErrorState, SkeletonCard, KeyValue } from '../components/ui';
+import { EvidenceChain } from '../components/Ai';
+import { Icon } from '../components/Icon';
+import { fmtMoneyShort, fmtPct, fmtRelative } from '../lib/format';
+import {
+  apiAssets, apiCases, apiEvents, apiFeeObligations, apiFunnelSummary, apiSchoolStaff, apiTransportRoutes, apiWorkOrders,
+} from '../services/liveApi';
+import { humanize } from '../lib/labels';
+import { filesList } from '../services/adminApi';
+
+/* ============================================================
+   The hub's one read. Each door settles on its own: a desk this role
+   cannot reach must not blank the hub, so a failed read reports `null`
+   and its card says the read is unavailable — never a zero, which would
+   read as "nothing is wrong".
+   ============================================================ */
+interface OpsRead {
+  workOrders: { open: number; total: number; overdue: number } | null;
+  assets: Record<string, unknown>[] | null;
+  cases: { open: number; inProgress: number; total: number } | null;
+  routes: number | null;
+  fees: { billed: number; collected: number; pct: number; failed: number; open: number } | null;
+  admissions: { open: number; total: number } | null;
+  staff: number | null;
+  files: number | null;
+  nextEvent: { title: string; at: string } | null;
+}
+
+const CLOSED = ['resolved', 'closed', 'cancelled'];
+
+/** One settled read → its array, or nothing. Typed at the boundary because the nine doors answer
+ *  nine different envelopes and a rejected read must not become an empty list that reads as "0". */
+const list = <T,>(r: PromiseSettledResult<unknown>, key: string): T[] => {
+  if (r.status !== 'fulfilled') return [];
+  const arr = (r.value as Record<string, unknown> | null)?.[key];
+  return Array.isArray(arr) ? (arr as T[]) : [];
+};
+
+function useOpsRead(): { data: OpsRead | null; loading: boolean; error: string | null; retry: () => void } {
   const [tick, setTick] = useState(0);
+  const [state, setState] = useState<{ data: OpsRead | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   useEffect(() => {
     let live = true;
     setState(s => ({ ...s, loading: true, error: null }));
-    fn().then(d => live && setState({ data: d, loading: false, error: null }))
-      .catch(e => live && setState({ data: null, loading: false, error: String(e) }));
+    (async () => {
+      const [wo, assets, cases, routes, obligations, funnel, staff, files, events] = await Promise.allSettled([
+        apiWorkOrders(), apiAssets(), apiCases(), apiTransportRoutes(), apiFeeObligations(),
+        apiFunnelSummary(), apiSchoolStaff(), filesList(), apiEvents(),
+      ]);
+      const woRows = list<Record<string, unknown>>(wo, 'workOrders');
+      const openWo = woRows.filter(w => !CLOSED.includes(String(w.status ?? '')));
+      const caseRows = list<Record<string, unknown>>(cases, 'cases');
+      const openCases = caseRows.filter(c => !CLOSED.includes(String(c.status ?? '')));
+      const obs = list<Record<string, unknown>>(obligations, 'obligations');
+      const billed = obs.reduce((a, o) => a + Number(o.amount_cents ?? 0), 0);
+      const collected = obs.reduce((a, o) => a + Number(o.paid_cents ?? 0), 0);
+      const byStage = funnel.status === 'fulfilled' ? funnel.value.byStage : null;
+      const funnelTotal = funnel.status === 'fulfilled' ? funnel.value.total : 0;
+      const closedStages = ['enrolled', 'rejected', 'withdrawn'];
+      const evs = list<Record<string, unknown>>(events, 'events');
+      const upcoming = evs
+        .map(e => ({ title: String((e.payload as Record<string, unknown> | undefined)?.label ?? e.label ?? e.type ?? 'Event'), at: String(e.created_at ?? '') }))
+        .filter(e => e.at && new Date(e.at).getTime() >= Date.now())
+        .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+      const out: OpsRead = {
+        workOrders: wo.status === 'fulfilled' ? { open: openWo.length, total: woRows.length, overdue: openWo.filter(w => w.sla_breached).length } : null,
+        assets: assets.status === 'fulfilled' ? list<Record<string, unknown>>(assets, 'assets') : null,
+        cases: cases.status === 'fulfilled' ? { open: openCases.length, inProgress: caseRows.filter(c => String(c.status) === 'in-progress').length, total: caseRows.length } : null,
+        routes: routes.status === 'fulfilled' ? list(routes, 'routes').length : null,
+        fees: obligations.status === 'fulfilled'
+          ? {
+            billed, collected,
+            pct: billed ? Math.round((collected / billed) * 1000) / 10 : 0,
+            failed: obs.filter(o => String(o.status) === 'failed').length,
+            open: obs.filter(o => !['paid', 'void'].includes(String(o.status))).length,
+          }
+          : null,
+        admissions: byStage ? { open: Object.entries(byStage).filter(([s]) => !closedStages.includes(s)).reduce((a, [, n]) => a + n, 0), total: funnelTotal } : null,
+        staff: staff.status === 'fulfilled' ? list(staff, 'staff').length : null,
+        files: files.status === 'fulfilled' ? list(files, 'files').length : null,
+        nextEvent: upcoming[0] ?? null,
+      };
+      if (live) setState({ data: out, loading: false, error: null });
+    })();
     return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick]);
+  }, [tick]);
   return { ...state, retry: () => setTick(t => t + 1) };
 }
 
-/* ============================================================
-   Asset register + vendor contracts — group-level registers.
-   Deterministic local data (makeRng 9090), per assignment.
-   ============================================================ */
-interface Asset {
-  id: string; name: string; type: 'Bus' | 'Lab equipment'; location: string;
-  campus: string; vendor: string; lastServiced: string; nextDue: string;
-  dueInDays: number; status: 'In service' | 'Due for service' | 'In workshop';
-}
-interface Vendor {
-  id: string; name: string; service: string; contact: string;
-  contractEndsDays: number; contractEnds: string; assetsCovered: number;
-}
-
-function buildAssets(): Asset[] {
-  /* Empty-world law: assets derive from the tenant's own routes; a school with
-     no routes and no dataset assets simply has no asset rows — never demo buses. */
-  if (!seed.busRoutes.length) return [];
-  const BUS_NO = [3, 5, 8, 9, 11, 12, 14, 17, 19, 22];
-  const rng = makeRng(9090);
-  const rows: Asset[] = [];
-  seed.busRoutes.forEach((r, i) => {
-    const isBus14 = r.id === 'route_7';
-    /* deterministic: Bus 14 in workshop + one more bus due → 3 assets due overall */
-    const dueInDays = isBus14 ? -2 : i === 3 ? 4 : rng.int(35, 90);
-    const status: Asset['status'] = isBus14 ? 'In workshop' : i === 3 ? 'Due for service' : 'In service';
-    rows.push({
-      id: `ast_bus_${i + 1}`,
-      name: `Bus ${BUS_NO[i]}`,
-      type: 'Bus',
-      location: r.name,
-      campus: seed.campuses.find(c => c.id === r.campus)?.shortName ?? r.campus,
-      vendor: 'Meridian School Bus Service',
-      lastServiced: fmtDateShort(rng.date(-rng.int(20, 150))),
-      nextDue: fmtDateShort(rng.date(dueInDays)),
-      dueInDays,
-      status});
-  });
-  rows.push({
-    id: 'ast_lab_1', name: 'Centrifuge — Physics Lab', type: 'Lab equipment', location: 'North · Lab 2',
-    campus: 'North', vendor: 'MetroLab Supplies', lastServiced: fmtDateShort(rng.date(-210)),
-    nextDue: fmtDateShort(rng.date(6)), dueInDays: 6, status: 'Due for service'});
-  rows.push({
-    id: 'ast_lab_2', name: 'Microscope set B (12 units)', type: 'Lab equipment', location: 'City · Lab 1',
-    campus: 'City', vendor: 'MetroLab Supplies', lastServiced: fmtDateShort(rng.date(-40)),
-    nextDue: fmtDateShort(rng.date(120)), dueInDays: 120, status: 'In service'});
-  return rows;
-}
-
-function buildVendors(): Vendor[] {
-  /* Empty-world law: vendor contracts are demo-world backdrop. A real school
-     starts with none — the register fills as they add assets/vendors. */
-  if (!seed.busRoutes.length && !seed.assets.length) return [];
-  const rng = makeRng(9091);
-  const defs: { name: string; service: string; contact: string; days: number; covered: number }[] = [
-    { name: 'Meridian School Bus Service', service: 'Bus fleet operation & maintenance', contact: '+91 98220 41187', days: 45, covered: 10 },
-    { name: 'MetroLab Supplies', service: 'Lab equipment AMC & consumables', contact: '+91 99304 22871', days: 12, covered: 2 },
-    { name: 'ShineClean Housekeeping', service: 'Housekeeping — all campuses', contact: '+91 98675 30219', days: 128, covered: 3 },
-    { name: 'SecureVision CCTV Systems', service: 'CCTV coverage & quarterly audit', contact: '+91 97112 88450', days: 9, covered: 3 },
-    { name: 'AquaSure Water Purifiers', service: 'RO units service contract', contact: '+91 98926 71044', days: -6, covered: 3 }];
-  return defs.map((d, i) => ({
-    id: `vnd_${i + 1}`, name: d.name, service: d.service, contact: d.contact,
-    contractEndsDays: d.days, contractEnds: fmtDateShort(rng.date(d.days)), assetsCovered: d.covered}));
-}
-
-const ASSETS = buildAssets();
-const VENDORS = buildVendors();
-
-function contractBadge(days: number) {
-  if (days < 0) return <Badge tone="danger" dot>Expired · {fmtDateShort(new Date(Date.now() + days * 86400000))}</Badge>;
-  if (days <= 30) return <Badge tone="warning" dot>{days} days left</Badge>;
-  return <Badge tone="outline">Renews {fmtDateShort(new Date(Date.now() + days * 86400000))}</Badge>;
-}
-
-/* ---------- trace (static, mirrors aiService posture) ---------- */
-const BRIEFING_TRACE = {
-  trigger: 'Morning assembly of overnight operational events (07:30 daily)',
-  policy: 'Read-only summarisation · Constitution v2026.1 · no automated actions on operations',
-  dataUsed: ['fees records (30d)', 'transport GPS events', 'case queue', 'incident log', 'document registry'],
-  reasoningRole: 'Summarizer (read-only)',
-  action: 'None — surfaces the briefing and links to each domain',
-  approvalStatus: 'Not required (read-only)',
-  verification: 'Illustrative sample in this build — not recomputed from source records'};
+/* ---------- the asset register's own vocabulary ---------- */
+const ASSET_STATUS: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
+  operational: { label: 'Operational', tone: 'success' },
+  watch: { label: 'On watch', tone: 'warning' },
+  degraded: { label: 'Degraded', tone: 'warning' },
+  down: { label: 'Down', tone: 'danger' },
+  maintenance: { label: 'In maintenance', tone: 'warning' },
+  retired: { label: 'Retired', tone: 'neutral' },
+};
+const needsService = (a: Record<string, unknown>) => !['operational', 'retired'].includes(String(a.status ?? ''));
 
 /* ============================================================ */
 
@@ -125,222 +137,252 @@ interface DomainCardDef {
   icon: (p: { size?: number }) => React.ReactElement;
   to?: string;
   summary: string;
-  count: number;
+  count: number | null;
   countLabel: string;
   tone?: 'warning' | 'danger' | 'success' | 'accent';
 }
 
 export default function Operations() {
   const navigate = useNavigate();
-  const { session, domain, dispatch, actorName } = useStore();
-  const openMaint = domain.workOrders.filter(w => !['resolved', 'closed', 'cancelled'].includes(w.status)).length;
   const toast = useToast();
   const assetsRef = useRef<HTMLDivElement>(null);
-  const campus = session.activeCampus;
-  const campusName = seed.campuses.find(c => c.id === campus)?.name ?? campus;
+  const ops = useOpsRead();
+  const d = ops.data;
 
-  const fees = useAsync(() => feeService.obligations(campus), [campus]);
-
-  const collectionPct = useMemo(() => {
-    const items = fees.data ?? [];
-    const billed = items.reduce((a, f) => a + f.amount, 0);
-    const paid = items.reduce((a, f) => a + f.paidAmount, 0);
-    return billed ? Math.round((paid / billed) * 1000) / 10 : 0;
-  }, [fees.data]);
-
-  /* A world exists only when the tenant has records — briefing/evidence chain
-     narrate records; without any, they are skipped entirely. */
-  const HAS_WORLD = seed.students.length > 0 || seed.cases.length > 0 || seed.incidents.length > 0 || seed.documents.length > 0 || seed.leads.length > 0 || seed.busRoutes.length > 0;
-  const live = useMemo(() => {
-    const openLeads = seed.leads.filter(l => l.campus === campus && !['enrolled', 'rejected', 'withdrawn'].includes(l.stage)).length;
-    const delayedRoutes = seed.busRoutes.filter(r => r.campus === campus && r.status === 'delayed').length;
-    const openCases = domain.cases.filter(c => c.campus === campus && !['resolved', 'closed'].includes(c.status)).length;
-    const casesInProgress = domain.cases.filter(c => c.campus === campus && c.status === 'in-progress').length;
-    const openIncidents = seed.incidents.filter(i => i.campus === campus && !['resolved', 'reviewed'].includes(i.status)).length;
-    const incidentsInProgress = seed.incidents.filter(i => i.campus === campus && ['in-progress', 'assigned'].includes(i.status)).length;
-    const docsExpiring = seed.documents.filter(d => d.status === 'expiring').length;
-    const assetsDue = ASSETS.filter(a => a.status !== 'In service').length;
-    const upcoming = seed.calendarEvents
-      .filter(e => e.campus === campus || e.campus === 'all')
-      .filter(e => e.on.getTime() >= Date.now())
-      .sort((a, b) => a.on.getTime() - b.on.getTime());
-    return { openLeads, delayedRoutes, openCases, casesInProgress, openIncidents, incidentsInProgress, docsExpiring, assetsDue, nextEvent: upcoming[0] };
-  }, [campus, domain.cases]);
+  const assets = d?.assets ?? [];
+  const dueForService = assets.filter(needsService).length;
 
   const cards: DomainCardDef[] = useMemo(() => [
-    { key: 'fees', title: 'Fees', icon: Icon.Money, to: '/fees', summary: `${fmtPct(collectionPct, 1)} collected across all terms`, count: seed.feeObligations.filter(f => f.status === 'failed').length, countLabel: 'failed payments', tone: 'warning' },
-    { key: 'admissions', title: 'Admissions', icon: Icon.Graduation, to: '/admissions', summary: `${live.openLeads} open leads in the funnel`, count: live.openLeads, countLabel: 'open leads', tone: 'accent' },
-    { key: 'transport', title: 'Transport', icon: Icon.Bus, to: '/transport', summary: live.delayedRoutes > 0 ? `${live.delayedRoutes} route${live.delayedRoutes > 1 ? 's' : ''} running late` : seed.busRoutes.length ? 'All routes on time' : 'No routes yet', count: live.delayedRoutes, countLabel: 'routes delayed', tone: live.delayedRoutes > 0 ? 'warning' : 'success' },
-    { key: 'documents', title: 'Documents', icon: Icon.Document, to: '/documents', summary: `${live.docsExpiring} certificates expiring in 30 days`, count: live.docsExpiring, countLabel: 'expiring', tone: live.docsExpiring > 0 ? 'warning' : 'success' },
-    { key: 'facilities', title: 'Maintenance & Facilities', icon: Icon.Building, to: '/maintenance', summary: `${openMaint} open work order${openMaint === 1 ? '' : 's'} across buildings and assets`, count: openMaint, countLabel: 'open jobs', tone: 'accent' },
-    { key: 'hr', title: 'HR', icon: Icon.People, to: '/operations/hr', summary: seed.staff.length ? `${seed.staff.length} staff on record` : 'No staff records yet', count: seed.staff.length ? 1 : 0, countLabel: 'roster', tone: 'accent' },
-    { key: 'calendar', title: 'Calendar', icon: Icon.Calendar, to: '/calendar', summary: live.nextEvent ? `Next: ${live.nextEvent.title} · ${fmtRelative(live.nextEvent.on)}` : 'No upcoming events', count: seed.calendarEvents.filter(e => e.campus === campus || e.campus === 'all').length, countLabel: 'this term', tone: 'accent' },
-    { key: 'cases', title: 'Cases', icon: Icon.Clipboard, to: '/cases', summary: `${live.casesInProgress} in progress · ${live.openCases} open overall`, count: live.openCases, countLabel: 'open', tone: live.openCases > 3 ? 'warning' : undefined },
-    { key: 'incidents', title: 'Incidents', icon: Icon.Alert, to: '/incidents', summary: `${live.incidentsInProgress} being worked, ${live.openIncidents} unresolved`, count: live.openIncidents, countLabel: 'open', tone: live.openIncidents > 0 ? 'warning' : 'success' },
-    { key: 'assets', title: 'Assets & Vendors', icon: Icon.Grid, summary: `${live.assetsDue} assets due for service · ${VENDORS.length} vendor contract${VENDORS.length === 1 ? '' : 's'} on file`, count: live.assetsDue, countLabel: 'due for service', tone: live.assetsDue > 0 ? 'warning' : undefined }], [campus, collectionPct, live, openMaint]);
+    {
+      key: 'fees', title: 'Fees', icon: Icon.Money, to: '/fees',
+      summary: d?.fees
+        ? `${fmtPct(d.fees.pct, 1)} of ${fmtMoneyShort(d.fees.billed)} billed is recorded as collected`
+        : 'The fee ledger is not readable for this desk',
+      count: d?.fees ? d.fees.failed : null, countLabel: 'failed payments', tone: (d?.fees?.failed ?? 0) > 0 ? 'warning' : 'success',
+    },
+    {
+      key: 'admissions', title: 'Admissions', icon: Icon.Graduation, to: '/admissions',
+      summary: d?.admissions ? `${d.admissions.open} lead${d.admissions.open === 1 ? '' : 's'} still in the funnel` : 'The funnel is not readable for this desk',
+      count: d?.admissions?.open ?? null, countLabel: 'open leads', tone: 'accent',
+    },
+    {
+      key: 'transport', title: 'Transport', icon: Icon.Bus, to: '/transport',
+      summary: d?.routes != null ? `${d.routes} route${d.routes === 1 ? '' : 's'} on the school register` : 'The route register is not readable for this desk',
+      count: d?.routes ?? null, countLabel: 'routes', tone: 'success',
+    },
+    {
+      key: 'documents', title: 'Documents', icon: Icon.Document, to: '/documents',
+      summary: d?.files != null ? `${d.files} file${d.files === 1 ? '' : 's'} in the document store` : 'The document store is not readable for this desk',
+      count: d?.files ?? null, countLabel: 'on file', tone: 'accent',
+    },
+    {
+      key: 'facilities', title: 'Maintenance & Facilities', icon: Icon.Building, to: '/maintenance',
+      summary: d?.workOrders
+        ? `${d.workOrders.open} open work order${d.workOrders.open === 1 ? '' : 's'}${d.workOrders.overdue ? ` · ${d.workOrders.overdue} past the SLA` : ''}`
+        : 'The work-order board is not readable for this desk',
+      count: d?.workOrders?.open ?? null, countLabel: 'open jobs', tone: (d?.workOrders?.overdue ?? 0) > 0 ? 'warning' : 'accent',
+    },
+    {
+      key: 'hr', title: 'People', icon: Icon.People, to: '/operations/hr',
+      summary: d?.staff != null ? `${d.staff} staff account${d.staff === 1 ? '' : 's'} active` : 'The staff roster is not readable for this desk',
+      count: d?.staff ?? null, countLabel: 'on the roster', tone: 'accent',
+    },
+    {
+      key: 'calendar', title: 'Events', icon: Icon.Calendar, to: '/calendar',
+      summary: d?.nextEvent ? `Next: ${d.nextEvent.title} · ${fmtRelative(new Date(d.nextEvent.at))}` : 'No dated events on the feed',
+      count: null, countLabel: '', tone: 'accent',
+    },
+    {
+      key: 'cases', title: 'Cases', icon: Icon.Clipboard, to: '/cases',
+      summary: d?.cases ? `${d.cases.inProgress} in progress · ${d.cases.open} open of ${d.cases.total} on the log` : 'The case log is not readable for this desk',
+      count: d?.cases?.open ?? null, countLabel: 'open', tone: (d?.cases?.open ?? 0) > 3 ? 'warning' : undefined,
+    },
+    {
+      key: 'incidents', title: 'Incidents', icon: Icon.Alert, to: '/incidents',
+      // no app.incidents table and no door: the count would be the demo world's, not the school's
+      summary: 'Not connected yet — there is no incident register on the server, so this screen counts nothing',
+      count: null, countLabel: '', tone: undefined,
+    },
+    {
+      key: 'assets', title: 'Assets', icon: Icon.Grid, to: '/maintenance/assets',
+      summary: d?.assets
+        ? `${d.assets.length} asset${d.assets.length === 1 ? '' : 's'} on the register${dueForService ? ` · ${dueForService} need attention` : ''}`
+        : 'The asset register is not readable for this desk',
+      count: d?.assets ? dueForService : null, countLabel: 'need attention', tone: dueForService > 0 ? 'warning' : 'success',
+    },
+  ], [d, dueForService]);
 
   const openCard = (c: DomainCardDef) => {
-    if (c.key === 'assets') {
-      assetsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
+    if (c.key === 'assets' && c.to) { navigate(c.to); return; }
     if (c.to) navigate(c.to);
+    else if (c.key === 'assets') assetsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+
+  /* The summary is arithmetic over the reads above — no model ran, so it is not dressed as one. */
+  const summarySentence = useMemo(() => {
+    if (!d) return null;
+    const parts: string[] = [];
+    if (d.cases && d.cases.open) parts.push(`${d.cases.open} case${d.cases.open === 1 ? '' : 's'} open (${d.cases.inProgress} being worked)`);
+    if (d.workOrders && d.workOrders.open) parts.push(`${d.workOrders.open} work order${d.workOrders.open === 1 ? '' : 's'} open${d.workOrders.overdue ? `, ${d.workOrders.overdue} past the SLA` : ''}`);
+    if (d.fees && d.fees.billed) parts.push(`${fmtPct(d.fees.pct, 1)} of billed fees recorded as collected, ${d.fees.failed} failed payment${d.fees.failed === 1 ? '' : 's'}`);
+    if (d.assets && dueForService) parts.push(`${dueForService} asset${dueForService === 1 ? '' : 's'} not operational`);
+    if (d.admissions && d.admissions.open) parts.push(`${d.admissions.open} admission lead${d.admissions.open === 1 ? '' : 's'} in the funnel`);
+    if (d.routes) parts.push(`${d.routes} transport route${d.routes === 1 ? '' : 's'} on the register`);
+    if (!parts.length) return 'Nothing needs attention in the records this desk can read. Add a work order, a case or a fee plan and it will show up here.';
+    return `${parts.join('; ')}.`;
+  }, [d, dueForService]);
+
+  const evidence = useMemo(() => {
+    if (!d) return [];
+    const steps: { label: string; detail: string; source: string; refType: string }[] = [];
+    if (d.workOrders) steps.push({ label: 'Work orders', detail: `${d.workOrders.open} open of ${d.workOrders.total} · ${d.workOrders.overdue} past the SLA`, source: 'GET /work-orders', refType: 'maintenance' });
+    if (d.cases) steps.push({ label: 'Case log', detail: `${d.cases.open} open · ${d.cases.inProgress} in progress`, source: 'GET /cases', refType: 'case' });
+    if (d.fees && d.fees.billed) steps.push({ label: 'Fee ledger', detail: `${fmtPct(d.fees.pct, 1)} collected · ${d.fees.open} obligations still open`, source: 'GET /fees/obligations', refType: 'fees' });
+    if (d.assets) steps.push({ label: 'Asset register', detail: `${d.assets.length} assets · ${dueForService} not operational`, source: 'GET /assets', refType: 'maintenance' });
+    if (d.admissions) steps.push({ label: 'Admissions funnel', detail: `${d.admissions.open} open of ${d.admissions.total} leads`, source: 'GET /plugins/admissions.funnel/summary', refType: 'admissions' });
+    if (d.staff != null) steps.push({ label: 'Staff roster', detail: `${d.staff} active staff accounts`, source: 'GET /school/staff', refType: 'hr' });
+    return steps;
+  }, [d, dueForService]);
 
   return (
     <div>
-      <SampleNote>Sample operations data — the briefing, asset register and vendor figures are illustrative in this build and are not read from your school’s records.</SampleNote>
       <PageHead
         title="Operations"
-        sub={`Transport, fees, facilities, documents and people operations — ${campusName}. Sample figures in this build — a live deployment recomputes from records.`}
-        actions={<Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { fees.retry(); toast({ title: 'Operations summary refreshed', tone: 'info' }); }}>Refresh</Button>}
+        sub="Every figure below is read from this school's own records. A door this desk cannot reach says so rather than showing a zero."
+        actions={<Button variant="secondary" icon={<Icon.Refresh size={14} />} onClick={() => { ops.retry(); toast({ title: 'Operations summary refreshed', sub: 'Re-read from the live registers.', tone: 'info' }); }}>Refresh</Button>}
       />
 
       {/* ---- Stats row ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
-        <Stat label="Open cases" value={live.openCases} sub={`${live.casesInProgress} in progress now`} onClick={() => navigate('/cases')} />
-        <Stat label="Incidents in progress" value={live.incidentsInProgress} sub={`${live.openIncidents} unresolved overall`} onClick={() => navigate('/incidents')} />
-        <Stat label="Collection rate" value={fees.loading ? '—' : fmtPct(collectionPct, 1)} sub="Sample obligations · this campus" onClick={() => navigate('/fees')} />
-        <Stat label="Documents expiring" value={live.docsExpiring} sub="Within 30 days · renewal tasks open" onClick={() => navigate('/documents')} />
+        <Stat label="Open cases" value={d?.cases?.open ?? '—'} sub={d?.cases ? `${d.cases.inProgress} in progress now` : 'case log not readable'} onClick={() => navigate('/cases')} />
+        <Stat label="Open work orders" value={d?.workOrders?.open ?? '—'} sub={d?.workOrders ? `${d.workOrders.overdue} past the SLA` : 'work orders not readable'} onClick={() => navigate('/maintenance')} />
+        <Stat label="Fees collected" value={d?.fees ? fmtPct(d.fees.pct, 1) : '—'} sub={d?.fees ? `${fmtMoneyShort(d.fees.collected)} of ${fmtMoneyShort(d.fees.billed)}` : 'ledger not readable'} onClick={() => navigate('/fees')} />
+        <Stat label="Assets needing attention" value={d?.assets ? dueForService : '—'} sub={d?.assets ? `${d.assets.length} on the register` : 'register not readable'} onClick={() => navigate('/maintenance/assets')} />
       </div>
 
-      {/* ---- Operations briefing ---- */}
-      {/* Empty-world law: the briefing narrates RECORDS; with no records there
-          is nothing to narrate — the card is skipped, not filled with demo copy. */}
-      {HAS_WORLD && <Card pad style={{ marginBottom: 28, borderColor: 'var(--ai-weak-2)' }}>
-        <div className="u-col" style={{ gap: 12 }}>
-          <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <span className="ai-chip"><Icon.Sparkle size={12} /> Operations briefing</span>
-            <Badge tone="success" dot>high confidence</Badge>
-            <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Assembled {fmtRelative(new Date(new Date().setHours(7, 30, 0, 0)))} · refreshed as records change</span>
+      {/* ---- Operations summary ---- */}
+      {ops.loading ? (
+        <div className="grid grid-3" style={{ marginBottom: 28 }}><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
+      ) : ops.error ? (
+        <Card pad style={{ marginBottom: 28 }}><ErrorState title="Could not read the operations registers" sub={ops.error} onRetry={ops.retry} /></Card>
+      ) : summarySentence ? (
+        <Card pad style={{ marginBottom: 28 }}>
+          <div className="u-col" style={{ gap: 12 }}>
+            <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className="u-upper">Operations summary</span>
+              <Badge tone="info" dot>computed from records · {fmtRelative(new Date())}</Badge>
+            </div>
+            <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.65, maxWidth: 880 }}>{summarySentence}</p>
+            {evidence.length > 0 && <EvidenceChain title="Where this came from" steps={evidence} />}
+            <span className="u-xs u-faint">
+              Arithmetic over the reads named above, at the moment you opened this page. No model generated it and no
+              figure here is estimated — a register this desk cannot read is left out rather than filled in.
+            </span>
           </div>
-          <p style={{ margin: 0, fontSize: 'var(--text-md)', lineHeight: 1.65, maxWidth: 880 }}>
-            Bus 14 on Route 7 is running 13 minutes late; the breakdown two days ago still explains three open threads —
-            Grade 8-B attendance, 41 of 47 failed Term-2 payments, and the Bus 14 complaint case on a 24-hour SLA.
-            Collection sits at 82.3% this week against an 88% four-week average, and 23 gateway receipts await settlement-file import.
-            {live.docsExpiring > 0 ? ` ${live.docsExpiring} documents expire within 30 days; the fire safety certificate at North is the compliance-critical one.` : ''}
-            {' '}Maintenance has {openMaint} open work order{openMaint === 1 ? '' : 's'} across campuses, the generator inspection is overdue, and AC-04 in the science lab is on its 4th failure — a replacement evaluation is flagged.
-          </p>
-          <EvidenceChain
-            title="Evidence chain"
-            steps={[
-              { label: 'Route 7 · Bus 14 status', detail: 'Delayed +13 min · 38 students · incident inc_1 resolved, repair scheduled Saturday', source: 'Transport GPS · Route 7', refType: 'transport' },
-              { label: 'Fee collection dip', detail: '82.3% this week vs 88% 4-week avg · 41 of 47 failures on Route 7 households', source: 'Sample fees record · this build', refType: 'fees' },
-              { label: 'Case queue', detail: `${live.openCases} open cases on ${campusName} · 1 on a 24h SLA (Bus 14 complaint)`, source: 'Cases · live queue', refType: 'case' },
-              { label: 'Compliance watch', detail: 'Fire Safety Certificate (North) expires in 21 days · vendor quote pending', source: 'Document registry', refType: 'document' }]}
-          />
-          <AiTraceCard trace={BRIEFING_TRACE} />
-        </div>
-      </Card>}
+        </Card>
+      ) : null}
 
       {/* ---- Domain cards ---- */}
       <Section
         title="Domains"
-        sub="One card per operations domain. Summaries are live — counts come from the records behind each screen."
+        sub="One card per operations domain. Each summary is the record behind that screen, not a demo figure."
       >
-        {fees.loading ? (
-          <div className="grid grid-3"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
-        ) : fees.error ? (
-          <Card pad><ErrorState title="Could not load operations summary" sub={fees.error} onRetry={fees.retry} /></Card>
-        ) : (
-          <div className="grid grid-3">
-            {cards.map(c => {
-              const Ic = c.icon;
-              return (
-                <Card key={c.key} onClick={() => openCard(c)} className="card-click">
-                  <div className="u-flex" style={{ gap: 12, alignItems: 'flex-start', padding: 'var(--s-5)' }}>
-                    <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface-3)', display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--accent-text)' }}>
-                      <Ic size={16} />
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 620, fontSize: 'var(--text-lg)' }}>{c.title}</span>
-                        {c.tone && <Badge tone={c.tone === 'accent' ? 'accent' : c.tone === 'warning' ? 'warning' : c.tone === 'danger' ? 'danger' : 'success'} dot>{c.count} {c.countLabel}</Badge>}
-                      </div>
-                      <div className="u-small u-muted" style={{ marginTop: 4 }}>{c.summary}</div>
+        <div className="grid grid-3">
+          {cards.map(c => {
+            const Ic = c.icon;
+            return (
+              <Card key={c.key} onClick={() => openCard(c)} className="card-click">
+                <div className="u-flex" style={{ gap: 12, alignItems: 'flex-start', padding: 'var(--s-5)' }}>
+                  <span style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--surface-3)', display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--accent-text)' }}>
+                    <Ic size={16} />
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 620, fontSize: 'var(--text-lg)' }}>{c.title}</span>
+                      {c.tone && c.count != null && (
+                        <Badge tone={c.tone === 'accent' ? 'accent' : c.tone === 'warning' ? 'warning' : c.tone === 'danger' ? 'danger' : 'success'} dot>{c.count} {c.countLabel}</Badge>
+                      )}
                     </div>
-                    <Icon.ChevronRight size={15} style={{ color: 'var(--text-3)', flexShrink: 0, marginTop: 2 }} />
+                    <div className="u-small u-muted" style={{ marginTop: 4 }}>{c.summary}</div>
                   </div>
-                </Card>
-              );
-            })}
-          </div>
-        )}
+                  <Icon.ChevronRight size={15} style={{ color: 'var(--text-3)', flexShrink: 0, marginTop: 2 }} />
+                </div>
+              </Card>
+            );
+          })}
+        </div>
       </Section>
 
-      {/* ---- Asset register ---- */}
+      {/* ---- Asset register — the school's own assets ---- */}
       <div ref={assetsRef}>
         <Section
           title="Asset register"
-          sub={ASSETS.length ? 'Group-level register · buses and lab equipment.' : 'Buses, lab equipment and facilities you register — nothing here yet.'}
-          actions={<Badge tone="warning" dot>{ASSETS.filter(a => a.status !== 'In service').length} due for service</Badge>}
+          sub={assets.length ? 'Every asset registered in this school, with its own service state.' : 'Assets you register — nothing here yet.'}
+          actions={assets.length ? <Badge tone={dueForService ? 'warning' : 'success'} dot>{dueForService} need attention</Badge> : undefined}
           style={{ marginTop: 8 }}
         >
           <Card>
             <DataTable
-              rows={ASSETS}
-              rowKey={a => a.id}
+              rows={assets}
+              rowKey={a => String(a.id)}
               columns={[
-                { key: 'name', label: 'Asset', render: a => <span style={{ fontWeight: 580 }}>{a.name}</span> },
-                { key: 'type', label: 'Type', render: a => <Badge tone="outline">{a.type}</Badge> },
-                { key: 'location', label: 'Route / location' },
-                { key: 'campus', label: 'Campus' },
-                { key: 'vendor', label: 'Vendor', render: a => <span className="u-small u-muted">{a.vendor}</span> },
-                { key: 'lastServiced', label: 'Last serviced' },
-                { key: 'nextDue', label: 'Next due', render: a => <span className={a.dueInDays < 15 ? 'mono' : ''}>{a.nextDue}</span> },
+                { key: 'code', label: 'Code', render: a => <span className="mono u-small">{String(a.code ?? '—')}</span> },
+                { key: 'name', label: 'Asset', render: a => <span style={{ fontWeight: 580 }}>{String(a.name ?? '—')}</span> },
+                { key: 'category', label: 'Category', render: a => <Badge tone="outline">{humanize(String(a.category ?? ''))}</Badge> },
                 {
-                  key: 'status', label: 'Status', align: 'right', render: a => a.status === 'In service'
-                    ? <Badge tone="success" dot>In service</Badge>
-                    : a.status === 'Due for service'
-                      ? <Badge tone="warning" dot>Due for service</Badge>
-                      : <Badge tone="danger" dot>In workshop</Badge>}]}
-              empty={<Empty icon={<Icon.Grid size={22} />} title="No assets on register" />}
+                  key: 'where', label: 'Where',
+                  sortValue: a => `${a.building ?? ''} ${a.room ?? ''}`,
+                  render: a => [a.building, a.room].filter(Boolean).join(' · ') || '—',
+                },
+                {
+                  key: 'health_score', label: 'Health', align: 'right',
+                  render: a => <span className="mono">{a.health_score != null ? `${a.health_score}%` : '—'}</span>,
+                },
+                {
+                  key: 'status', label: 'Status', align: 'right',
+                  render: a => {
+                    const s = ASSET_STATUS[String(a.status ?? '')] ?? { label: humanize(String(a.status ?? '')), tone: 'neutral' as const };
+                    return <Badge tone={s.tone} dot>{s.label}</Badge>;
+                  },
+                },
+              ]}
+              empty={<Empty icon={<Icon.Grid size={22} />} title="No assets on register" sub="Register a bus, a projector or a water cooler and it appears here with its own service state." />}
             />
+            {assets.length > 0 && (
+              <div style={{ padding: 'var(--s-4) var(--s-5)' }}>
+                <KeyValue
+                  cols={3}
+                  items={[
+                    { k: 'On the register', v: String(assets.length) },
+                    { k: 'Operational', v: String(assets.filter(a => String(a.status) === 'operational').length) },
+                    { k: 'Need attention', v: <b style={{ color: dueForService ? 'var(--warning-text, var(--text-1))' : 'var(--success-text, var(--accent-text))' }}>{dueForService}</b> },
+                  ]}
+                />
+              </div>
+            )}
           </Card>
         </Section>
       </div>
 
-      {/* ---- Vendor list ---- */}
+      {/* ---- Vendor contracts — no model, so no fiction ---- */}
       <Section
         title="Vendor contracts"
-        sub={VENDORS.length ? `${VENDORS.length} active service contracts.` : 'Service contracts for your assets appear here as you add them.'}
+        sub="Service contracts need a vendor register, which the server does not have yet."
         style={{ marginTop: 8 }}
       >
-        <div className="grid grid-3">
-          {VENDORS.map(v => (
-            <Card key={v.id} pad>
-              <div className="u-col" style={{ gap: 8 }}>
-                <div className="u-between">
-                  <span style={{ fontWeight: 620 }}>{v.name}</span>
-                  <span className="u-xs u-faint">{v.assetsCovered} assets</span>
-                </div>
-                <div className="u-small u-muted">{v.service}</div>
-                <div className="u-xs u-faint mono">{v.contact}</div>
-                <div style={{ marginTop: 2 }}>{contractBadge(v.contractEndsDays)}</div>
-              </div>
-            </Card>
-          ))}
-          {VENDORS.length > 0 && <Card pad style={{ borderStyle: 'dashed' }}>
-            <div className="u-col" style={{ gap: 6 }}>
-              <span className="u-upper">Contract renewals</span>
-              <span className="u-small u-muted">
-                Expiring within 30 days: MetroLab Supplies (12d) and SecureVision CCTV (9d). Workflow <span className="mono">wf_5</span> creates
-                owner tasks at 30/14/7 days — no renewal is currently in progress for either contract.
-              </span>
-              <div style={{ marginTop: 4 }}>
-                <Button size="sm" variant="secondary" icon={<Icon.Workflow size={13} />} onClick={() => {
-                  dispatch({ type: 'audit/add', entry: { actor: actorName, actorRole: session.roleId, action: 'Reviewed vendor renewal workflow', recordType: 'Vendor contract', recordRef: 'MetroLab Supplies · SecureVision CCTV', policyRef: 'Approvals §1.2', aiInvolved: false, risk: 'low', outcome: 'Renewal workflow wf_5 reviewed' } });
-                  toast({ title: 'Renewal review recorded', sub: 'Audit entry added for MetroLab and SecureVision contracts', tone: 'success' });
-                }}>Record renewal review</Button>
-              </div>
-            </div>
-          </Card>}
-        </div>
+        <Card pad>
+          <Empty
+            icon={<Icon.Offline size={22} />}
+            title="Not connected yet"
+            sub="There is no vendor register on the server, so no contract is shown here — an invented one would be worse than an empty list. The vendor directory says the same thing."
+            action={<Button size="sm" variant="secondary" onClick={() => navigate('/maintenance/vendors')}>Open the vendor directory</Button>}
+          />
+        </Card>
       </Section>
 
       <div style={{ height: 24 }} />
       <div className="u-xs u-faint" style={{ textAlign: 'center' }}>
-        {fees.loading ? 'Computing collection…' : `${fmtMoneyShort((fees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} received on this campus · sample figure in this build`}
+        {ops.loading ? 'Reading the registers…' : d?.fees ? `${fmtMoneyShort(d.fees.collected)} recorded as collected against ${fmtMoneyShort(d.fees.billed)} billed` : 'Fee ledger not readable for this desk'}
       </div>
     </div>
   );

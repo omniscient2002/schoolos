@@ -7,6 +7,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
+import { statusLabel, roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   createLesson, listLessons, reflectLesson,
@@ -95,7 +96,7 @@ export default function Lessons() {
     } finally { setSaving(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -153,7 +154,7 @@ export default function Lessons() {
                     <div className="u-between u-wrap" style={{ gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Badge tone={STATUS_TONE[l.status] ?? 'neutral'} dot>{l.status}</Badge>
+                          <Badge tone={STATUS_TONE[l.status] ?? 'neutral'} dot>{statusLabel(l.status)}</Badge>
                           <span style={{ fontWeight: 620 }}>{l.topic}</span>
                         </div>
                         <div className="u-small u-muted" style={{ marginTop: 3 }}>

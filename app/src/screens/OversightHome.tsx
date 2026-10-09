@@ -12,6 +12,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Button, ErrorState, Section, Stat, SkeletonCard } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtMoney } from '../lib/format';
+import { roleLabel } from '../lib/labels';
 
 interface Home {
   as_of?: string;
@@ -72,7 +73,7 @@ export default function OversightHome() {
                   <div className="u-col" style={{ gap: 8 }}>
                     {(data?.queue ?? []).map(q => (
                       <div key={q.owner_role ?? 'unassigned'} className="u-between u-small">
-                        <span>{q.owner_role ?? 'unassigned'}</span>
+                        <span>{q.owner_role ? roleLabel(q.owner_role) : 'Not assigned yet'}</span>
                         <span className="tnum">{q.n}</span>
                       </div>
                     ))}

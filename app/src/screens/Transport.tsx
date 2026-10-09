@@ -14,11 +14,97 @@ import {
   Empty, ErrorState, SampleNote, Skeleton, SkeletonCard,
 } from '../components/ui';
 import { Icon } from '../components/Icon';
+import { apiRequest } from '../services/liveApi';
 import { fmtTime } from '../lib/format';
+import { statusLabel } from '../lib/labels';
+import { useRoleOrGrant } from '../lib/access';
 import { makeRng } from '../lib/rng';
 import type { BusRoute } from '../types/domain';
 
+interface LiveRoute {
+  id: string; code: string; name: string; vehicle: string | null;
+  capacity: number; riders: number; stops: number;
+}
+
+/* The live band: what the school's records actually say, with no decoration that implies more. */
+function LiveRoutes({ rows, canWrite, onManage }: { rows: LiveRoute[]; canWrite: boolean; onManage: () => void }) {
+  return (
+    <Card style={{ marginBottom: 20 }}
+      head="Your school's routes"
+      sub="From the school records — riders counted from the roster, stops from the route itself."
+      actions={canWrite ? <Button size="sm" variant="secondary" onClick={onManage}>Add or edit routes</Button> : undefined}>
+      {rows.length === 0 ? (
+        <Empty title="No routes yet"
+          sub="A self-signup school starts with none. The transport in-charge can add them from Routes & stops." />
+      ) : (
+        <div className="grid grid-3" style={{ gap: 12 }}>
+          {rows.map(r => {
+            const usage = r.capacity > 0 ? Math.round((r.riders / r.capacity) * 100) : 0;
+            return (
+              <div key={r.id} className="u-col" style={{ gap: 6, border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: 12 }}>
+                <div className="u-between">
+                  <strong>{r.name}</strong>
+                  <span className="u-mono u-xs u-faint">{r.code}</span>
+                </div>
+                <div className="u-xs u-muted">{r.vehicle ?? 'No vehicle recorded'} · {r.stops} stop{r.stops === 1 ? '' : 's'}</div>
+                <div className="u-between u-xs">
+                  <span>{r.riders} riding</span>
+                  <span className="tnum u-faint">{r.capacity ? `${usage}% of ${r.capacity}` : 'No capacity set'}</span>
+                </div>
+                <Progress value={usage} tone={usage > 90 ? 'danger' : usage > 75 ? 'warn' : undefined} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /* ---------- standard async hook (APP-SPEC pattern, local copy) ---------- */
+/* Today's runs with stop ETAs: scheduled times from run start + stop offsets, plus how many
+   pupils are aboard. The office starts runs on Routes & stops; ETAs compute — no GPS vendor needed. */
+function TodayRuns() {
+  const [runs, setRuns] = useState<{ id: string; code?: string; name?: string; ran_on?: string; boarded?: number }[] | null>(null);
+  const [eta, setEta] = useState<{ run: { code: string; name: string }; stops: { name: string; scheduledAt: string }[]; boardedCount: number } | null>(null);
+  useEffect(() => {
+    let dead = false;
+    apiRequest<{ runs: { id: string; code?: string; name?: string; ran_on?: string; boarded?: number }[] }>('/transport/runs')
+      .then(r => { if (!dead) setRuns(r.runs ?? []); })
+      .catch(() => { if (!dead) setRuns([]); });
+    return () => { dead = true; };
+  }, []);
+  const openEta = (id: string) => {
+    apiRequest<{ run: { code: string; name: string }; stops: { name: string; scheduledAt: string }[]; boardedCount: number }>(`/transport/runs/${id}/eta`)
+      .then(setEta)
+      .catch(() => setEta(null));
+  };
+  if (runs == null) return null;
+  if (!runs.length) return null;
+  return (
+    <Card headAs="h2" head="Today's runs & stop ETAs" sub="Scheduled times from each run's start plus stop offsets — start runs on Routes & stops.">
+      <div className="u-flex u-gap-2 u-wrap" style={{ marginBottom: 10 }}>
+        {runs.map(r => (
+          <Button key={r.id} variant="ghost" size="sm" onClick={() => openEta(r.id)}>
+            {r.code ?? r.id.slice(0, 8)} · {r.boarded ?? 0} aboard
+          </Button>
+        ))}
+      </div>
+      {eta && (
+        <div className="u-col" style={{ gap: 4 }}>
+          <div className="u-small" style={{ fontWeight: 620 }}>{eta.run.code} · {eta.run.name} — {eta.boardedCount} aboard</div>
+          {eta.stops.map(s => (
+            <div key={s.name} className="u-flex u-small" style={{ gap: 10 }}>
+              <span>{s.name}</span>
+              <span className="u-faint">{new Date(s.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
   const [tick, setTick] = useState(0);
@@ -135,7 +221,7 @@ function RouteCard({ route, onOpenIncident }: { route: BusRoute; onOpenIncident:
         {isR7 && (
           <div className="u-flex" style={{ gap: 8, paddingTop: 4, borderTop: '1px solid var(--border-subtle)' }}>
             <span className="u-xs u-muted" style={{ flex: 1 }}>
-              Coolant leak repaired; pre-route inspection in effect (dec_4). Guardians notified per Transport §3.1.
+              Coolant leak repaired; pre-route inspection in effect. Guardian alerts run as part of the transport workflow (Transport §3.1).
             </span>
             <Button size="sm" variant="secondary" iconRight={<Icon.ArrowUpRight size={12} />} onClick={onOpenIncident}>
               View incident
@@ -151,6 +237,23 @@ function RouteCard({ route, onOpenIncident }: { route: BusRoute; onOpenIncident:
 function LiveMap({ routes }: { routes: BusRoute[] }) {
   const shown = ROUTE_PATHS.filter(p => routes.some(r => r.id === p.routeId));
   const W = 760, H = 360;
+  /* Nothing to plot. A 500px blank graticule with a legend for delayed
+     routes and maintenance buses that do not exist is a lie by omission —
+     it reads as "the map is broken". Say what is missing and what would
+     fill it, in a box the size of the answer. */
+  if (!routes.length) {
+    return (
+      <Empty
+        icon={<Icon.Bus size={22} />}
+        title="No routes are running"
+        sub="The live map draws each active route and its last known vehicle positions. With no routes scheduled there is nothing to plot — routes appear here as soon as Transport schedules them."
+      />
+    );
+  }
+  /* The campus pin only gets a label when a campus actually resolves.
+     Falling back to the word "Campus" printed a generic label that read as
+     a real place name. */
+  const campusName = seed.campuses.find(c => c.id === (routes[0]?.campus ?? 'north'))?.name;
   return (
     <div style={{ position: 'relative', background: 'var(--surface-2)', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)', overflow: 'hidden' }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="Live map of active routes">
@@ -177,7 +280,7 @@ function LiveMap({ routes }: { routes: BusRoute[] }) {
               <circle cx={p.bus.x} cy={p.bus.y} r={p.isRoute7 ? 6.5 : 4.5} fill={color} opacity="0.28" style={{ animation: 'pulse 2.2s ease-in-out infinite' }}>
                 <animate attributeName="r" values={`${p.isRoute7 ? 5 : 3.5};${p.isRoute7 ? 9 : 6};${p.isRoute7 ? 5 : 3.5}`} dur="2.2s" repeatCount="indefinite" />
               </circle>
-              <circle cx={p.bus.x} cy={p.bus.y} r={p.isRoute7 ? 4.6 : 3.2} fill={color} stroke="#fff" strokeWidth="1.2" />
+              <circle cx={p.bus.x} cy={p.bus.y} r={p.isRoute7 ? 4.6 : 3.2} fill={color} stroke="var(--surface)" strokeWidth="1.2" />
               {p.isRoute7 && (
                 <text x={p.bus.x + 9} y={p.bus.y + 3.5} fontSize="10" fontWeight="640" fill="var(--warning)" style={{ fontFamily: 'var(--font-sans)' }}>Bus 14</text>
               )}
@@ -191,10 +294,15 @@ function LiveMap({ routes }: { routes: BusRoute[] }) {
           return (
             <g>
               <rect x={pin.x - 8} y={pin.y - 8} width={16} height={16} rx={5} fill="var(--accent)" />
-              <path d={`M${pin.x - 3},${pin.y + 1.5} l2.4,2.6 4.4,-5`} stroke="#fff" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              <text x={pin.x - 8} y={pin.y + 20} fontSize="10" fontWeight="620" fill="var(--text-2)" style={{ fontFamily: 'var(--font-sans)' }}>
-                {seed.campuses.find(c => c.id === (routes[0]?.campus ?? 'north'))?.name ?? 'Campus'}
-              </text>
+              <path d={`M${pin.x - 3},${pin.y + 1.5} l2.4,2.6 4.4,-5`} stroke="var(--surface)" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              {/* Map annotations are small by nature, but this one names a
+                  campus, so it stays above the 10px floor and is set in full
+                  ink — a pin label nobody can read is decoration. */}
+              {campusName && (
+                <text x={pin.x - 8} y={pin.y + 20} fontSize="11" fontWeight="620" fill="var(--text)" style={{ fontFamily: 'var(--font-sans)' }}>
+                  {campusName}
+                </text>
+              )}
             </g>
           );
         })()}
@@ -220,8 +328,17 @@ export default function Transport() {
   const toast = useToast();
   const campus = session.activeCampus;
   const isTransportRole = session.roleId === 'transport';
+  const canWriteRoutes = useRoleOrGrant(['owner', 'principal', 'transport', 'coordinator'],
+    ['POST /plugins/transport.gps/routes']);
 
   const routes = useAsync(() => transportService.routes(campus), [campus]);
+  /* P2-9 · the live half. This screen is a labelled sample board (the map, the Bus 14 drill and the
+     ridership figures below are demo), but `GET /plugins/transport.gps/routes` answers with the school's
+     OWN routes, riders and stop counts — so the door exists and this screen ignored it, which is how a
+     demo board became the only transport view a school ever had. The live band sits above the sample one
+     and links to the write screen for anyone who can reach it. */
+  const live = useAsync(() => apiRequest<{ routes: LiveRoute[] }>('/plugins/transport.gps/routes')
+    .then(r => r.routes ?? []), []);
   const [simulating, setSimulating] = useState(false);
   const [extraDelay, setExtraDelay] = useState(0);
 
@@ -260,12 +377,12 @@ export default function Transport() {
           reason: 'Ops drill: verify guardian ETA updates and attendance leniency',
           policyRef: 'Transport §3.1 · Attendance §1.4 (leniency for delayed routes)',
           aiInvolved: false, risk: 'low',
-          outcome: `Guardian ETA notifications queued for 38 students · attendance leniency active until 09:30`,
+          outcome: `Demo drill — no guardian notifications sent · attendance leniency active until 09:30`,
         },
       });
       toast({
-        title: 'Bus 14 delay simulated',
-        sub: 'Guardians of 38 students will be notified within 15 minutes (Transport §3.1). Attendance leniency stays on until 09:30.',
+        title: 'Bus 14 delay simulated (demo)',
+        sub: 'This is a demo simulation — no guardian notifications are sent. Attendance leniency stays on until 09:30.',
         tone: 'info',
       });
     } catch {
@@ -278,12 +395,16 @@ export default function Transport() {
   return (
     <div>
       <style>{MAP_STYLE}</style>
-      <SampleNote>Sample transport data — route ridership and delay figures are illustrative in this build; live GPS doors are not connected.</SampleNote>
+      {!live.loading && !live.error && (
+        <LiveRoutes rows={live.data ?? []} canWrite={canWriteRoutes} onManage={() => navigate('/transport/setup')} />
+      )}
+      <TodayRuns />
+      <SampleNote>Sample transport data below — the map, the Bus 14 drill and the delay figures are illustrative in this build; live GPS tracking is not connected.</SampleNote>
       <PageHead
         title="Transport"
         sub={isTransportRole
-          ? 'Your live board — routes, vehicles and the families waiting on them. Guardian notifications fire automatically per Transport §3.1.'
-          : 'Live route status, capacity and today\'s transport cases. Delays over 10 minutes notify guardians automatically (Transport §3.1).'}
+          ? 'Your live board — routes, vehicles and the families waiting on them. Guardian alerts run as part of the transport workflow (Transport §3.1).'
+          : 'Live route status, capacity and today\'s transport cases. Delays over 10 minutes are flagged to guardians (Transport §3.1).'}
         actions={r7 ? (
           <Button variant="secondary" icon={<Icon.Zap size={14} />} loading={simulating} onClick={simulateDelay}>
             Simulate Bus 14 delay
@@ -295,7 +416,7 @@ export default function Transport() {
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Routes active" value={routeList.length} sub={`${delayed.length} delayed · ${routeList.filter(r => r.status === 'maintenance').length} in maintenance`} />
         <Stat label="Students riding" value={studentsOnRoutes} sub={`${atCapacity} routes above 90% capacity`} />
-        {r7 && <Stat label="Bus 14 delay" value={`+${r7Delay} min`} sub={r7Delay > 10 ? 'Guardians notified · leniency till 09:30' : 'Within notification threshold'} />}
+        {r7 && <Stat label="Bus 14 delay" value={`+${r7Delay} min`} sub={r7Delay > 10 ? 'Past alert threshold · leniency till 09:30' : 'Within notification threshold'} />}
         <Stat label="Transport cases" value={transportCases.length} sub={`${transportCases.filter(c => c.status !== 'resolved' && c.status !== 'closed').length} open`} onClick={() => navigate('/cases')} />
       </div>
 
@@ -317,7 +438,7 @@ export default function Transport() {
       {/* ---- Route cards ---- */}
       <Section
         title="Routes"
-        sub="Capacity, crew and next stops per route. Route 7 carries 38 students and is linked to incident inc_1."
+        sub="Capacity, crew and next stops per route. Route 7 carries 38 students and is linked to an incident."
       >
         {routes.loading ? (
           <div className="grid grid-3"><SkeletonCard lines={6} /><SkeletonCard lines={6} /><SkeletonCard lines={6} /></div>
@@ -337,7 +458,7 @@ export default function Transport() {
       {/* ---- Transport cases ---- */}
       <Section
         title="Transport cases"
-        sub="Cases of kind transport from the case queue — complaints, pickup changes and incident follow-ups."
+        sub="Transport cases from the case queue — complaints, pickup changes and incident follow-ups."
         actions={<Button size="sm" variant="secondary" iconRight={<Icon.ArrowRight size={12} />} onClick={() => navigate('/cases')}>Open case queue</Button>}
         style={{ marginTop: 8 }}
       >
@@ -353,10 +474,10 @@ export default function Transport() {
                     <div style={{ minWidth: 0 }}>
                       <div className="u-flex" style={{ gap: 8 }}>
                         <span style={{ fontWeight: 580 }}>{c.title}</span>
-                        <Badge tone={open ? (c.priority === 'high' ? 'danger' : 'warning') : 'success'} dot>{c.status}</Badge>
+                        <Badge tone={open ? (c.priority === 'high' ? 'danger' : 'warning') : 'success'} dot>{statusLabel(c.status)}</Badge>
                       </div>
                       <div className="u-xs u-faint" style={{ marginTop: 2 }}>
-                        {c.id} · opened {fmtTime(c.openedOn)} · owner {c.owner} · SLA {c.slaHours}h
+                        {c.id} · opened {fmtTime(c.openedOn)} · owner {c.owner} · deadline {c.slaHours}h
                       </div>
                     </div>
                     <Icon.ChevronRight size={14} style={{ color: 'var(--text-3)', flexShrink: 0 }} />
@@ -371,7 +492,7 @@ export default function Transport() {
       <div style={{ height: 20 }} />
       <div className="u-small u-muted">
         Data scope follows your role: transport staff see the operational view; other roles read the same live positions without
-        dispatch controls. Delay notifications and attendance leniency run as workflows (wf_2, Attendance §1.4) — they are not manual steps.
+        dispatch controls. Delay alerts and attendance leniency run as workflows (Attendance §1.4) — they are not manual steps.
       </div>
     </div>
   );

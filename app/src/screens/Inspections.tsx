@@ -24,7 +24,7 @@ function LiveInspections() {
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="There is no inspections door on the server yet. Rounds and checklists will appear here when the door exists."
+          sub="There is no inspection data available yet. Rounds and checklists will appear here once it is."
         />
       </Card>
     </div>

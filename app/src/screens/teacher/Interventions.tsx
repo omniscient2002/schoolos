@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Empty, Modal, PageHead, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { statusLabel, roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   createPlan, listInterventions, listMyStudents, movePlan,
@@ -70,7 +71,7 @@ export default function Interventions() {
     } finally { setSaving(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
@@ -92,7 +93,7 @@ export default function Interventions() {
                     <div className="u-between u-wrap" style={{ gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Badge tone={TONE[p.status] ?? 'neutral'} dot>{LABEL[p.status] ?? p.status}</Badge>
+                          <Badge tone={TONE[p.status] ?? 'neutral'} dot>{LABEL[p.status] ?? statusLabel(p.status)}</Badge>
                           <span style={{ fontWeight: 600 }}>{p.studentName}</span>
                         </div>
                         <div className="u-small" style={{ marginTop: 4 }}>{p.objective}</div>

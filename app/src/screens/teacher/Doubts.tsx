@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtRelative } from '../../lib/format';
+import { statusLabel, roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import { answerDoubt, listDoubts, promoteDoubtFaq, type SupportDoubt } from '../../services/teacherApi';
 import { AsyncGate, DeniedState, useAsync, useTeacherAccess } from './teacherKit';
@@ -44,7 +45,7 @@ export default function Doubts() {
     }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
@@ -61,7 +62,7 @@ export default function Doubts() {
                     <div className="u-between u-wrap" style={{ gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Badge tone={STATUS_TONE[d.status] ?? 'neutral'} dot>{d.status}</Badge>
+                          <Badge tone={STATUS_TONE[d.status] ?? 'neutral'} dot>{statusLabel(d.status)}</Badge>
                           <span className="u-small u-muted">{d.subject}{d.topic ? ` · ${d.topic}` : ''}</span>
                           <span className="u-xs u-faint">{d.askedByName} · {fmtRelative(d.createdAt)}</span>
                         </div>

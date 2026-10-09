@@ -15,6 +15,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { BarChart } from '../components/Chart';
 import { Icon } from '../components/Icon';
 import { fmtDate, fmtDateShort } from '../lib/format';
+import { humanize } from '../lib/labels';
 import { makeRng } from '../lib/rng';
 import type { DocRecord } from '../types/domain';
 
@@ -145,8 +146,8 @@ export default function Documents() {
         actor: actorName, actorRole: session.roleId,
         action: 'Noted renewal need (no task created)', recordType: 'Document', recordRef: `${d.title} — ${d.ownerName}`,
         reason: d.expiresOn ? `Expires ${fmtDate(d.expiresOn)}` : 'Renewal due',
-        policyRef: 'Workflow wf_5 · document.expiring', aiInvolved: false, risk: 'low',
-        outcome: 'Note kept on this device · workflow runtime not connected',
+        policyRef: 'Document renewals', aiInvolved: false, risk: 'low',
+        outcome: 'Note kept on this device · renewal reminders not connected',
       },
     });
     /* T305 (§9.5): there is no workflow runtime — no task exists anywhere and
@@ -215,7 +216,7 @@ export default function Documents() {
     <div>
       <PageHead
         title="Documents"
-        sub="Certificates, agreements and IDs on record — with expiry watch, renewal tasks and the inspection pack."
+        sub="Certificates, agreements and IDs on record — with expiry watch. Renewal tasks and the inspection pack are not connected in this build."
         actions={
           <>
             <Button variant="secondary" icon={<Icon.Clipboard size={14} />} loading={generating} onClick={() => setPackOpen(true)}>
@@ -231,7 +232,7 @@ export default function Documents() {
       {/* ---- Stats ---- */}
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
         <Stat label="Documents on record" value={stats.total} sub={`${categories.length} categories · ${campusName ?? 'group'} scope`} />
-        <Stat label="Expiring in 30 days" value={stats.in30} sub="Renewal tasks auto-created (wf_5)" />
+        <Stat label="Expiring in 30 days" value={stats.in30} sub="Renewal reminders not connected in this build" />
         <Stat label="Expired" value={stats.expired} sub="Need renewal before inspection" />
         <Stat label="Verified" value={`${stats.verified}%`} sub="Share of registry currently valid" />
       </div>
@@ -255,7 +256,7 @@ export default function Documents() {
                     <div style={{ minWidth: 0 }}>
                       <div className="u-flex" style={{ gap: 8 }}>
                         <span style={{ fontWeight: 580 }}>{d.title}</span>
-                        <Badge tone="outline">{d.ownerType}</Badge>
+                        <Badge tone="outline">{humanize(d.ownerType)}</Badge>
                       </div>
                       <div className="u-xs u-muted" style={{ marginTop: 2 }}>
                         {d.ownerName} · expires {d.expiresOn ? fmtDate(d.expiresOn) : '—'} · {days < 0 ? `${Math.abs(days)} days ago` : `in ${days} days`}
@@ -285,7 +286,7 @@ export default function Documents() {
               <BarChart data={forecast} format={v => `${v}`} highlightMax={false} height={170} />
               <div className="u-small u-muted" style={{ marginTop: 10 }}>
                 Renewal load peaks this month, driven by student medical forms and the four school compliance certificates.
-                Workflow wf_5 opens owner tasks at 30 days and escalates at 14 and 7 — nothing currently sits beyond the first reminder.
+                Renewal reminders are not connected in this build, so no tasks are opened and nothing is escalated.
               </div>
             </div>
             <div className="u-col" style={{ gap: 10 }}>
@@ -360,7 +361,7 @@ export default function Documents() {
       {/* ---- Registry table ---- */}
       <Section
         title="Registry"
-        sub={`${filtered.length} of ${all.length} documents shown. Expiry badges drive the renewal workflow.`}
+        sub={`${filtered.length} of ${all.length} documents shown. Expiry badges flag what needs renewal.`}
         actions={<Button size="sm" variant="ghost" icon={<Icon.Refresh size={13} />} onClick={registry.retry}>Reload</Button>}
       >
         <Card>
@@ -386,7 +387,7 @@ export default function Documents() {
                   key: 'owner', label: 'Owner', render: d => (
                     <div>
                       <div className="u-small">{d.ownerName}</div>
-                      <div className="u-xs u-faint">{d.ownerType}</div>
+                      <div className="u-xs u-faint">{humanize(d.ownerType)}</div>
                     </div>
                   ),
                 },
@@ -406,11 +407,10 @@ export default function Documents() {
           <div className="u-flex" style={{ gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
             <QrPattern />
             <div style={{ minWidth: 220, flex: 1 }}>
-              <div style={{ fontWeight: 620, marginBottom: 4 }}>Scan to report — creates a facilities case</div>
+              <div style={{ fontWeight: 620, marginBottom: 4 }}>Scan to report — facilities report (preview)</div>
               <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-                Staff scan, pick a location, attach a photo. The report lands in the facilities queue with the reporter's name and
-                timestamp; urgent ones page the Admin Officer. Last quarter 62% of facility issues arrived through this QR flow
-                rather than the front desk.
+                Staff scan, pick a location, attach a photo. Reporting from the floor is a preview in this build — nothing is filed
+                and nobody is paged.
               </div>
               <div style={{ marginTop: 10 }}>
                 <Button size="sm" variant="secondary" iconRight={<Icon.ArrowRight size={12} />} onClick={() => toast({ title: 'QR poster opened (demo)', sub: 'On mobile this deep-links to the report form.', tone: 'info' })}>

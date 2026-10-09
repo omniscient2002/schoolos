@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Card, Button, Badge, DataTable, ErrorState, Empty, useToast, KeyValue } from '../../../components/ui';
 import { DeskIcon as Icon } from './shared';
 import { friendly } from '../../../lib/friendlyErrors';
+import { humanize } from '../../../lib/labels';
 import { libraryLoans, libraryReturn, libraryRenew, type LibraryLoan } from '../../../services/adminApi';
 import { fmtDate, inr, todayISO } from './shared';
 
@@ -59,7 +60,7 @@ export default function Return() {
           <DataTable
             columns={[
               { key: 'book', label: 'Book', render: (l: LibraryLoan) => <span><b>{l.bookTitle}</b><span className="u-xs u-muted" style={{ display: 'block' }}><code>{l.bookCode}</code></span></span> },
-              { key: 'who', label: 'Borrower', render: (l: LibraryLoan) => `${l.borrowerName ?? l.studentName ?? '—'}${l.borrowerType ? ` · ${l.borrowerType}` : ''}` },
+              { key: 'who', label: 'Borrower', render: (l: LibraryLoan) => `${l.borrowerName ?? l.studentName ?? '—'}${l.borrowerType ? ` · ${humanize(l.borrowerType)}` : ''}` },
               { key: 'due', label: 'Due', render: (l: LibraryLoan) => (
                 <span>
                   {fmtDate(l.dueOn)}

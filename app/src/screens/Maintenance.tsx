@@ -11,6 +11,7 @@ import { friendly } from '../lib/friendlyErrors';
 import {PageHead, Stat, Badge, Button, Empty, ErrorState, SkeletonCard, Tabs, Section} from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtRelative } from '../lib/format';
+import { statusLabel } from '../lib/labels';
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({ data: null, loading: true, error: null });
@@ -74,7 +75,7 @@ function LiveOverview() {
     <div>
       <PageHead
         title="Maintenance"
-        sub={`${open.length} open jobs${emergency ? ` · ${emergency} need immediate action` : ''} — from the maintenance ledger`}
+        sub={`${open.length} open jobs${emergency ? ` · ${emergency} need immediate action` : ''} — from the school records`}
         actions={
           <div className="u-inline" style={{ gap: 8 }}>
             <Button variant="secondary" icon={<Icon.Compass size={14} />} onClick={() => navigate('/maintenance/map')}>Facilities map</Button>
@@ -84,9 +85,9 @@ function LiveOverview() {
       />
 
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
-        <Stat label="Open jobs" value={open.length} sub={`${wos.length} total on the server`} />
+        <Stat label="Open jobs" value={open.length} sub={`${wos.length} in total`} />
         <Stat label="Need immediate action" value={emergency} sub="emergency / critical priority" />
-        <Stat label="SLA breached" value={open.filter(w => w.breached).length} sub="windows already blown" />
+        <Stat label="Past deadline" value={open.filter(w => w.breached).length} sub="deadlines already missed" />
         <Stat label="Recorded spend" value={spend ? `₹${Math.round(spend).toLocaleString('en-IN')}` : '—'} sub="costs entered at resolution" />
       </div>
 
@@ -101,33 +102,33 @@ function LiveOverview() {
       ) : wosQ.error ? (
         <div style={{ marginTop: 16 }}><ErrorState title="Could not load maintenance" sub={friendly(wosQ.error)} onRetry={wosQ.retry} /></div>
       ) : tab === 'now' ? (
-        <Section title="Needs attention" sub="Priority-ranked from the server · open the board for the full flow" style={{ marginTop: 16 }}>
+        <Section title="Needs attention" sub="Priority-ranked · open the board for the full flow" style={{ marginTop: 16 }}>
           <div className="u-col" style={{ gap: 10 }}>
             {needNow.map(w => (
               <Link key={w.id} to={`/maintenance/work-orders/${w.id}`} className={`wo-card prio-${w.priority} u-col`} style={{ gap: 6 }}>
                 <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
                   <span className="u-mono u-small u-muted">{w.code}</span>
-                  <Badge tone="outline">{w.priority}</Badge>
-                  <Badge tone="info">{w.status}</Badge>
-                  {w.breached && <Badge tone="danger" dot>SLA breached</Badge>}
+                  <Badge tone="outline">{statusLabel(w.priority)}</Badge>
+                  <Badge tone="info">{statusLabel(w.status)}</Badge>
+                  {w.breached && <Badge tone="danger" dot>Past deadline</Badge>}
                 </div>
                 <span style={{ fontWeight: 600, fontSize: 'var(--text-md)' }}>{w.title}</span>
               </Link>
             ))}
-            {needNow.length === 0 && <Empty icon={<Icon.Check size={20} />} title="Nothing needs attention" sub="No open work orders on the ledger." />}
+            {needNow.length === 0 && <Empty icon={<Icon.Check size={20} />} title="Nothing needs attention" sub="No open jobs in the school records." />}
           </div>
         </Section>
       ) : (
-        <Section title="Live events" sub="Straight from GET /events · maintenance type only" style={{ marginTop: 16 }}>
+        <Section title="Live events" sub="Live maintenance events only" style={{ marginTop: 16 }}>
           <div className="u-col" style={{ gap: 8 }}>
             {eventsQ.loading && <SkeletonCard lines={2} />}
             {eventsQ.error && <ErrorState title="Could not load events" sub={friendly(eventsQ.error)} onRetry={eventsQ.retry} />}
             {(eventsQ.data ?? []).length === 0 && !eventsQ.loading && !eventsQ.error && (
-              <Empty icon={<Icon.Offline size={20} />} title="No maintenance events yet" sub="Server events appear here as work moves." />
+              <Empty icon={<Icon.Offline size={20} />} title="No maintenance events yet" sub="Events appear here as work moves." />
             )}
             {(eventsQ.data ?? []).map((e: { label?: string; created_at?: string }, i: number) => (
               <div key={i} className="u-small" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 6 }}>
-                {e.label ?? 'event'}{e.created_at ? ` · ${fmtRelative(new Date(e.created_at))}` : ''}
+                {e.label ?? 'Event'}{e.created_at ? ` · ${fmtRelative(new Date(e.created_at))}` : ''}
               </div>
             ))}
           </div>

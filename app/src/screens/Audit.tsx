@@ -29,12 +29,8 @@ import { friendly } from '../lib/friendlyErrors';
 import { Badge, Button, Card, DataTable, Drawer, Empty, KeyValue, PageHead, Section, Skeleton, Stat, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDateTime, fmtRelative } from '../lib/format';
+import { humanize, roleLabel, statusLabel } from '../lib/labels';
 
-const ROLE_LABEL: Record<string, string> = {
-  principal: 'Principal', teacher: 'Teacher', coordinator: 'Coordinator', finance: 'Finance',
-  admissions: 'Admissions', transport: 'Transport', parent: 'Parent', student: 'Student',
-  owner: 'Owner', itadmin: 'IT Admin', facilities: 'Facilities', technician: 'Technician',
-};
 const RISK_TONE: Record<string, 'success' | 'warning' | 'danger'> = {
   low: 'success', medium: 'warning', high: 'danger',
 };
@@ -130,8 +126,8 @@ export default function Audit() {
     toast({
       title: `CSV downloaded — ${filtered.length} entries`,
       sub: fallback
-        ? 'These are this session\'s entries only (the school ledger was not reachable).'
-        : 'From the ledger rows currently on screen.',
+        ? 'These are this session\'s entries only (the school audit trail was not reachable).'
+        : 'From the audit trail rows currently on screen.',
       tone: 'success',
     });
   };
@@ -140,7 +136,7 @@ export default function Audit() {
     <>
       <PageHead
         title="Audit trail"
-        sub="Who did what, when, why and under which policy — straight from the school's append-only ledger."
+        sub="Who did what, when, why and under which policy — straight from the school's audit trail."
         actions={
           <>
             {fallback && <Badge tone="warning" dot>Showing session entries</Badge>}
@@ -154,10 +150,10 @@ export default function Audit() {
           <Icon.Alert size={16} style={{ color: 'var(--warning)', flexShrink: 0, marginTop: 2 }} />
           <div style={{ flex: 1, minWidth: 220 }}>
             <div style={{ fontWeight: 600 }}>
-              {ledger.error ? 'The school ledger could not be reached — showing this session\'s entries' : `The audit ledger is limited to owner, principal, finance and IT admin — showing ${actorName}'s session entries`}
+              {ledger.error ? 'The school audit trail could not be reached — showing this session\'s entries' : `The audit trail is limited to owner, principal, finance and IT admin — showing ${actorName}'s session entries`}
             </div>
             <div className="u-small u-muted" style={{ marginTop: 2 }}>
-              {ledger.error ? friendly(ledger.error) : 'Ask the owner or IT admin for the full ledger view.'}
+              {ledger.error ? friendly(ledger.error) : 'Ask the owner or IT admin for the full audit trail view.'}
               {' '}Everything below is clearly separated from the permanent record.
             </div>
           </div>
@@ -169,14 +165,14 @@ export default function Audit() {
         <Stat label="Entries today" value={entriesToday} sub={`${rows.length} rows on screen`} />
         <Stat label="Rule/AI-involved" value={`${aiPct}%`} sub="of entries carry an automated flag" />
         <Stat label="High-risk actions" value={highRisk} sub="flagged at write time" />
-        <Stat label="Scope" value={fallback ? 'Session' : 'Ledger'} sub={fallback ? 'this session only' : 'latest 200 entries'} />
+        <Stat label="Scope" value={fallback ? 'This session' : 'Whole school'} sub={fallback ? 'this session only' : 'latest 200 entries'} />
       </div>
 
       <Section title="Filters" sub="Search on record references, actors and actions.">
         <div className="u-flex" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <select className="select" style={{ width: 160 }} value={role} onChange={e => setRole(e.target.value)} aria-label="Filter by actor role">
             <option value="all">All roles</option>
-            {roles.map(r => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+            {roles.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
           </select>
           <select className="select" style={{ width: 160 }} value={risk} onChange={e => setRisk(e.target.value)} aria-label="Filter by risk">
             <option value="all">All risk levels</option>
@@ -222,7 +218,7 @@ export default function Audit() {
                 key: 'actor', label: 'Actor', width: 170, sortable: true, sortValue: a => a.actor, render: a => (
                   <div>
                     <div className="u-small" style={{ fontWeight: 590 }}>{a.actor}</div>
-                    <div className="u-xs u-faint">{ROLE_LABEL[a.actorRole] ?? a.actorRole}</div>
+                    <div className="u-xs u-faint">{roleLabel(a.actorRole)}</div>
                   </div>
                 ),
               },
@@ -230,7 +226,7 @@ export default function Audit() {
               {
                 key: 'record', label: 'Record', width: 210, render: a => (
                   <div>
-                    <div className="u-xs u-faint">{a.recordType}</div>
+                    <div className="u-xs u-faint">{humanize(a.recordType)}</div>
                     <div className="u-small mono u-truncate" style={{ maxWidth: 200 }}>{a.recordRef}</div>
                   </div>
                 ),
@@ -238,7 +234,7 @@ export default function Audit() {
               { key: 'reason', label: 'Reason', render: a => <span className="u-small u-muted">{a.reason ?? '—'}</span> },
               { key: 'policyRef', label: 'Policy', width: 150, render: a => a.policyRef ? <span className="u-xs mono" style={{ color: 'var(--accent-text)' }}>{a.policyRef}</span> : <span className="u-faint u-xs">—</span> },
               { key: 'aiInvolved', label: 'AI', width: 64, render: a => a.aiInvolved ? <Badge tone="ai">AI</Badge> : <span className="u-xs u-faint">—</span> },
-              { key: 'risk', label: 'Risk', width: 84, render: a => <Badge tone={RISK_TONE[a.risk] ?? 'neutral'}>{a.risk}</Badge> },
+              { key: 'risk', label: 'Risk', width: 84, render: a => <Badge tone={RISK_TONE[a.risk] ?? 'neutral'}>{statusLabel(a.risk)}</Badge> },
             ]}
             rows={filtered}
             rowKey={a => a.id}
@@ -276,10 +272,10 @@ export default function Audit() {
           <Card>
             <div className="u-flex" style={{ gap: 9, marginBottom: 8 }}>
               <Icon.Lock size={15} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }} />
-              <div className="u-small" style={{ fontWeight: 620 }}>Why the ledger can be trusted</div>
+              <div className="u-small" style={{ fontWeight: 620 }}>Why the audit trail can be trusted</div>
             </div>
             <ul className="u-small u-muted" style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 6 }}>
-              <li>Append-only — each entry carries a hash of the previous one; edits would break the chain.</li>
+              <li>Protected — each entry carries a security fingerprint of the previous one; edits would break the chain.</li>
               <li>Written in the same transaction as the change it describes.</li>
               <li>Exportable as CSV for board review and regulatory inspection (button above).</li>
             </ul>
@@ -291,16 +287,16 @@ export default function Audit() {
         open={!!selected}
         onClose={() => setOpenId(null)}
         title={selected ? `${selected.action}` : ''}
-        sub={selected ? `${selected.id.slice(0, 8)}… · ${fmtDateTime(selected.on)}` : undefined}
+        sub={selected ? fmtDateTime(selected.on) : undefined}
         footer={<Button variant="ghost" onClick={() => setOpenId(null)}>Close</Button>}
       >
         {selected && (
           <div className="u-col" style={{ gap: 16 }}>
             <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
               {selected.aiInvolved && <Badge tone="ai">AI involved</Badge>}
-              <Badge tone={RISK_TONE[selected.risk] ?? 'neutral'}>{selected.risk} risk</Badge>
-              <Badge tone="outline">{ROLE_LABEL[selected.actorRole] ?? selected.actorRole}</Badge>
-              {selected.server && <Badge tone="outline">School ledger</Badge>}
+              <Badge tone={RISK_TONE[selected.risk] ?? 'neutral'}>{statusLabel(selected.risk)} risk</Badge>
+              <Badge tone="outline">{roleLabel(selected.actorRole)}</Badge>
+              {selected.server && <Badge tone="outline">Full audit trail</Badge>}
               {!selected.server && <Badge tone="warning">Session entry</Badge>}
             </div>
 
@@ -309,7 +305,7 @@ export default function Audit() {
               items={[
                 { k: 'Actor', v: selected.actor },
                 { k: 'Action', v: selected.action },
-                { k: 'Record', v: <span><span className="u-muted">{selected.recordType} · </span><span className="mono">{selected.recordRef}</span></span> },
+                { k: 'Record', v: <span><span className="u-muted">{humanize(selected.recordType)} · </span><span className="mono">{selected.recordRef}</span></span> },
                 { k: 'Reason', v: selected.reason ?? '—' },
                 { k: 'Policy basis', v: selected.policyRef ? <span className="mono u-xs" style={{ color: 'var(--accent-text)' }}>{selected.policyRef}</span> : '—' },
                 { k: 'Outcome', v: selected.outcome || '—' },
@@ -322,12 +318,12 @@ export default function Audit() {
                 <Icon.Info size={14} style={{ color: 'var(--accent)' }} /> Why this entry exists
               </div>
               <div className="u-small u-muted" style={{ marginBottom: 10 }}>
-                {selected.actor} performed “{selected.action.toLowerCase()}” on {selected.recordType.toLowerCase()}.
+                {selected.actor} performed “{selected.action.toLowerCase()}” on {humanize(selected.recordType).toLowerCase()}.
                 SchoolOS records who, what, when, why and under which policy — so any future question about this record has an answer.
                 Nobody, including IT Admin, can edit or delete it.
               </div>
               <div className="u-col" style={{ gap: 6 }}>
-                <div className="u-flex u-xs" style={{ gap: 8 }}><Icon.Lock size={12} style={{ color: 'var(--text-3)' }} /> Append-only · hash-chained to the previous entry</div>
+                <div className="u-flex u-xs" style={{ gap: 8 }}><Icon.Lock size={12} style={{ color: 'var(--text-3)' }} /> Cannot be edited · linked to the previous entry</div>
                 <div className="u-flex u-xs" style={{ gap: 8 }}><Icon.Download size={12} style={{ color: 'var(--text-3)' }} /> Exportable as CSV for board review</div>
               </div>
             </div>

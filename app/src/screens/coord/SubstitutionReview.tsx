@@ -13,6 +13,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { friendly } from '../../lib/friendlyErrors';
+import { humanize } from '../../lib/labels';
 import {
   getCoordHome, decideSubstitution,
   type CoordHome, type CoordPendingApproval,
@@ -122,7 +123,7 @@ export default function SubstitutionReview() {
                   render: a => (
                     <div>
                       <div style={{ fontWeight: 570 }}>{a.title}</div>
-                      <div className="u-xs u-faint">{a.code} · {a.kind}</div>
+                      <div className="u-xs u-faint">{a.code} · {humanize(a.kind)}</div>
                     </div>
                   ),
                 },
@@ -154,7 +155,7 @@ export default function SubstitutionReview() {
           {otherApprovals.length > 0 && (
             <Card style={{ marginTop: 20 }}
               head={`${otherApprovals.length} other approval${otherApprovals.length === 1 ? '' : 's'} on your desk`}
-              sub="Non-substitution kernel actions — they are decided in the Approval Center."
+              sub="Non-substitution approvals — they are decided in the Approval Center."
               actions={<Button variant="secondary" size="sm" onClick={() => navigate('/coord/approvals')}>Open Approval Center</Button>}
             >
               <div className="u-col" style={{ gap: 6 }}>

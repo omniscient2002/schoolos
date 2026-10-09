@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Drawer, Empty, PageHead, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtRelative } from '../../lib/format';
+import { statusLabel, roleLabel, humanize } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   concernEvents, fileConcern, listMyConcerns, listMyStudents,
@@ -26,14 +27,14 @@ function EventsDrawer({ concern, onClose }: { concern: TeacherConcern; onClose: 
   const [events, setEvents] = useState<ConcernEvent[] | null>(null);
   useEffect(() => { concernEvents(concern.concernId).then(d => setEvents(d.events)).catch(() => setEvents([])); }, [concern.concernId]);
   return (
-    <Drawer open onClose={onClose} title={concern.studentName ?? 'Concern'} sub={`${concern.category} · ${concern.urgency}`}>
+    <Drawer open onClose={onClose} title={concern.studentName ?? 'Concern'} sub={`${humanize(concern.category)} · ${statusLabel(concern.urgency)}`}>
       {events === null ? <SkeletonCard lines={4} /> : (
         <div className="u-col" style={{ gap: 10 }}>
           <p className="u-small" style={{ margin: 0 }}>{concern.detail}</p>
           <div className="u-col" style={{ gap: 8 }}>
             {events.map((e, i) => (
               <div key={i} className="u-small" style={{ borderLeft: '2px solid var(--border)', paddingLeft: 10 }}>
-                <div style={{ fontWeight: 570 }}>{e.to.replace('_', ' ')}</div>
+                <div style={{ fontWeight: 570 }}>{statusLabel(e.to)}</div>
                 {e.note && <div className="u-muted">{e.note}</div>}
                 <div className="u-xs u-faint">{fmtRelative(e.at)}</div>
               </div>
@@ -79,7 +80,7 @@ export default function Concerns() {
     } finally { setSaving(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
@@ -101,7 +102,7 @@ export default function Concerns() {
           <div className="field"><label>Urgency</label>
             <div className="u-flex u-wrap" style={{ gap: 6 }}>
               {URGENCIES.map(u => (
-                <button key={u} className={`tab ${urgency === u ? 'active' : ''}`} aria-pressed={urgency === u} onClick={() => setUrgency(u)}>{u}</button>
+                <button key={u} className={`tab ${urgency === u ? 'active' : ''}`} aria-pressed={urgency === u} onClick={() => setUrgency(u)}>{statusLabel(u)}</button>
               ))}
             </div>
             {(category === 'safety' || urgency === 'critical') && (
@@ -128,9 +129,9 @@ export default function Concerns() {
                   <Card key={c.concernId} pad onClick={() => setOpen(c)} className="u-between" style={{ cursor: 'pointer' }}>
                     <div style={{ minWidth: 0 }}>
                       <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <Badge tone={STATUS_TONE[c.status] ?? 'neutral'} dot>{c.status.replace('_', ' ')}</Badge>
+                        <Badge tone={STATUS_TONE[c.status] ?? 'neutral'} dot>{statusLabel(c.status)}</Badge>
                         <span style={{ fontWeight: 570 }}>{c.studentName ?? 'General concern'}</span>
-                        <span className="u-small u-muted">{c.category} · {c.urgency}</span>
+                        <span className="u-small u-muted">{humanize(c.category)} · {statusLabel(c.urgency)}</span>
                       </div>
                       <div className="u-small u-muted u-truncate" style={{ marginTop: 3 }}>{c.detail}</div>
                     </div>

@@ -19,6 +19,7 @@ import {
 import { Icon } from '../components/Icon';
 import { fmtMoney, fmtMoneyShort, fmtDate } from '../lib/format';
 import { friendly } from '../lib/friendlyErrors';
+import { humanize, statusLabel, gradeLabel, classAndSection } from '../lib/labels';
 import {
   getMyFees, getMyPayments, getMyReceipts, getMyReceipt, getMyInstallments, downloadReceiptPdf,
   createUpiLink, createRazorpayOrder,
@@ -150,7 +151,7 @@ function ReceiptModal({ id, onClose }: { id: string; onClose: () => void }) {
           { k: 'Student', v: `${receipt?.student_name ?? ''}${receipt?.admission_no ? ` · ${receipt.admission_no}` : ''}` },
           { k: 'Towards', v: `${receipt?.term ?? ''} ${receipt?.obligation_label ?? ''}` },
           { k: 'Amount', v: <b>{fmtMoney(Number(receipt?.amount_cents ?? 0) / 100)}</b> },
-          { k: 'Method', v: String(receipt?.method ?? '—') },
+          { k: 'Method', v: humanize(receipt?.method ?? '—') },
           { k: 'Issued', v: fmtDate(String(receipt?.issued_at ?? '')) },
           { k: 'PDF', v: receipt?.pdf_file_id ? 'Available to download' : 'Not available' },
           ...(receipt?.voided_at ? [{ k: 'Status', v: <Badge tone="danger" dot>Voided (refunded)</Badge> }] : []),
@@ -179,7 +180,7 @@ export default function ParentFees() {
     const m = new Map<string, { name: string; grade: string; items: ParentFeeObligation[] }>();
     for (const o of rows) {
       const k = o.student_id;
-      const cur = m.get(k) ?? { name: o.student_name ?? 'Student', grade: o.grade ? `Grade ${o.grade}-${o.section ?? '—'}` : '', items: [] };
+      const cur = m.get(k) ?? { name: o.student_name ?? 'Student', grade: o.grade ? gradeLabel(classAndSection(o.grade, o.section)) : '', items: [] };
       cur.items.push(o);
       m.set(k, cur);
     }
@@ -224,7 +225,7 @@ export default function ParentFees() {
                         <div style={{ fontWeight: 580 }}>{o.term} · {o.label}</div>
                         <div className="u-small u-muted" style={{ marginTop: 2 }}>
                           {o.due_on ? `Due ${fmtDate(o.due_on)}` : 'No due date on record'}
-                          {o.concession_cents ? ' · concession applied' : ''}
+                          {o.concession_cents ? ' · discount or waiver applied' : ''}
                         </div>
                       </div>
                       <div className="u-flex" style={{ gap: 12, alignItems: 'center' }}>
@@ -302,8 +303,8 @@ export default function ParentFees() {
                     { key: 'date', label: 'Date', render: (p: ParentPayment) => <span className="u-small">{fmtDate(p.created_at)}</span> },
                     { key: 'student', label: 'Student', render: (p: ParentPayment) => p.student_name ?? '—' },
                     { key: 'amount', label: 'Amount', align: 'right', render: (p: ParentPayment) => <span className="tnum">{fmtMoney(p.amount_cents / 100)}</span> },
-                    { key: 'method', label: 'Method', render: (p: ParentPayment) => <Badge tone="outline">{p.method}</Badge> },
-                    { key: 'status', label: 'Status', align: 'right', render: (p: ParentPayment) => p.status === 'confirmed' ? <Badge tone="success" dot>Confirmed</Badge> : p.status === 'initiated' ? <Badge tone="warning" dot>Awaiting school</Badge> : p.status === 'refunded' ? <Badge tone="danger" dot>Refunded</Badge> : <Badge tone="outline">{p.status}</Badge> },
+                    { key: 'method', label: 'Method', render: (p: ParentPayment) => <Badge tone="outline">{humanize(p.method)}</Badge> },
+                    { key: 'status', label: 'Status', align: 'right', render: (p: ParentPayment) => p.status === 'confirmed' ? <Badge tone="success" dot>Confirmed</Badge> : p.status === 'initiated' ? <Badge tone="warning" dot>Awaiting school</Badge> : p.status === 'refunded' ? <Badge tone="danger" dot>Refunded</Badge> : <Badge tone="outline">{statusLabel(p.status)}</Badge> },
                   ]}
                 />
               )}

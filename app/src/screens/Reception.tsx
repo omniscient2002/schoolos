@@ -12,6 +12,7 @@ import { PageHead, Card, Stat, Badge, Button, Drawer, Empty, Avatar, useToast, K
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtTime, fmtDateTime } from '../lib/format';
+import { humanize, statusLabel } from '../lib/labels';
 import type { ReceptionCall } from '../types/domain';
 
 const OUTCOME_META: Record<ReceptionCall['outcome'], { label: string; tone: 'success' | 'warning' | 'danger' | 'info' | 'neutral' }> = {
@@ -98,7 +99,7 @@ export default function Reception() {
         }
       />
 
-      <SampleNote>Sample front-desk data — the call log, transcripts and desk analytics are illustrative in this build; no live reception or telephony door is connected.</SampleNote>
+      <SampleNote>Sample front-desk data — the call log, transcripts and desk analytics are illustrative in this build; no live reception or telephony feature is connected.</SampleNote>
 
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
         <Stat label="Calls today" value={a.callsToday} sub={hasCalls ? `${a.missedCalls} missed · 0 hold time` : 'No calls on the desk log yet'} />
@@ -136,7 +137,7 @@ export default function Reception() {
                       <div className="u-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
                         <span className="u-inline" style={{ gap: 8 }}>
                           <span style={{ fontWeight: 570, fontSize: 'var(--text-sm)' }}>{c.callerName ?? 'Unknown caller'}</span>
-                          <span className="u-mono u-xs u-faint">{c.id} · {c.channel}</span>
+                          <span className="u-mono u-xs u-faint">{c.channel}</span>
                         </span>
                         <span className="u-small u-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {c.transcript[1]?.text ?? c.transcript[0]?.text}
@@ -171,7 +172,7 @@ export default function Reception() {
                   </div>
                 ))}
                 <div className="u-small u-muted" style={{ marginTop: 4 }}>
-                  Visitors on campus: {onCampus.length}. Badge expiry + host-check reminders fire automatically 2 hours after sign-in.
+                  Visitors on campus: {onCampus.length}. Badge expiry and host-check reminders are not connected in this build.
                 </div>
               </div>
             )}
@@ -259,7 +260,7 @@ export default function Reception() {
         </div>
       </div>
 
-      <Drawer open={!!call} onClose={() => setOpenId(null)} title={call ? `${call.id} — ${call.callerName ?? 'Unknown caller'}` : ''} sub={call ? `${fmtDateTime(call.on)} · ${call.channel} · ${call.durationSec}s · ${call.language}` : ''}>
+      <Drawer open={!!call} onClose={() => setOpenId(null)} title={call ? (call.callerName ?? 'Unknown caller') : ''} sub={call ? `${fmtDateTime(call.on)} · ${call.channel} · ${call.durationSec}s · ${call.language}` : ''}>
         {call && (
           <div className="u-col" style={{ gap: 14 }}>
             <CallBubbles call={call} />
@@ -267,7 +268,7 @@ export default function Reception() {
               <Badge tone={OUTCOME_META[call.outcome].tone}>{OUTCOME_META[call.outcome].label}</Badge>
               {call.handedOffTo && <Badge tone="warning">Handed to {call.handedOffTo} — {call.handoffReason}</Badge>}
               {call.callbackFor && <Badge tone="info">Callback: {call.callbackFor}</Badge>}
-              <Badge tone={call.callerSentiment === 'frustrated' ? 'warning' : 'neutral'}>Sentiment: {call.callerSentiment}</Badge>
+              <Badge tone={call.callerSentiment === 'frustrated' ? 'warning' : 'neutral'}>Sentiment: {statusLabel(call.callerSentiment)}</Badge>
               <Badge tone="neutral">{call.recordingConsent ? 'Recording consented' : 'Recording off'}</Badge>
             </div>
             {call.linkedRecords && (
@@ -278,7 +279,7 @@ export default function Reception() {
             )}
             <AiTraceCard
               trace={{
-                trigger: `Call ${call.id} — intent: ${call.intents.join(', ')}`,
+                trigger: `Call — intent: ${call.intents.map(i => humanize(i)).join(', ')}`,
                 policy: 'Front Desk §1.1 — grounded answers only; no student data to unverified callers',
                 dataUsed: call.linkedRecords ?? ['general knowledge base'],
                 reasoningRole: 'Voice receptionist (deterministic retrieval + templates)',

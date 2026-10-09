@@ -27,6 +27,7 @@ import { getNoticeboard, type StudentNoticeboardData } from '../../services/stud
 import { useSession } from '../../App';
 import { canSurface } from '../../lib/effective';
 import { useRoleOrGrant } from '../../lib/access';
+import { roleLabel } from '../../lib/labels';
 
 /* staff surface: teacher/office/coordinator/principal (plan: "teacher/office see
    … noticeboard"); the server decides — this is a UI mirror, not authority. */
@@ -110,7 +111,7 @@ export default function Noticeboard() {
     return (
       <div>
         <PageHead title="Noticeboard" sub="The weekly print-ready sheet for the class noticeboard." />
-        <Empty icon={<Icon.Lock size={22} />} title="Staff surface" sub="The weekly noticeboard sheet is for office and teaching staff (teacher, coordinator, principal, owner, IT admin). Students see the same week on their Home page — this page is the paper version." />
+        <Empty icon={<Icon.Lock size={22} />} title="Staff surface" sub={`The weekly noticeboard sheet is for office and teaching staff (${STAFF_ROLES.map(roleLabel).join(', ')}). Students see the same week on their Home page — this page is the paper version.`} />
       </div>
     );
   }
@@ -121,7 +122,7 @@ export default function Noticeboard() {
         <PageHead title="Noticeboard" sub="The weekly print-ready sheet for the class noticeboard." />
         <ErrorState title="Could not load the weekly summary" sub={error} onRetry={() => setTick(t => t + 1)} />
         <p className="u-small u-faint" style={{ marginTop: 10 }}>
-          The noticeboard door (student.world) assembles the week from homework, published results and announcements. Until it answers, nothing can be printed here.
+          This feature assembles the week from homework, published results and announcements. Until it answers, nothing can be printed here.
         </p>
       </div>
     );

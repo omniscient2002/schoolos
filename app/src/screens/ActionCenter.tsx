@@ -16,6 +16,7 @@ import { PageHead, Card, Badge, Button, Empty, Tabs, Drawer, Skeleton, SkeletonC
 import { EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtTime } from '../lib/format';
+import { humanize, roleLabel, statusLabel } from '../lib/labels';
 
 /* ---------- local async pattern (per APP-SPEC) ---------- */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -117,7 +118,7 @@ function ActionCard({ a, busy, decidable, onOpen, onApprove, onDismiss }: {
             <Badge tone="warning" dot>Owner must approve</Badge>
           )}
           {due && <span className="u-xs u-flex" style={{ gap: 4, color: due.tone === 'danger' ? 'var(--danger)' : due.tone === 'warning' ? 'var(--warning)' : 'var(--text-3)' }}><Icon.Clock size={12} /> {due.label}</span>}
-          <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Owner: {a.owner}{a.ownerRole ? ` (${a.ownerRole})` : ''} · raised {fmtTime(a.on)}</span>
+          <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>Owner: {a.owner}{a.ownerRole ? ` (${roleLabel(a.ownerRole)})` : ''} · raised {fmtTime(a.on)}</span>
         </div>
         <div style={{ fontWeight: 620, fontSize: 'var(--text-lg)', lineHeight: 1.35 }}>{a.title}</div>
         {a.detail && <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>{a.detail}</div>}
@@ -128,7 +129,7 @@ function ActionCard({ a, busy, decidable, onOpen, onApprove, onDismiss }: {
           </div>
         )}
         <ClickThrough className="u-flex" style={{ gap: 8, marginTop: 4 }}>
-          <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole || a.owner}) can approve this — the server will refuse it`} onClick={onApprove}>Approve</Button>
+          <Button size="sm" variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole ? roleLabel(a.ownerRole) : a.owner}) can approve this — the server will refuse it`} onClick={onApprove}>Approve</Button>
           <Button size="sm" variant="ghost" icon={<Icon.X size={13} />} disabled={busy} onClick={onDismiss}>Dismiss</Button>
           <span className="u-xs u-faint" style={{ alignSelf: 'center' }}>Deciding writes to the school's audit trail</span>
         </ClickThrough>
@@ -155,11 +156,11 @@ function EvidenceDrawer({ a, busy, decidable, onClose, onApprove, onDismiss }: {
       open={!!a}
       onClose={onClose}
       title={a.title}
-      sub={`${a.kind} · priority ${a.priority}${due ? ` · ${due.label}` : ''} · owner ${a.owner}${a.ownerRole ? ` (${a.ownerRole})` : ''}`}
+      sub={`${humanize(a.kind)} · priority ${humanize(a.priority)}${due ? ` · ${due.label}` : ''} · owner ${a.owner}${a.ownerRole ? ` (${roleLabel(a.ownerRole)})` : ''}`}
       footer={
         <div className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
           <Button variant="ghost" icon={<Icon.X size={13} />} disabled={busy} onClick={onDismiss}>Dismiss</Button>
-          <Button variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole || a.owner}) can approve this`} onClick={onApprove}>Approve</Button>
+          <Button variant="primary" icon={<Icon.Check size={13} />} loading={busy} disabled={!decidable} title={decidable ? undefined : `Only the owning authority (${a.ownerRole ? roleLabel(a.ownerRole) : a.owner}) can approve this`} onClick={onApprove}>Approve</Button>
         </div>
       }
     >
@@ -186,7 +187,7 @@ function EvidenceDrawer({ a, busy, decidable, onClose, onApprove, onDismiss }: {
           title="What happens when you decide"
           steps={[
             { label: 'Your decision is recorded', detail: `Status → ${'approved' === a.status ? 'approved' : 'approved/dismissed'} with your name, role and note`, source: 'School records', refType: 'record' },
-            { label: 'Audit entry written', detail: a.policyRef ? `Policy reference ${a.policyRef}` : 'Actor, role, decision and outcome are written to the audit trail', source: 'Audit trail · append-only' },
+            { label: 'Audit entry written', detail: a.policyRef ? `Policy reference ${a.policyRef}` : 'Actor, role, decision and outcome are written to the audit trail', source: 'Audit trail · protected' },
             { label: 'Linked execution runs where defined', detail: 'Message and task items execute on approval; other items record the decision for the owning desk to act on', source: 'Action spine' },
           ]}
         />
@@ -216,6 +217,28 @@ export default function ActionCenter() {
     const res = await apiActions();
     return (res.actions ?? []).map(mapServerAction);
   }, []);
+
+  /* Stale approvals: open approval actions older than a day, escalated as one digest to
+     owners/principals. The queue shows everything; this answers "what is rotting". */
+  const canEscalate = ['owner', 'principal', 'itadmin', 'coordinator'].includes(session.roleId);
+  const [stale, setStale] = useState<{ id: string; title: string; created_at: string }[] | null>(null);
+  const [escalating, setEscalating] = useState(false);
+  const loadStale = () => {
+    import('../services/liveApi').then(({ apiGet }) => apiGet<{ stale: { id: string; title: string; created_at: string }[] }>('/actions/stale?days=1')
+      .then(r => setStale(r.stale ?? []))
+      .catch(() => setStale([])));
+  };
+  useEffect(() => { loadStale(); }, []);
+  const escalate = async () => {
+    setEscalating(true);
+    try {
+      const { apiPost } = await import('../services/liveApi');
+      const r = await apiPost<{ escalated: number }>('/actions/stale/escalate', { days: 1 });
+      toast({ title: r.escalated ? `Escalated ${r.escalated} stale approval(s)` : 'Nothing stale — the queue is fresh', sub: r.escalated ? 'A digest went to every owner and principal.' : undefined, tone: 'success' });
+      loadStale();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setEscalating(false); }
+  };
 
   const items: QueueItem[] = override ?? queue.data ?? [];
 
@@ -313,6 +336,18 @@ export default function ActionCenter() {
         </div>
       </div>
 
+      {canEscalate && stale !== null && stale.length > 0 && (
+        <div className="card card-pad u-col" style={{ gap: 8, marginBottom: 16, borderColor: 'var(--warning-weak-2)' }}>
+          <div className="u-between u-small" style={{ gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600 }}>⏳ {stale.length} approval(s) open beyond a day</span>
+            <Button variant="secondary" size="sm" disabled={escalating} onClick={escalate}>
+              {escalating ? 'Escalating…' : 'Escalate digest to owners'}
+            </Button>
+          </div>
+          <div className="u-xs u-faint">{stale.slice(0, 3).map(s => s.title).join(' · ')}{stale.length > 3 ? ` +${stale.length - 3} more` : ''}</div>
+        </div>
+      )}
+
       {error ? (
         <Card pad><Empty icon={<Icon.Alert size={22} />} title="Queue could not load" sub={friendly(error)} action={<Button variant="secondary" onClick={refresh}>Try again</Button>} /></Card>
       ) : (
@@ -379,7 +414,7 @@ export default function ActionCenter() {
                   <div key={a.id} className="u-between u-small" style={{ gap: 10 }}>
                     <span className="u-truncate">{a.title}</span>
                     <span className="u-flex" style={{ gap: 6, flexShrink: 0 }}>
-                      <Badge tone={a.status === 'approved' ? 'success' : 'neutral'}>{a.status}</Badge>
+                      <Badge tone={a.status === 'approved' ? 'success' : 'neutral'}>{statusLabel(a.status)}</Badge>
                       <button className="u-xs u-faint" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => navigate('/audit')}>audit <Icon.ArrowRight size={10} /></button>
                     </span>
                   </div>
@@ -413,8 +448,8 @@ export default function ActionCenter() {
           title="What you are closing"
           steps={[
             { label: 'Item leaves the open queue', detail: 'Status changes to dismissed, recorded on the server', source: 'School records' },
-            { label: 'Audit entry recorded', detail: `Actor ${actorName} · role ${session.roleId} · outcome “closed without action”`, source: 'Audit trail · cannot be edited' },
-            { label: 'Underlying records untouched', detail: 'Attendance, fee and transport records are never modified by a dismissal', source: 'Constitution v2026.1' },
+            { label: 'Audit entry recorded', detail: `Actor ${actorName} · role ${roleLabel(session.roleId)} · outcome “closed without action”`, source: 'Audit trail · cannot be edited' },
+            { label: 'Underlying records untouched', detail: 'Attendance, fee and transport records are never modified by a dismissal', source: 'School policy' },
           ]}
         />
       </Drawer>

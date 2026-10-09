@@ -19,6 +19,7 @@ import {
 } from '../../services/teacherApi';
 import { DeniedState, useTeacherAccess } from './teacherKit';
 import { useStore } from '../../state/store';
+import { humanize, roleLabel } from '../../lib/labels';
 
 const DRAFT_KINDS: { id: string; label: string; hint: string }[] = [
   { id: 'lesson', label: 'Lesson plan', hint: 'A 40-minute plan for a topic.' },
@@ -63,7 +64,7 @@ export default function Copilot() {
     try {
       setAnswer(await askTeacherCopilot(questionText));
     } catch (e) {
-      toast({ title: 'The copilot did not answer', sub: String(e).replace('Error: ', ''), tone: 'error' });
+      toast({ title: 'The teaching assistant did not answer', sub: String(e).replace('Error: ', ''), tone: 'error' });
     } finally { setAsking(false); }
   };
 
@@ -80,14 +81,14 @@ export default function Copilot() {
     } finally { setDrafting(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
       <PageHead
-        title="Teaching copilot"
+        title="Teaching assistant"
         sub="Ask about your own classes, or draft a lesson, worksheet or message. Answers cite their sources; drafts are templates you edit — nothing is sent for you."
-        actions={<Badge tone="outline" dot>Deterministic v0 · no model call</Badge>}
+        actions={<Badge tone="outline" dot>No AI model — answers from your records</Badge>}
       />
 
       <Section title="Ask" sub="Answers are built only from your authorised school data.">
@@ -99,7 +100,7 @@ export default function Copilot() {
               value={question}
               onChange={e => setQuestion(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); ask(); } }}
-              aria-label="Ask the copilot"
+              aria-label="Ask the teaching assistant"
             />
             <Button variant="ai" icon={<Icon.Sparkle size={14} />} loading={asking} onClick={() => ask()} disabled={!question.trim()}>
               Ask
@@ -116,7 +117,7 @@ export default function Copilot() {
               <div className="u-flex" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <Badge tone="info">Answer</Badge>
                 {answer.sources.length > 0 && (
-                  <span className="u-xs u-faint">from {answer.sources.map(s => s.kind).join(', ')}</span>
+                  <span className="u-xs u-faint">from {answer.sources.map(s => humanize(s.kind)).join(', ')}</span>
                 )}
                 <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>
                   Budget {answer.budget.used}/{answer.budget.cap} today
@@ -137,7 +138,7 @@ export default function Copilot() {
         </Card>
       </Section>
 
-      <Section title="Draft" sub="A labelled ai_draft template — review and edit it before you use it.">
+      <Section title="Draft" sub="A draft template — review and edit it before you use it.">
         <Card pad>
           <div className="u-flex u-wrap" style={{ gap: 6, marginBottom: 12 }}>
             {DRAFT_KINDS.map(k => (
@@ -180,7 +181,7 @@ export default function Copilot() {
           {draft && (
             <div style={{ marginTop: 14 }}>
               <div className="u-flex" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
-                <Badge tone="warning">{draft.label}</Badge>
+                <Badge tone="warning">{draft.label === 'ai_draft' ? 'AI draft' : humanize(draft.label)}</Badge>
                 <span className="u-small" style={{ fontWeight: 600 }}>{draft.title}</span>
                 <span className="u-xs u-faint" style={{ marginLeft: 'auto' }}>
                   Budget {draft.budget.used}/{draft.budget.cap} today
@@ -197,8 +198,8 @@ export default function Copilot() {
       </Section>
 
       <div className="grid grid-3">
-        <Stat label="Copilot mode" value="Deterministic" sub="No model call — retrieval only" />
-        <Stat label="Sources" value="Shown" sub="Every answer cites its tables" />
+        <Stat label="Assistant mode" value="Lookup only" sub="No AI model — answers come from your records" />
+        <Stat label="Sources" value="Shown" sub="Every answer cites where it came from" />
         <Stat label="Budget" value="Daily cap" sub="Ask + draft share one allowance" />
       </div>
     </div>

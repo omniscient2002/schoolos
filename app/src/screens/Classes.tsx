@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react';
 import { PageHead, Card, Button, Empty, ErrorState, SkeletonCard, useToast } from '../components/ui';
 import { apiSchoolClasses, apiSaveSchoolClasses, apiSchoolSubjects, apiAddSchoolSubject, type SchoolClass, type SchoolSubject } from '../services/onboardingApi';
+import { apiGet, apiPost, apiDelete } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { useRoleOrGrant } from '../lib/access';
 
@@ -14,7 +15,7 @@ function SectionChip({ name, onRemove }: { name: string; onRemove: () => void })
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 6px 3px 10px',
-      borderRadius: 999, border: '1px solid var(--line)', background: 'var(--accent-soft, rgba(0,0,0,0.04))',
+      borderRadius: 999, border: '1px solid var(--border)', background: 'var(--accent-weak)',
       fontSize: 13, fontWeight: 600,
     }}>
       {name}
@@ -37,7 +38,7 @@ function ClassRow({ cls, onChange, onRemove }: { cls: SchoolClass; onChange: (ne
   };
 
   return (
-    <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--line)', borderRadius: 12 }}>
+    <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--border)', borderRadius: 12 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <label style={{ display: 'grid', gap: 4, flex: '1 1 200px' }}>
           <span style={{ fontSize: 12.5, opacity: 0.75 }}>Class / grade name</span>
@@ -77,6 +78,9 @@ export default function Classes() {
   /* FEX-4/FEX-7: the write gate is the school-structure door, not a role string — a custom role
      whose mask grants `PUT /school/classes` may edit. The server re-decides regardless. */
   const canEdit = useRoleOrGrant(CAN_EDIT, ['PUT /school/classes']);
+  /* P2-2: register ownership is delegated by the principal office, and the coordinator is part of it. */
+  const canAssign = useRoleOrGrant([...CAN_EDIT, 'coordinator'],
+    ['POST /class-assignments', 'DELETE /class-assignments/:id']);
 
   const [classes, setClasses] = useState<SchoolClass[] | null>(null);
   const [subjects, setSubjects] = useState<SchoolSubject[]>([]);
@@ -174,7 +178,7 @@ export default function Classes() {
             {subjects.length ? (
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
                 {subjects.map(s => (
-                  <span key={s.id} style={{ padding: '3px 10px', borderRadius: 999, border: '1px solid var(--line)', fontSize: 13 }}>{s.name}{s.code ? ` · ${s.code}` : ''}</span>
+                  <span key={s.id} style={{ padding: '3px 10px', borderRadius: 999, border: '1px solid var(--border)', fontSize: 13 }}>{s.name}{s.code ? ` · ${s.code}` : ''}</span>
                 ))}
               </div>
             ) : (
@@ -185,8 +189,150 @@ export default function Classes() {
               <Button variant="secondary" onClick={addSubject}>Add subject</Button>
             </div>
           </Card>
+
+          {/* P2-2 · this panel has its OWN authority. The class-assignment doors admit a coordinator;
+              the class-STRUCTURE door (PUT /school/classes) does not. Inheriting the structure gate put
+              the register hand-over in front of the one role the door accepts, read-only — and the
+              coordinator is precisely who needs it when a term starts. */}
+          <ClassOwners
+            classes={classes ?? []}
+            canEdit={canAssign}
+            onChanged={() => setTick(t => t + 1)}
+          />
         </>
       )}
     </div>
+  );
+}
+
+/* ── Who owns which register ───────────────────────────────────────────────────
+   GET/POST /class-assignments is the only door that lets a school hand a teacher
+   ownership of a register, and POST /attendance/mark is gated on exactly that
+   ownership ("a teacher must own the classes of record"). Until this panel
+   existed the door had no caller in the SPA at all, so a brand-new school could
+   never give a teacher a class and no teacher could ever mark a register. */
+interface ClassAssignment {
+  id: string;
+  teacher_id: string;
+  teacher_name: string;
+  grade: string;
+  section: string | null;
+}
+
+function ClassOwners({ classes, canEdit, onChanged }: { classes: SchoolClass[]; canEdit: boolean; onChanged: () => void }) {
+  const toast = useToast();
+  const [rows, setRows] = useState<ClassAssignment[] | null>(null);
+  const [teachers, setTeachers] = useState<{ id: string; name: string }[]>([]);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const slotKey = (g: string, s: string) => `${g} ${s}`;
+
+  useEffect(() => {
+    let dead = false;
+    setError(null);
+    Promise.all([
+      apiGet<{ assignments: ClassAssignment[] }>('/class-assignments'),
+      /* GET /school/staff, not people.admin/users: this panel is writable by a COORDINATOR (the
+         class-assignment door admits them) while people.admin's user list is gated to owner and IT
+         admin — so the one role the door accepts got an empty picker and had to ask a principal.
+         P2-2's structural gate is unchanged: the panel still sits on the structure screen. */
+      apiGet<{ staff?: { id: string; name: string; role: string }[] }>('/school/staff?role=teacher')
+        .catch(() => ({ staff: [] as { id: string; name: string; role: string }[] })),
+    ])
+      .then(([a, u]) => {
+        if (dead) return;
+        setRows(a.assignments ?? []);
+        setTeachers(u.staff ?? []);
+      })
+      .catch((e) => { if (!dead) setError(friendly(e)); });
+    return () => { dead = true; };
+  }, [tick]);
+
+  const holderOf = (g: string, s: string) =>
+    rows?.find((r) => r.grade === g && (r.section ?? '') === (s ?? '')) ?? null;
+
+  const assign = async (grade: string, section: string) => {
+    const teacherId = draft[slotKey(grade, section)];
+    if (!teacherId) { toast({ title: 'Choose a teacher first', tone: 'info' }); return; }
+    setBusy(slotKey(grade, section));
+    try {
+      const teacher = teachers.find((t) => t.id === teacherId);
+      const r = await apiPost<{ ok: true; assignmentId: string }>('/class-assignments', { teacherId, grade, section });
+      setRows(prev => [...(prev ?? []).filter((x) => !(x.grade === grade && (x.section ?? '') === section)), {
+        id: r.assignmentId, teacher_id: teacherId, teacher_name: teacher?.name ?? 'Teacher', grade, section,
+      }]);
+      setDraft(prev => { const n = { ...prev }; delete n[slotKey(grade, section)]; return n; });
+      toast({ title: `${teacher?.name ?? 'Teacher'} now owns ${grade}-${section}`, sub: 'They can mark its register. The hand-over is recorded.', tone: 'success' });
+      onChanged();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(null); }
+  };
+
+  const retire = async (a: ClassAssignment) => {
+    setBusy(a.id);
+    try {
+      await apiDelete(`/class-assignments/${a.id}`);
+      setRows(prev => (prev ?? []).filter((x) => x.id !== a.id));
+      toast({ title: `${a.teacher_name} no longer owns ${a.grade}${a.section ? '-' + a.section : ''}`, tone: 'info' });
+      onChanged();
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setBusy(null); }
+  };
+
+  /* the door requires a section, so a class with no sections has no slot to own */
+  const slots: { grade: string; section: string }[] = [];
+  for (const c of classes) for (const s of c.sections) slots.push({ grade: c.grade, section: s });
+
+  return (
+    <Card
+      headAs="h2"
+      head="Who teaches which class"
+      sub="Register ownership. A teacher can only mark attendance for a class they own, so this is what makes daily marking work."
+      style={{ marginTop: 'var(--s-4)' }}
+    >
+      {error ? <ErrorState title="Could not load class assignments" sub={error.replace('Error: ', '')} onRetry={() => setTick(t => t + 1)} />
+        : !rows ? <SkeletonCard />
+        : !classes.length ? <Empty title="Define your classes first" sub="Class ownership follows the classes and sections above." />
+        : !teachers.length ? <Empty title="No teachers yet" sub="Create a teacher account first — open Manage people." />
+        : (
+          <div style={{ display: 'grid', gap: 10 }}>
+            {slots.map(({ grade, section }) => {
+              const k = slotKey(grade, section);
+              const holder = holderOf(grade, section);
+              return (
+                <div key={k} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 10 }}>
+                  <span style={{ minWidth: 130, fontWeight: 600, fontSize: 13.5 }}>{grade} · {section}</span>
+                  {holder ? (
+                    <>
+                      <span style={{ fontSize: 13 }}>{holder.teacher_name}</span>
+                      {canEdit && <Button size="sm" variant="ghost" disabled={busy === holder.id} onClick={() => retire(holder)}>Retire</Button>}
+                    </>
+                  ) : canEdit ? (
+                    <>
+                      <select
+                        aria-label={`Teacher for ${grade} ${section}`}
+                        value={draft[k] ?? ''}
+                        onChange={(e) => setDraft(prev => ({ ...prev, [k]: e.target.value }))}
+                        style={{ minWidth: 200 }}
+                      >
+                        <option value="">Choose a teacher…</option>
+                        {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                      <Button size="sm" variant="secondary" disabled={!draft[k] || busy === k} onClick={() => assign(grade, section)}>
+                        {busy === k ? 'Assigning…' : 'Assign'}
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="u-small u-faint">No teacher assigned yet</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+    </Card>
   );
 }

@@ -10,7 +10,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
-import { apiFeesSummary } from '../services/liveApi';
+import { apiFeesSummary, apiBiAttendance } from '../services/liveApi';
+import { roleLabel, statusLabel } from '../lib/labels';
 import {PageHead, Card, Stat, Badge, Button, Empty, Skeleton, SkeletonCard, Drawer, useToast, ClickThrough, SampleNote} from '../components/ui';
 import { LineChart, BarChart, Sparkline } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -50,8 +51,8 @@ function InsightCard({ ins, highlighted, onOpen }: { ins: Insight; highlighted: 
       <div className="u-col" style={{ gap: 10, border: highlighted ? '1px solid var(--accent-weak-2)' : undefined, margin: highlighted ? -12 : undefined, padding: highlighted ? 12 : undefined, borderRadius: highlighted ? 'var(--r-lg)' : undefined }}>
         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {highlighted && <Badge tone="accent" dot>For your role</Badge>}
-          <Badge tone={confTone(ins.confidence)}>{ins.confidence} confidence</Badge>
-          <Badge tone="outline">{ins.ownerRole}</Badge>
+          <Badge tone={confTone(ins.confidence)}>{statusLabel(ins.confidence)} confidence</Badge>
+          <Badge tone="outline">{roleLabel(ins.ownerRole)}</Badge>
         </div>
         <div style={{ fontWeight: 620, fontSize: 'var(--text-lg)', lineHeight: 1.35 }}>{ins.question}</div>
         <div className="u-flex" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -84,7 +85,7 @@ function AnalysisDrawer({ ins, onClose }: { ins: Insight | null; onClose: () => 
   const toast = useToast();
   if (!ins) return null;
   return (
-    <Drawer open={!!ins} onClose={onClose} title={ins.question} sub={`${ins.metric} · ${ins.delta} · ${ins.confidence} confidence · owner ${ins.ownerRole}`}>
+    <Drawer open={!!ins} onClose={onClose} title={ins.question} sub={`${ins.metric} · ${ins.delta} · ${statusLabel(ins.confidence)} confidence · owner ${roleLabel(ins.ownerRole)}`}>
       <div className="u-col" style={{ gap: 16 }}>
         {isCategorical(ins) ? (
           <BarChart
@@ -128,7 +129,7 @@ function AnalysisDrawer({ ins, onClose }: { ins: Insight | null; onClose: () => 
                 iconRight={<Icon.ArrowRight size={13} />}
                 onClick={() => {
                   if (a.ref) { navigate(a.ref); onClose(); }
-                  else toast({ title: `${a.label} — queued.`, sub: 'SchoolOS will follow up with the evidence trail in Ask.', tone: 'info' });
+                  else toast({ title: `${a.label} — not connected yet`, sub: 'This next step is not wired up in this build.', tone: 'info' });
                 }}
               >
                 {a.label}
@@ -139,7 +140,7 @@ function AnalysisDrawer({ ins, onClose }: { ins: Insight | null; onClose: () => 
 
         <div className="u-xs u-faint" style={{ lineHeight: 1.65, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
           Sources — {ins.chart.labels.length} data points recomputed from school records; analysis deterministic for this dataset.
-          Owner {ins.ownerRole} · confidence {ins.confidence} (verification pass compares figures against the underlying ledgers).
+          Owner {roleLabel(ins.ownerRole)} · confidence {statusLabel(ins.confidence)} (verification pass compares figures against the underlying fee records).
           Question investigations like this are also available conversationally in Ask, with per-claim citations.
         </div>
       </div>
@@ -163,6 +164,19 @@ export default function Insights() {
   const liveFees = useAsync(async () => {
     try { return await apiFeesSummary(); } catch { return null; }
   }, []);
+
+  /* U-09: attendance health is a LIVE read model (GET /plugins/ops.bi/attendance), not the demo seed. */
+  const liveAtt = useAsync(async () => {
+    try { return await apiBiAttendance(30); } catch { return null; }
+  }, []);
+
+  const attLive = useMemo(() => {
+    const rows = (liveAtt.data?.byClass as Array<{ marks?: number; present?: number; late?: number; pct?: number }> | undefined) ?? [];
+    const marks = rows.reduce((a, r) => a + Number(r.marks ?? 0), 0);
+    const present = rows.reduce((a, r) => a + Number(r.present ?? 0) + Number(r.late ?? 0), 0);
+    const below = (liveAtt.data?.belowThreshold as unknown[] | undefined)?.length ?? 0;
+    return { has: marks > 0, pct: marks ? Math.round((present / marks) * 1000) / 10 : null, below };
+  }, [liveAtt.data]);
 
   /* P0 empty-world: TERM_DAYS / attendance / students are all empty for a
      tenant with no records yet, so each stat reports what the dataset can
@@ -195,6 +209,11 @@ export default function Insights() {
     return { rate, failed, presence, hasAttendanceToday, totalActive, flagged, wl };
   }, []);
 
+  /* 0.5 demo-residue: the honesty chrome shows only while BOTH live doors fail —
+     collection rate (fees summary) and attendance health (ops.bi) carry the
+     page once either lane is wired. */
+  const liveMissing = liveFees.data == null && liveAtt.data == null;
+
   const insights = useMemo(() => data ?? [], [data]);
   const ordered = useMemo(() => {
     const mine = insights.filter(i => i.ownerRole === session.roleId);
@@ -209,31 +228,31 @@ export default function Insights() {
       <PageHead
         title="Insights"
         sub="Questions the data answers today — each with its metric, movement, and the records behind it."
-        actions={<Badge tone="outline">Illustrative in this build</Badge>}
+        actions={liveMissing ? <Badge tone="outline">Illustrative in this build</Badge> : undefined}
       />
 
-      <SampleNote>Sample insights — the question cards, attendance and workload figures are illustrative in this build and are not read from your school&rsquo;s records. Only the collection rate comes from the live fee ledger.</SampleNote>
+      {liveMissing && <SampleNote>Sample insights — the question cards and the workload figure are illustrative in this build. The collection rate and attendance health are read live from the fee records and attendance records.</SampleNote>}
 
       {/* stats row */}
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
         <Stat
-          label="Collection rate — whole ledger"
+          label="Collection rate — all fee records"
           /* No obligations to divide by → "—", not a 0% that would read as a
              collection failure the school never had. */
           value={liveFees.data?.collectionPct == null ? '—' : `${liveFees.data.collectionPct}%`}
-          delta={liveFees.data?.collectionPct == null ? undefined : { value: `${liveFees.data.totals?.obligations ?? 0} obligations`, dir: 'flat' }}
+          delta={liveFees.data?.collectionPct == null ? undefined : { value: `${liveFees.data.totals?.obligations ?? 0} fee dues`, dir: 'flat' }}
           sub={liveFees.error ? 'Fee summary is unavailable right now'
-            : liveFees.data?.collectionPct == null ? 'No fee obligations recorded yet'
-              : 'From the live fee ledger (GET /reports/fees/summary)'}
+            : liveFees.data?.collectionPct == null ? 'No fee dues recorded yet'
+              : 'From the live fee records'}
           onClick={() => navigate('/fees')}
         />
         <Stat
-          label="Attendance health today"
-          value={stats.hasAttendanceToday ? `${stats.presence}%` : '—'}
-          delta={!stats.hasAttendanceToday
-            ? { value: stats.totalActive ? 'register not marked yet' : 'no students on record yet', dir: 'flat' as const }
-            : { value: stats.flagged ? `${stats.flagged} section${stats.flagged > 1 ? 's' : ''} flagged` : 'all sections nominal', dir: stats.flagged ? 'down' as const : 'up' as const }}
-          sub={stats.hasAttendanceToday ? 'Sample — attendance figures are illustrative in this build' : 'No attendance records yet'}
+          label="Attendance health — last 30 days"
+          value={attLive.has ? `${attLive.pct}%` : '—'}
+          delta={!attLive.has
+            ? { value: 'no registers marked yet', dir: 'flat' as const }
+            : { value: attLive.below ? `${attLive.below} class${attLive.below > 1 ? 'es' : ''} below 75%` : 'all classes above the floor', dir: attLive.below ? 'down' as const : 'up' as const }}
+          sub={liveAtt.error ? 'Attendance read model unavailable right now' : attLive.has ? 'From live attendance records' : 'No attendance records yet'}
           onClick={() => navigate('/attendance')}
         />
         {stats.wl && (
@@ -241,7 +260,7 @@ export default function Insights() {
             label="Teacher workload"
             value={stats.wl.delta}
             delta={{ value: 'avg periods/week', dir: 'up' }}
-            sub="Sample — no timetable-workload door is connected in this build"
+            sub="Sample — no timetable-workload feature is connected in this build"
             onClick={() => navigate('/operations/hr')}
           />
         )}

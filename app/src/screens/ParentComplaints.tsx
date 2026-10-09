@@ -1,5 +1,6 @@
 import { Icon } from '../components/Icon';
 import { apiMyCases, apiCreateCase } from '../services/liveApi';
+import { statusLabel } from '../lib/labels';
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 
@@ -79,7 +80,7 @@ function ParentComplaints() {
           {rows && rows.map(c => (
             <div key={c.id} className="parent-complaint-row" style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
               <div className="parent-complaint-title">{c.title}</div>
-              <div className="parent-complaint-meta"><span>{STATUS_LABEL[c.status] ?? c.status}</span><span className="u-faint">{c.code}</span></div>
+              <div className="parent-complaint-meta"><span>{STATUS_LABEL[c.status] ?? statusLabel(c.status)}</span><span className="u-faint">{c.code}</span></div>
               {c.detail && <div className="parent-complaint-detail">{c.detail}</div>}
             </div>
           ))}

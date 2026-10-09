@@ -8,14 +8,24 @@
    ============================================================ */
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiWorkOrders } from '../services/liveApi';
+import { apiWorkOrderStatus, apiWorkOrders } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Section, Card, Stat, Badge, Button, Empty, Tabs, SkeletonCard, ErrorState } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { PriorityBadge, WOStatusChip, woStatusLabel } from '../components/Maint';
+import { statusLabel } from '../lib/labels';
+import { useRoleOrGrant } from '../lib/access';
+import { useToast } from '../components/ui';
 import type { MaintPriority, WOStatus } from '../types/domain';
 
 const PRIO_RANK: Record<string, number> = { emergency: 0, critical: 1, high: 2, medium: 3, low: 4 };
+/* G-4 · the ONE state machine, mirroring the server's WO_FLOW and its single extra edge
+   (reported → cancelled). The board offers the next step the door actually permits, so moving a job
+   forward never needs a detour through the detail route — which is what the run had to do. */
+const WO_NEXT: Record<string, string> = {
+  reported: 'assigned', assigned: 'accepted', accepted: 'en-route', 'en-route': 'on-site',
+  'on-site': 'repairing', repairing: 'verification', verification: 'resolved', resolved: 'closed',
+};
 const OPEN_STATES: string[] = ['reported', 'assigned', 'accepted', 'en-route', 'on-site', 'repairing', 'verification'];
 const STAGE_OPTIONS: string[] = ['reported', 'assigned', 'accepted', 'en-route', 'on-site', 'repairing', 'verification', 'resolved', 'closed', 'cancelled'];
 const PRIORITIES: string[] = ['emergency', 'critical', 'high', 'medium', 'low'];
@@ -71,8 +81,8 @@ const ageOf = (d: Date) => {
 /* SLA display straight from server truth: breach flag + time left */
 function SlaChip({ row }: { row: WoRow }) {
   if (!OPEN_STATES.includes(row.status)) return null;
-  if (!row.slaDue) return <Badge tone="outline">No SLA window</Badge>;
-  if (row.breached) return <Badge tone="danger" dot>SLA breached</Badge>;
+  if (!row.slaDue) return <Badge tone="outline">No deadline</Badge>;
+  if (row.breached) return <Badge tone="danger" dot>Past deadline</Badge>;
   const minsLeft = Math.round((row.slaDue.getTime() - Date.now()) / 60000);
   const tone = minsLeft <= 60 ? 'danger' : minsLeft <= 240 ? 'warning' : 'info';
   return <Badge tone={tone} dot>{minsLeft <= 0 ? 'Due now' : minsLeft < 60 ? `${minsLeft}m left` : `${Math.round(minsLeft / 60)}h left`}</Badge>;
@@ -99,22 +109,31 @@ function WORow({ wo }: { wo: WoRow }) {
   );
 }
 
-function WOBoardCard({ wo }: { wo: WoRow }) {
+function WOBoardCard({ wo, onAdvance, busy }: { wo: WoRow; onAdvance?: (wo: WoRow, to: string) => void; busy?: boolean }) {
+  const next = WO_NEXT[wo.status];
   return (
-    <Link to={`/maintenance/work-orders/${wo.id}`} className={`wo-card prio-${wo.priority} u-col`} style={{ gap: 6 }}>
-      <div className="u-inline" style={{ gap: 6 }}>
-        <span className="u-mono u-small u-muted">{wo.code}</span>
-        <span style={{ marginLeft: 'auto' }}><PriorityBadge p={wo.priority as MaintPriority} size="sm" /></span>
-      </div>
-      <span className="u-small" style={{ fontWeight: 600, lineHeight: 1.4 }}>{wo.title}</span>
-      <div className="u-inline" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {wo.assetCode ? <Badge tone="accent">{wo.assetName ?? wo.assetCode}</Badge> : <Badge tone="outline">{wo.category}</Badge>}
-      </div>
-      <div className="u-inline u-small u-muted" style={{ gap: 6, flexWrap: 'wrap' }}>
-        <span className="u-mono">{ageOf(wo.createdAt)}</span>
-      </div>
-      <SlaChip row={wo} />
-    </Link>
+    <div className={`wo-card prio-${wo.priority} u-col`} style={{ gap: 6 }}>
+      <Link to={`/maintenance/work-orders/${wo.id}`} className="u-col" style={{ gap: 6, textDecoration: 'none', color: 'inherit' }}>
+        <div className="u-inline" style={{ gap: 6 }}>
+          <span className="u-mono u-small u-muted">{wo.code}</span>
+          <span style={{ marginLeft: 'auto' }}><PriorityBadge p={wo.priority as MaintPriority} size="sm" /></span>
+        </div>
+        <span className="u-small" style={{ fontWeight: 600, lineHeight: 1.4 }}>{wo.title}</span>
+        <div className="u-inline" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {wo.assetCode ? <Badge tone="accent">{wo.assetName ?? wo.assetCode}</Badge> : <Badge tone="outline">{wo.category}</Badge>}
+        </div>
+        <div className="u-inline u-small u-muted" style={{ gap: 6, flexWrap: 'wrap' }}>
+          <span className="u-mono">{ageOf(wo.createdAt)}</span>
+        </div>
+        <SlaChip row={wo} />
+      </Link>
+      {onAdvance && next && (
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => onAdvance(wo, next)}
+          title={`Move to ${woStatusLabel(next as WOStatus)}`}>
+          {busy ? 'Moving…' : `Advance to ${woStatusLabel(next as WOStatus)}`}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -136,6 +155,10 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 /* ================= live board (real door) ================= */
 function LiveBoard() {
   const navigate = useNavigate();
+  const toast = useToast();
+  /* G-4: the transition door's own gate — technician, facilities, coordinator, principal, owner. */
+  const canTransition = useRoleOrGrant(['technician', 'facilities', 'coordinator', 'principal', 'owner'], ['POST /work-orders/:id/status']);
+  const [moving, setMoving] = useState<string | null>(null);
   const [view, setView] = useState('list');
   const [status, setStatus] = useState('all');
   const [priority, setPriority] = useState('all');
@@ -154,6 +177,20 @@ function LiveBoard() {
 
   const filtersActive = q.trim() !== '' || status !== 'all' || priority !== 'all';
   const clearFilters = () => { setQ(''); setStatus('all'); setPriority('all'); };
+
+  /* G-4 · the board row advances the job itself. The server enforces the same state machine (WO_FLOW
+     plus reported → cancelled), so a step it refuses is refused here too — the toast shows the server's
+     own wording rather than a client-side guess at what is allowed. */
+  const advance = async (wo: WoRow, to: string) => {
+    setMoving(wo.id);
+    try {
+      await apiWorkOrderStatus(wo.id, to);
+      toast({ title: `${wo.code} → ${woStatusLabel(to as WOStatus)}`, sub: 'Recorded on the job with your name.', tone: 'success' });
+      wos.retry();
+    } catch (e) {
+      toast({ title: 'Could not move the job', sub: friendly(e), tone: 'error' });
+    } finally { setMoving(null); }
+  };
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -178,7 +215,7 @@ function LiveBoard() {
     <div>
       <PageHead
         title="Work-order board"
-        sub={`${open.length} open · ${emergencies} emergency/critical · ${slaRisk} at SLA risk — straight from the maintenance ledger`}
+        sub={`${open.length} open · ${emergencies} emergency/critical · ${slaRisk} at deadline risk — straight from the school records`}
         actions={
           <div className="u-inline" style={{ gap: 8 }}>
             <Button variant="secondary" icon={<Icon.User size={14} />} onClick={() => navigate('/maintenance/technician')}>Technician view</Button>
@@ -188,17 +225,17 @@ function LiveBoard() {
       />
 
       <div className="grid grid-4" style={{ marginBottom: 'var(--s-5)' }}>
-        <Stat label="Open jobs" value={open.length} sub={`${rows.length} total on the server`} onClick={() => { setView('list'); setStatus('open'); }} />
+        <Stat label="Open jobs" value={open.length} sub={`${rows.length} in total`} onClick={() => { setView('list'); setStatus('open'); }} />
         <Stat label="Emergency / critical" value={emergencies} sub="safety and hygiene rules auto-escalate" />
         <Stat label="Deadline soon" value={slaRisk} sub="breached or closing within 4 hours" />
-        <Stat label="Resolved + closed" value={resolvedCount} sub="completed jobs on the ledger" />
+        <Stat label="Resolved + closed" value={resolvedCount} sub="completed jobs in the school records" />
       </div>
 
       <Card style={{ marginBottom: 16 }}>
         <div className="u-inline" style={{ gap: 8, flexWrap: 'wrap' }}>
           <div className="searchbox" style={{ flex: '1 1 210px', maxWidth: 320 }}>
             <Icon.Search size={14} />
-            <input className="input" placeholder="Search code, title, asset, category…" value={q} onChange={e => setQ(e.target.value)} aria-label="Search work orders" />
+            <input className="input" placeholder="Search code, title, asset, category…" value={q} onChange={e => setQ(e.target.value)} aria-label="Search jobs" />
           </div>
           <select className="input" value={status} onChange={e => setStatus(e.target.value)} aria-label="Filter by status" style={{ maxWidth: 172 }}>
             <option value="all">All statuses</option>
@@ -207,7 +244,7 @@ function LiveBoard() {
           </select>
           <select className="input" value={priority} onChange={e => setPriority(e.target.value)} aria-label="Filter by priority" style={{ maxWidth: 140 }}>
             <option value="all">All priorities</option>
-            {PRIORITIES.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+            {PRIORITIES.map(p => <option key={p} value={p}>{statusLabel(p)}</option>)}
           </select>
           {filtersActive && (
             <Button size="sm" variant="ghost" icon={<Icon.Filter size={13} />} onClick={clearFilters}>Clear filters</Button>
@@ -228,7 +265,7 @@ function LiveBoard() {
       ) : view === 'list' ? (
         <Section
           title="Work orders"
-          sub={`${filtered.length} of ${rows.length} on the server · ranked by priority, then SLA deadline · click a row to open`}
+          sub={`${filtered.length} of ${rows.length} on the record · ranked by priority, then deadline · click a row to open`}
           style={{ marginTop: 'var(--s-4)' }}
         >
           <div className="u-col" style={{ gap: 8 }}>
@@ -236,7 +273,7 @@ function LiveBoard() {
             {filtered.length === 0 && (
               <Empty
                 icon={<Icon.Search size={22} />}
-                title="No work orders match these filters"
+                title="No jobs match these filters"
                 sub="Try widening the status or priority filter — or clear everything and start again."
                 action={<Button variant="secondary" icon={<Icon.Filter size={14} />} onClick={clearFilters}>Clear filters</Button>}
               />
@@ -246,7 +283,9 @@ function LiveBoard() {
       ) : (
         <Section
           title="Flow board"
-          sub={`${filtered.length} active job${filtered.length === 1 ? '' : 's'} across the lifecycle · transitions advance on each job's page`}
+          sub={canTransition
+            ? `${filtered.length} active job${filtered.length === 1 ? '' : 's'} across the lifecycle · each card advances the job one step`
+            : `${filtered.length} active job${filtered.length === 1 ? '' : 's'} across the lifecycle · moving a job along is the technician's or office's call`}
           style={{ marginTop: 'var(--s-4)' }}
         >
           <div
@@ -263,7 +302,11 @@ function LiveBoard() {
                     <span style={{ fontWeight: 620, fontSize: 'var(--text-sm)' }}>{col.label}</span>
                     <Badge tone={items.length ? 'info' : 'neutral'}>{items.length}</Badge>
                   </div>
-                  {items.map(wo => <WOBoardCard key={wo.id} wo={wo} />)}
+                  {items.map(wo => (
+                    <WOBoardCard key={wo.id} wo={wo}
+                      onAdvance={canTransition ? advance : undefined}
+                      busy={moving === wo.id} />
+                  ))}
                   {items.length === 0 && (
                     <div className="u-small u-muted" style={{ border: '1px dashed var(--border)', borderRadius: 'var(--r-md)', padding: '16px 10px', textAlign: 'center' }}>
                       Nothing here

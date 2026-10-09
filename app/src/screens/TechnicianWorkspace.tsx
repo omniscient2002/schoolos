@@ -86,7 +86,7 @@ function LiveWorkspace() {
     setBusy(`${wo.id}:${to}`);
     try {
       await apiWorkOrderStatus(wo.id, to, costCents);
-      toast({ title: `${wo.code} → ${to.replace('-', ' ')}`, sub: 'Recorded on the server — the board and this queue reflect it immediately.', tone: 'success' });
+      toast({ title: `${wo.code} → ${woStatusLabel(to as WOStatus)}`, sub: 'Recorded — the board and this queue reflect it immediately.', tone: 'success' });
       setCostRupees('');
       wos.retry();
     } catch (e) {
@@ -107,7 +107,7 @@ function LiveWorkspace() {
     <div>
       <PageHead
         title={isTech ? 'Your shift' : 'Technician workspace'}
-        sub={`${active.length} active · ${queue.length} reported · ${verify.length} awaiting verification — from the maintenance ledger. Named assignment is not exposed by the door yet; jobs advance through the flow transitions.`}
+        sub={`${active.length} active · ${queue.length} reported · ${verify.length} awaiting verification — from the school records. Named assignment is not available here yet; jobs advance through the flow steps.`}
         actions={<Button variant="secondary" icon={<Icon.Grid size={14} />} onClick={() => { window.location.hash = ''; }}>Refresh</Button>}
       />
 
@@ -128,7 +128,7 @@ function LiveWorkspace() {
         <Empty
           icon={<Icon.Check size={22} />}
           title={tab === 'active' ? 'Nothing in progress' : tab === 'queue' ? 'No reported jobs waiting' : tab === 'verify' ? 'Nothing awaiting verification' : 'Nothing completed yet'}
-          sub="Jobs appear here as the maintenance ledger changes — nothing is cached on this device."
+          sub="Jobs appear here as the school records change — nothing is stored on this device."
         />
       ) : (
         <div className="u-col" style={{ gap: 10 }}>
@@ -144,7 +144,7 @@ function LiveWorkspace() {
                   <PriorityBadge p={wo.priority as MaintPriority} size="sm" />
                   <WOStatusChip s={wo.status as WOStatus} />
                   {wo.breached
-                    ? <Badge tone="danger" dot>SLA breached</Badge>
+                    ? <Badge tone="danger" dot>Past deadline</Badge>
                     : dueMins != null ? <Badge tone={dueMins <= 240 ? 'warning' : 'info'}>{dueMins >= 0 ? `${Math.round(dueMins / 60)}h left` : 'Due now'}</Badge> : null}
                 </div>
                 <span style={{ fontWeight: 600, fontSize: 'var(--text-md)' }}>{wo.title}</span>
@@ -178,7 +178,7 @@ function LiveWorkspace() {
                       {next === 'closed' && (
                         <Button size="sm" variant="primary" loading={busy === `${wo.id}:closed`} disabled={!!busy}
                           onClick={() => transition(wo, 'closed')}>
-                          Close work order
+                          Close job
                         </Button>
                       )}
                     </div>

@@ -118,7 +118,7 @@ function LiveAssets() {
     <div>
       <PageHead
         title="Assets"
-        sub="Asset registry — straight from the server (GET /assets). Criticality and service schedules are not exposed by the door yet."
+        sub="Asset registry — straight from the school's records. Criticality and service schedules are not available here yet."
         actions={
           <Button variant="secondary" icon={<Icon.Zap size={14} />} onClick={() => navigate('/maintenance/report')}>Report issue</Button>
         }

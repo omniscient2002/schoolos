@@ -191,7 +191,7 @@ export default function AiGovernance() {
         </div>
 
         <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Card head="AI cost & usage" actions={<Link to="/ai-usage" className="u-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minHeight: 32, padding: '0 4px' }}>Full breakdown <Icon.ArrowRight size={12} /></Link>}>
+          <Card head="AI cost & usage" actions={<Link to="/ai-usage" className="u-small link-action" style={{ gap: 3 }}>Full breakdown <Icon.ArrowRight size={12} /></Link>}>
             <div className="u-col" style={{ gap: 10 }}>
               <div className="u-between">
                 <div>

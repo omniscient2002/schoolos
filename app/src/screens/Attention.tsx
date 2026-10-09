@@ -17,7 +17,7 @@ import { Slot } from '../plugins/Slot';
 import type { WorkOrderRecord } from '../types/domain';
 import { assets as seedAssetsMaint } from '../data/dataset';
 import { Icon } from '../components/Icon';
-import { fmtTime, fmtDateShort } from '../lib/format';
+import { fmtTime, fmtDateShort, fmtHM } from '../lib/format';
 
 /* ---------- local async pattern (per APP-SPEC) ---------- */
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -190,9 +190,9 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
           ? 'Safety or core-function impact with a fixed deadline. The facilities desk owns it; leadership is kept informed automatically.'
           : 'Learning or comfort impact inside teaching hours. Ranked against every other open signal on urgency, impact, and deadline.',
         priority: urgent ? 'critical' : wo.priority === 'high' ? 'high' : 'normal',
-        chips: [`${wo.id} · SLA ${new Date(wo.sla.resolveBy).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`, wo.assetId ? `Asset ${wo.assetId}` : 'No registered asset', `Category ${wo.category}`],
+        chips: [`${wo.id} · SLA ${fmtHM(wo.sla.resolveBy)}`, wo.assetId ? `Asset ${wo.assetId}` : 'No registered asset', `Category ${wo.category}`],
         evidence: [
-          { label: 'Report intake', detail: `${wo.source} · ${wo.reportedBy} · ${new Date(wo.reportedOn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` },
+          { label: 'Report intake', detail: `${wo.source} · ${wo.reportedBy} · ${fmtHM(wo.reportedOn)}` },
           ...(wo.aiUnderstanding ? [{ label: 'AI understanding', detail: `${wo.aiUnderstanding.category} · ${wo.aiUnderstanding.assetMatch ? 'asset ' + wo.aiUnderstanding.assetMatch.assetId + ' (' + Math.round(wo.aiUnderstanding.assetMatch.confidence * 100) + '%)' : 'no asset match'} · confidence ${Math.round(wo.aiUnderstanding.confidence * 100)}%` }] : []),
           { label: 'Response promise', detail: `reply within ${wo.sla.responseMins}m · fix within ${Math.round(wo.sla.resolveMins / 60)}h (school rule, Facilities §1.2)` },
           ...(wo.assetId ? [{ label: 'Asset history', detail: (() => { const a = seedAssetsMaint.find(x => x.id === wo.assetId); return a ? `${a.failures.length} prior failure${a.failures.length === 1 ? '' : 's'} · ₹${a.repairSpendYTD.toLocaleString('en-IN')} YTD · health ${a.health}` : 'asset record'; })() }] : []),
@@ -203,7 +203,7 @@ function deriveSignals(workOrders: WorkOrderRecord[] = []): Signal[] {
         ],
         policyRef: 'Facilities §1.2 (intake + priority) · deadlines are set by the book',
         to: `/maintenance/work-orders/${wo.id}`,
-        due: wo.sla.resolveBy.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        due: fmtHM(wo.sla.resolveBy),
         aiInvolved: !!wo.aiUnderstanding,
         derived: true,
       });

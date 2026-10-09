@@ -10,6 +10,7 @@ import {
   PageHead, Card, Badge, Button, Empty, ErrorState, SkeletonCard, Stat,
 } from '../components/ui';
 import { friendly } from '../lib/friendlyErrors';
+import { pluginLabel } from '../lib/labels';
 import { getCapabilities, pluginEnabled, type Capabilities } from '../services/capabilitiesApi';
 import { apiGet } from '../services/liveApi';
 
@@ -71,8 +72,16 @@ export default function RailsBoard() {
       {!loading && !error && caps && (
         <>
           <div className="grid grid-4" style={{ marginBottom: 'var(--s-4)' }}>
-            <Stat label="SMS" value={caps.rails.sms.configured ? 'Connected' : 'Off'} sub={caps.rails.sms.provider || 'no provider'} />
-            <Stat label="WhatsApp" value={caps.rails.whatsapp.configured ? 'Connected' : 'Off'} sub={caps.rails.whatsapp.provider || 'no provider'} />
+            <Stat
+              label="SMS"
+              value={caps.rails.sms.configured ? 'Connected' : caps.rails.sms.sandbox ? 'Sandbox' : 'Off'}
+              sub={caps.rails.sms.configured ? caps.rails.sms.provider || 'provider set' : caps.rails.sms.sandbox ? 'messages are logged, not sent' : 'no provider'}
+            />
+            <Stat
+              label="WhatsApp"
+              value={caps.rails.whatsapp.configured ? 'Connected' : caps.rails.whatsapp.sandbox ? 'Sandbox' : 'Off'}
+              sub={caps.rails.whatsapp.configured ? caps.rails.whatsapp.provider || 'provider set' : caps.rails.whatsapp.sandbox ? 'messages are logged, not sent' : 'no provider'}
+            />
             <Stat label="Razorpay" value={caps.rails.razorpay.configured ? 'Connected' : 'Off'} sub="fee payments" />
             <Stat label="Documents" value={caps.rails.files.configured ? 'Ready' : 'Off'} sub="storage" />
           </div>
@@ -81,25 +90,32 @@ export default function RailsBoard() {
             {RAILS.map(r => {
               const st = caps.rails[r.key];
               const on = 'configured' in st && st.configured;
+              /* Three states, not two. "Not set up" and "sandbox" are different facts: the first is
+                 nothing configured, the second is everything configured except a real provider — and
+                 in the sandbox state the rail accepts messages and delivers none, which is exactly
+                 what a school must be told before it promises a guardian an SMS. */
+              const sandbox = 'sandbox' in st && st.sandbox && !on;
               return (
-                <div key={r.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)', alignItems: 'center' }}>
+                <div key={r.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
                   <div>
                     <strong>{r.name}</strong>{' '}
-                    <Badge tone={on ? 'success' : 'neutral'}>{on ? 'Connected' : 'Not set up'}</Badge>
+                    <Badge tone={on ? 'success' : sandbox ? 'warning' : 'neutral'}>{on ? 'Connected' : sandbox ? 'Sandbox — not sending' : 'Not set up'}</Badge>
                     <div style={{ fontSize: 13, opacity: 0.75, marginTop: 2 }}>{r.what}</div>
                   </div>
                   <div style={{ fontSize: 13, opacity: 0.7, textAlign: 'right' }}>
-                    {'provider' in st && st.provider ? `provider: ${st.provider}` : on ? 'ready' : 'add keys in plugin settings'}
+                    {'provider' in st && st.provider
+                      ? `provider: ${st.provider}${sandbox ? ' — writes to the log, sends nothing' : ''}`
+                      : on ? 'ready' : 'add keys in add-on settings'}
                   </div>
                 </div>
               );
             })}
           </Card>
 
-          <Card headAs="h2" head="School modules (plugins)" sub="A module that is switched off simply does not appear for staff — nothing breaks">
+          <Card headAs="h2" head="School add-ons" sub="An add-on that is switched off simply does not appear for staff — nothing breaks">
             {['library', 'payments.upi', 'payments.razorpay', 'transport.gps', 'ops.visitors', 'admissions.funnel', 'ops.timetable', 'people.admin', 'files.store'].map(id => (
-              <div key={id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
-                <span style={{ fontFamily: 'monospace', fontSize: 13 }}>{id}</span>
+              <div key={id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 13 }}>{pluginLabel(id)}</span>
                 <Badge tone={pluginEnabled(id) ? 'success' : 'neutral'}>{pluginEnabled(id) ? 'On' : 'Off'}</Badge>
               </div>
             ))}

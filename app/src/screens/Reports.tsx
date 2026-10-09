@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { apiBiAttendance, apiBiAging, apiBiFunnel, apiBiHomework } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { statusLabel, humanize } from '../lib/labels';
 import { PageHead, Card, Badge, Button, Empty, Stat, SkeletonCard, ErrorState, DataTable, Tabs } from '../components/ui';
 import { BarChart, Donut } from '../components/Chart';
 import { Icon } from '../components/Icon';
@@ -54,7 +55,7 @@ function AttendanceByClass() {
       <div className="u-between u-wrap" style={{ gap: 10, marginBottom: 10 }}>
         <div className="u-col" style={{ gap: 2 }}>
           <span style={{ fontWeight: 620 }}>Attendance by class</span>
-          <span className="u-xs u-faint">Source: GET /plugins/ops.bi/attendance ({att.data?.window?.days ?? days}-day window, {att.data?.window?.tz ?? 'Asia/Kolkata'} · present + late count as attended · cached {att.data?.cacheSeconds ?? '—'}s on the server)</span>
+          <span className="u-xs u-faint">From the live attendance records ({att.data?.window?.days ?? days}-day window, {att.data?.window?.tz ?? 'Asia/Kolkata'} · present + late count as attended · the server caches this for {att.data?.cacheSeconds ?? '—'}s)</span>
         </div>
         <div className="u-flex" style={{ gap: 8 }}>
           <select className="select" value={days} onChange={e => setDays(Number(e.target.value))} aria-label="Window" style={{ width: 150 }}>
@@ -108,13 +109,13 @@ function FeeAgeing() {
   return (
     <Card pad>
       <div className="u-col" style={{ gap: 2, marginBottom: 10 }}>
-        <span style={{ fontWeight: 620 }}>Fee ageing — overdue by bucket and term</span>
-        <span className="u-xs u-faint">Source: GET /plugins/ops.bi/fees/aging · overdue = past due_on with unpaid balance and not void · cached {aging.data?.cacheSeconds ?? '—'}s on the server</span>
+        <span style={{ fontWeight: 620 }}>Fee ageing — overdue by age band and term</span>
+        <span className="u-xs u-faint">From the live fee records · overdue = past the due date with an unpaid balance and not void · the server caches this for {aging.data?.cacheSeconds ?? '—'}s</span>
       </div>
       {aging.loading ? <SkeletonCard lines={3} />
         : aging.error ? <ErrorState title="Could not load the ageing report" sub={friendly(aging.error)} onRetry={aging.retry} />
         : buckets.length === 0 || totalOverdue === 0 ? (
-          <Empty icon={<Icon.Money size={22} />} title="Nothing overdue" sub="Either the ledger has no obligations yet or every obligation is paid or not yet due — the report shows the door's own answer, never a guess." />
+          <Empty icon={<Icon.Money size={22} />} title="Nothing overdue" sub="Either there are no fee dues yet or every fee due is paid or not yet due — the report shows the live data, never a guess." />
         ) : (
           <div className="u-col" style={{ gap: 12 }}>
             <div className="grid grid-3">
@@ -126,7 +127,7 @@ function FeeAgeing() {
               <div key={b.term} className="u-col" style={{ gap: 6 }}>
                 <div className="u-between u-small">
                   <span style={{ fontWeight: 620 }}>Term {b.term}</span>
-                  <span className="u-faint">not yet due: {b.not_due} obligation(s)</span>
+                  <span className="u-faint">not yet due: {b.not_due} fee due(s)</span>
                 </div>
                 <Donut
                   size={130}
@@ -135,22 +136,22 @@ function FeeAgeing() {
                   centerSub="overdue"
                   segments={[
                     { label: '1–7 days', value: Number(b.c1_7), color: 'var(--warning)' },
-                    { label: '8–30 days', value: Number(b.c8_30), color: '#d97706' },
+                    { label: '8–30 days', value: Number(b.c8_30), color: 'var(--chart-amber)' },
                     { label: '31–90 days', value: Number(b.c31_90), color: 'var(--danger)' },
-                    { label: '90+ days', value: Number(b.c90p), color: '#7f1d1d' },
+                    { label: '90+ days', value: Number(b.c90p), color: 'var(--chart-red-deep)' },
                   ].filter(s => s.value > 0)}
                 />
               </div>
             ))}
             {worst.length > 0 && (
               <>
-                <span className="u-xs u-faint">Oldest debtors first — the door's own ordering{aging.data?.capped ? ` (capped at ${aging.data.rowCap} rows)` : ''}:</span>
+                <span className="u-xs u-faint">Oldest debtors first — the live ordering{aging.data?.capped ? ` (capped at ${aging.data.rowCap} rows)` : ''}:</span>
                 <DataTable
                   rows={worst}
                   rowKey={d => d.id}
                   columns={[
                     { key: 'name', label: 'Student', render: d => <span>{d.name} <span className="u-xs u-faint">{d.admission_no} · {d.grade}-{d.section}</span></span> },
-                    { key: 'label', label: 'Obligation', render: d => `${d.label} · term ${d.term}` },
+                    { key: 'label', label: 'Fee', render: d => `${d.label} · term ${d.term}` },
                     { key: 'days_over', label: 'Days over', align: 'right' as const, render: d => <Badge tone={d.days_over > 90 ? 'danger' : d.days_over > 30 ? 'warning' : 'info'}>{d.days_over}</Badge> },
                     { key: 'outstanding_cents', label: 'Outstanding', align: 'right' as const, render: d => fmtMoney(Number(d.outstanding_cents)) },
                   ]}
@@ -186,12 +187,12 @@ function FunnelConversion() {
     <Card pad>
       <div className="u-col" style={{ gap: 2, marginBottom: 10 }}>
         <span style={{ fontWeight: 620 }}>Admissions funnel</span>
-        <span className="u-xs u-faint">Source: GET /plugins/ops.bi/funnel · the door's own stage counts, shares and average days-in-stage · cached {funnel.data?.cacheSeconds ?? '—'}s on the server</span>
+        <span className="u-xs u-faint">From the live admissions records · the school's own stage counts, shares and average days-in-stage · the server caches this for {funnel.data?.cacheSeconds ?? '—'}s</span>
       </div>
       {funnel.loading ? <SkeletonCard lines={3} />
         : funnel.error ? <ErrorState title="Could not load the funnel" sub={friendly(funnel.error)} onRetry={funnel.retry} />
         : stages.length === 0 ? (
-          <Empty icon={<Icon.Graduation size={22} />} title="No leads in the funnel yet" sub="The admissions plugin reports zero leads — the report fills as enquiries arrive." />
+          <Empty icon={<Icon.Graduation size={22} />} title="No leads in the funnel yet" sub="The admissions add-on reports zero leads — the report fills as enquiries arrive." />
         ) : (
           <div className="u-col" style={{ gap: 12 }}>
             <div className="grid grid-3">
@@ -203,13 +204,13 @@ function FunnelConversion() {
               {stages.map(s => (
                 <div key={s.stage} className="u-col" style={{ gap: 3 }}>
                   <div className="u-between u-xs">
-                    <span style={{ textTransform: 'capitalize' }}>{s.stage.replace(/_/g, ' ')}</span>
+                    <span style={{ textTransform: 'capitalize' }}>{humanize(s.stage)}</span>
                     <span className="u-faint">
                       {s.leads} lead(s) · {s.sharePct}% of entry
                       {funnel.data?.avgDaysInStage?.[s.stage] != null ? ` · ${funnel.data.avgDaysInStage[s.stage]}d avg in stage` : ''}
                     </span>
                   </div>
-                  <div className="bar-track" style={{ height: 10, borderRadius: 999, background: 'var(--border-weak, var(--border))', overflow: 'hidden' }}>
+                  <div className="bar-track" style={{ height: 10, borderRadius: 999, background: 'var(--border)', overflow: 'hidden' }}>
                     <div style={{ width: `${Math.min(100, s.sharePct)}%`, height: '100%', background: 'var(--accent)', borderRadius: 999 }} />
                   </div>
                 </div>
@@ -246,7 +247,7 @@ function HomeworkCompletion() {
     <Card pad>
       <div className="u-col" style={{ gap: 2, marginBottom: 10 }}>
         <span style={{ fontWeight: 620 }}>Homework completion by class</span>
-        <span className="u-xs u-faint">Source: GET /plugins/ops.bi/homework · turned-in = submitted, late, reviewed or graded · cached {hw.data?.cacheSeconds ?? '—'}s on the server</span>
+        <span className="u-xs u-faint">From the live homework records · turned-in = submitted, late, reviewed or graded · the server caches this for {hw.data?.cacheSeconds ?? '—'}s</span>
       </div>
       {hw.loading ? <SkeletonCard lines={3} />
         : hw.error ? <ErrorState title="Could not load homework completion" sub={friendly(hw.error)} onRetry={hw.retry} />
@@ -274,7 +275,7 @@ function HomeworkCompletion() {
                     { key: 'title', label: 'Assignment', render: r => <span>{r.title} <span className="u-xs u-faint">{r.grade}{r.subject ? ` · ${r.subject}` : ''}</span></span> },
                     { key: 'dueAt', label: 'Due', render: r => fmtDate(new Date(r.dueAt)) },
                     { key: 'submissions', label: 'Submissions', align: 'right' as const, render: r => String(r.submissions) },
-                    { key: 'status', label: 'Status', render: r => <Badge tone="outline">{r.status}</Badge> },
+                    { key: 'status', label: 'Status', render: r => <Badge tone="outline">{statusLabel(r.status)}</Badge> },
                   ]}
                 />
               </>
@@ -292,7 +293,7 @@ export default function Reports() {
     <div className="u-col" style={{ gap: 14 }}>
       <PageHead
         title="Reports"
-        sub="Every figure comes from the ops.bi read-model doors (L3-4.3) — the door's own aggregations, not client-side estimates."
+        sub="Every figure comes from the live school records — the server's own aggregations, not client-side estimates."
       />
       <Tabs
         tabs={[

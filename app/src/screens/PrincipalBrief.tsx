@@ -11,6 +11,7 @@ import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Empty, ErrorState, Section, Stat, SkeletonCard } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtMoney } from '../lib/format';
+import { roleLabel } from '../lib/labels';
 
 interface Brief {
   absentees?: number;
@@ -41,7 +42,7 @@ export default function PrincipalBrief() {
     <>
       <PageHead
         title="Morning brief"
-        sub={state.date ? `Generated for ${state.date} by the day worker (07:00 IST).` : 'Generated daily by the day worker.'}
+        sub={state.date ? `Generated for ${state.date} automatically each morning (07:00 IST).` : 'Generated automatically each morning.'}
         actions={<button className="btn btn-ghost btn-sm" onClick={() => setTick(t => t + 1)}><Icon.Refresh size={13} /> Reload</button>}
       />
       {state.loading ? <SkeletonCard lines={4} />
@@ -63,7 +64,7 @@ export default function PrincipalBrief() {
                 {(b.open_actions_by_role && Object.keys(b.open_actions_by_role).length) ? (
                   <div className="grid grid-4">
                     {Object.entries(b.open_actions_by_role).map(([role, n]) => (
-                      <Stat key={role} label={role} value={n} sub="open action(s)" />
+                      <Stat key={role} label={roleLabel(role)} value={n} sub="open decision(s)" />
                     ))}
                   </div>
                 ) : <Empty icon={<Icon.Clipboard size={20} />} title="No open actions" sub="Every desk is clear." />}
@@ -72,7 +73,7 @@ export default function PrincipalBrief() {
 
             <div className="u-flex u-gap-3 u-wrap" style={{ marginTop: 14 }}>
               <Link className="btn btn-secondary btn-sm" to="/action-center"><Icon.Clipboard size={13} /> Open the decision queue</Link>
-              {!!b.ai_calls_stopped_on_budget && <Badge tone="warning" dot>{b.ai_calls_stopped_on_budget} AI call(s) stopped on budget yesterday</Badge>}
+              {!!b.ai_calls_stopped_on_budget && <Badge tone="warning" dot>{b.ai_calls_stopped_on_budget} AI request(s) paused after reaching yesterday&rsquo;s limit</Badge>}
             </div>
           </>
         )}

@@ -15,6 +15,7 @@ import {
 } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate, fmtRelative, weekday } from '../../lib/format';
+import { roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   listDutyRoster, myWorkload,
@@ -60,7 +61,7 @@ export default function DutyWorkload() {
     }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div>
@@ -93,7 +94,7 @@ export default function DutyWorkload() {
                 <Stat label="Teaching periods" value={String(wl.periods)} sub="Your timetable this week" />
                 <Stat label="Substitutions" value={String(wl.substitutions)} sub="Extra classes taken for others" />
                 <Stat label="Invigilation" value={String(wl.invigilation)} sub="Exam-hall sittings" />
-                <Stat label="Grading estimate" value={`${Math.round(wl.grading_estimate_mins / 60)}h ${wl.grading_estimate_mins % 60}m`} sub={`+ ${wl.ptm_count} PTMs · ${wl.meetings} meeting${wl.meetings === 1 ? '' : 's'}`} />
+                <Stat label="Grading estimate" value={`${Math.round(wl.grading_estimate_mins / 60)}h ${wl.grading_estimate_mins % 60}m`} sub={`+ ${wl.ptm_count} parent meeting${wl.ptm_count === 1 ? '' : 's'} · ${wl.meetings} meeting${wl.meetings === 1 ? '' : 's'}`} />
               </div>
 
               <div className="u-xs" style={{ fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 4 }}>

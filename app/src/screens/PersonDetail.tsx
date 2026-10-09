@@ -8,6 +8,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import * as seed from '../data/dataset';
 import { apiGet } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { roleLabel, statusLabel, humanize, gradeLabel, classAndSection } from '../lib/labels';
 import { useRoleOrGrant } from '../lib/access';
 import { RecordPaymentModal } from '../components/RecordPaymentModal';
 
@@ -38,7 +39,7 @@ import {
 import { Sparkline } from '../components/Chart';
 import { AiHeader, EvidenceChain } from '../components/Ai';
 import { Icon } from '../components/Icon';
-import { fmtDate, fmtDateShort, fmtMoney, fmtMoneyShort, fmtPct } from '../lib/format';
+import { fmtDate, fmtDateShort, fmtMoney, fmtMoneyShort, fmtPct, fmtWeekday } from '../lib/format';
 import type { AiEvidenceStep, AttendanceRecord, FeeObligation, Person, TimeSlot } from '../types/domain';
 
 const campusShort = (id: string) => seed.campuses.find(c => c.id === id)?.shortName ?? id;
@@ -97,7 +98,7 @@ function LiveStudentProfile({ id }: { id: string }) {
             { k: 'Guardian', v: str(s.guardian_name) },
             { k: 'Guardian phone', v: str(s.guardian_phone, 'not shared') },
             { k: 'Bus route', v: str(s.bus_route, 'day scholar') },
-            { k: 'Status', v: str(s.status, 'active') },
+            { k: 'Status', v: statusLabel(str(s.status, 'active')) },
           ]} />
         </Card>
         <Card head="Attendance" pad>
@@ -108,22 +109,78 @@ function LiveStudentProfile({ id }: { id: string }) {
           ]} />
         </Card>
       </div>
-      <Card head="Fee obligations" sub="Live rows from the fee ledger." style={{ marginTop: 'var(--s-4)' }}>
+      <Card head="Fee obligations" sub="Live rows from the school's fee records." style={{ marginTop: 'var(--s-4)' }}>
         {fees.length === 0 ? <Empty title="No fee obligations on record" /> : (
           <DataTable
             columns={[
               { key: 'label', label: 'Term', render: (f: Record<string, unknown>) => str(f.label ?? f.term) },
               { key: 'amount_cents', label: 'Amount', align: 'right', render: (f: Record<string, unknown>) => `₹${(Number(f.amount_cents ?? 0) / 100).toFixed(2)}` },
               { key: 'paid_cents', label: 'Paid', align: 'right', render: (f: Record<string, unknown>) => `₹${(Number(f.paid_cents ?? 0) / 100).toFixed(2)}` },
-              { key: 'status', label: 'Status', render: (f: Record<string, unknown>) => <Badge tone={f.status === 'paid' ? 'success' : f.status === 'void' ? 'neutral' : 'warning'}>{str(f.status)}</Badge> },
+              { key: 'status', label: 'Status', render: (f: Record<string, unknown>) => <Badge tone={f.status === 'paid' ? 'success' : f.status === 'void' ? 'neutral' : 'warning'}>{statusLabel(str(f.status))}</Badge> },
             ]}
             rows={fees}
             rowKey={(f: Record<string, unknown>) => String(f.id)}
           />
         )}
       </Card>
+      <Student360Block id={id} />
       <Button variant="ghost" style={{ marginTop: 'var(--s-3)' }} onClick={() => navigate('/people')}>Back to Directory</Button>
     </>
+  );
+}
+
+/* Student 360 — one joined page per child (attendance, dues, bus, loans, exams, health,
+   homework). Money is withheld from roles whose dues door refuses (teachers, counselors) rather
+   than leaked through aggregation; a 403 hides the block instead of erroring the page. */
+function Student360Block({ id }: { id: string }) {
+  const { data, loading } = useAsync(async () => {
+    const { student360 } = await import('../services/complianceApi');
+    return student360(id);
+  }, [id]);
+  /* APAAR is the national pupil id (12 digits, one child one id). Recording it is the
+     office desk — owner/principal/coordinator/admissions/IT admin, like the POST door. */
+  const canSetIdentity = useRoleOrGrant(['owner', 'principal', 'coordinator', 'admissions', 'itadmin'], ['POST /students/:id/identity']);
+  const toast = useToast();
+  const [apaar, setApaar] = useState('');
+  const [savingApaar, setSavingApaar] = useState(false);
+  const saveApaar = async () => {
+    if (!/^[0-9]{12}$/.test(apaar.trim())) { toast({ title: 'APAAR is exactly 12 digits', tone: 'info' }); return; }
+    setSavingApaar(true);
+    try {
+      const { studentIdentity } = await import('../services/complianceApi');
+      await studentIdentity(id, apaar.trim());
+      toast({ title: 'APAAR recorded', sub: 'One child, one id — the door refuses duplicates by name.', tone: 'success' });
+      setApaar('');
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setSavingApaar(false); }
+  };
+  if (loading) return null;
+  if (!data) return null;
+  const money = data.fees.outstanding_cents == null
+    ? (data.fees.withheld ?? 'Not visible to your role')
+    : `₹${(data.fees.outstanding_cents / 100).toFixed(2)} across ${data.fees.open_dues} open due(s)`;
+  return (
+    <Card head="School record" sub="Attendance, dues, bus, library, exams, health and homework — one joined page." style={{ marginTop: 'var(--s-4)' }}>
+      <KeyValue items={[
+        { k: 'Presence', v: data.attendance.pct == null ? 'no register yet' : `${data.attendance.pct}% (${data.attendance.marks} marks)` },
+        { k: 'Fee dues', v: money },
+        { k: 'Bus', v: data.transport.bus_route ? String(data.transport.bus_route) : 'day scholar' },
+        { k: 'Library', v: data.library ? `${data.library.open} open loan(s)${data.library.fine_open ? ` · ₹${(data.library.fine_open / 100).toFixed(2)} open fines` : ''}` : 'no library data' },
+        { k: 'Published exams', v: data.exams && data.exams.marks ? `${data.exams.scored}/${data.exams.max} across ${data.exams.marks} published mark(s)` : 'nothing published yet' },
+        { k: 'Homework pending', v: data.homework ? `${data.homework.pending} open` : '—' },
+        { k: 'Recent checkups', v: data.health.length ? data.health.map(h => `${h.kind} ${h.checked_on}`).join(' · ') : 'none on record' },
+        { k: 'Approved concessions', v: data.concessions.length ? data.concessions.map(c => `${c.kind} ${c.percent}%`).join(' · ') : 'none' },
+        { k: 'APAAR id', v: (data.student as Record<string, unknown>).apaar_id ? String((data.student as Record<string, unknown>).apaar_id) : 'not recorded' },
+      ]} />
+      {canSetIdentity && !(data.student as Record<string, unknown>).apaar_id ? (
+        <div className="u-flex u-gap-2 u-wrap" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+          <label className="u-small">APAAR (12 digits)
+            <input className="input" inputMode="numeric" maxLength={12} value={apaar} onChange={e => setApaar(e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 123456789012" aria-label="APAAR id" style={{ display: 'block', marginTop: 4, maxWidth: 200 }} />
+          </label>
+          <Button variant="secondary" size="sm" disabled={savingApaar} onClick={saveApaar}>{savingApaar ? 'Recording…' : 'Record APAAR'}</Button>
+        </div>
+      ) : null}
+    </Card>
   );
 }
 
@@ -177,7 +234,10 @@ function StudentDetail({ person }: { person: Person }) {
      attendance truth is derived accordingly. */
   const isRealStudent = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(person.id);
   /* FEE-RBAC-2: mask-aware, matching the confirm door exactly. */
-  const canConfirm = useRoleOrGrant(['finance', 'finance_head', 'finance_clerk', 'owner'], ['POST /fees/payments/:id/confirm']);
+  /* P2-4 guard: the CONFIRM door admits finance, the finance head and the owner — a finance clerk may
+     *initiate* a payment but not confirm its settlement. The two tiers are separate doors on purpose
+     (the desk records money that has actually arrived), and the UI now says the same thing. */
+  const canConfirm = useRoleOrGrant(['finance', 'finance_head', 'owner'], ['POST /fees/payments/:id/confirm']);
 
   const rate = useMemo(() => seed.studentAttendanceRate(person.id), [person.id]);
   const fees = useMemo(() => seed.studentFeeSummary(person.id), [person.id]);
@@ -290,7 +350,7 @@ function StudentDetail({ person }: { person: Person }) {
           <div className="u-grow" style={{ minWidth: 220 }}>
             <h2 style={{ fontSize: 'var(--text-xl)' }}>{person.name}</h2>
             <div className="u-small u-muted" style={{ marginTop: 2 }}>
-              Grade {person.grade} · Section {person.section} · Roll {person.rollNo} · {campusShort(person.campus)} Campus
+              {gradeLabel(person.grade)} · Section {person.section} · Roll {person.rollNo} · {campusShort(person.campus)} Campus
             </div>
             <div className="u-flex u-wrap" style={{ gap: 6, marginTop: 10 }}>
               <Badge tone={attTier.tone} dot>{attTier.label}</Badge>
@@ -326,7 +386,7 @@ function StudentDetail({ person }: { person: Person }) {
             <KeyValue
               cols={2}
               items={[
-                { k: 'Section', v: section ? `Grade ${section.grade}-${section.name} · Room ${section.room}` : '—' },
+                { k: 'Section', v: section ? `${gradeLabel(classAndSection(section.grade, section.name))} · Room ${section.room}` : '—' },
                 {
                   k: 'Section attendance today',
                   v: section ? (() => { const t = seed.sectionAttendanceToday(section.id); return `${t.pct}% present · ${t.absent} absent${t.unmarked ? ` · ${t.unmarked} unmarked` : ''}`; })() : '—',
@@ -375,7 +435,7 @@ function StudentDetail({ person }: { person: Person }) {
                     { k: 'Campus', v: campusShort(person.campus) },
                     { k: 'Bus route', v: person.busRoute ?? 'Parent-managed commute' },
                     { k: 'Guardians linked', v: `${guardianRows.length} · ${verifiedCount} verified` },
-                    { k: 'Status', v: <Badge tone={person.status === 'active' ? 'success' : 'neutral'} dot>{person.status ?? 'active'}</Badge> },
+                    { k: 'Status', v: <Badge tone={person.status === 'active' ? 'success' : 'neutral'} dot>{statusLabel(person.status)}</Badge> },
                   ]}
                 />
                 <div>
@@ -396,7 +456,7 @@ function StudentDetail({ person }: { person: Person }) {
                   rowKey={r => r.date.toISOString()}
                   onRowClick={r => setSlot(r as AttendanceRecord)}
                   columns={[
-                    { key: 'date', label: 'Date', render: r => <span className="tnum">{fmtDateShort(r.date)} · {new Date(r.date).toLocaleDateString('en-IN', { weekday: 'short' })}</span> },
+                    { key: 'date', label: 'Date', render: r => <span className="tnum">{fmtDateShort(r.date)} · {fmtWeekday(r.date)}</span> },
                     {
                       key: 'status', label: 'Status',
                       render: r => r.status === 'present' ? <Badge tone="success">Present</Badge>
@@ -425,7 +485,7 @@ function StudentDetail({ person }: { person: Person }) {
                     <div className="grid grid-3">
                       <Stat label="Due now" value={fmtMoneyShort((realFees.data ?? []).filter(f => f.status !== 'paid' && f.status !== 'void').reduce((a, f) => a + (f.amount - f.paidAmount), 0))} sub="Open + part-paid obligations" />
                       <Stat label="Paid to date" value={fmtMoneyShort((realFees.data ?? []).reduce((a, f) => a + f.paidAmount, 0))} sub={`${(realFees.data ?? []).filter(f => f.status === 'paid').length} of ${(realFees.data ?? []).length} obligations settled`} />
-                      <Stat label="Ledger" value="Live" sub="Straight from the school's fee ledger" />
+                      <Stat label="Records" value="Live" sub="Straight from the school's fee records" />
                     </div>
                     <DataTable<RealObligation>
                       rows={realFees.data ?? []}
@@ -447,19 +507,19 @@ function StudentDetail({ person }: { person: Person }) {
                           render: f => (f.status !== 'paid' && f.status !== 'void')
                             ? (canConfirm
                               ? <Button size="sm" variant="secondary" icon={<Icon.Money size={12} />} loading={retrying === f.id} onClick={() => setPayRow(f)}>Record payment</Button>
-                              : <Button size="sm" variant="secondary" disabled title="Recording payments is done by finance or the owner — your role can view the ledger.">Record payment</Button>)
+                              : <Button size="sm" variant="secondary" disabled title="Recording payments is done by finance or the owner — your role can view the records.">Record payment</Button>)
                             : null,
                         },
                       ]}
                     />
-                    <div className="u-xs u-faint">Payments run the real ledger (initiate + confirm). Recording is finance/owner authority; every entry is audited server-side.</div>
+                    <div className="u-xs u-faint">Payments run the real school fee records (initiate + confirm). Recording is finance/owner authority; every entry is audited server-side.</div>
                   </div>
                 )
               ) : fees.items.length === 0 ? (
                 <Empty icon={<Icon.Money size={24} />} title="No fee obligations on record" sub="This student has no fee lines for the current academic year." />
               ) : (
                 <div className="u-col" style={{ gap: 14 }}>
-                  <Badge tone="outline">Demo data — payments for demo-directory records cannot be recorded against the school ledger</Badge>
+                  <Badge tone="outline">Demo data — payments for demo-directory records cannot be recorded against the school fee records</Badge>
                   <div className="grid grid-3">
                     <Stat label="Due now" value={fmtMoneyShort(fees.due)} sub={fees.overdue > 0 ? `${fmtMoneyShort(fees.overdue)} overdue` : 'Nothing overdue'} />
                     <Stat label="Paid this year" value={fmtMoneyShort(fees.paid)} sub={`${fees.items.filter(f => f.status === 'paid').length} of ${fees.items.length} obligations settled`} />
@@ -484,7 +544,7 @@ function StudentDetail({ person }: { person: Person }) {
                       { key: 'paid', label: 'Paid on', render: f => f.paidOn ? <span className="u-small u-muted">{fmtDateShort(f.paidOn)} · {f.method}</span> : '—' },
                     ]}
                   />
-                  <div className="u-xs u-faint">This is a demo-directory record. Real payments are recorded from the Fees desk against ledger rows.</div>
+                  <div className="u-xs u-faint">This is a demo-directory record. Real payments are recorded from the Fees desk against the school's fee records.</div>
                 </div>
               )
             )}
@@ -502,7 +562,7 @@ function StudentDetail({ person }: { person: Person }) {
                         <div className="u-grow" style={{ minWidth: 0 }}>
                           <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
                             <span style={{ fontWeight: 600 }}>{guardian.name}</span>
-                            <Badge tone="neutral">{link.relation}</Badge>
+                            <Badge tone="neutral">{humanize(link.relation)}</Badge>
                             {link.primary && <Badge tone="accent">Primary contact</Badge>}
                           </div>
                           <div className="u-small u-muted" style={{ marginTop: 2 }}><span className="mono">{guardian.phone}</span> · {guardian.email}</div>
@@ -543,7 +603,7 @@ function StudentDetail({ person }: { person: Person }) {
                         : <Badge tone="success">Valid</Badge>}
                     </div>
                   ))}
-                  <div className="u-xs u-faint">Expiring documents create renewal tasks for the class teacher automatically (workflow wf_5).</div>
+                  <div className="u-xs u-faint">Expiring documents create renewal tasks for the class teacher automatically.</div>
                 </div>
               )
             )}
@@ -597,12 +657,12 @@ function StaffDetail({ person }: { person: Person }) {
   const todayDow = new Date().getDay(); // 1 = Monday … 6 = Saturday
 
   const message = () => {
-    toast({ title: `Message queued to ${person.name}`, sub: 'Staff channel · delivered on next sync.', tone: 'success' });
+    toast({ title: `Draft noted for ${person.name}`, sub: 'Staff messaging is not connected yet — no message was sent.', tone: 'info' });
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: 'coordinator', action: 'Sent staff message', recordType: 'Message',
-        recordRef: person.name, aiInvolved: false, risk: 'low', outcome: 'Queued via staff channel',
+        actor: actorName, actorRole: 'coordinator', action: 'Drafted staff message', recordType: 'Message',
+        recordRef: person.name, aiInvolved: false, risk: 'low', outcome: 'Not sent — messaging not connected',
       },
     });
   };
@@ -614,9 +674,9 @@ function StaffDetail({ person }: { person: Person }) {
           <Avatar name={person.name} size="lg" />
           <div className="u-grow" style={{ minWidth: 220 }}>
             <h2 style={{ fontSize: 'var(--text-xl)' }}>{person.name}</h2>
-            <div className="u-small u-muted" style={{ marginTop: 2 }}>{person.role ?? 'Staff'} · {campusShort(person.campus)} Campus · joined {person.joinedOn ? fmtDate(person.joinedOn) : '—'}</div>
+            <div className="u-small u-muted" style={{ marginTop: 2 }}>{person.role ? roleLabel(person.role) : 'Staff'} · {campusShort(person.campus)} Campus · joined {person.joinedOn ? fmtDate(person.joinedOn) : '—'}</div>
             <div className="u-flex u-wrap" style={{ gap: 6, marginTop: 10 }}>
-              <Badge tone="accent">{person.role ?? 'Staff'}</Badge>
+              <Badge tone="accent">{person.role ? roleLabel(person.role) : 'Staff'}</Badge>
               {person.subjects?.map(s => <Badge key={s} tone="neutral">{s}</Badge>)}
               {teachesSection && <Badge tone="outline">Class teacher · {teachesSection.grade}-{teachesSection.name}</Badge>}
             </div>
@@ -700,12 +760,12 @@ function GuardianDetail({ person }: { person: Person }) {
   const wards = links.map(l => ({ link: l, student: seed.findPerson(l.studentId) })).filter(w => w.student);
 
   const message = () => {
-    toast({ title: `Message queued to ${person.name}`, sub: 'WhatsApp template · quiet hours 20:30–07:30 (Communication §1.1).', tone: 'success' });
+    toast({ title: `Draft noted for ${person.name}`, sub: 'WhatsApp messaging is not connected yet — no message was sent.', tone: 'info' });
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: 'coordinator', action: 'Sent guardian message', recordType: 'Message',
-        recordRef: person.name, aiInvolved: false, risk: 'low', outcome: 'Queued via WhatsApp template',
+        actor: actorName, actorRole: 'coordinator', action: 'Drafted guardian message', recordType: 'Message',
+        recordRef: person.name, aiInvolved: false, risk: 'low', outcome: 'Not sent — messaging not connected',
       },
     });
   };
@@ -717,7 +777,7 @@ function GuardianDetail({ person }: { person: Person }) {
           <Avatar name={person.name} size="lg" />
           <div className="u-grow" style={{ minWidth: 220 }}>
             <h2 style={{ fontSize: 'var(--text-xl)' }}>{person.name}</h2>
-            <div className="u-small u-muted" style={{ marginTop: 2 }}>{person.role ?? 'Guardian'} · {campusShort(person.campus)} Campus</div>
+            <div className="u-small u-muted" style={{ marginTop: 2 }}>{person.role ? roleLabel(person.role) : 'Guardian'} · {campusShort(person.campus)} Campus</div>
             <div className="u-flex u-wrap" style={{ gap: 6, marginTop: 10 }}>
               {links.every(l => l.verified) ? <Badge tone="success" dot>WhatsApp verified</Badge> : <Badge tone="warning" dot>Verification pending</Badge>}
               <Badge tone="outline">{wards.length} linked {wards.length === 1 ? 'student' : 'students'}</Badge>
@@ -751,10 +811,10 @@ function GuardianDetail({ person }: { person: Person }) {
                     <Avatar name={student.name} />
                     <div className="u-grow" style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600 }}>{student.name}</div>
-                      <div className="u-small u-muted">Grade {student.grade}-{student.section} · Roll {student.rollNo}</div>
+                      <div className="u-small u-muted">{gradeLabel(classAndSection(student.grade, student.section))} · Roll {student.rollNo}</div>
                     </div>
                     <div className="u-col" style={{ gap: 5, alignItems: 'flex-end' }}>
-                      <Badge tone="neutral">{link.relation}</Badge>
+                      <Badge tone="neutral">{humanize(link.relation)}</Badge>
                       {link.pickupAuthorized ? <Badge tone="info">Pickup authorised</Badge> : <Badge tone="outline">No pickup</Badge>}
                     </div>
                   </div>

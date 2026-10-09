@@ -6,6 +6,7 @@ import { Button, Card, Empty, ErrorState, SkeletonCard, useToast } from '../../.
 import { Icon } from '../../../components/Icon';
 import { friendly } from '../../../lib/friendlyErrors';
 import { getDocuments, downloadDocument, type ParentDocumentsData } from '../../../services/parentApi';
+import { fmtDate } from '../../../lib/format';
 
 const fmtBytes = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 
@@ -43,7 +44,7 @@ export default function Documents({ childId }: { childId: string }) {
           <div key={d.id} className="u-between u-wrap" style={{ gap: 10, alignItems: 'center' }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontWeight: 570 }}>{d.filename}</div>
-              <div className="u-xs u-faint">{fmtBytes(d.bytes)} · {new Date(d.created_at).toLocaleDateString()}</div>
+              <div className="u-xs u-faint">{fmtBytes(d.bytes)} · {fmtDate(d.created_at)}</div>
             </div>
             <Button size="sm" variant="secondary" icon={<Icon.Download size={12} />} onClick={() => download(d.id, d.filename)}>Download</Button>
           </div>

@@ -14,6 +14,7 @@ import { PageHead, Card, Badge, Button, Empty, Skeleton, SkeletonCard, DataTable
 import { friendly } from '../lib/friendlyErrors';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtRelative } from '../lib/format';
+import { humanize, statusLabel } from '../lib/labels';
 import type { HealthIssue, Person } from '../types/domain';
 
 /* ---------- local async pattern (per APP-SPEC) ---------- */
@@ -107,7 +108,7 @@ function feeMismatchRows(): ReviewTable {
   return {
     columns: [ { key: 'reference', label: 'Gateway ref' }, { key: 'student', label: 'Payer' }, { key: 'amount', label: 'Amount' }, { key: 'method', label: 'Method' }, { key: 'on', label: 'Attempted' }, { key: 'action', label: 'Resolution' } ],
     rows,
-    note: 'Includes the 23 timeout batch from case_3. Importing the bank file re-matches payments automatically; payment records are never edited by hand.',
+    note: 'Includes the 23 timeout batch from an earlier payment-matching case. Importing the bank file re-matches payments automatically; payment records are never edited by hand.',
   };
 }
 
@@ -125,7 +126,7 @@ function expiredDocRows(): ReviewTable {
   return {
     columns: [ { key: 'title', label: 'Document' }, { key: 'owner', label: 'Owner' }, { key: 'category', label: 'Category' }, { key: 'expires', label: 'Expires' }, { key: 'status', label: 'Status' } ],
     rows,
-    note: 'Renewal tasks go to class teachers (bulk) per workflow wf_5; school compliance certificates route to the Admin Officer.',
+    note: 'Renewal reminders route to class teachers (bulk); school compliance certificates route to the Admin Officer.',
   };
 }
 
@@ -165,7 +166,7 @@ function unverifiedGuardianRows(): ReviewTable {
   return {
     columns: [ { key: 'guardian', label: 'Guardian' }, { key: 'student', label: 'Linked student' }, { key: 'relation', label: 'Relation' }, { key: 'status', label: 'Delivery' }, { key: 'action', label: 'Fix path' } ],
     rows,
-    note: 'Absence alerts for these guardians fall back to SMS so Attendance §1.1 notification SLAs still hold.',
+    note: 'Absence alerts for these guardians fall back to SMS so Attendance §1.1 notification deadlines still hold.',
   };
 }
 
@@ -193,7 +194,7 @@ function IssueRow({ issue, onReview, onFix, onIgnore }: {
     <div className="u-between" style={{ gap: 14, padding: '13px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'flex-start' }}>
       <div style={{ minWidth: 0 }} className="u-col">
         <div className="u-flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-          <Badge tone={SEVERITY_TONE[issue.severity]} dot={issue.severity === 'high'}>{issue.severity}</Badge>
+          <Badge tone={SEVERITY_TONE[issue.severity]} dot={issue.severity === 'high'}>{statusLabel(issue.severity)}</Badge>
           <span style={{ fontWeight: 600 }}>{issue.title}</span>
           <Badge tone="outline">{issue.count} record{issue.count === 1 ? '' : 's'}</Badge>
           {issue.status === 'fixed' && <Badge tone="success"><Icon.Check size={10} style={{ marginRight: 3, verticalAlign: '-1px' }} />fixed</Badge>}
@@ -282,7 +283,7 @@ function BulkGrid({ onApplied }: { onApplied: (n: number) => void }) {
                 {r.patch && <span className="u-small u-muted">→ {r.patch}</span>}
               </span>
               <Badge tone={r.state === 'valid' || r.state === 'applied' ? 'success' : r.state === 'invalid' ? 'danger' : 'neutral'}>
-                {r.state}{r.reason ? ` · ${r.reason}` : ''}
+                {humanize(r.state)}{r.reason ? ` · ${r.reason}` : ''}
               </Badge>
             </div>
           ))}
@@ -442,7 +443,7 @@ export default function DataHealth() {
                 /* L5-4.2: the fabricated "Connected · healthy / last export 06:00 /
                    0 failures" Tally row is gone — no gateway is wired, say so. */
                 { name: 'Tally gateway', tone: 'neutral' as BadgeTone, status: 'Not connected', detail: 'No gateway is wired yet — voucher exports are planned, not scheduled.' },
-                { name: 'Payment gateway', tone: 'warning' as BadgeTone, status: 'Import pending · manual', detail: 'Settlement mismatches await the bank-file import (issue case_3 below) — no live gateway is connected.' },
+                { name: 'Payment gateway', tone: 'warning' as BadgeTone, status: 'Import pending · manual', detail: 'Settlement mismatches await the bank-file import (the payment mismatch issue below) — no live gateway is connected.' },
                 { name: 'GPS tracking', tone: maintenanceVehicles.length ? 'warning' as BadgeTone : 'success' as BadgeTone, status: maintenanceVehicles.length ? `${maintenanceVehicles.length} vehicle${maintenanceVehicles.length > 1 ? 's' : ''} offline` : 'All vehicles reporting', detail: maintenanceVehicles.length ? maintenanceVehicles.map(r => `${r.name.split('—')[0].trim()} · ${r.vehicle} in workshop`).join(' · ') : 'Heartbeats nominal' },
               ].map(row => (
                 <div key={row.name} className="u-between u-small" style={{ gap: 10 }}>
@@ -489,7 +490,7 @@ export default function DataHealth() {
         open={!!reviewIssue}
         onClose={() => setReviewId(null)}
         title={reviewIssue?.title ?? ''}
-        sub={reviewIssue ? `${CATEGORY_LABEL[reviewIssue.category]} · ${reviewIssue.count} affected records · severity ${reviewIssue.severity}` : undefined}
+        sub={reviewIssue ? `${CATEGORY_LABEL[reviewIssue.category]} · ${reviewIssue.count} affected records · severity ${statusLabel(reviewIssue.severity)}` : undefined}
         footer={reviewIssue && reviewIssue.status === 'open' ? (
           <div className="u-flex" style={{ gap: 8, justifyContent: 'flex-end' }}>
             <Button variant="ghost" onClick={() => ignore(reviewIssue)}>Ignore</Button>
@@ -531,7 +532,7 @@ export default function DataHealth() {
               </>
             )}
             <div className="u-xs u-faint" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, lineHeight: 1.6 }}>
-              Preview scope: fixes apply to this workspace view only — no records were changed on the server. Real bulk fixes with your identity and an audited undo path land with the data-quality doors (L3-4.x).
+              Preview scope: fixes apply to this workspace view only — no records were changed on the server. Real bulk fixes with your identity and an audited undo path arrive when the data-quality features are connected.
             </div>
           </div>
         )}

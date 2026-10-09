@@ -9,6 +9,7 @@ import { apiGet, apiPost } from '../services/liveApi';
 import { Badge, Button, Card, Empty, Modal, PageHead, SampleNote, Section, SkeletonCard, Stat, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtDate } from '../lib/format';
+import { statusLabel } from '../lib/labels';
 import type { PolicyRule } from '../types/domain';
 
 /* OPP-PRD-12: the school's own policy store is live (GET/POST /policy-documents) — versioned and
@@ -131,16 +132,16 @@ export default function Constitution() {
     dispatch({
       type: 'audit/add',
       entry: {
-        actor: actorName, actorRole: session.roleId, action: 'Updated constitution entry',
+        actor: actorName, actorRole: session.roleId, action: 'Updated school policy entry',
         recordType: 'Policy', recordRef: `${refOf(p)} — ${p.title}`,
-        reason: 'Draft edit saved from Constitution page', policyRef: refOf(p),
+        reason: 'Draft edit saved from School policy page', policyRef: refOf(p),
         aiInvolved: false, risk: 'medium',
         outcome: `Reference-set draft ${version} saved in this workspace (the illustrative reference set is not persisted)`,
       },
     });
     toast({
       title: 'Reference draft saved in this workspace',
-      sub: `${refOf(p)} · ${p.title} → ${version}. This is the illustrative reference set — your own rules live in the School constitution section above.`,
+      sub: `${refOf(p)} · ${p.title} → ${version}. This is the illustrative reference set — your own rules live in the School policy section above.`,
       tone: 'success',
     });
     setEditId(null);
@@ -153,17 +154,17 @@ export default function Constitution() {
       <PageHead
         title="School policies"
         sub={session.roleId === 'itadmin'
-          ? 'Your school constitution is saved, versioned and audited on the server; the reference set below is illustrative.'
+          ? 'Your school policy is saved, versioned and audited on the server; the reference set below is illustrative.'
           : 'The rules every automation is designed against. Your own rules are saved, versioned and audited; the reference set below is illustrative.'}
       />
 
-      <SampleNote>Sample policies — the reference set below is illustrative in this build. Your own school constitution (top of this page) is stored live, versioned and audited.</SampleNote>
+      <SampleNote>Sample policies — the reference set below is illustrative in this build. Your own school policy (top of this page) is stored live, versioned and audited.</SampleNote>
 
       <div className="grid grid-3" style={{ marginBottom: 18 }}>
         <Card>
           <div className="u-flex" style={{ gap: 8, marginBottom: 6 }}>
             <Icon.Lock size={15} style={{ color: 'var(--accent)' }} />
-            <span style={{ fontWeight: 620 }}>1 · Platform floor</span>
+            <span style={{ fontWeight: 620 }}>1 · Platform rules</span>
           </div>
           <div className="u-small u-muted">Set by SchoolOS. Applies to every school on the platform and cannot be edited — including by owners.</div>
         </Card>
@@ -177,7 +178,7 @@ export default function Constitution() {
         <Card>
           <div className="u-flex" style={{ gap: 8, marginBottom: 6 }}>
             <Icon.Scale size={15} style={{ color: 'var(--ai)' }} />
-            <span style={{ fontWeight: 620 }}>3 · School constitution</span>
+            <span style={{ fontWeight: 620 }}>3 · School policy</span>
           </div>
           <div className="u-small u-muted">Meridian's own rules. Saved, versioned and audit-logged on the server; edit them below.</div>
         </Card>
@@ -185,7 +186,7 @@ export default function Constitution() {
 
       {/* OPP-PRD-12 · the live school constitution */}
       <Section
-        title="School constitution"
+        title="School policy"
         sub="Your own rules — each save creates a new version and writes an audit entry."
         style={{ marginBottom: 4 }}
       >
@@ -219,13 +220,13 @@ export default function Constitution() {
       </Section>
 
       <div className="grid grid-4" style={{ marginBottom: 22 }}>
-        <Stat label="Constitution entries" value={local.length} sub={`across ${new Set(local.map(p => p.category)).size} categories`} />
+        <Stat label="Policy entries" value={local.length} sub={`across ${new Set(local.map(p => p.category)).size} categories`} />
         <Stat label="AI acts" value={`${autoCount} / ${approvalCount} / ${humanCount}`} sub="AI acts: automatically / with approval / never without a human" />
         <Stat label="Last amended" value={fmtDate(lastAmended)} sub={edited && Object.keys(edited).length ? 'draft edits are undated until server versioning exists' : 'most recent effective date'} />
-        <Stat label="Platform invariants" value={local.filter(isFloor).length} sub="locked for every school" />
+        <Stat label="Platform rules" value={local.filter(isFloor).length} sub="locked for every school" />
       </div>
 
-      <Section title="Filters" sub="Narrow the constitution by category and enforcement posture.">
+      <Section title="Filters" sub="Narrow school policy by category and enforcement posture.">
         <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {['All', ...CATEGORIES].map(c => (
             <button
@@ -244,14 +245,14 @@ export default function Constitution() {
           <div style={{ width: 12 }} />
           <select className="select" style={{ width: 210 }} value={posture} onChange={e => setPosture(e.target.value)} aria-label="Filter by AI rule">
             <option value="All">All AI rules</option>
-            {POSTURES.map(p => <option key={p} value={p}>{p}</option>)}
+            {POSTURES.map(p => <option key={p} value={p}>{statusLabel(p)}</option>)}
           </select>
         </div>
       </Section>
 
       <Section title={`${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`} sub="Expand an entry for details, version history and the edit draft.">
         {filtered.length === 0 && (
-          <Empty icon={<Icon.Scale size={26} />} title="No entries match" sub="Adjust the category or posture filters to see more of the constitution." />
+          <Empty icon={<Icon.Scale size={26} />} title="No entries match" sub="Adjust the category or posture filters to see more of school policy." />
         )}
         <div className="grid grid-2">
           {filtered.map(p => {
@@ -262,9 +263,9 @@ export default function Constitution() {
                 <div className="u-between" style={{ gap: 8, marginBottom: 6 }}>
                   <span className="mono u-xs" style={{ color: 'var(--accent-text)', fontWeight: 650 }}>{refOf(p)}</span>
                   <span className="u-flex" style={{ gap: 6 }}>
-                    {floor && <Badge tone="outline"><Icon.Lock size={10} style={{ marginRight: 4 }} />platform floor</Badge>}
+                    {floor && <Badge tone="outline"><Icon.Lock size={10} style={{ marginRight: 4 }} />platform rule</Badge>}
                     {edited[p.id] && <Badge tone="ai">edited today</Badge>}
-                    <Badge tone={postureTone(p.posture)}>{p.posture}</Badge>
+                    <Badge tone={postureTone(p.posture)}>{statusLabel(p.posture)}</Badge>
                   </span>
                 </div>
                 <div style={{ fontWeight: 610, marginBottom: 4 }}>{p.title}</div>
@@ -307,7 +308,7 @@ export default function Constitution() {
                         </span>
                       ))}
                     </div>
-                    <div className="u-xs u-faint">Status: {p.status} · this is the illustrative reference set; your own rules live in the School constitution section above.</div>
+                    <div className="u-xs u-faint">Status: {statusLabel(p.status)} · this is the illustrative reference set; your own rules live in the School policy section above.</div>
                   </div>
                 )}
               </Card>
@@ -316,7 +317,7 @@ export default function Constitution() {
         </div>
       </Section>
 
-      <Section title="What always runs" sub="These invariants are outside every school's control — by design.">
+      <Section title="What always runs" sub="These platform rules are outside every school's control — by design.">
         <Card>
           <div className="u-flex" style={{ gap: 9, marginBottom: 8 }}>
             <Icon.Lock size={15} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }} />
@@ -335,11 +336,11 @@ export default function Constitution() {
         open={!!editing}
         onClose={() => setEditId(null)}
         title="Edit draft — policy entry"
-        sub={editing ? `${refOf(editing)} · ${editing.title} — a new version goes live immediately on save.` : undefined}
+        sub={editing ? `${refOf(editing)} · ${editing.title} — saved as a draft in this workspace; the reference set is not persisted.` : undefined}
         footer={
           <>
             <Button variant="ghost" onClick={() => setEditId(null)}>Cancel</Button>
-            <Button variant="primary" icon={<Icon.Check size={13} />} onClick={saveEdit} disabled={!editStatement.trim()}>Save new version</Button>
+            <Button variant="primary" icon={<Icon.Check size={13} />} onClick={saveEdit} disabled={!editStatement.trim()}>Save draft</Button>
           </>
         }
       >
@@ -352,13 +353,13 @@ export default function Constitution() {
             <div>
               <label className="u-xs" style={{ fontWeight: 640, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-3)' }} htmlFor="pol-posture">Posture</label>
               <select id="pol-posture" className="select" style={{ width: '100%', marginTop: 5 }} value={editPosture} onChange={e => setEditPosture(e.target.value as PolicyRule['posture'])}>
-                {POSTURES.map(p => <option key={p} value={p}>{p}</option>)}
+                {POSTURES.map(p => <option key={p} value={p}>{statusLabel(p)}</option>)}
               </select>
               <div className="u-xs u-faint" style={{ marginTop: 6 }}>
                 Raising a posture to HUMAN-ONLY pauses any automation that currently executes it; lowering one schedules a 7-day grace period.
               </div>
             </div>
-            <div className="u-xs u-faint">Current version {editing.version} → next save creates {bumpMinor(editing.version)}.</div>
+            <div className="u-xs u-faint">Current version {editing.version} → this draft would become {bumpMinor(editing.version)}.</div>
           </div>
         )}
       </Modal>

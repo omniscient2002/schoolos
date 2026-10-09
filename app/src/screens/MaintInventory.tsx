@@ -24,7 +24,7 @@ function LiveMaintInventory() {
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="There is no inventory door on the server yet (L4-2.2 note filed). The demo world shows the mock registry; a live school sees nothing here rather than invented stock numbers."
+          sub="There is no inventory data available yet. The demo world shows the mock registry; a live school sees nothing here rather than invented stock numbers."
         />
       </Card>
     </div>

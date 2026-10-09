@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiFeePlans, apiCreateFeePlan, apiGenerateFeePlan, apiVoidBillingRun, apiFeeHeads, type FeePlan, type FeePlanTerm } from '../../services/liveApi';
 import { friendly } from '../../lib/friendlyErrors';
 import { useRoleOrGrant } from '../../lib/access';
+import { apiSchoolClasses } from '../../services/onboardingApi';
 import {
   PageHead, Card, Badge, Button, Empty, Modal, Stat, useToast, SkeletonCard, ErrorState,
 } from '../../components/ui';
@@ -21,7 +22,12 @@ import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
 
 /* door canon: grades are grade-name strings (students.grade domain) */
-const GRADES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+/* GRADE-1: the grade scope of a fee plan must be the SCHOOL'S OWN classes, read from
+   GET /school/classes — the same list the Classes & sections screen writes and every
+   other class picker in the app reads. This constant hard-coded 1..10, so a school that
+   named its classes "Grade 1".."Grade 8" (or UKG, or Class VIII) could not select ANY
+   grade: every generated obligation silently matched zero students. */
+const FALLBACK_GRADES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 
 const rupeesToCents = (v: string) => {
   const n = Number.parseFloat(v.replace(/,/g, ''));
@@ -53,10 +59,31 @@ export default function FeePlans() {
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<string | null>(null); /* D7: the run just generated, voidable */
+  /* the school's own classes, for the grade scope picker */
+  const [schoolGrades, setSchoolGrades] = useState<string[] | null>(null);
+  useEffect(() => {
+    let dead = false;
+    apiSchoolClasses()
+      .then((r) => { if (!dead) setSchoolGrades((r.classes ?? []).map((c) => c.grade).filter(Boolean)); })
+      .catch(() => { if (!dead) setSchoolGrades([]); });
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const GRADES = schoolGrades?.length ? schoolGrades : FALLBACK_GRADES;
 
   /* FEE-RBAC-2: plan authority mirrors the DOORS — a built-in role in the gate OR the caller's own
      custom-role mask explicitly ALLOWing the create/generate doors. */
-  const canManage = useRoleOrGrant(['finance', 'owner', 'principal'], ['POST /fee-plans', 'POST /fee-plans/:id/generate']);
+  /* FEE-1: this list omitted finance_head and finance_clerk, which the server DOES
+     allow on POST /fee-plans and POST /fee-plans/:id/generate
+     (require('owner','principal','finance','finance_head','finance_clerk')). The effect
+     was that a school's Finance head — the person whose whole job this is — saw a
+     DISABLED "New plan" button captioned "Fee plans are managed by finance, the
+     principal or the owner — your role can view them", and only the owner could build
+     the fee structure. Read the list off the doors, not a hand copy. */
+  const canManage = useRoleOrGrant(
+    ['owner', 'principal', 'finance', 'finance_head', 'finance_clerk'],
+    ['POST /fee-plans', 'POST /fee-plans/:id/generate'],
+  );
 
   const [form, setForm] = useState({
     name: '',
@@ -65,7 +92,15 @@ export default function FeePlans() {
     grades: [] as string[],
     terms: [emptyTerm()],
     installmentCount: 0,
+    hikePct: '',
+    consultationMeetingId: '',
   });
+  /* SMC consultations to cite: a rise above 10% must name the meeting that approved it. */
+  const [meetings, setMeetings] = useState<{ id: string; kind: string; held_on: string }[]>([]);
+  useEffect(() => {
+    import('../../services/complianceApi').then(({ meetingsList }) => meetingsList('SMC')
+      .then(r => setMeetings(r.meetings ?? [])).catch(() => setMeetings([])));
+  }, []);
 
   const plans = useAsync(async () => {
     const res = await apiFeePlans();
@@ -119,14 +154,16 @@ export default function FeePlans() {
         terms,
         feeHeadId: form.feeHeadId || undefined,
         installments,
+        ...(form.hikePct.trim() !== '' ? { hikePct: Number(form.hikePct) } : {}),
+        ...(form.consultationMeetingId ? { consultationMeetingId: form.consultationMeetingId } : {}),
       });
       toast({
         title: `Plan “${res.feePlan?.name ?? form.name.trim()}” created`,
-        sub: `${res.feePlan?.terms?.length ?? terms.length} term(s) × ${res.feePlan?.grades?.length ?? form.grades.length} grade(s). Nothing has been charged yet — generate obligations to create ledger rows.`,
+        sub: `${res.feePlan?.terms?.length ?? terms.length} term(s) × ${res.feePlan?.grades?.length ?? form.grades.length} grade(s). Nothing has been charged yet — generate fee dues to create records.`,
         tone: 'success',
       });
       setCreateOpen(false);
-      setForm({ name: '', category: 'Tuition', feeHeadId: '', grades: [], terms: [emptyTerm()], installmentCount: 0 });
+      setForm({ name: '', category: 'Tuition', feeHeadId: '', grades: [], terms: [emptyTerm()], installmentCount: 0, hikePct: '', consultationMeetingId: '' });
       plans.retry();
     } catch (e) {
       toast({ title: 'Could not create the plan', sub: friendly(e), tone: 'error' });
@@ -140,8 +177,8 @@ export default function FeePlans() {
     try {
       const res = await apiGenerateFeePlan(plan.id);
       toast({
-        title: `Generation complete — ${res.inserted} obligation(s) created`,
-        sub: `${res.skipped} skipped (already on the ledger) · ${res.students} students in scope. Every row is in the ledger below.`,
+        title: `Generation complete — ${res.inserted} fee due(s) created`,
+        sub: `${res.skipped} skipped (already on record) · ${res.students} students in scope. Every row is in the fee records below.`,
         tone: 'success',
       });
       setGenPlan(null);
@@ -159,7 +196,7 @@ export default function FeePlans() {
     setGenerating('void');
     try {
       const r = await apiVoidBillingRun(lastRun);
-      toast({ title: 'Billing run voided', sub: `${r.voidedObligations} obligation(s) voided`, tone: 'success' });
+      toast({ title: 'Billing run voided', sub: `${r.voidedObligations} fee due(s) voided`, tone: 'success' });
       setLastRun(null);
       plans.retry();
     } catch (e) {
@@ -172,7 +209,7 @@ export default function FeePlans() {
     <div className="u-col" style={{ gap: 14 }}>
       <PageHead
         title="Fee plans"
-        sub="Templates that generate ledger obligations — pick grades, terms and amounts, then generate. Charges appear in the Fees ledger, never from this screen directly."
+        sub="Templates that generate fee dues — pick grades, terms and amounts, then generate. Charges appear in the fee records, never from this screen directly."
         actions={
           <>
             {canManage && lastRun && (
@@ -192,8 +229,8 @@ export default function FeePlans() {
           {doorMissing ? (
             <Empty
               icon={<Icon.Offline size={22} />}
-              title="Fee-plan doors are not connected yet"
-              sub="The server did not answer GET /fee-plans (the L1-2.2 doors are live — this is a network or session problem, not missing data). Nothing is faked in the meantime."
+              title="Fee plans are unavailable right now"
+              sub="The server did not answer the fee-plans request (this is a network or session problem, not missing data). Nothing is faked in the meantime."
               action={<Button variant="secondary" icon={<Icon.Refresh size={13} />} onClick={plans.retry}>Retry</Button>}
             />
           ) : (
@@ -214,7 +251,7 @@ export default function FeePlans() {
                 icon={<Icon.Money size={24} />}
                 title="No fee plans yet"
                 sub={canManage
-                  ? 'Create the first plan — grades, terms and amounts — then generate obligations for every active student in scope.'
+                  ? 'Create the first plan — grades, terms and amounts — then generate fee dues for every active student in scope.'
                   : 'Finance has not created any plans yet. Plans appear here the moment they exist.'}
                 action={canManage ? <Button variant="secondary" onClick={() => setCreateOpen(true)}>Create the first plan</Button> : undefined}
               />
@@ -242,13 +279,13 @@ export default function FeePlans() {
                     </div>
                     <div className="u-flex" style={{ gap: 8 }}>
                       {canManage
-                        ? <Button variant="secondary" icon={<Icon.Play size={13} />} loading={generating === p.id} onClick={() => setGenPlan(p)}>Generate obligations</Button>
-                        : <Button variant="secondary" disabled title="Generation is done by finance, the principal or the owner.">Generate obligations</Button>}
+                        ? <Button variant="secondary" icon={<Icon.Play size={13} />} loading={generating === p.id} onClick={() => setGenPlan(p)}>Generate fee dues</Button>
+                        : <Button variant="secondary" disabled title="Generation is done by finance, the principal or the owner.">Generate fee dues</Button>}
                     </div>
                   </div>
                 </Card>
               ))}
-              <div className="u-xs u-faint">Generation inserts one obligation per active student per term, server-side in a single transaction. Students who already have the obligation are skipped, paid rows are never overwritten.</div>
+              <div className="u-xs u-faint">Generation inserts one fee due per active student per term, server-side in a single transaction. Students who already have the fee due are skipped, paid rows are never overwritten.</div>
             </div>
           )}
         </>
@@ -259,7 +296,7 @@ export default function FeePlans() {
         open={createOpen}
         onClose={() => !saving && setCreateOpen(false)}
         title="New fee plan"
-        sub="A template only — nothing is charged or created until you generate obligations."
+        sub="A template only — nothing is charged or created until you generate fee dues."
         footer={
           <>
             <Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button>
@@ -283,12 +320,26 @@ export default function FeePlans() {
           </select>
         </div>
         <div className="field">
-          <label htmlFor="fp-inst">Installment schedule <span className="u-faint">(optional — splits the obligation into equal parts)</span></label>
+          <label htmlFor="fp-inst">Installment schedule <span className="u-faint">(optional — splits the fee due into equal parts)</span></label>
           <select id="fp-inst" className="input" value={form.installmentCount} onChange={e => setForm(f => ({ ...f, installmentCount: Number(e.target.value) }))}>
             <option value={0}>One payment (no schedule)</option>
             {[2, 3, 4, 6, 12].map(n => <option key={n} value={n}>{n} installments</option>)}
           </select>
         </div>
+        <div className="field">
+          <label htmlFor="fp-hike">Rise over last year, % <span className="u-faint">(optional — above 10% needs its SMC consultation below)</span></label>
+          <input id="fp-hike" className="input" type="number" min={0} max={100} value={form.hikePct}
+            onChange={e => setForm(f => ({ ...f, hikePct: e.target.value }))} placeholder="e.g. 8" />
+        </div>
+        {Number(form.hikePct) > 10 && (
+          <div className="field">
+            <label htmlFor="fp-smc">SMC consultation that approved it</label>
+            <select id="fp-smc" className="input" value={form.consultationMeetingId} onChange={e => setForm(f => ({ ...f, consultationMeetingId: e.target.value }))}>
+              <option value="">Choose the minuted meeting…</option>
+              {meetings.map(m => <option key={m.id} value={m.id}>SMC · {m.held_on}</option>)}
+            </select>
+          </div>
+        )}
         <div className="field">
           <label>Grades in scope ({form.grades.length} selected)</label>
           <div className="u-flex u-wrap" style={{ gap: 6 }}>
@@ -339,7 +390,7 @@ export default function FeePlans() {
           </div>
         </div>
         <p className="u-xs u-faint" style={{ marginBottom: 0, lineHeight: 1.6 }}>
-          Generation happens per plan, when you choose it — every active student in the selected grades gets one obligation per term, and the server skips students who already have it.
+          Generation happens per plan, when you choose it — every active student in the selected grades gets one fee due per term, and the server skips students who already have it.
         </p>
       </Modal>
 
@@ -347,7 +398,7 @@ export default function FeePlans() {
       <Modal
         open={!!genPlan}
         onClose={() => !generating && setGenPlan(null)}
-        title="Generate obligations?"
+        title="Generate fee dues?"
         sub={genPlan ? `${genPlan.name} · grades ${(genPlan.grades ?? []).join(', ')}` : undefined}
         footer={
           <>
@@ -357,9 +408,9 @@ export default function FeePlans() {
         }
       >
         <p className="u-small u-muted" style={{ margin: 0, lineHeight: 1.65 }}>
-          This creates real ledger rows on the server: one obligation per active student in the plan's grades, per term
+          This creates real records on the server: one fee due per active student in the plan's grades, per term
           {genPlan ? ` (${(genPlan.terms ?? []).length} term(s), ₹${centsToRupees((genPlan.terms ?? []).reduce((a, t) => a + (t.amount_cents ?? 0), 0))} per student)` : ''}.
-          Students who already have these obligations are skipped; paid rows are never touched. The server reports the exact counts when it finishes.
+          Students who already have these fee dues are skipped; paid rows are never touched. The server reports the exact counts when it finishes.
         </p>
       </Modal>
     </div>

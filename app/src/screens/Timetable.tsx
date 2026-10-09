@@ -18,20 +18,91 @@ import { friendly } from '../lib/friendlyErrors';
 import { apiRequest } from '../services/liveApi';
 import { apiSchoolClasses, apiSchoolSubjects, type SchoolClass, type SchoolSubject } from '../services/onboardingApi';
 import { useRoleOrGrant } from '../lib/access';
+import { classLabel } from '../lib/labels';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 interface Period { id: string; seq: string; label: string; start_time: string; end_time: string; is_break: boolean; sort_idx: number }
+interface ClashHit { slotId?: string; subject?: string; teacher?: string; room?: string; absentTeacher?: string; via?: string }
+interface ClashResult {
+  clean?: boolean;
+  teacherClashes?: ClashHit[];
+  roomClashes?: ClashHit[];
+  substitutionClashes?: ClashHit[];
+}
 interface Slot { id: string; period_id: string; day_of_week: string; subject: string; teacher_name: string; teacher_id: string | null; room: string | null; grade: string | null; section: string | null }
 
 const PERIOD_BASE = '/plugins/ops.timetable';
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/* Conflict detector panel: read-only clashes per day×period cell (teacher/room/section).
+   Detection, never resolution — fixing a clash stays a coordinator edit on the grid below. */
+function ConflictsPanel() {
+  const [state, setState] = useState<{ conflicts: { kind: string; dayOfWeek: string; periodId: string; ref: string; slots: string[] }[]; cells: number; slots: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setError(null);
+    apiRequest<{ conflicts: { kind: string; dayOfWeek: string; periodId: string; ref: string; slots: string[] }[]; cells: number; slots: number }>(`${PERIOD_BASE}/conflicts`)
+      .then(r => { if (live) setState(r); })
+      .catch(e => { if (live) { setState(null); setError(String(e)); } });
+    return () => { live = false; };
+  }, [tick]);
+  if (error) return <ErrorState title="Could not check for conflicts" sub={friendly(error)} onRetry={() => setTick(t => t + 1)} />;
+  if (!state) return <div className="u-small u-muted">Checking the grid…</div>;
+  if (!state.conflicts.length) {
+    return <Empty title="No clashes" sub={`${state.slots} slot(s) across ${state.cells} day×period cell(s) — nobody is in two places at once.`} />;
+  }
+  return (
+    <div className="u-col" style={{ gap: 8 }}>
+      {state.conflicts.map((c, i) => (
+        <div key={i} className="u-flex" style={{ gap: 10, alignItems: 'center' }}>
+          <Badge tone="danger">{c.kind}</Badge>
+          <span className="u-small"><strong>{c.ref}</strong> — {c.dayOfWeek}, period {String(c.periodId).slice(0, 8)}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setTick(t => t + 1)}>Re-check</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Timetable() {
   const toast = useToast();
   const canWrite = useRoleOrGrant(['owner', 'principal', 'coordinator'], [`POST ${PERIOD_BASE}/periods`, `POST ${PERIOD_BASE}/slots`]);
   const canRetire = useRoleOrGrant(['owner', 'principal'], [`POST ${PERIOD_BASE}/periods/:id/retire`, `POST ${PERIOD_BASE}/slots/:id/retire`]);
+  /* TIMETABLE-1: "Start from the standard day" was gated on canWrite
+     (owner/principal/coordinator) while the server mounts
+     POST /plugins/ops.timetable/periods/seed-default behind RETIRE_ROLES
+     (owner/principal). A coordinator therefore saw a live, enabled button and got
+     403 "role coordinator not permitted" — the one-click way to get a usable day
+     was offered to exactly the person who could not use it. Gate it on the door. */
+  const canSeed = useRoleOrGrant(['owner', 'principal'], [`POST ${PERIOD_BASE}/periods/seed-default`]);
   const canRead = useRoleOrGrant(['owner', 'principal', 'coordinator', 'teacher', 'itadmin', 'finance', 'admissions', 'transport', 'facilities', 'technician'], [`GET ${PERIOD_BASE}/grid`]);
+  /* P2-18: POST /timetable/clash-check is the one tool that would catch a double-booked teacher
+     BEFORE it is saved, and no control invoked it — the door existed, the planner did not. It is
+     surfaced in the slot editor, where the proposal is, so the check and the save are the same
+     screen (the save door's own 409 remains the backstop). */
+  const canCheck = useRoleOrGrant(['owner', 'principal', 'coordinator', 'itadmin'], ['POST /timetable/clash-check']);
+  const [clash, setClash] = useState<ClashResult | null>(null);
+  const [clashBusy, setClashBusy] = useState(false);
+
+  const checkClashes = async () => {
+    if (!slotForm) return;
+    setClashBusy(true);
+    try {
+      const r = await apiRequest<{ results: ClashResult[]; note?: string }>('/timetable/clash-check', {
+        method: 'POST',
+        body: JSON.stringify({
+          dayOfWeek: slotForm.day_of_week,
+          periodId: slotForm.period_id,
+          proposals: [{ teacherName: slotForm.teacher_name || null, room: slotForm.room || null }],
+        }),
+      });
+      setClash(r.results?.[0] ?? null);
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setClashBusy(false); }
+  };
 
   const [periods, setPeriods] = useState<Period[] | null>(null);
   const [slots, setSlots] = useState<Slot[] | null>(null);
@@ -45,7 +116,13 @@ export default function Timetable() {
   const [busy, setBusy] = useState(false);
 
   const [periodForm, setPeriodForm] = useState<null | { id?: string; seq: string; label: string; start_time: string; end_time: string; is_break: boolean }>(null);
-  const [slotForm, setSlotForm] = useState<null | { id?: string; period_id: string; day_of_week: string; subject: string; teacher_name: string; room: string; grade: string; section: string; force: boolean }>(null);
+  const [slotForm, setSlotForm] = useState<null | { id?: string; period_id: string; day_of_week: string; subject: string; teacher_id: string; teacher_name: string; room: string; grade: string; section: string; force: boolean }>(null);
+  /* P2-15: a slot stored the teacher as a TYPED NAME and `teacher_id` came back null, so the
+     substitution engine could not match a slot against a teacher who is ill, and a renamed teacher
+     left every past slot naming someone who no longer exists. Two people could also both be entered
+     as "K. Nair". The teacher is now PICKED from this school's staff (`GET /school/staff`), and the
+     name travels as the denormalised display value the grid already reads. */
+  const [staff, setStaff] = useState<{ id: string; name: string; role: string }[]>([]);
 
   useEffect(() => {
     if (!canRead) return;
@@ -57,16 +134,21 @@ export default function Timetable() {
       apiRequest<{ slots: Slot[] }>(`${PERIOD_BASE}/grid${q}`),
       apiSchoolClasses().catch(() => ({ classes: [] as SchoolClass[] })),
       apiSchoolSubjects().catch(() => ({ subjects: [] as SchoolSubject[] })),
-    ]).then(([p, g, c, s]) => {
+      // office roles only — a teacher who cannot write slots never sees the picker, and a refusal
+      // here degrades to the typed-name fallback below rather than an empty editor
+      canWrite ? apiRequest<{ staff: { id: string; name: string; role: string }[] }>('/school/staff?role=teacher')
+        .catch(() => ({ staff: [] as { id: string; name: string; role: string }[] })) : Promise.resolve({ staff: [] }),
+    ]).then(([p, g, c, s, st]) => {
       if (dead) return;
       setPeriods(p.periods ?? []);
       setSlots(g.slots ?? []);
       setClasses(c.classes ?? []);
       setSubjects(s.subjects ?? []);
+      setStaff(st.staff ?? []);
       setLoading(false);
     }).catch(e => { if (!dead) { setError(friendly(e)); setLoading(false); } });
     return () => { dead = true; };
-  }, [tick, grade, section, canRead]);
+  }, [tick, grade, section, canRead, canWrite]);
 
   const reload = () => setTick(t => t + 1);
 
@@ -106,7 +188,8 @@ export default function Timetable() {
   };
 
   const openNewSlot = (periodId: string, day: string) => {
-    setSlotForm({ period_id: periodId, day_of_week: day, subject: '', teacher_name: '', room: '', grade, section, force: false });
+    setClash(null);
+    setSlotForm({ period_id: periodId, day_of_week: day, subject: '', teacher_id: '', teacher_name: '', room: '', grade, section, force: false });
   };
 
   const saveSlot = async () => {
@@ -115,6 +198,8 @@ export default function Timetable() {
     setBusy(true);
     const body = {
       period_id: slotForm.period_id, day_of_week: slotForm.day_of_week, subject: slotForm.subject.trim(),
+      // the reference decides; the name is the display value the grid reads
+      teacher_id: slotForm.teacher_id || null,
       teacher_name: slotForm.teacher_name.trim(), room: slotForm.room.trim() || null,
       grade: slotForm.grade || null, section: slotForm.section || null, force: slotForm.force,
     };
@@ -174,7 +259,7 @@ export default function Timetable() {
       ) : (
         <>
           <Card headAs="h2" head="Periods" sub="The sequence of the day. Breaks are part of the shape too."
-            actions={canWrite && !periods?.length ? <Button variant="ghost" onClick={seedDefault} disabled={busy}>Start from the standard day</Button> : undefined}>
+            actions={canSeed && !periods?.length ? <Button variant="ghost" onClick={seedDefault} disabled={busy}>Start from the standard day</Button> : undefined}>
             {!periods?.length ? (
               <Empty title="No periods yet" sub="Add the first period, or start from a standard Indian school day and edit it." />
             ) : (
@@ -199,12 +284,16 @@ export default function Timetable() {
             )}
           </Card>
 
+          <Card headAs="h2" head="Conflicts" sub="Same teacher, room or class twice in one day×period cell. Detection only — the coordinator still owns every resolution.">
+            <ConflictsPanel />
+          </Card>
+
           <Card headAs="h2" head="Weekly grid" sub="Pick a class-section to see and edit its week; school-wide slots show for every class."
             actions={classOptions.length ? (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <select aria-label="Class" value={grade} onChange={e => { setGrade(e.target.value); setSection(''); }}>
                   <option value="">School-wide</option>
-                  {classOptions.map(c => <option key={c.grade} value={c.grade}>Class {c.grade}</option>)}
+                  {classOptions.map(c => <option key={c.grade} value={c.grade}>{classLabel(c.grade)}</option>)}
                 </select>
                 <select aria-label="Section" value={section} onChange={e => setSection(e.target.value)} disabled={!grade || !(classOptions.find(c => c.grade === grade)?.sections.length)}>
                   <option value="">{grade && !(classOptions.find(c => c.grade === grade)?.sections.length) ? 'No sections' : 'All sections'}</option>
@@ -231,7 +320,7 @@ export default function Timetable() {
                             return (
                               <td key={d}>
                                 {canWrite ? (
-                                  <button type="button" className="u-faint u-xs" style={{ border: '1px dashed var(--line)', background: 'transparent', borderRadius: 8, padding: '4px 8px', cursor: 'pointer' }}
+                                  <button type="button" className="u-faint u-xs" style={{ border: '1px dashed var(--border)', background: 'transparent', borderRadius: 8, padding: '4px 8px', cursor: 'pointer' }}
                                     onClick={() => openNewSlot(p.id, d)}>+ add</button>
                                 ) : <span className="u-faint u-xs">—</span>}
                               </td>
@@ -239,7 +328,7 @@ export default function Timetable() {
                           }
                           return (
                             <td key={d}>
-                              <button type="button" onClick={() => canWrite && setSlotForm({ id: s.id, period_id: s.period_id, day_of_week: s.day_of_week, subject: s.subject, teacher_name: s.teacher_name, room: s.room ?? '', grade: s.grade ?? '', section: s.section ?? '', force: false })}
+                              <button type="button" onClick={() => { setClash(null); if (canWrite) setSlotForm({ id: s.id, period_id: s.period_id, day_of_week: s.day_of_week, subject: s.subject, teacher_id: s.teacher_id ?? '', teacher_name: s.teacher_name, room: s.room ?? '', grade: s.grade ?? '', section: s.section ?? '', force: false }); }}
                                 style={{ textAlign: 'left', border: 0, background: 'transparent', cursor: canWrite ? 'pointer' : 'default', padding: 0 }}>
                                 <div className="u-small" style={{ fontWeight: 600 }}>{s.subject}</div>
                                 <div className="u-faint u-xs">{s.teacher_name}{s.room ? ` · ${s.room}` : ''}</div>
@@ -281,8 +370,11 @@ export default function Timetable() {
         sub="Who teaches what, where. The server refuses a clash unless you choose to place it anyway."
         footer={<div className="u-flex" style={{ gap: 8, justifyContent: 'space-between', width: '100%' }}>
           <div>{slotForm?.id && canRetire && <Button variant="danger" onClick={() => slotForm && retireSlot(slotForm.id!)} disabled={busy}>Retire slot</Button>}</div>
-          <div className="u-flex" style={{ gap: 8 }}><Button variant="ghost" onClick={() => setSlotForm(null)}>Cancel</Button>
-            <Button onClick={saveSlot} disabled={busy}>{busy ? 'Saving…' : (slotForm?.force ? 'Place anyway' : 'Save slot')}</Button></div>
+          <div className="u-flex" style={{ gap: 8 }}>
+            <Button variant="ghost" onClick={() => { setSlotForm(null); setClash(null); }}>Cancel</Button>
+            {canCheck && <Button variant="secondary" onClick={checkClashes} disabled={clashBusy}>{clashBusy ? 'Checking…' : 'Check for clashes'}</Button>}
+            <Button onClick={saveSlot} disabled={busy}>{busy ? 'Saving…' : (slotForm?.force ? 'Place anyway' : 'Save slot')}</Button>
+          </div>
         </div>}>
         {slotForm && (
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 1fr' }}>
@@ -292,20 +384,49 @@ export default function Timetable() {
               <select value={slotForm.period_id} onChange={e => setSlotForm({ ...slotForm, period_id: e.target.value })}>{(periods ?? []).filter(p => !p.is_break).map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
             <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Subject</span>
               <input list="timetable-subjects" value={slotForm.subject} maxLength={60} onChange={e => setSlotForm({ ...slotForm, subject: e.target.value })} /></label>
-            <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Teacher</span>
-              <input value={slotForm.teacher_name} maxLength={80} onChange={e => setSlotForm({ ...slotForm, teacher_name: e.target.value })} /></label>
+            {/* P2-15: a PICKER of this school's teachers, so the slot carries `teacher_id` and the
+                substitution engine can reason about it. The typed field below is the fallback for a
+                school whose staff list the office cannot read (and for a slot written before this
+                existed) — it stores the name alone and says so. */}
+            {staff.length ? (
+              <label style={{ display: 'grid', gap: 4, gridColumn: '1 / -1' }}><span className="u-small">Teacher</span>
+                <select value={slotForm.teacher_id} onChange={e => {
+                  const picked = staff.find(t => t.id === e.target.value);
+                  setSlotForm({ ...slotForm, teacher_id: e.target.value, teacher_name: picked?.name ?? slotForm.teacher_name });
+                }} aria-label="Teacher">
+                  <option value="">Choose a teacher…</option>
+                  {staff.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </label>
+            ) : (
+              <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Teacher (name)</span>
+                <input value={slotForm.teacher_name} maxLength={80} onChange={e => setSlotForm({ ...slotForm, teacher_name: e.target.value })} />
+                <span className="u-small u-faint">No staff list available, so this is stored as a name only — substitutions cannot match it.</span>
+              </label>
+            )}
             <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Room (optional)</span>
               <input value={slotForm.room} maxLength={40} onChange={e => setSlotForm({ ...slotForm, room: e.target.value })} /></label>
             <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Class (optional)</span>
               <select value={slotForm.grade} onChange={e => setSlotForm({ ...slotForm, grade: e.target.value, section: '' })}>
                 <option value="">School-wide</option>
-                {classOptions.map(c => <option key={c.grade} value={c.grade}>Class {c.grade}</option>)}
+                {classOptions.map(c => <option key={c.grade} value={c.grade}>{classLabel(c.grade)}</option>)}
               </select></label>
             <label style={{ display: 'grid', gap: 4 }}><span className="u-small">Section (optional)</span>
               <select value={slotForm.section} onChange={e => setSlotForm({ ...slotForm, section: e.target.value })} disabled={!slotForm.grade}>
                 <option value="">—</option>
                 {(classOptions.find(c => c.grade === slotForm.grade)?.sections ?? []).map(s => <option key={s} value={s}>Section {s}</option>)}
               </select></label>
+            {clash && (
+              <div className="u-small" style={{ gridColumn: '1 / -1', border: `1px solid ${clash.clean ? 'var(--success-text)' : 'var(--warning)'}`, borderRadius: 8, padding: '8px 10px' }}>
+                {clash.clean
+                  ? 'No clash: this teacher and room are free in that period.'
+                  : [
+                    ...(clash.teacherClashes ?? []).map(c => `${c.teacher} already teaches ${c.subject}${c.room ? ` in ${c.room}` : ''} (${c.via})`),
+                    ...(clash.roomClashes ?? []).map(c => `${c.room} is already in use for ${c.subject} (${c.via})`),
+                    ...(clash.substitutionClashes ?? []).map(c => `${c.teacher} is standing in for ${c.absentTeacher} in ${c.subject} (${c.via})`),
+                  ].join(' · ')}
+              </div>
+            )}
             {slotForm.force && <div className="u-small" style={{ gridColumn: '1 / -1', color: 'var(--warning)' }}>The server flagged a clash. Saving now will place it anyway and record the override.</div>}
           </div>
         )}

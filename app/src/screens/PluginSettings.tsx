@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiGet } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
+import { humanize, pluginLabel } from '../lib/labels';
 import { Badge, Button, Card, Empty, ErrorState, PageHead, Section, SkeletonCard } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { useStore } from '../state/store';
@@ -61,7 +62,7 @@ export default function PluginSettings() {
   if (!canAdmin) {
     return (
       <>
-        <PageHead title="Plugin settings" sub="Plugin configuration is managed by the school owner and IT admin." />
+        <PageHead title="Add-on settings" sub="Add-on configuration is managed by the school owner and IT admin." />
         <Empty icon={<Icon.Lock size={24} />} title="Not your desk" sub="Settings hold provider keys and integration facts — only the owner and IT admin can open them." />
       </>
     );
@@ -76,9 +77,9 @@ export default function PluginSettings() {
           {current ? (
             <>
               <PageHead
-                title={`${current.manifest?.name ?? current.plugin_id} — settings`}
-                sub={current.enabled ? undefined : 'This plugin is currently OFF — settings can be staged and will apply when it is switched on.'}
-                actions={<Button variant="ghost" size="sm" onClick={() => navigate('/plugins/settings')}>All plugins</Button>}
+                title={`${current.manifest?.name ?? pluginLabel(current.plugin_id)} — settings`}
+                sub={current.enabled ? undefined : 'This add-on is currently OFF — settings can be staged and will apply when it is switched on.'}
+                actions={<Button variant="ghost" size="sm" onClick={() => navigate('/plugins/settings')}>All add-ons</Button>}
               />
               <div style={{ maxWidth: 860, margin: '0 auto', width: '100%' }}>
                 <Card head="Configuration">
@@ -89,35 +90,35 @@ export default function PluginSettings() {
               </div>
             </>
           ) : rows ? (
-            <ErrorState title="Plugin not found" sub={`No registered plugin “${id}” on this school — check the Plugin Manager.`} />
+            <ErrorState title="Add-on not found" sub={`No registered add-on “${pluginLabel(id)}” on this school — check the Add-ons screen.`} />
           ) : (
             <SkeletonCard lines={8} />
           )}
         </>
       ) : (
         <>
-          <PageHead title="Plugin settings" sub="Every module that declares a settings schema — values are school-scoped and every save is audited." />
-          {loadError && <ErrorState title="Could not load the plugin registry" sub={loadError} onRetry={() => setSavedTick(t => t + 1)} />}
+          <PageHead title="Add-on settings" sub="Every add-on with settings — values are school-scoped and every save is audited." />
+          {loadError && <ErrorState title="Could not load the add-on registry" sub={loadError} onRetry={() => setSavedTick(t => t + 1)} />}
           {!loadError && rows === null && <div className="grid grid-2"><SkeletonCard lines={5} /><SkeletonCard lines={5} /></div>}
           {!loadError && rows && (
-            <Section title="Configurable plugins" sub={`${rows.filter(r => schemaOf(r)).length} of ${rows.length} registered modules declare settings`}>
+            <Section title="Configurable add-ons" sub={`${rows.filter(r => schemaOf(r)).length} of ${rows.length} registered add-ons declare settings`}>
               {rows.filter(r => schemaOf(r)).length === 0 && (
                 <Empty icon={<Icon.Settings size={24} />} title="Nothing to configure yet"
-                  sub="No plugin on this school declares a settings schema. When one does, its form appears here." />
+                  sub="No add-on on this school has settings yet. When one does, its form appears here." />
               )}
               <div className="grid grid-2">
                 {rows.filter(r => schemaOf(r)).map(r => {
                   const keys = Object.keys(schemaOf(r)!.properties);
                   const configured = (r.settings ?? null) !== null && Object.keys(r.settings ?? {}).length > 0;
                   return (
-                    <Card key={r.plugin_id} head={r.manifest?.name ?? r.plugin_id}
+                    <Card key={r.plugin_id} head={r.manifest?.name ?? pluginLabel(r.plugin_id)}
                       actions={<Button size="sm" variant="secondary" onClick={() => navigate(`/plugins/settings/${r.plugin_id}`)}>Configure</Button>}>
                       <div className="u-col" style={{ padding: 'var(--s-4) var(--s-5)', gap: 8 }}>
                         <div className="u-between">
-                          <span className="u-mono u-small">{r.plugin_id}</span>
+                          <span className="u-mono u-small">{pluginLabel(r.plugin_id)}</span>
                           <Badge tone={r.enabled ? 'success' : 'neutral'} dot>{r.enabled ? 'on' : 'off'}</Badge>
                         </div>
-                        <div className="u-small u-muted">{keys.length} setting{keys.length === 1 ? '' : 's'}: {keys.map(k => k.replace(/_/g, ' ')).join(', ')}</div>
+                        <div className="u-small u-muted">{keys.length} setting{keys.length === 1 ? '' : 's'}: {keys.map(humanize).join(', ')}</div>
                         <div className="u-xs u-faint">{configured ? 'values saved — editing replaces them all' : 'no values saved yet'}</div>
                       </div>
                     </Card>

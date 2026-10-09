@@ -190,7 +190,7 @@ export default function Copilot() {
           </Button>
         </form>
         <div className="u-between u-xs u-faint">
-          <button className="btn btn-ghost btn-sm" style={{ minHeight: 44 }} onClick={makeDraft} disabled={draftLoading}>
+          <button className="btn btn-ghost btn-sm" onClick={makeDraft} disabled={draftLoading}>
             <Icon.Edit size={13} /> Draft a note to the teacher
           </button>
           {typeof budgetLeft === 'number' && (

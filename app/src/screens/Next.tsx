@@ -13,6 +13,7 @@ import { PageHead, Section, Card, Badge, Button, Empty, Skeleton, SampleNote} fr
 import { EvidenceChain, AiTraceCard } from '../components/Ai';
 import { Icon } from '../components/Icon';
 import { fmtDateShort, fmtDuration } from '../lib/format';
+import { humanize } from '../lib/labels';
 import type {RoleId} from '../types/domain';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'ai' | 'accent' | 'outline';
@@ -140,7 +141,7 @@ export default function Next() {
         owner: o.owner,
         mine: !!(mineHint && mineHint.test(o.owner)),
         to: '/calendar',
-        source: 'Obligation register'});
+        source: 'Commitments register'});
     });
 
     /* calendar events */
@@ -168,17 +169,17 @@ export default function Next() {
       out.push({
         id: c.id,
         band: p.overdue ? 'NOW' : bandOf(dueAt, dayStart),
-        kind: 'Case · SLA',
+        kind: 'Case · Deadline',
         kindTone: p.overdue ? 'danger' : 'info',
         title: c.title,
-        detail: `${c.origin === 'parent-whatsapp' ? 'Guardian WhatsApp' : c.origin} · owner ${c.owner} · SLA ${c.slaHours}h from opening`,
+        detail: `${c.origin === 'parent-whatsapp' ? 'Guardian WhatsApp' : humanize(c.origin)} · owner ${c.owner} · deadline ${c.slaHours}h from opening`,
         due: dueAt,
         dueLabel: p.label,
         overdue: p.overdue,
         owner: c.owner,
         mine: !!mineHint && mineHint.test(c.owner),
         to: `/cases/${c.id}`,
-        source: `Case ${c.id}`});
+        source: 'Cases'});
     });
 
     return out.sort((a, b) => a.due.getTime() - b.due.getTime());
@@ -195,7 +196,7 @@ export default function Next() {
     setTimeout(() => {
       setPlanMeta({
         counts: { 'NOW': grouped['NOW'].length, 'TODAY': grouped['TODAY'].length, 'THIS WEEK': grouped['THIS WEEK'].length, 'LATER': grouped['LATER'].length },
-        sources: ['Action Center (open items)', 'Obligation register', 'Academic calendar', 'Case queue + SLA clocks']});
+        sources: ['Action Center (open items)', 'Commitments register', 'Academic calendar', 'Case queue + deadlines']});
       setGenState('done');
     }, 900);
   };
@@ -212,7 +213,7 @@ export default function Next() {
     <>
       <PageHead
         title="What's next"
-        sub={`Personal plan for ${actorName} · ${items.length} commitment${items.length === 1 ? '' : 's'} merged from actions, obligations, calendar and case SLAs${overdueTotal ? ` · ${overdueTotal} overdue` : ''}.`}
+        sub={`Personal plan for ${actorName} · ${items.length} commitment${items.length === 1 ? '' : 's'} merged from actions, commitments, calendar and case deadlines${overdueTotal ? ` · ${overdueTotal} overdue` : ''}.`}
         actions={
           <Button variant="ai" size="sm" loading={genState === 'running'} icon={<Icon.Sparkle size={13} />} onClick={generatePlan}>
             {genState === 'done' ? 'Regenerate plan' : 'Generate plan'}
@@ -232,7 +233,7 @@ export default function Next() {
               sub={BAND_SUB[band]}
             >
               {grouped[band].length === 0 ? (
-                <Card pad><Empty icon={<Icon.Check size={20} />} title={band === 'NOW' ? 'Nothing overdue' : `Nothing in ${band.toLowerCase()}`} sub={band === 'NOW' ? 'Every SLA clock and deadline is inside its window.' : 'Items appear here as deadlines approach.'} /></Card>
+                <Card pad>                <Empty icon={<Icon.Check size={20} />} title={band === 'NOW' ? 'Nothing overdue' : `Nothing in ${band.toLowerCase()}`} sub={band === 'NOW' ? 'Every deadline is inside its window.' : 'Items appear here as deadlines approach.'} /></Card>
               ) : (
                 <div className="u-col" style={{ gap: 10 }}>
                   {grouped[band].map(it => <PlanRow key={`${it.source}-${it.id}`} item={it} />)}
@@ -250,7 +251,7 @@ export default function Next() {
                 <Skeleton w="60%" h={12} />
                 <Skeleton w="85%" h={12} />
                 <Skeleton w="45%" h={12} />
-                <div className="u-xs u-faint u-flex" style={{ gap: 6 }}><span className="spinner" style={{ width: 11, height: 11 }} /> Reading actions, obligations, calendar and SLAs…</div>
+                <div className="u-xs u-faint u-flex" style={{ gap: 6 }}><span className="spinner" style={{ width: 11, height: 11 }} /> Reading actions, commitments, calendar and deadlines…</div>
               </div>
             )}
             {genState === 'idle' && (
@@ -268,12 +269,12 @@ export default function Next() {
                   steps={[
                     {
                       label: `Collect commitments — ${items.length} found`,
-                      detail: `${domain.actions.filter(a => a.status === 'open').length} open actions · ${seed.obligations.filter(o => o.status !== 'done').length} obligations · ${seed.calendarEvents.filter(e => e.on.getTime() >= dayStart.getTime()).length} upcoming events · ${domain.cases.filter(c => c.status !== 'resolved' && c.status !== 'closed').length} active cases`,
+                      detail: `${domain.actions.filter(a => a.status === 'open').length} open actions · ${seed.obligations.filter(o => o.status !== 'done').length} commitments · ${seed.calendarEvents.filter(e => e.on.getTime() >= dayStart.getTime()).length} upcoming events · ${domain.cases.filter(c => c.status !== 'resolved' && c.status !== 'closed').length} active cases`,
                       source: planMeta.sources.join(' · ')},
                     {
                       label: 'Score urgency per item',
-                      detail: 'Deadline proximity × SLA remaining × priority; overdue items surface in NOW with a red marker',
-                      source: 'Constitution v2026.1 — scheduling posture'},
+                      detail: 'Deadline proximity × time remaining × priority; overdue items surface in NOW with a red marker',
+                      source: 'School policy — scheduling'},
                     {
                       label: `Compose bands — NOW ${planMeta.counts['NOW']} · TODAY ${planMeta.counts['TODAY']} · THIS WEEK ${planMeta.counts['THIS WEEK']} · LATER ${planMeta.counts['LATER']}`,
                       detail: 'Items marked “Yours” match your role\'s ownership; everything else stays visible with its owner',
@@ -281,7 +282,7 @@ export default function Next() {
                 />
                 <AiTraceCard trace={{
                   trigger: '“What’s next” plan generation',
-                  policy: 'Read-only composition; no reminders sent, no records changed · Constitution v2026.1',
+                  policy: 'Read-only composition; no reminders sent, no records changed · School policy',
                   dataUsed: planMeta.sources,
                   reasoningRole: 'Planner (read-only)',
                   action: 'Ordered existing commitments into time bands',
@@ -291,9 +292,9 @@ export default function Next() {
             )}
           </Card>
 
-          <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Clock size={14} /> SLA clocks running</span>} pad>
+          <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Clock size={14} /> Deadlines running</span>} pad>
             {domain.cases.filter(c => c.status === 'open' || c.status === 'triaged' || c.status === 'in-progress').length === 0 ? (
-              <Empty icon={<Icon.Check size={20} />} title="No clocks running" sub="No active cases with an SLA." />
+              <Empty icon={<Icon.Check size={20} />} title="No deadlines running" sub="No active cases with a deadline." />
             ) : (
               <div className="u-col" style={{ gap: 8 }}>
                 {domain.cases
@@ -305,7 +306,7 @@ export default function Next() {
                     return (
                       <button key={c.id} className="u-col" style={{ gap: 4, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }} onClick={() => navigate(`/cases/${c.id}`)}>
                         <span className="u-between u-xs" style={{ gap: 8 }}>
-                          <span className="u-truncate" style={{ fontWeight: 560, color: 'var(--text)' }}>{c.id} · {c.title}</span>
+                          <span className="u-truncate" style={{ fontWeight: 560, color: 'var(--text)' }}>{c.title}</span>
                           <span style={{ color: p.overdue ? 'var(--danger)' : 'var(--warning)', flexShrink: 0 }}>{p.label}</span>
                         </span>
                         <span className="progress" style={{ height: 4 }}><span style={{ display: 'block', height: '100%', borderRadius: 999, width: `${pct}%`, background: p.overdue ? 'var(--danger)' : 'var(--warning)', transition: 'width var(--t-slow) var(--ease-out)' }} /></span>

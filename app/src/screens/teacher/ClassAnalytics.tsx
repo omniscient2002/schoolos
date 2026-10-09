@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Badge, Card, Empty, PageHead, Progress, Section, SkeletonCard, Stat } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { roleLabel, classLabel } from '../../lib/labels';
 import { getClassAnalyticsLive } from '../../services/teacherApi';
 import { AsyncGate, DeniedState, useAsync, useTeacherAccess } from './teacherKit';
 import { useStore } from '../../state/store';
@@ -16,14 +17,14 @@ export default function ClassAnalytics() {
   const [grade, setGrade] = useState('8');
   const state = useAsync(() => getClassAnalyticsLive(grade, subject), [grade, subject]);
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
       <PageHead
         title="Class analytics"
         sub="How a class is doing as a group — where to reteach, who to support, what to celebrate. Never a ranking of children."
-        actions={<Badge tone="outline" dot>{subject} · Class {grade}</Badge>}
+        actions={<Badge tone="outline" dot>{subject} · {classLabel(grade)}</Badge>}
       />
       <div className="u-flex u-wrap" style={{ gap: 10, marginBottom: 14 }}>
         <select className="input" style={{ width: 'auto' }} value={subject} onChange={e => setSubject(e.target.value)} aria-label="Subject">
@@ -43,7 +44,7 @@ export default function ClassAnalytics() {
               <Stat label="Attendance (30d)" value={d.attendance.pct != null ? `${d.attendance.pct}%` : '—'} sub="Approved leave excluded" />
               <Stat label="Needs support" value={String(d.mastery.needs_support)} sub="From current evidence" />
             </div>
-            <Section title="Mastery spread" sub="Counts, not names.">
+            <Section title="Topic understanding spread" sub="Counts, not names.">
               <Card pad>
                 <div className="u-col" style={{ gap: 12 }}>
                   {([['strong', 'Secure', 'success'], ['developing', 'Developing', 'warning'], ['needs_support', 'Needs support', 'danger'], ['unlabelled', 'No evidence yet', 'neutral']] as const).map(([key, label, tone]) => {

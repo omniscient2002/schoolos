@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, Section, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { fmtRelative } from '../lib/format';
+import { statusLabel, roleLabel, humanize } from '../lib/labels';
 import { useSession } from '../App';
 import {
   listMyConcerns, recordConcernOutcome,
@@ -62,7 +63,7 @@ export default function CounselorConcerns() {
   const session = useSession();
   const allowed = useTeacherAccess('/teacher/concerns');
   const list = useAsync(() => listMyConcerns(), []);
-  if (!allowed) return <DeniedState role={session.role} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.role)} />;
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
       <PageHead
@@ -81,13 +82,13 @@ export default function CounselorConcerns() {
                     <div className="u-between u-wrap" style={{ gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
                         <div className="u-flex" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Badge tone={STATUS_TONE[c.status] ?? 'neutral'} dot>{c.status.replace('_', ' ')}</Badge>
-                          <Badge tone="outline">{c.category}</Badge>
+                          <Badge tone={STATUS_TONE[c.status] ?? 'neutral'} dot>{statusLabel(c.status)}</Badge>
+                          <Badge tone="outline">{humanize(c.category)}</Badge>
                           {c.studentName && <span className="u-small u-muted">{c.studentName}</span>}
                           <span className="u-xs u-faint">{fmtRelative(c.createdAt)}</span>
                         </div>
                         <p className="u-small" style={{ margin: '6px 0 0' }}>{c.detail}</p>
-                        {c.outcome && <div className="u-xs u-faint" style={{ marginTop: 4 }}>Outcome: {c.outcome}{c.outcomeNote ? ` — ${c.outcomeNote}` : ''}</div>}
+                        {c.outcome && <div className="u-xs u-faint" style={{ marginTop: 4 }}>Outcome: {humanize(c.outcome)}{c.outcomeNote ? ` — ${c.outcomeNote}` : ''}</div>}
                       </div>
                     </div>
                     {c.status !== 'closed' && c.status !== 'open' && <OutcomeForm concern={c} onDone={() => list.retry()} />}

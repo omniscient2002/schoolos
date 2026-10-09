@@ -8,10 +8,10 @@
    ============================================================ */
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Badge, Card, Empty } from '../../components/ui';
+import { Badge, Button, Card, Empty } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { apiGet, apiPost } from '../../services/liveApi';
 import { DeniedEmpty, ParentError, ParentLoading } from '../../components/parent/states';
-import { friendly } from '../../lib/friendlyErrors';
 import { fmtDate, fmtDateShort, weekday } from '../../lib/format';
 import {
   getParentHome, getBrief, getAttendance, getAssignments, getExams, getConsents,
@@ -49,10 +49,28 @@ function targetOf(ref: string, kind?: string): string | null {
   return null;
 }
 
+/* Each per-child door keeps its own loading / data / error state so a temporary
+   outage is never collapsed into "nothing due". */
+type Loaded<T> =
+  | { status: 'loading' }
+  | { status: 'data'; data: T }
+  | { status: 'error'; error: unknown };
+
 interface ChildDetail {
-  attendance: ParentAttendanceData | null;
-  assignments: ParentAssignmentsData | null;
-  exams: ParentExamsData | null;
+  attendance: Loaded<ParentAttendanceData>;
+  assignments: Loaded<ParentAssignmentsData>;
+  exams: Loaded<ParentExamsData>;
+}
+
+function load<T>(p: Promise<T>): Promise<Loaded<T>> {
+  return p
+    .then(data => ({ status: 'data', data } as Loaded<T>))
+    .catch(error => ({ status: 'error', error } as Loaded<T>));
+}
+
+/* Resolved data (null while loading or failed) — pairs with Loaded<T>. */
+function dataOf<T>(s: Loaded<T> | undefined): T | null {
+  return s?.status === 'data' ? s.data : null;
 }
 
 export default function FamilyHome() {
@@ -67,9 +85,30 @@ export default function FamilyHome() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ChildDetail | null>(null);
-  const [detailErr, setDetailErr] = useState<unknown>(null);
+  const [detailReload, setDetailReload] = useState(0);
+
+  /* School notices with read-and-sign receipts: the diary surface. Unsigned notices sit
+     above the fold; signing is one tap and idempotent, so a double-tap never duplicates. */
+  const [notices, setNotices] = useState<{ id: string; title: string; body: string; audience_kind: string; created_at: string; acked: boolean }[] | null>(null);
+  const [signing, setSigning] = useState<string | null>(null);
+  useEffect(() => {
+    let dead = false;
+    apiGet<{ notices: { id: string; title: string; body: string; audience_kind: string; created_at: string; acked: boolean }[] }>('/notices')
+      .then(r => { if (!dead) setNotices(r.notices); })
+      .catch(() => { if (!dead) setNotices([]); });
+    return () => { dead = true; };
+  }, [reload]);
+  const signNotice = async (id: string) => {
+    setSigning(id);
+    try {
+      await apiPost(`/announcements/${encodeURIComponent(id)}/ack`, {});
+      setNotices(ns => (ns ?? []).map(n => (n.id === id ? { ...n, acked: true } : n)));
+    } catch { /* signing is best-effort sugar on top of reading; the notice stays readable */ }
+    finally { setSigning(null); }
+  };
 
   const retry = useCallback(() => { setErr(null); setReload(n => n + 1); }, []);
+  const retryDetail = useCallback(() => setDetailReload(n => n + 1), []);
 
   /* --- family-level load: home, week brief, consents --- */
   useEffect(() => {
@@ -91,19 +130,21 @@ export default function FamilyHome() {
   useEffect(() => {
     if (!selectedId) return;
     let dead = false;
-    setDetailErr(null);
-    setDetail(null);
+    setDetail({
+      attendance: { status: 'loading' },
+      assignments: { status: 'loading' },
+      exams: { status: 'loading' },
+    });
     Promise.all([
-      getAttendance(selectedId).catch(() => null),
-      getAssignments(selectedId).catch(() => null),
-      getExams(selectedId).catch(() => null),
+      load(getAttendance(selectedId)),
+      load(getAssignments(selectedId)),
+      load(getExams(selectedId)),
     ]).then(([attendance, assignments, exams]) => {
       if (dead) return;
       setDetail({ attendance, assignments, exams });
-      if (!attendance && !assignments && !exams) setDetailErr(new Error('no child doors answered'));
-    }).catch(e => { if (!dead) setDetailErr(e); });
+    });
     return () => { dead = true; };
-  }, [selectedId]);
+  }, [selectedId, detailReload]);
 
   /* ---------- states ---------- */
   if (err) return <ParentError err={err} onRetry={retry} />; // covers denied via DeniedEmpty
@@ -123,9 +164,12 @@ export default function FamilyHome() {
   const firstName = parentFirstName();
   const now = new Date();
 
-  const hw = detail?.assignments?.upcoming ?? [];
-  const exams = detail?.exams?.upcoming ?? [];
-  const attToday = detail?.attendance?.today?.status ?? child.attendance_today ?? null;
+  const attData = dataOf(detail?.attendance);
+  const hwData = dataOf(detail?.assignments);
+  const examData = dataOf(detail?.exams);
+  const hw = hwData?.upcoming ?? [];
+  const exams = examData?.upcoming ?? [];
+  const attToday = attData?.today?.status ?? child.attendance_today ?? null;
 
   /* family-wide tiered list: each child's attention rows + the home actions,
      urgent first, then action, then upcoming.
@@ -179,11 +223,9 @@ export default function FamilyHome() {
       <Card
         headAs="h2"
         head={<>Today {multi && <span className="u-xs u-faint" style={{ marginLeft: 8 }}>{child.name} · {child.class}</span>}</>}
-        actions={<Link to={`/parent/child/${child.child_id}`} className="btn btn-secondary btn-sm" style={{ minHeight: 34 }}>Full record</Link>}
+        actions={<Link to={`/parent/child/${child.child_id}`} className="btn btn-secondary btn-sm">Full record</Link>}
       >
-        {detailErr ? (
-          <div className="u-small u-muted">Today&apos;s class details could not load just now. {friendly((detailErr as Error).message)}</div>
-        ) : !detail ? (
+        {!detail ? (
           <ParentLoading cards={1} />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
@@ -193,17 +235,25 @@ export default function FamilyHome() {
                 ? <Badge tone={ATT_TONE[attToday]} dot>{ATT_WORD[attToday]}</Badge>
                 : <Badge tone="outline">Not marked yet</Badge>}
               <div className="u-small u-muted" style={{ marginTop: 8 }}>
-                {detail.attendance?.today?.classes_today != null
-                  ? `${detail.attendance.today.classes_today} class${detail.attendance.today.classes_today === 1 ? '' : 'es'} today.`
-                  : 'The register updates here by 9:00 each morning.'}
+                {attData?.today?.classes_today != null
+                  ? `${attData.today.classes_today} class${attData.today.classes_today === 1 ? '' : 'es'} today.`
+                  : detail.attendance.status === 'error'
+                    ? <>Today&apos;s attendance didn&apos;t load — <RetryLink onClick={retryDetail} />.</>
+                    : 'The register updates here by 9:00 each morning.'}
               </div>
             </div>
             <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
               <div className="u-upper" style={{ marginBottom: 6 }}>Homework due</div>
-              {detail.assignments == null ? (
-                /* D-6 honesty: there is no per-child assignments door yet — the
-                   request 404s. Say that, never "no homework". */
-                <div className="u-small u-muted">Not available yet — ask the class teacher until homework appears here.</div>
+              {detail.assignments.status === 'loading' ? (
+                <div className="u-small u-muted">Loading homework…</div>
+              ) : detail.assignments.status === 'error' ? (
+                isDeniedError(detail.assignments.error) ? (
+                  /* Access refused: this account is not allowed to see the child's homework. */
+                  <div className="u-small u-muted">Homework for this child isn&apos;t shared with your account. Ask the school office if it should be.</div>
+                ) : (
+                  /* A client wrapper exists, so this is a temporary failure returned by the door — never "no homework". */
+                  <div className="u-small u-muted">Couldn&apos;t load homework — <RetryLink onClick={retryDetail} />.</div>
+                )
               ) : hw.length === 0 ? (
                 <div className="u-small u-muted">No homework due right now.</div>
               ) : (
@@ -214,20 +264,30 @@ export default function FamilyHome() {
                       <span className="u-faint" style={{ flexShrink: 0, marginLeft: 'auto' }}>{a.due ? fmtDateShort(a.due) : 'due soon'}</span>
                     </div>
                   ))}
-                  {hw.length > 3 && <Link to="/parent/family" className="u-xs" style={{ minHeight: 32, display: 'inline-flex', alignItems: 'center' }}>+{hw.length - 3} more — see all</Link>}
+                  {hw.length > 3 && <Link to="/parent/family" className="u-xs link-action">+{hw.length - 3} more — see all</Link>}
                 </div>
               )}
             </div>
             <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: 12 }}>
               <div className="u-upper" style={{ marginBottom: 6 }}>Upcoming exams</div>
-              {exams.length === 0 ? (
+              {detail.exams.status === 'loading' ? (
+                <div className="u-small u-muted">Loading exams…</div>
+              ) : detail.exams.status === 'error' ? (
+                isDeniedError(detail.exams.error) ? (
+                  <div className="u-small u-muted">The exam schedule isn&apos;t shared with your account. Ask the school office if it should be.</div>
+                ) : (
+                  <div className="u-small u-muted">Couldn&apos;t load exams — <RetryLink onClick={retryDetail} />.</div>
+                )
+              ) : exams.length === 0 ? (
                 <div className="u-small u-muted">No exams scheduled.</div>
               ) : (
                 <div className="u-col" style={{ gap: 5 }}>
                   {exams.slice(0, 3).map(e => (
                     <div key={e.id} className="u-flex u-small" style={{ gap: 8 }}>
-                      <span className="u-truncate" style={{ fontWeight: 550 }}>{e.title}</span>
-                      <span className="u-faint" style={{ flexShrink: 0, marginLeft: 'auto' }}>{fmtDateShort(e.date)}</span>
+                      <span className="u-truncate" style={{ fontWeight: 550 }}>{e.name}</span>
+                      {/* No date is published for every exam; fmtDateShort
+                          renders an em-dash rather than "Invalid Date". */}
+                      <span className="u-faint" style={{ flexShrink: 0, marginLeft: 'auto' }}>{e.date ? fmtDateShort(e.date) : 'Date not announced'}</span>
                     </div>
                   ))}
                 </div>
@@ -251,8 +311,7 @@ export default function FamilyHome() {
       </Card>
 
       {/* ---------- NEEDS YOUR ATTENTION ---------- */}
-      <Card headAs="h2" head="Needs your attention">
-        {attention.length === 0 && homeActions.length === 0 ? (
+      <Card headAs="h2" head="Needs your attention">        {attention.length === 0 && homeActions.length === 0 ? (
           <Empty
             titleAs="h3"
             icon={<Icon.Check size={22} style={{ color: 'var(--success)' }} />}
@@ -286,6 +345,37 @@ export default function FamilyHome() {
                   </div>
                 );
               })}
+          </div>
+        )}
+      </Card>
+
+      {/* ---------- NOTICES FROM SCHOOL ---------- */}
+      <Card headAs="h2" head="Notices from school">
+        {notices == null ? (
+          <div className="u-small u-muted">Reading notices…</div>
+        ) : notices.length === 0 ? (
+          <Empty
+            titleAs="h3"
+            icon={<Icon.Message size={22} style={{ color: 'var(--success)' }} />}
+            title="No notices right now"
+            sub="School circulars and diary notes appear here. Anything needing your signature moves to the top."
+          />
+        ) : (
+          <div className="u-col" style={{ gap: 8 }}>
+            {[...notices].sort((a, b) => Number(a.acked) - Number(b.acked)).map(n => (
+              <div key={n.id} className="u-flex" style={{ gap: 10, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', alignItems: 'flex-start' }}>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <span className="u-small" style={{ display: 'block', fontWeight: 600 }}>{n.title}</span>
+                  <span className="u-small u-muted" style={{ display: 'block', marginTop: 2 }}>{n.body}</span>
+                  <span className="u-xs u-faint">{new Date(n.created_at).toLocaleDateString()}</span>
+                </span>
+                {n.acked
+                  ? <Badge tone="success">Signed ✓</Badge>
+                  : <Button size="sm" variant="secondary" disabled={signing === n.id} onClick={() => { void signNotice(n.id); }}>
+                      {signing === n.id ? '…' : 'Sign'}
+                    </Button>}
+              </div>
+            ))}
           </div>
         )}
       </Card>
@@ -338,4 +428,17 @@ export default function FamilyHome() {
 
 function tierRank(t: string): number {
   return t === 'urgent' ? 0 : t === 'action' ? 1 : 2;
+}
+
+/* Inline "try again" for a single failed per-child door (retries all three). */
+function RetryLink({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer', color: 'var(--accent-text)', textDecoration: 'underline' }}
+    >
+      try again
+    </button>
+  );
 }

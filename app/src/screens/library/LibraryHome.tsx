@@ -5,6 +5,8 @@
 import { useEffect, useState } from 'react';
 import { PageHead, Card, Badge, Button, useToast, Empty, ErrorState, SkeletonCard, DataTable } from '../../components/ui';
 import { friendly } from '../../lib/friendlyErrors';
+import { fmtDate } from '../../lib/format';
+import { pluginLabel, statusLabel, humanize } from '../../lib/labels';
 import {
   libraryCatalog, libraryReserve, libraryMyLoans, libraryRenewRequest, libraryMyFines,
   libraryMyReservations, libraryCancelReservation, libraryMyRequests, libraryRequestBook,
@@ -43,8 +45,16 @@ export default function LibraryHome() {
   }, [tick, search]);
 
   const reserve = async (b: LibraryBook) => {
-    try { await libraryReserve(b.id); toast({ title: `Reserved "${b.title}"`, sub: 'Collect it at the library when it is ready.', tone: 'success' }); setTick(t => t + 1); }
-    catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    const queued = b.available < 1;
+    try {
+      await libraryReserve(b.id);
+      toast({
+        title: queued ? `Joined the queue for "${b.title}"` : `Reserved "${b.title}"`,
+        sub: queued ? 'The librarian will let you know when a copy is free.' : 'Collect it at the library when it is ready.',
+        tone: 'success',
+      });
+      setTick(t => t + 1);
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
   };
   const renew = async (l: LibraryLoan) => {
     try { const r = await libraryRenewRequest(l.id); toast({ title: 'Renewed', sub: `New due date ${r.dueOn}`, tone: 'success' }); setTick(t => t + 1); }
@@ -65,7 +75,7 @@ export default function LibraryHome() {
 
   return (
     <div style={{ maxWidth: 1080, margin: '0 auto' }}>
-      <PageHead title="Library" sub="Search the catalog, reserve a book, and see what you have out" actions={<Badge tone="accent" dot>library</Badge>} />
+      <PageHead title="Library" sub="Search the catalog, reserve a book, and see what you have out" actions={<Badge tone="accent" dot>{pluginLabel('library')}</Badge>} />
       {loading && <SkeletonCard />}
       {error && <ErrorState title="Could not load" sub={error.replace('Error: ', '')} onRetry={() => setTick(t => t + 1)} />}
       {!loading && !error && (
@@ -81,7 +91,7 @@ export default function LibraryHome() {
                     <div className="u-xs u-muted">{b.author || '—'}{b.category ? ` · ${b.category}` : ''}</div>
                     <div className="u-between">
                       <Badge tone={b.available > 0 ? 'success' : 'warning'}>{b.available} of {b.copiesTotal} available</Badge>
-                      <Button variant="secondary" disabled={b.available < 1} onClick={() => reserve(b)}>{b.available > 0 ? 'Reserve' : 'Join queue'}</Button>
+                      <Button variant="secondary" onClick={() => reserve(b)}>{b.available > 0 ? 'Reserve' : 'Join queue'}</Button>
                     </div>
                   </div>
                 ))}
@@ -96,7 +106,7 @@ export default function LibraryHome() {
               <DataTable
                 columns={[
                   { key: 'book', label: 'Book', render: (l: LibraryLoan) => `${l.bookTitle} (${l.bookCode})` },
-                  { key: 'due', label: 'Due', render: (l: LibraryLoan) => new Date(l.dueOn).toLocaleDateString() },
+                  { key: 'due', label: 'Due', render: (l: LibraryLoan) => fmtDate(l.dueOn) },
                   { key: 'status', label: 'Status', render: (l: LibraryLoan) => <Badge tone={dueTone(l)}>{l.status === 'issued' ? (l.overdue ? 'Overdue' : 'With you') : 'Returned'}</Badge> },
                   { key: 'fine', label: 'Fine', render: (l: LibraryLoan) => (l.fineCents ? inr(l.fineCents) : '—') },
                   { key: 'act', label: '', render: (l: LibraryLoan) => (l.status === 'issued' ? <Button variant="ghost" onClick={() => renew(l)}>Renew</Button> : null) },
@@ -123,9 +133,9 @@ export default function LibraryHome() {
             <Card headAs="h2" head="My fines" sub="Pay at the library counter">
               <DataTable
                 columns={[
-                  { key: 'cause', label: 'Reason', render: (f: LibraryFine) => f.cause },
+                  { key: 'cause', label: 'Reason', render: (f: LibraryFine) => humanize(f.cause) },
                   { key: 'amount', label: 'Amount', render: (f: LibraryFine) => inr(f.amount_cents) },
-                  { key: 'status', label: 'Status', render: (f: LibraryFine) => <Badge tone={f.status === 'outstanding' ? 'warning' : 'success'}>{f.status}</Badge> },
+                  { key: 'status', label: 'Status', render: (f: LibraryFine) => <Badge tone={f.status === 'outstanding' ? 'warning' : 'success'}>{statusLabel(f.status)}</Badge> },
                 ]}
                 rows={fines} rowKey={(f: LibraryFine) => f.id}
               />
@@ -144,7 +154,7 @@ export default function LibraryHome() {
                   columns={[
                     { key: 'title', label: 'Requested', render: (r: LibraryAcq) => r.title },
                     { key: 'votes', label: 'Demand', render: (r: LibraryAcq) => `${r.vote_count} ${r.vote_count === 1 ? 'vote' : 'votes'}` },
-                    { key: 'status', label: 'Status', render: (r: LibraryAcq) => <Badge tone={r.status === 'added' ? 'success' : r.status === 'rejected' ? 'danger' : 'info'}>{r.status}</Badge> },
+                    { key: 'status', label: 'Status', render: (r: LibraryAcq) => <Badge tone={r.status === 'added' ? 'success' : r.status === 'rejected' ? 'danger' : 'info'}>{statusLabel(r.status)}</Badge> },
                   ]}
                   rows={requests} rowKey={(r: LibraryAcq) => r.id}
                 />

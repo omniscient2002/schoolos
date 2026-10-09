@@ -12,6 +12,7 @@ import * as m from '../data/dataset';
 import { PageHead, Card, Badge, Button, Modal, useToast, KeyValue, Empty, Avatar } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { AssetTag, HealthRing, PriorityBadge, SLAIndicator, TechnicianWhy, StatusDot } from '../components/Maint';
+import { statusLabel } from '../lib/labels';
 import type { WorkOrderRecord, MaintPriority } from '../types/domain';
 
 const EXAMPLES = [
@@ -109,16 +110,16 @@ export default function ReportIssue() {
       return;
     }
     setCreated({ ...created, status: 'assigned', assignedTo: techName, assignedOn: new Date() });
-    toast({ title: `Assigned to ${techName.split(' ')[0]}`, sub: `${created.id} · work order status updated`, tone: 'success' });
+    toast({ title: `Assigned to ${techName.split(' ')[0]}`, sub: `${created.id} · job status updated`, tone: 'success' });
     setTimeout(() => setPhase('done'), 900);
   };
 
   const doOverride = () => {
     if (!created || !overrideTo) return;
-    dispatch({ type: 'wo/patch', id: created.id, patch: { priority: overrideTo, timeline: [...created.timeline, { on: new Date(), actor: actorName, note: `Priority overridden ${created.priority} → ${overrideTo} by ${actorName} · reason recorded`, kind: 'status' as const }] }, actor: actorName, note: `Priority override → ${overrideTo}` });
+    dispatch({ type: 'wo/patch', id: created.id, patch: { priority: overrideTo, timeline: [...created.timeline, { on: new Date(), actor: actorName, note: `Priority overridden ${created.priority} → ${overrideTo} by ${actorName} · screen only, not saved`, kind: 'status' as const }] }, actor: actorName, note: `Priority override → ${overrideTo}` });
     setCreated({ ...created, priority: overrideTo });
     setOverrideOpen(false);
-    toast({ title: `Priority set to ${overrideTo}`, sub: 'Override recorded in the audit trail', tone: 'success' });
+    toast({ title: `Priority set to ${statusLabel(overrideTo)}`, sub: 'Override isn\'t saved to the school\'s records yet', tone: 'success' });
   };
 
   const voiceFill = () => {
@@ -127,7 +128,7 @@ export default function ReportIssue() {
       setListening(false);
       setVoiceUsed(true);
       if (!text.trim()) setText('The projector in Science Lab 204 isn\u2019t turning on.');
-      toast({ title: 'Voice captured', sub: 'Transcribed on device — edit anything before sending', tone: 'info' });
+      toast({ title: "Voice input isn't available yet", sub: 'This demo filled the box with an example — edit it before sending.', tone: 'info' });
     }, 1400);
   };
 
@@ -172,8 +173,8 @@ export default function ReportIssue() {
               <div className="u-inline" style={{ gap: 6, justifyContent: 'space-between' }}>
                 <div className="u-inline" style={{ gap: 4 }}>
                   <button className="btn btn-ghost btn-sm" onClick={() => { setPhoto(true); toast({ title: 'Photo attached (demo)', sub: 'Camera capture is simulated in this prototype', tone: 'info' }); }} aria-label="Attach photo"><Icon.Plus size={13} /> Photo</button>
-                  <button className="btn btn-ghost btn-sm" onClick={voiceFill} aria-label="Record voice note">
-                    {listening ? <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 8, background: 'var(--danger)', animation: 'pulse 1s infinite' }} /> Listening…</span> : <><Icon.Mic size={13} /> Voice</>}
+                  <button className="btn btn-ghost btn-sm" onClick={voiceFill} aria-label="Voice input isn't available yet" title="Voice input isn't available yet">
+                    {listening ? <span className="u-inline" style={{ gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 8, background: 'var(--danger)', animation: 'pulse 1s infinite' }} /> Filling example…</span> : <><Icon.Mic size={13} /> Voice (demo)</>}
                   </button>
                   {preset && <Badge tone="outline"><Icon.Grid size={11} /> {preset.id}</Badge>}
                 </div>
@@ -289,7 +290,7 @@ export default function ReportIssue() {
               </span>
             </div>
             <div className="u-inline" style={{ gap: 8 }}>
-              <Button variant="secondary" onClick={() => navigate(`/maintenance/work-orders/${created.id}`)}>Open work order</Button>
+              <Button variant="secondary" onClick={() => navigate(`/maintenance/work-orders/${created.id}`)}>Open job</Button>
               <Button variant="ghost" onClick={() => { setCreated(null); setText(''); setPhase('input'); }}>Report another</Button>
             </div>
           </div>
@@ -301,7 +302,7 @@ export default function ReportIssue() {
         open={overrideOpen}
         onClose={() => setOverrideOpen(false)}
         title="Override priority"
-        sub="Overrides are honoured immediately and recorded in the audit trail with your name."
+        sub="This changes the priority on this screen only — the override isn't saved to the school's records yet."
         footer={
           <div className="u-inline" style={{ gap: 8, justifyContent: 'flex-end', width: '100%' }}>
             <Button variant="ghost" onClick={() => setOverrideOpen(false)}>Cancel</Button>

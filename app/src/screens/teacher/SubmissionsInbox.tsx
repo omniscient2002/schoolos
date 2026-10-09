@@ -19,6 +19,7 @@ import {
 import { Icon } from '../../components/Icon';
 import { fmtDateTime, fmtRelative } from '../../lib/format';
 import { friendly } from '../../lib/friendlyErrors';
+import { roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   listHomework, listSubmissions, reviewSubmission,
@@ -185,7 +186,7 @@ export default function SubmissionsInbox() {
     } finally { setSaving(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div>
@@ -272,7 +273,7 @@ export default function SubmissionsInbox() {
                 icon={<Icon.Clipboard size={22} />}
                 title="No submissions yet"
                 sub="Assign homework first — turned-in work lands here the moment a student sends it."
-                action={<Link to="/teacher/homework" className="btn btn-secondary btn-sm" style={{ minHeight: 40 }}>Assign homework</Link>}
+                action={<Link to="/teacher/homework" className="btn btn-secondary btn-sm">Assign homework</Link>}
               />
             ) : tab === 'submitted' ? (
               <Empty

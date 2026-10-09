@@ -10,14 +10,15 @@ import { useNavigate } from 'react-router-dom';
 import { useStore } from '../state/store';
 import * as seed from '../data/dataset';
 import { apiGet } from '../services/liveApi';
-import { PageHead, Section, Card, Stat, Badge, Empty, ErrorState, Skeleton, SkeletonCard } from '../components/ui';
+import { PageHead, Section, Card, Stat, Badge, Empty, ErrorState, Skeleton, SkeletonCard, SampleNote } from '../components/ui';
 import { EvidenceChain, EventLine } from '../components/Ai';
 import { Sparkline } from '../components/Chart';
 import { Slot } from '../plugins/Slot';
 import { Icon } from '../components/Icon';
 import { friendly } from '../lib/friendlyErrors';
 import { apiTransportRoutes, type LiveRouteRow } from '../services/liveApi';
-import { fmtDate, fmtDateShort, fmtTime, weekday } from '../lib/format';
+import { fmtDate, fmtDateShort, fmtTime, weekday, fmtHM } from '../lib/format';
+import { humanize, statusLabel } from '../lib/labels';
 import type { ActionRecord, BusRoute } from '../types/domain';
 
 /* ---------- shared shapes ---------- */
@@ -67,8 +68,8 @@ function maintenanceBriefs(workOrders: { id: string; title: string; priority: st
     id: `maint-${w.id}`,
     icon: 'Wrench' as const,
     title: w.title,
-    detail: `${w.building}${w.room ? ' · ' + w.room : ''} · reported by ${w.reportedBy} · ${w.assetId ? 'asset ' + w.assetId + ' · ' : ''}${w.status.replace('-', ' ')}.`,
-    chips: [`Work order ${w.id} · ${new Date(w.reportedOn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · high`, 'SLA engine · deterministic · high'],
+    detail: `${w.building}${w.room ? ' · ' + w.room : ''} · reported by ${w.reportedBy} · ${w.assetId ? 'asset ' + w.assetId + ' · ' : ''}${statusLabel(w.status)}.`,
+    chips: [`Work order ${w.id} · ${fmtHM(w.reportedOn)} · high`, 'deadline engine · deterministic · high'],
     badge: w.priority === 'emergency' ? { label: 'Emergency', tone: 'danger' as BadgeTone } : w.priority === 'critical' ? { label: 'Critical', tone: 'danger' as BadgeTone } : { label: 'High', tone: 'warning' as BadgeTone },
     to: `/maintenance/work-orders/${w.id}`,
   }));
@@ -86,9 +87,9 @@ function tomorrowBriefs(workOrders: { id: string; title: string; priority: strin
     out.push({
       id: `tom-${w.id}`,
       icon: 'Clock',
-      title: `SLA closes in ${hrs}h — ${w.title}`,
-      detail: `${w.id} (${w.priority}) resolves by ${w.sla.resolveBy.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}. Escalation fires automatically at breach.`,
-      chips: [`SLA engine · deterministic · high`, 'Facilities §2.1 (lifecycle)'],
+      title: `Deadline closes in ${hrs}h — ${w.title}`,
+      detail: `This work order (${humanize(w.priority)}) resolves by ${fmtHM(w.sla.resolveBy)}. Escalation fires automatically at breach.`,
+      chips: [`deadline engine · deterministic · high`, 'Facilities §2.1 (lifecycle)'],
       to: `/maintenance/work-orders/${w.id}`,
     });
   }
@@ -123,7 +124,7 @@ function BandRow({ item, divider }: { item: BriefItem; divider?: boolean }) {
     : item.badge?.tone === 'warning' ? 'var(--status-warning)' : 'var(--border)';
   return (
     <div
-      className={`attention-row ${divider ? 'divider' : ''}`}
+      className={`attention-row ${divider ? 'sep' : ''}`}
       role={divider ? undefined : 'button'}
       onClick={() => navigate(item.to)}
       onKeyDown={e => { if (e.key === 'Enter') navigate(item.to); }}
@@ -196,9 +197,6 @@ export default function Today() {
   const { session, domain, actorName } = useStore();
   const navigate = useNavigate();
   const role = session.roleId;
-  const campusLabel = session.campusScope === 'all'
-    ? 'All campuses'
-    : seed.campuses.find(c => c.id === session.campusScope)?.name ?? 'Campus';
 
   const [routesData, setRoutesData] = useState<BusRoute[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -230,7 +228,7 @@ export default function Today() {
     const now = new Date();
     const actions = domain.actions;
 
-    /* --- computed presence (all campuses) --- */
+    /* --- computed presence (school-wide) --- */
     /* D-5: the kernel tolerates every removed dataset key — all seed reads
        below are optional-chained with honest fallbacks. */
     const studentsAll = seed.students ?? [];
@@ -242,7 +240,6 @@ export default function Today() {
     const feeObligationsAll = seed.feeObligations ?? [];
     const attendanceAll = seed.attendance ?? [];
     const termDays = seed.TERM_DAYS ?? [];
-    const campusesAll = seed.campuses ?? [];
     const insightsAll = seed.insights ?? [];
     const actionItemsAll = seed.actionItems ?? [];
     const busRoutesAll = seed.busRoutes ?? [];
@@ -294,10 +291,9 @@ export default function Today() {
       id: e.id,
       icon: e.type === 'exam' ? 'Book' : e.type === 'deadline' ? 'Flag' : e.type === 'ptm' ? 'Users' : 'Calendar',
       title: e.title,
-      detail: `${e.type.charAt(0).toUpperCase() + e.type.slice(1)} · ${e.owner}${e.location ? ` · ${e.location}` : ''}`,
+      detail: `${humanize(e.type)} · ${e.owner}${e.location ? ` · ${e.location}` : ''}`,
       chips: [
         `${e.on.getTime() < dayStart.getTime() + 86400000 ? 'Today' : fmtDateShort(e.on)} · ${e.durationMins ? `${fmtTime(e.on)} · ${e.durationMins}m` : 'all day'}`,
-        e.campus === 'all' ? 'All campuses' : seed.campuses.find(c => c.id === e.campus)?.name ?? '',
       ],
       badge: e.type === 'exam' ? { label: 'Exam', tone: 'accent' } : e.type === 'deadline' ? { label: 'Deadline', tone: 'warning' } : undefined,
       to: '/calendar',
@@ -312,8 +308,8 @@ export default function Today() {
         id: o.id,
         icon: o.category === 'compliance' ? 'Shield' : o.category === 'fee' ? 'Money' : o.category === 'review' ? 'Flag' : 'Document',
         title: o.title,
-        detail: `${o.category} · owner ${o.owner}`,
-        chips: [o.evidence ?? 'Obligation register', `Due ${fmtDateShort(o.dueOn)}`],
+        detail: `${humanize(o.category)} · owner ${o.owner}`,
+        chips: [o.evidence ?? 'Commitments register', `Due ${fmtDateShort(o.dueOn)}`],
         due: dueIn(o.dueOn),
         to: '/calendar',
       }));
@@ -359,7 +355,7 @@ export default function Today() {
       id: 'chg-bus',
       icon: 'Bus',
       title: `Bus 14 (Route 7) running ${r7.delayMins ?? 13} min late`,
-      detail: `Coolant leak repaired after Tuesday's breakdown; ${r7.students} students on route. Pre-route inspections active per dec_4; spare bus on standby.`,
+      detail: `Coolant leak repaired after Tuesday's breakdown; ${r7.students} students on route. Pre-route inspections active per school policy; spare bus on standby.`,
       chips: [demo('GPS monitor · 07:42 · high'), demo('Transport SOP · updated 2d ago · high')],
       badge: { label: 'Transport', tone: 'warning' },
       to: '/transport',
@@ -375,7 +371,7 @@ export default function Today() {
         icon: 'Message',
         title: `${complaintCases.length} unresolved WhatsApp complaint${complaintCases.length > 1 ? 's' : ''} about Bus 14`,
         detail: complaintCases[0].messages[0]?.text ?? '',
-        chips: [demo('Communication log · 08:15 · high'), `Case ${complaintCases[0].id} · SLA ${complaintCases[0].slaHours}h`],
+        chips: [demo('Communication log · 08:15 · high'), `Case · deadline ${complaintCases[0].slaHours}h`],
         badge: { label: 'Cases', tone: 'info' },
         to: '/cases',
       });
@@ -384,14 +380,13 @@ export default function Today() {
     /* --- today band --- */
     const today: BriefItem[] = [];
     if (dow === 0) {
-      today.push({ id: 'tt-off', icon: 'Sunrise', title: 'Sunday — no classes scheduled', detail: 'Campus closed; duty roster covers security and transport maintenance.', chips: ['Academic calendar · verified', 'Duty roster · 06:00 · high'], to: '/calendar' });
+      today.push({ id: 'tt-off', icon: 'Sunrise', title: 'Sunday — no classes scheduled', detail: 'School closed; duty roster covers security and transport maintenance.', chips: ['Academic calendar · verified', 'Duty roster · 06:00 · high'], to: '/calendar' });
     } else if (current.length) {
-      const campusesNow = new Set(current.map(c => sectionsAll.find(s => s.id === c.sectionId)?.campus)).size;
       today.push({
         id: 'tt-now',
         icon: 'Clock',
         title: `Period ${current[0].period} in session (${current[0].start}–${current[0].end})`,
-        detail: `${current.length} classes in session across ${campusesNow} campus${campusesNow > 1 ? 'es' : ''}${next ? ` · next period at ${next.start}` : ' · last period of the day'}.`,
+        detail: `${current.length} classes in session${next ? ` · next period at ${next.start}` : ' · last period of the day'}.`,
         chips: [demo('Timetable engine · live · high'), `${slotsToday.length} slots scheduled today`],
         to: '/operations',
       });
@@ -419,7 +414,13 @@ export default function Today() {
 
     /* --- assemble per role --- */
     const bands: Band[] = [];
-    let stats: { label: string; value: string; delta?: { value: string; dir: 'up' | 'down' | 'flat' }; sub: string; spark?: ReactNode; to?: string }[] = [];
+    /* A stat carries EITHER a figure or an honest "unavailable" state — the
+       union mirrors Stat's own props, so a bare em-dash can never creep back
+       in as a stand-in for a missing number. */
+    type TodayStat =
+      | { label: string; value: string; delta?: { value: string; dir: 'up' | 'down' | 'flat' }; sub: string; spark?: ReactNode; to?: string }
+      | { label: string; unavailable: string; delta?: { value: string; dir: 'up' | 'down' | 'flat' }; sub: string; spark?: ReactNode; to?: string };
+    let stats: TodayStat[] = [];
     let headSub = '';
 
     if (role === 'teacher') {
@@ -436,12 +437,12 @@ export default function Today() {
         : [];
       const mySlots = mySection && dow >= 1 && dow <= 6 ? timetableAll.filter(t => t.day === dow && t.sectionId === mySection.id).sort((a, b) => a.period - b.period) : [];
       headSub = mySection
-        ? `${weekday(now)} · ${fmtDate(now)} · Class teacher ${mySection.grade}-${mySection.name} · ${campusLabel}`
-        : `${weekday(now)} · ${fmtDate(now)} · Teacher · ${campusLabel}`;
+        ? `${weekday(now)} · ${fmtDate(now)} · Class teacher ${mySection.grade}-${mySection.name}`
+        : `${weekday(now)} · ${fmtDate(now)} · Teacher`;
       stats = [
         mySection
           ? { label: 'Class presence', value: `${Math.round(((att.total - att.absent) / Math.max(1, att.total)) * 100)}%`, sub: `${att.absent} absent · ${att.late} late · ${mySection.studentCount} students`, to: '/attendance' }
-          : { label: 'Class presence', value: '—', sub: 'No class assigned yet — ask your coordinator to assign you a section', to: '/attendance' },
+          : { label: 'Class presence', unavailable: 'Not assigned', sub: 'No class assigned yet — ask your coordinator to assign you a section', to: '/attendance' },
         { label: 'Absences to confirm', value: String(absentStudents.length), sub: 'Guardians of absentees are queued a notice (Attendance §1.1)', to: '/attendance' },
         { label: 'Periods today', value: String(mySlots.length), sub: mySlots.length ? `Next: ${mySlots.find(s => toMin(s.start) > hm)?.subject ?? mySlots[mySlots.length - 1].subject}` : mySection ? 'No classes' : 'No timetable yet', to: '/learning' },
         { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
@@ -468,15 +469,15 @@ export default function Today() {
         });
       }
       bands.push({ id: 'today', label: 'Today', sub: 'School calendar for your section', items: today.slice(0, 4) });
-      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 2), ...decisionReviews.slice(0, 2)] });
+      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — deadlines, commitments, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 2), ...decisionReviews.slice(0, 2)] });
     } else if (role === 'finance') {
       const failed = feeObligationsAll.filter(f => f.status === 'failed');
       const overdueSum = feeObligationsAll.filter(f => f.status === 'overdue').reduce((a, f) => a + (f.amount - f.paidAmount), 0);
-      headSub = `${weekday(now)} · ${fmtDate(now)} · Finance · ${campusLabel}`;
+      headSub = `${weekday(now)} · ${fmtDate(now)} · Finance`;
       stats = [
-        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'Sample insight in this build — open Fees for the live ledger' : 'No fee records yet', to: '/fees' },
+        { label: 'Collection — Term 2', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--accent)" /> : undefined, sub: insFee ? 'Sample insight in this build — open Fees for the live fee records' : 'No fee records yet', to: '/fees' },
         { label: 'Failed payments', value: String(failed.length), sub: failed.length ? `${failed.length} awaiting retry or settlement` : 'Nothing awaiting retry', to: '/fees' },
-        { label: 'Overdue outstanding', value: fmtMoneyShortLocal(overdueSum), sub: 'Across all campuses · Term 1 + 2', to: '/fees' },
+        { label: 'Overdue outstanding', value: fmtMoneyShortLocal(overdueSum), sub: 'Term 1 + 2', to: '/fees' },
         { label: 'Open items', value: String(openCount), sub: `${highCount} high priority`, to: '/action-center' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'approvals and finance clusters first', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
@@ -485,25 +486,25 @@ export default function Today() {
         items: [
           ...(collection != null ? [{
             id: 'fee-trend', icon: 'Money' as const, title: `Collection ${collection}% this week`,
-            detail: 'Sample figure in this build — open the Fees desk for the live obligations ledger.',
+            detail: 'Sample figure in this build — open the Fees desk for the live fee records.',
             chips: [demo('Fees records · sample')],
             badge: { label: 'Dip', tone: 'warning' as BadgeTone }, to: '/fees',
           }] : []),
         ],
       });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today });
-      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
+      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — deadlines, commitments, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
     } else if (role === 'transport') {
       const totalRiders = (liveRoutes ?? []).reduce((a, r) => a + Number(r.riders ?? 0), 0);
-      headSub = `${weekday(now)} · ${fmtDate(now)} · Transport · ${campusLabel}`;
+      headSub = `${weekday(now)} · ${fmtDate(now)} · Transport`;
       stats = [
-        { label: 'Routes', value: String(liveRoutes?.length ?? 0), sub: 'From GET /transport/routes — GPS status is not connected yet, so no on-time figure is shown', to: '/transport' },
-        { label: 'Riders on routes', value: String(totalRiders), sub: 'Live count of students holding a bus_route', to: '/transport' },
+        { label: 'Routes', value: String(liveRoutes?.length ?? 0), sub: 'From connected route records — GPS status is not connected yet, so no on-time figure is shown', to: '/transport' },
+        { label: 'Riders on routes', value: String(totalRiders), sub: 'Live count of students assigned to a bus route', to: '/transport' },
         { label: 'Open items', value: String(openCount), sub: `${criticalCount} critical`, to: '/action-center' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'transport-critical maintenance and follow-ups', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
       bands.push({
-        id: 'fleet', label: 'Fleet', sub: `${(liveRoutes ?? []).length} routes — from the routes door (roster and capacity only; GPS status is not connected yet)`,
+        id: 'fleet', label: 'Fleet', sub: `${(liveRoutes ?? []).length} routes — roster and capacity only; GPS status is not connected yet`,
         items: (liveRoutes ?? []).slice(0, 4).map(r => ({
           id: String(r.id), icon: 'Bus' as const,
           title: `${r.name ?? r.code}`,
@@ -513,10 +514,10 @@ export default function Today() {
         })),
       });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today.slice(0, 3) });
-      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 2), ...decisionReviews] });
+      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — deadlines, commitments, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 2), ...decisionReviews] });
     } else if (role === 'itadmin') {
       const score = healthIssues.length ? seed.healthScore(healthIssues) : null;
-      headSub = `${weekday(now)} · ${fmtDate(now)} · IT administration · ${campusLabel}`;
+      headSub = `${weekday(now)} · ${fmtDate(now)} · IT administration`;
       stats = [
         { label: 'Data health score', value: score != null ? String(score) : '—', sub: healthIssues.length ? `${healthIssues.filter(i => i.status === 'open').length} open issues` : 'Health checks appear once your school has records', to: '/data-health' },
         { label: 'AI spend this month', value: aiUsage ? fmtMoneyShortLocal(aiUsage.monthSpend) : '—', sub: aiUsage?.budget ? `of ${fmtMoneyShortLocal(aiUsage.budget)} budget` : 'No AI usage yet', to: '/ai-usage' },
@@ -531,40 +532,40 @@ export default function Today() {
           id: 'sys-sms', icon: 'Message', title: `SMS rail ${caps?.rails.sms?.configured ? 'configured' : 'not connected yet'}`,
           detail: caps?.rails.sms?.configured
             ? `Provider: ${caps.rails.sms?.provider ?? 'custom'}. Messages send through this rail.`
-            : 'Messages queue but do not send until a provider is connected. Set it up in the Rails console.',
-          chips: ['From GET /capabilities · live'], badge: { label: caps?.rails.sms?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.sms?.configured ? 'success' : 'warning' }, to: '/rails',
+            : 'Messages queue but do not send until a provider is connected. Set it up on the Connections page.',
+          chips: ['Connection status · live'], badge: { label: caps?.rails.sms?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.sms?.configured ? 'success' : 'warning' }, to: '/rails',
         },
         {
           id: 'sys-wa', icon: 'Message', title: `WhatsApp rail ${caps?.rails.whatsapp?.configured ? 'configured' : 'not connected yet'}`,
           detail: caps?.rails.whatsapp?.configured
             ? `Provider: ${caps.rails.whatsapp?.provider ?? 'BSP'}. Parent messages send through this rail.`
-            : 'WhatsApp drafts stay queued until a BSP provider is connected. Set it up in the Rails console.',
-          chips: ['From GET /capabilities · live'], badge: { label: caps?.rails.whatsapp?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.whatsapp?.configured ? 'success' : 'warning' }, to: '/rails',
+            : 'WhatsApp drafts stay queued until a BSP provider is connected. Set it up on the Connections page.',
+          chips: ['Connection status · live'], badge: { label: caps?.rails.whatsapp?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.whatsapp?.configured ? 'success' : 'warning' }, to: '/rails',
         },
         {
           id: 'sys-pay', icon: 'CreditCard', title: `Payments gateway ${caps?.rails.razorpay?.configured ? 'configured' : 'not connected yet'}`,
           detail: caps?.rails.razorpay?.configured
             ? 'Gateway keys are present; payments initiate and confirm against the real gateway.'
-            : 'Payments can be recorded manually; gateway keys are not connected yet. Set them up in the Rails console.',
-          chips: ['From GET /capabilities · live'], badge: { label: caps?.rails.razorpay?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.razorpay?.configured ? 'success' : 'warning' }, to: '/rails',
+            : 'Payments can be recorded manually; gateway keys are not connected yet. Set them up on the Connections page.',
+          chips: ['Connection status · live'], badge: { label: caps?.rails.razorpay?.configured ? 'Connected' : 'Setup needed', tone: caps?.rails.razorpay?.configured ? 'success' : 'warning' }, to: '/rails',
         },
       ];
-      bands.push({ id: 'systems', label: 'Systems', sub: 'What is actually connected — live from /capabilities', items: sysItems });
+      bands.push({ id: 'systems', label: 'Systems', sub: 'What is actually connected — checked live', items: sysItems });
       bands.push({ id: 'today', label: 'Today', sub: 'Calendar and timetable', items: today.slice(0, 3) });
-      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 3), ...decisionReviews] });
+      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — deadlines, commitments, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations.slice(0, 3), ...decisionReviews] });
     } else {
       /* principal / coordinator / admissions / owner — the full Morning Briefing */
-      headSub = `${weekday(now)} · ${fmtDate(now)} · ${campusLabel}`;
+      headSub = `${weekday(now)} · ${fmtDate(now)}`;
       stats = [
-        { label: 'WOC — coverage', value: woc != null ? `${woc.toFixed(1)}%` : '—', spark: wocSeries.length ? <Sparkline points={wocSeries} color="var(--accent)" /> : undefined, sub: `Weekly Operating Coverage · ${campusesAll.reduce((a, c) => a + (c.students ?? 0), 0)} students`, to: '/attendance' },
+        { label: 'Weekly coverage', value: woc != null ? `${woc.toFixed(1)}%` : '—', spark: wocSeries.length ? <Sparkline points={wocSeries} color="var(--accent)" /> : undefined, sub: `Sample figure in this build · ${totalActive} enrolled students`, to: '/attendance' },
         { label: 'Open actions', value: String(openCount), sub: `${criticalCount} critical · ${highCount} high priority`, to: '/action-center' },
-        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? 'Sample figure in this build — the live ledger is on the Fees desk' : 'No fee records yet', to: '/fees' },
-        { label: 'Transport on time', value: `${onTimePct}%`, sub: r7 ? (r7.status === 'delayed' ? `Bus 14 delayed +${r7.delayMins ?? 13} min` : 'All routes nominal') : 'No routes yet', to: '/transport' },
+        { label: 'Term 2 collection', value: collection != null ? `${collection}%` : '—', spark: insFeeValues.length ? <Sparkline points={insFeeValues} color="var(--warning)" /> : undefined, sub: insFee ? 'Sample figure in this build — the live fee records are on the Fees desk' : 'No fee records yet', to: '/fees' },
+        { label: 'Transport on time', ...(routesData.length ? { value: `${onTimePct}%` } : { unavailable: 'Not connected' }), sub: routesData.length ? 'Live route status from the transport door' : 'Route status is not connected yet — open Transport for the live roster', to: '/transport' },
       ];
       bands.push({ id: 'needs', label: 'Needs you', sub: 'priority-ranked, oldest deadline first', items: [...maintenanceBriefs(domain.workOrders), ...actionBriefs(actions)] });
       bands.push({ id: 'changed', label: 'Changed overnight', sub: 'Attendance anomalies, fee movement, transport events — diffed against 30-day baselines', items: changed });
       bands.push({ id: 'today', label: 'Today', sub: todays.length ? `${todays.length} event${todays.length === 1 ? '' : 's'} on today's calendar` : 'Calendar highlights for the coming week', items: today });
-      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — SLA clocks, obligations, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
+      bands.push({ id: 'watch', label: 'Tomorrow', sub: 'What breaks next — deadlines, commitments, decision reviews', items: [...tomorrowBriefs(domain.workOrders), ...watchObligations, ...decisionReviews] });
     }
 
     /* --- day ribbon: the school day as proportional segments (unit 9) --- */
@@ -581,10 +582,13 @@ export default function Today() {
     const nowPct = pctAt(hm);
 
     return { bands, stats, headSub, wocSeries, woc, openCount, ribbon, nowPct };
-  }, [routesData, domain.actions, domain.cases, domain.workOrders, role, actorName, campusLabel, caps]);
+  }, [routesData, domain.actions, domain.cases, domain.workOrders, role, actorName, caps]);
 
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
   const isPrincipalish = !['teacher', 'finance', 'transport', 'itadmin'].includes(role);
+  /* 0.5 demo-residue: the honesty note renders only when the briefing actually
+     shows demo chips — a populated all-live walk renders zero. */
+  const hasDemo = !!brief?.bands.some(b => b.items.some(it => it.chips.some(c => c.includes('· demo'))));
 
   if (error) {
     return <ErrorState title="The briefing could not load" sub="Attendance, fee and transport sources did not respond. Retry keeps your session." onRetry={() => setTick(t => t + 1)} />;
@@ -600,13 +604,18 @@ export default function Today() {
 
       {/* day ribbon — the temporal anchor (unit 9; deterministic from the timetable) */}
       {!loading && brief && brief.ribbon.length > 0 && (
-        <div className="day-ribbon" role="img" aria-label={`School day map: ${brief.ribbon.length} blocks between 7:00 and 16:00, now marker at ${Math.round(brief.nowPct)}% of the day`}>
-          <div className="dr-track">
+        <div className="day-ribbon">
+          <div className="day-ribbon-title">School day</div>
+          <div className="dr-track" role="img" aria-label={`School day map: ${brief.ribbon.length} blocks between 7:00 and 16:00, now marker at ${Math.round(brief.nowPct)}% of the day`}>
             {brief.ribbon.map((e, i) => (
               <span key={i} className={`dr-seg${e.isNow ? ' now' : ''}`} style={{ left: `${e.left}%`, width: `${e.width}%` }} />
             ))}
             {brief.nowPct > 0 && brief.nowPct < 100 && <span className="dr-now" style={{ left: `${brief.nowPct}%` }} />}
           </div>
+          {/* The axis sits UNDER the track at the same width, so "7 AM" and
+              "4 PM" land exactly on the track's ends. Sharing a line with the
+              title put the first label hard against the word "School day". */}
+          <div className="day-ribbon-axis" aria-hidden="true"><span>7 AM</span><span>12 PM</span><span>4 PM</span></div>
         </div>
       )}
 
@@ -618,7 +627,9 @@ export default function Today() {
             <Stat
               key={s.label}
               label={s.label}
-              value={s.value}
+              {...('unavailable' in s
+                ? { unavailable: s.unavailable }
+                : { value: s.value })}
               delta={s.delta}
               sub={s.sub}
               spark={s.spark}
@@ -646,16 +657,10 @@ export default function Today() {
             brief.bands.map(b => <BandBlock key={b.id} band={b} />)
           )}
 
-          {isPrincipalish && !loading && brief && (
-            <Card pad className="u-col" >
-              <div className="u-flex" style={{ gap: 10, alignItems: 'flex-start' }}>
-                <Icon.Info size={15} style={{ color: 'var(--text-3)', flexShrink: 0, marginTop: 2 }} />
-                <div className="u-small u-muted" style={{ lineHeight: 1.6 }}>
-                  Coverage (WOC) counts enrolled students present at first period across all campuses — 94.1% is the healthy band this term.
-                  Attendance leniency for delayed routes applies until 09:30 per Attendance §1.4; registers self-correct as students arrive.
-                </div>
-              </div>
-            </Card>
+          {isPrincipalish && !loading && brief && hasDemo && (
+            <SampleNote>
+              Some figures here are sample data in this build — look for the “· demo” tags and the “sample” notes on each card. Live actions, work orders, calendar records and connection status come from your school’s own records; the coverage and collection figures are illustrative until those live feeds are wired.
+            </SampleNote>
           )}
         </div>
 
@@ -663,7 +668,7 @@ export default function Today() {
         <div className="u-col" style={{ gap: 16 }}>
           <Card head={<span className="u-flex" style={{ gap: 7 }}><Icon.Zap size={14} /> Live activity</span>} pad>
             {domain.events.length === 0 ? (
-              <Empty icon={<Icon.Offline size={20} />} title="No live events yet" sub="Operational events from across the school stream here in real time." />
+              <Empty size="sm" icon={<Icon.Sunrise size={20} />} title="No live events yet" sub="Operational events from across the school stream here in real time." />
             ) : (
               <div className="scroll-thin" style={{ maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
                 {domain.events.slice(0, 12).map(e => <EventLine key={e.id} e={e} />)}
@@ -679,7 +684,7 @@ export default function Today() {
               title="How this briefing was assembled"
               steps={[
                 { label: 'Diff overnight deltas', detail: 'Attendance, fees records and transport events compared against recent baselines', source: 'School records · just now' },
-                { label: 'Rank by impact × deadline', detail: 'Priority = affected students × policy exposure × SLA remaining', source: 'Constitution v2026.1' },
+                { label: 'Rank by impact × deadline', detail: 'Priority = affected students × policy exposure × deadline remaining', source: 'School policy' },
                 { label: 'Draft with citations', detail: 'Every claim above carries its source, timestamp and confidence', source: 'Deterministic assembly · no language model' },
               ]}
             />

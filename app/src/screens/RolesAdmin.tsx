@@ -29,6 +29,7 @@ import { Badge, Button, Card, Empty, ErrorState, PageHead, Section, SkeletonCard
 import { Icon } from '../components/Icon';
 import { useStore } from '../state/store';
 import { fmtDate } from '../lib/format';
+import { humanize, roleLabel } from '../lib/labels';
 
 interface RoleMask { allow: string[]; deny: string[] }
 interface CustomRole { key: string; label: string; base_role: string; permissions: RoleMask; created_at: string; members: number }
@@ -36,6 +37,16 @@ interface RolesResponse { roles: CustomRole[]; builtin: string[] }
 interface UserRow { id: string; name: string; email: string; role: string; active: boolean }
 
 const METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', '*'] as const;
+const METHOD_LABELS: Record<string, string> = { GET: 'View', POST: 'Create', PATCH: 'Edit', PUT: 'Edit', DELETE: 'Delete', '*': 'Any action' };
+
+/* Plain name for a permission pattern: a preset's label, else the humanised feature path. */
+function featureLabel(pattern: string): string {
+  const known = PRESETS.find(x => x.pattern === pattern);
+  if (known) return known.label;
+  const path = pattern.replace(/^[A-Z*]+\s+/, '').replace(/^\//, '').replace(/\/\*?$/, '');
+  const name = path.split('/').filter(Boolean).pop() ?? path;
+  return name ? humanize(name) : pattern;
+}
 
 /* Curated presets — every pattern is a REAL door (routes.js / plugins).
    The server re-validates against the live route registry and refuses
@@ -111,13 +122,13 @@ function MaskEditor({ mask, onChange }: { mask: RoleMask; onChange: (m: RoleMask
   const renderList = (kind: 'allow' | 'deny') => (
     <div className="u-col" style={{ gap: 4 }}>
       <span className="u-xs u-faint" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>
-        {kind === 'allow' ? 'Allow (grant even if the base role lacks it)' : 'Deny (refuse even if the base role has it)'}
+        {kind === 'allow' ? 'Allow (grant even if the starting role lacks it)' : 'Refuse (deny even if the starting role has it)'}
       </span>
-      {mask[kind].length === 0 && <span className="u-xs u-faint">nothing {kind === 'allow' ? 'granted' : 'refused'} beyond the base role</span>}
+      {mask[kind].length === 0 && <span className="u-xs u-faint">nothing {kind === 'allow' ? 'granted' : 'refused'} beyond the starting role</span>}
       {mask[kind].map(p => (
         <div key={`${kind}-${p}`} className="u-flex" style={{ gap: 6, alignItems: 'center' }}>
-          <code className="u-mono u-small" style={{ background: 'var(--surface-2)', padding: '4px 8px', borderRadius: 'var(--r-md)', flex: 1 }}>{p}</code>
-          <Button size="sm" variant="ghost" onClick={() => onChange({ ...mask, [kind]: mask[kind].filter(x => x !== p) })} aria-label={`Remove ${p}`}>✕</Button>
+          <code className="u-mono u-small" style={{ background: 'var(--surface-2)', padding: '4px 8px', borderRadius: 'var(--r-md)', flex: 1 }}>{featureLabel(p)}</code>
+          <Button size="sm" variant="ghost" onClick={() => onChange({ ...mask, [kind]: mask[kind].filter(x => x !== p) })} aria-label={`Remove ${featureLabel(p)}`}>✕</Button>
         </div>
       ))}
     </div>
@@ -126,7 +137,7 @@ function MaskEditor({ mask, onChange }: { mask: RoleMask; onChange: (m: RoleMask
   return (
     <div className="u-col" style={{ gap: 12 }}>
       <div className="u-col" style={{ gap: 6 }}>
-        <span className="u-xs u-faint" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Common doors (real presets — the server refuses patterns that match nothing)</span>
+        <span className="u-xs u-faint" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Common features (real presets — the server refuses patterns that match nothing)</span>
         <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
           {PRESETS.map(pr => {
             const on = mask.allow.includes(pr.pattern);
@@ -140,7 +151,6 @@ function MaskEditor({ mask, onChange }: { mask: RoleMask; onChange: (m: RoleMask
                   color: on ? 'var(--accent-text)' : 'var(--text-2)',
                   borderRadius: 999, padding: '4px 10px', cursor: 'pointer', minHeight: 28,
                 }}
-                title={pr.pattern}
                 onClick={() => onChange(on
                   ? { ...mask, allow: mask.allow.filter(x => x !== pr.pattern) }
                   : { ...mask, allow: [...mask.allow, pr.pattern], deny: mask.deny.filter(x => x !== pr.pattern) })}
@@ -151,12 +161,12 @@ function MaskEditor({ mask, onChange }: { mask: RoleMask; onChange: (m: RoleMask
       </div>
 
       <div className="u-col" style={{ gap: 6 }}>
-        <span className="u-xs u-faint" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Custom pattern</span>
+        <span className="u-xs u-faint" style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}>Custom feature</span>
         <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
-          <select className="select" style={{ width: 110 }} value={method} onChange={e => setMethod(e.target.value)} aria-label="HTTP method">
-            {METHODS.map(m => <option key={m} value={m}>{m === '*' ? 'ANY method' : m}</option>)}
+          <select className="select" style={{ width: 110 }} value={method} onChange={e => setMethod(e.target.value)} aria-label="Action">
+            {METHODS.map(m => <option key={m} value={m}>{METHOD_LABELS[m] ?? m}</option>)}
           </select>
-          <input className="input" style={{ flex: 1, minWidth: 200 }} value={path} placeholder="/path or /prefix/*  (or empty with ANY method)"
+          <input className="input" style={{ flex: 1, minWidth: 200 }} value={path} placeholder="Feature path, e.g. /students or /students/*  (leave empty with Any action)"
             onChange={e => setText(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addRow(); } }} />
           <Button size="sm" variant="secondary" onClick={addRow}>Add to allow</Button>
@@ -168,8 +178,8 @@ function MaskEditor({ mask, onChange }: { mask: RoleMask; onChange: (m: RoleMask
         {renderList('deny')}
       </div>
       <div className="u-xs u-faint" style={{ lineHeight: 1.55 }}>
-        Deny wins over allow, and both win over the base role. A trailing <code>*</code> matches a prefix
-        (e.g. <code>POST /students/*</code>); a bare <code>*</code> matches everything.
+        Refuse wins over allow, and both win over the starting role. A trailing <code>*</code> matches a prefix;
+        a bare <code>*</code> matches everything.
       </div>
     </div>
   );
@@ -204,12 +214,16 @@ function AssignDrawer({ role, onClose, onDone }: { role: CustomRole; onClose: ()
     if (!userIds.length) return;
     setBusy(true); setError(null);
     try {
-      const r = await apiPost<{ assigned?: number; cleared?: number }>(`/roles/${role.key}/${kind}`, { userIds });
+      /* Both paths are written out in full rather than composed from `kind`: a door's name has to be
+         greppable, or "does the product call this door?" can only be answered by hand — which is how a
+         door with no screen survives for years (G-7). */
+      const path = kind === 'assign' ? `/roles/${role.key}/assign` : `/roles/${role.key}/unassign`;
+      const r = await apiPost<{ assigned?: number; cleared?: number }>(path, { userIds });
       toast({
         title: kind === 'assign' ? 'Role assigned' : 'Role cleared',
         sub: kind === 'assign'
-          ? `${r.assigned ?? userIds.length} account(s) now carry “${role.label}” (base ${role.base_role} + mask).`
-          : `${r.cleared ?? userIds.length} account(s) back to their builtin role.`,
+          ? `${r.assigned ?? userIds.length} account(s) now carry “${role.label}” (starting role ${roleLabel(role.base_role)} + permissions).`
+          : `${r.cleared ?? userIds.length} account(s) back to their built-in role.`,
         tone: 'success',
       });
       onDone();
@@ -257,6 +271,7 @@ function AssignDrawer({ role, onClose, onDone }: { role: CustomRole; onClose: ()
 }
 
 export default function RolesAdmin() {
+  const toast = useToast();
   const { session } = useStore();
   const canAdmin = session.roleId === 'owner' || session.roleId === 'itadmin';
 
@@ -267,6 +282,24 @@ export default function RolesAdmin() {
 
   const [editing, setEditing] = useState<CustomRole | 'new' | 'librarian' | null>(null);
   const [assigning, setAssigning] = useState<CustomRole | null>(null);
+  const [retiring, setRetiring] = useState<string | null>(null);
+
+  /* G-6 — retire a custom role. The server does not DELETE: it renames the key out of the live
+     namespace, empties the mask and refuses while any account still carries the role, so the audit
+     ledger's recordRefs stay resolvable forever (D-35). Both of those answers are surfaced here: the
+     409 names the accounts, because "unassign the N accounts first" is the actionable instruction. */
+  const retire = async (r: CustomRole) => {
+    const who = `${r.members} account${r.members === 1 ? '' : 's'}`;
+    if (!window.confirm(`Retire the role “${r.label}”? ${r.members > 0 ? `${who} still carry it — they will keep their built-in role until reassigned. ` : ''}It can never be used again.`)) return;
+    setRetiring(r.key);
+    try {
+      await roleSend('DELETE', `/roles/${encodeURIComponent(r.key)}`);
+      toast({ title: `“${r.label}” retired`, sub: 'The role is out of the live namespace. Its history stays in the audit ledger.', tone: 'success' });
+      reload();
+    } catch (e) {
+      toast({ title: 'Could not retire the role', sub: friendly(e), tone: 'error' });
+    } finally { setRetiring(null); }
+  };
 
   const reload = () => setTick(t => t + 1);
 
@@ -293,10 +326,10 @@ export default function RolesAdmin() {
     <>
       <PageHead
         title="Roles & permissions"
-        sub="Custom roles: pick a builtin base, then grant or refuse specific doors. The mask is read fresh on every request; assignment changes apply within the server's binding window."
+        sub="Custom roles: pick a starting role, then grant or refuse specific features. Permissions are read fresh on every request; assignment changes apply within the server's binding window."
         actions={
           <div className="u-flex" style={{ gap: 8 }}>
-            <Button variant="secondary" icon={<Icon.Book size={14} />} onClick={() => setEditing('librarian')} title="D-43 acceptance quick start — pre-fills the librarian role">Librarian role</Button>
+            <Button variant="secondary" icon={<Icon.Book size={14} />} onClick={() => setEditing('librarian')} title="Pre-fills the librarian role">Librarian role</Button>
             <Button variant="secondary" icon={<Icon.Plus size={14} />} onClick={() => setEditing('new')}>New role</Button>
           </div>
         }
@@ -306,11 +339,11 @@ export default function RolesAdmin() {
       {loadError && <ErrorState title="Could not load roles" sub={loadError} onRetry={reload} />}
       {!loading && !loadError && data && data.roles.length === 0 && (
         <Empty icon={<Icon.Users size={26} />} title="No custom roles yet"
-          sub="Every account uses its builtin role. Create a custom role when someone needs a base role plus (or minus) specific doors."
+          sub="Every account uses its built-in role. Create a custom role when someone needs a starting role plus (or minus) specific features."
           action={<Button variant="secondary" icon={<Icon.Book size={14} />} onClick={() => setEditing('librarian')}>Create the Librarian role</Button>} />
       )}
       {!loading && !loadError && data && data.roles.length > 0 && (
-        <Section title="Custom roles" sub={`${data.roles.length} role${data.roles.length === 1 ? '' : 's'} · resolution order: custom mask → builtin base`}>
+        <Section title="Custom roles" sub={`${data.roles.length} role${data.roles.length === 1 ? '' : 's'} · resolution order: custom permissions → starting role`}>
           <div className="grid grid-2">
             {data.roles.map(r => (
               <Card key={r.key} head={r.label}
@@ -318,17 +351,22 @@ export default function RolesAdmin() {
                   <div className="u-flex" style={{ gap: 4 }}>
                     <Button size="sm" variant="ghost" icon={<Icon.Edit size={12} />} onClick={() => setEditing(r)}>Edit</Button>
                     <Button size="sm" variant="ghost" icon={<Icon.Users size={12} />} onClick={() => setAssigning(r)}>Assign</Button>
+                    {/* G-6: the client transport already declared 'DELETE' and only ever called 'PATCH',
+                        which is how `DELETE /roles/:key` stayed unreachable — a role a school created by
+                        mistake was permanent from the UI, and the server implements a careful retire-in-place
+                        (key namespaced out of the live namespace, mask emptied, 409 while members remain). */}
+                    <Button size="sm" variant="ghost" onClick={() => retire(r)} disabled={retiring === r.key}>Retire</Button>
                   </div>
                 }>
                 <div className="u-col" style={{ padding: 'var(--s-4) var(--s-5)', gap: 8 }}>
                   <div className="u-between u-small">
-                    <span className="u-muted">key <code className="u-mono">{r.key}</code></span>
+                    <span className="u-muted">Custom role</span>
                     <Badge tone={r.members > 0 ? 'accent' : 'neutral'} dot>{r.members} account{r.members === 1 ? '' : 's'}</Badge>
                   </div>
-                  <div className="u-small">Base role: <strong>{r.base_role}</strong></div>
+                  <div className="u-small">Starting role: <strong>{roleLabel(r.base_role)}</strong></div>
                   <div className="u-small u-muted">
-                    {r.permissions.allow.length > 0 ? <>allows <code className="u-mono">{r.permissions.allow.join(', ')}</code></> : 'no extra grants'}
-                    {r.permissions.deny.length > 0 && <> · refuses <code className="u-mono">{r.permissions.deny.join(', ')}</code></>}
+                    {r.permissions.allow.length > 0 ? <>allows {r.permissions.allow.length} feature{r.permissions.allow.length === 1 ? '' : 's'}</> : 'no extra grants'}
+                    {r.permissions.deny.length > 0 && <> · refuses {r.permissions.deny.length} feature{r.permissions.deny.length === 1 ? '' : 's'}</>}
                   </div>
                   <div className="u-xs u-faint">created {fmtDate(new Date(r.created_at))}</div>
                 </div>
@@ -339,9 +377,9 @@ export default function RolesAdmin() {
       )}
 
       {data && data.roles.length > 0 && (
-        <Section title="Builtin roles" sub="The base every custom role starts from — not editable">
+        <Section title="Built-in roles" sub="The starting role every custom role begins from — not editable">
           <div className="u-flex" style={{ gap: 6, flexWrap: 'wrap' }}>
-            {data.builtin.map(b => <Badge key={b} tone="neutral">{b}</Badge>)}
+            {data.builtin.map(b => <Badge key={b} tone="neutral">{roleLabel(b)}</Badge>)}
           </div>
         </Section>
       )}
@@ -386,10 +424,10 @@ function RoleForm({ role, template, builtin, onClose, onSaved }: { role: CustomR
     try {
       if (isNew) {
         await apiPost<{ ok?: boolean }>('/roles', { key: key.trim(), label: label.trim(), base_role: baseRole, permissions: mask });
-        toast({ title: `Role created — ${label.trim()}`, sub: `Base ${baseRole} + ${mask.allow.length} grant${mask.allow.length === 1 ? '' : 's'}${mask.deny.length ? ` · ${mask.deny.length} refusal${mask.deny.length === 1 ? '' : 's'}` : ''}. Assign it to accounts next.`, tone: 'success' });
+        toast({ title: `Role created — ${label.trim()}`, sub: `Starting role ${roleLabel(baseRole)} + ${mask.allow.length} grant${mask.allow.length === 1 ? '' : 's'}${mask.deny.length ? ` · ${mask.deny.length} refusal${mask.deny.length === 1 ? '' : 's'}` : ''}. Assign it to accounts next.`, tone: 'success' });
       } else {
         await roleSend('PATCH', `/roles/${role.key}`, { label: label.trim(), base_role: baseRole, permissions: mask });
-        toast({ title: `Role updated — ${label.trim()}`, sub: 'The mask is read fresh on every request — changes apply immediately (within the server’s short binding window).', tone: 'success' });
+        toast({ title: `Role updated — ${label.trim()}`, sub: 'Permissions are read fresh on every request — changes apply immediately (within the server’s short binding window).', tone: 'success' });
       }
       onSaved();
     } catch (e: unknown) {
@@ -405,9 +443,9 @@ function RoleForm({ role, template, builtin, onClose, onSaved }: { role: CustomR
         {error && <div role="alert" className="u-small" style={{ color: 'var(--danger)' }}>{error}</div>}
         {template && (
           <div className="u-small" style={{ background: 'var(--accent-weak)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '9px 12px', lineHeight: 1.55 }}>
-            Pre-filled for the D-43 acceptance demo: a librarian is a <strong>teacher-based</strong> role with
-            explicit library permissions — the shell shows them the Library module and nothing management-only,
-            and the kernel refuses finance and other management doors for this token.
+            Pre-filled quick start: a librarian is a <strong>teacher-based</strong> role with
+            explicit library permissions — the school shows them the Library add-on and nothing management-only,
+            and finance and other management features are refused for this account.
           </div>
         )}
         <div className="grid grid-2">
@@ -419,9 +457,9 @@ function RoleForm({ role, template, builtin, onClose, onSaved }: { role: CustomR
             <input className="input" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Fee desk clerk" maxLength={60} />
           </label>
         </div>
-        <label>Base role (the builtin this role starts from)
+        <label>Starting role (the built-in this role starts from)
           <select className="select" value={baseRole} onChange={e => setBaseRole(e.target.value)}>
-            {builtin.map(b => <option key={b} value={b}>{b}</option>)}
+            {builtin.map(b => <option key={b} value={b}>{roleLabel(b)}</option>)}
           </select>
         </label>
         <MaskEditor mask={mask} onChange={setMask} />

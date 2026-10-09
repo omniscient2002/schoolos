@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Badge, Button, Card, Empty, PageHead, Progress, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
+import { roleLabel } from '../../lib/labels';
 import { getCurriculumTreeLive, saveCoverage, type CurriculumTopicLive } from '../../services/teacherApi';
 import { AsyncGate, DeniedState, useAsync, useTeacherAccess } from './teacherKit';
 import { useStore } from '../../state/store';
@@ -50,7 +51,7 @@ export default function CurriculumProgress() {
   const allTopics = units.flatMap(u => u.topics);
   const covered = allTopics.filter(t => t.covered).length;
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>

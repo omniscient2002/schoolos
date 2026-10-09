@@ -24,7 +24,7 @@ function LivePreventive() {
         <Empty
           icon={<Icon.Offline size={24} />}
           title="Not connected yet"
-          sub="There is no preventive-schedule door on the server yet. Plans and schedules will appear here when the door exists."
+          sub="There is no schedule data available yet. Plans and schedules will appear here once it is."
         />
       </Card>
     </div>

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Badge, Button, Card, Empty, Modal, PageHead, Section, SkeletonCard, useToast } from '../../components/ui';
 import { Icon } from '../../components/Icon';
 import { fmtDate } from '../../lib/format';
+import { statusLabel, roleLabel } from '../../lib/labels';
 import { useStore } from '../../state/store';
 import {
   createPtmSlot, listPtmMeetings, listPtmNotes, listPtmSlots, savePtmNotes,
@@ -61,7 +62,7 @@ export default function Ptm() {
     } finally { setSaving(false); }
   };
 
-  if (!allowed) return <DeniedState role={session.roleId} />;
+  if (!allowed) return <DeniedState role={roleLabel(session.roleId)} />;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto' }}>
@@ -139,7 +140,7 @@ function SlotChip({ slot }: { slot: PtmSlot }) {
   return (
     <span className="u-flex" style={{ gap: 6, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: '6px 10px' }}>
       <span className="u-small">{fmtDate(slot.date)} · {slot.startTime}</span>
-      <Badge tone={slot.booked ? 'success' : 'neutral'} dot>{slot.booked ? 'booked' : 'open'}</Badge>
+      <Badge tone={slot.booked ? 'success' : 'neutral'} dot>{statusLabel(slot.booked ? 'booked' : 'open')}</Badge>
     </span>
   );
 }

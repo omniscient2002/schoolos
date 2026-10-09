@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { Card, Button, Badge, DataTable, ErrorState, SkeletonCard, Section, KeyValue, useToast } from '../../../components/ui';
 import { DeskIcon as Icon } from './shared';
 import { friendly } from '../../../lib/friendlyErrors';
+import { statusLabel, humanize } from '../../../lib/labels';
 import {
   libraryDeskBook, libraryUpdateBook, libraryAddCopies, librarySetCopy, libraryBookCoverUrl, filesUploadBase64,
   type LibraryDeskBookDetail, type LibraryCopy,
@@ -114,7 +115,7 @@ export default function BookDetail() {
         <DataTable
           columns={[
             { key: 'code', label: 'Copy', render: (k: LibraryCopy) => <code>{k.copy_code}</code> },
-            { key: 'status', label: 'Status', render: (k: LibraryCopy) => <Badge tone={k.status === 'available' ? 'success' : k.status === 'issued' ? 'info' : 'warning'}>{k.status}</Badge> },
+            { key: 'status', label: 'Status', render: (k: LibraryCopy) => <Badge tone={k.status === 'available' ? 'success' : k.status === 'issued' ? 'info' : 'warning'}>{statusLabel(k.status)}</Badge> },
             { key: 'who', label: 'With', render: (k: LibraryCopy) => k.borrower ? `${k.borrower}${k.due_on ? ` · due ${fmtDate(k.due_on)}` : ''}` : '—' },
             { key: 'act', label: '', render: (k: LibraryCopy) => k.status === 'issued' ? null : (
               <>
@@ -132,7 +133,7 @@ export default function BookDetail() {
         {data.openLoans.length ? (
           <DataTable
             columns={[
-              { key: 'borrower', label: 'Borrower', render: (l) => `${l.borrower ?? '—'} (${l.borrower_type})` },
+              { key: 'borrower', label: 'Borrower', render: (l) => `${l.borrower ?? '—'} (${humanize(l.borrower_type)})` },
               { key: 'copy', label: 'Copy', render: (l) => <code>{l.copy_code}</code> },
               { key: 'due', label: 'Due', render: (l) => fmtDate(l.due_on) },
             ]}

@@ -9,6 +9,7 @@ import { apiGet, apiPost } from '../services/liveApi';
 import { friendly } from '../lib/friendlyErrors';
 import { PageHead, Card, Badge, Button, DataTable, Empty, ErrorState, Section, SkeletonCard, useToast } from '../components/ui';
 import { Icon } from '../components/Icon';
+import { roleLabel, statusLabel } from '../lib/labels';
 
 interface Delegation { id: string; from_name?: string; from_role: string; to_name?: string; to_role: string; scope_role?: string | null; starts_at: string; ends_at: string; reason?: string | null }
 interface Person { id: string; name: string; role: string }
@@ -69,14 +70,14 @@ export default function Delegations() {
                   setForm(f => ({ ...f, fromUserId: e.target.value, fromRole: p ? p.role : myRole, toRole: p ? p.role : myRole }));
                 }}
               >
-                <option value="">Me ({myRole})</option>
-                {delegators.map(p => <option key={p.id} value={p.id}>{p.name} · {p.role}</option>)}
+                <option value="">Me ({roleLabel(myRole)})</option>
+                {delegators.map(p => <option key={p.id} value={p.id}>{p.name} · {roleLabel(p.role)}</option>)}
               </select>
             </label>
             <label className="u-small" style={{ flex: 1, minWidth: 220 }}>Deputy
               <select className="select" value={form.toUserId} onChange={e => setForm(f => ({ ...f, toUserId: e.target.value }))} style={{ width: '100%' }}>
                 <option value="">Select a staff member…</option>
-                {people.map(p => <option key={p.id} value={p.id}>{p.name} · {p.role}</option>)}
+                {people.map(p => <option key={p.id} value={p.id}>{p.name} · {roleLabel(p.role)}</option>)}
               </select>
             </label>
             <label className="u-small">Until
@@ -97,10 +98,10 @@ export default function Delegations() {
           : (
             <DataTable<Delegation>
               columns={[
-                { key: 'from', label: 'From', render: r => <span>{r.from_name ?? r.from_role} <span className="u-xs u-faint">({r.from_role})</span></span> },
-                { key: 'to', label: 'To', render: r => <span>{r.to_name ?? r.to_role} <span className="u-xs u-faint">({r.to_role})</span></span> },
+                { key: 'from', label: 'From', render: r => <span>{r.from_name ?? roleLabel(r.from_role)} <span className="u-xs u-faint">({roleLabel(r.from_role)})</span></span> },
+                { key: 'to', label: 'To', render: r => <span>{r.to_name ?? roleLabel(r.to_role)} <span className="u-xs u-faint">({roleLabel(r.to_role)})</span></span> },
                 { key: 'window', label: 'Window', render: r => <span className="u-small">{new Date(r.starts_at).toLocaleString()} → {new Date(r.ends_at).toLocaleString()}</span> },
-                { key: 'status', label: 'Status', render: r => <Badge tone={active(r) ? 'success' : 'outline'} dot>{active(r) ? 'active' : 'expired'}</Badge> },
+                { key: 'status', label: 'Status', render: r => <Badge tone={active(r) ? 'success' : 'outline'} dot>{statusLabel(active(r) ? 'active' : 'expired')}</Badge> },
                 { key: 'reason', label: 'Reason', render: r => <span className="u-small u-muted">{r.reason ?? '—'}</span> },
               ]}
               rows={list}

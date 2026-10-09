@@ -23,25 +23,21 @@ import {
   type AdminUser, type ImportReport, type ImportOkRow, type ImportFailRow,
 } from '../services/adminApi';
 import { apiOnboardStatus, apiSchoolClasses, type OnboardStatus, type SchoolClass } from '../services/onboardingApi';
-import { apiUpdateStudent, apiWithdrawStudent } from '../services/liveApi';
-import { KNOWN_ROLES } from '../lib/roles';
-import { useRoleOrGrant } from '../lib/access';
+import { apiGet, apiPost, apiCreateFeeHead, apiUpdateStudent, apiWithdrawStudent, apiStudents } from '../services/liveApi';
+import { PROVISIONABLE_ROLES } from '../lib/roles';
+import { roleLabel, pluginLabel, classLabel, gradeLabel } from '../lib/labels';
+import { useRoleOrGrant, useLiveRole } from '../lib/access';
 
-/* Review round 20, P2: this list is what a school actually sees when appointing someone, and it was missing
-   `counselor` — the role RBAC-2 added, whose whole purpose is the safeguarding work this product ships
-   screens for. The API door accepted it while the only provisioning UI could not offer it, so the 13th role
-   was reachable only by hand-written requests. Owner is intentionally absent: the server refuses to
-   provision owners through this console (ROLES_NO_OWNER), so the option must not exist either.
-   `server/tests/frontend-grants.test.js` now fails if this list and the server's ROLES disagree. */
-const ROLE_OPTIONS = KNOWN_ROLES.filter((r) => r !== 'owner' && r !== 'student');
-const ROLE_LABEL: Record<string, string> = {
-  principal: 'Principal', coordinator: 'Coordinator', counselor: 'Counsellor (wellbeing)',
-  finance: 'Accounts (Finance)',
-  finance_head: 'Finance head (approver)', finance_clerk: 'Finance clerk (maker)',
-  admissions: 'Admissions desk', transport: 'Transport in-charge', facilities: 'Facilities',
-  technician: 'Technician', teacher: 'Teacher', itadmin: 'IT admin', parent: 'Parent',
-  librarian: 'Librarian',
-};
+/* One declaration of what a school can appoint: `PROVISIONABLE_ROLES` (lib/roles.ts) is
+   KNOWN_ROLES minus `owner`, because owners are created at tenant bootstrap and nowhere else —
+   the server refuses to provision one here (ROLES_NO_OWNER), so the option must not exist either.
+   `student` used to be filtered out of this list as well "by design", and that decision had no
+   second door behind it: the server issues the role and ~20 `/student/*` doors exist, so the entire
+   student portal had no possible user (G-1). A pupil's portal account is now created from the
+   roster, where the school actually is — see "Give a pupil a portal account" below.
+   `server/tests/frontend-grants.test.js` fails if this list and the server's roles disagree, and it
+   asserts `roleLabel()` returns a human name for every one of them (PRE-1). */
+const ROLE_OPTIONS = PROVISIONABLE_ROLES;
 /* Classes and sections are NOT hardcoded: the school defines them on the Classes & sections
    screen (owner/principal/IT admin) and this console reads that one list. */
 
@@ -54,7 +50,16 @@ export default function PeopleAdmin() {
      The server's require(...ADMIN / ...ROSTER) re-decides every write. */
   const canAdmin = useRoleOrGrant(['owner', 'itadmin'], ['GET /plugins/people.admin/users', 'POST /plugins/people.admin/users']);
   const canRoster = useRoleOrGrant(['owner', 'principal', 'coordinator'],
-    ['POST /plugins/people.admin/students/:id/transfer', 'PATCH /plugins/people.admin/students/:id', 'POST /plugins/people.admin/students/:id/withdraw']);
+    ['POST /plugins/people.admin/students/:id/transfer', 'PATCH /plugins/people.admin/students/:id']);
+  /* P2-4 guard: withdrawal is a DIFFERENT authority from a class transfer — the withdraw door admits
+     owner and principal only, while transfer and edit also admit a coordinator. One combined list put the
+     withdraw form in front of a coordinator who would be refused by the server. */
+  const canWithdraw = useRoleOrGrant(['owner', 'principal'], ['POST /plugins/people.admin/students/:id/withdraw']);
+  /* The server can never admit a principal appointment from a non-owner
+     (audited 403 regardless of custom masks — the handler checks the built-in
+     role, not the grant), so offering it is a guaranteed refusal. Hide it. */
+  const liveRole = useLiveRole();
+  const roleOptions = liveRole === 'owner' ? ROLE_OPTIONS : ROLE_OPTIONS.filter(r => r !== 'principal');
   const canImport = useRoleOrGrant(['owner', 'principal', 'coordinator', 'admissions', 'itadmin'],
     ['POST /plugins/people.admin/import/students']);
 
@@ -68,6 +73,9 @@ export default function PeopleAdmin() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('teacher');
+  const [phone, setPhone] = useState('');
+  const [childId, setChildId] = useState('');
+  const [roster, setRoster] = useState<{ id: string; name: string; grade?: string; section?: string }[]>([]);
   const [creating, setCreating] = useState(false);
   const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
 
@@ -87,6 +95,66 @@ export default function PeopleAdmin() {
 
   /* owner setup checklist (Platform §1.1) — a fresh school shows what's left */
   const [setup, setSetup] = useState<OnboardStatus | null>(null);
+
+  /* 0.3 size presets — guided setup. Selecting a size only sets local state
+     and previews what Apply will do; Apply itself enables/disables modules via
+     GET /plugins + POST /plugins/:id/enable|disable and creates the 3 standard
+     fee heads via POST /fees/heads (409 already-exists is fine). */
+  type SizePreset = 'small' | 'standard' | 'large';
+  const SMALL_ON = ['people.admin', 'ops.visitors', 'ops.timetable', 'files.store', 'library', 'admissions.funnel', 'exams.assessment'];
+  const STANDARD_ON = [...SMALL_ON, 'transport.gps', 'teacher.classroom', 'parent.assistant', 'pack.cbse', 'pack.dpdp'];
+  /* Full per-tenant registry (server/src/plugin-catalog.js CATALOG): Large = all on. */
+  const ALL_ON = ['accounting.tally', 'ops.udise', 'ops.import', 'ops.bi', 'admissions.funnel', 'comms.whatsapp', 'coord.view', 'exams.assessment', 'family.view', 'files.store', 'health.clinic', 'hr.leave', 'library', 'ops.timetable', 'ops.visitors', 'pack.cbse', 'pack.dpdp', 'parent.assistant', 'payments.razorpay', 'payments.upi', 'rails.email', 'rails.sms', 'rails.whatsapp', 'people.admin', 'student.world', 'teacher.classroom', 'teacher.copilot', 'teacher.support', 'transport.gps'];
+  const PRESET_ON: Record<SizePreset, string[]> = { small: SMALL_ON, standard: STANDARD_ON, large: ALL_ON };
+  const PRESET_LABEL: Record<SizePreset, string> = { small: 'Small (≤500 pupils)', standard: 'Standard', large: 'Large' };
+  const PRESET_WILL: Record<SizePreset, string> = {
+    small: 'Keeps 7 essentials on — People console, Visitors gate pass, Timetable, Documents, Library, Admissions funnel, Exams — and switches the other 22 off.',
+    standard: 'Keeps the Small 7 plus Bus tracking, Teacher classroom, Parent assistant, CBSE pack and DPDP pack (12 on) — switches the other 17 off.',
+    large: 'Switches all 29 modules on.',
+  };
+  /* The door's unique key is (tenant, name); the short codes ride as the ledger name. */
+  const STANDARD_HEADS = [
+    { name: 'Tuition', category: 'Tuition', glLedgerName: 'TUIT' },
+    { name: 'Transport', category: 'Transport', glLedgerName: 'TRANS' },
+    { name: 'Activity', category: 'Activity', glLedgerName: 'ACT' },
+  ];
+  const [sizePreset, setSizePreset] = useState<SizePreset>('standard');
+  const [applying, setApplying] = useState(false);
+  const [applyMsg, setApplyMsg] = useState<string | null>(null);
+
+  const applyPreset = async () => {
+    const want = new Set(PRESET_ON[sizePreset]);
+    if (!window.confirm(`Apply the ${PRESET_LABEL[sizePreset]} setup? ${want.size} modules will be switched on, the rest switched off (switching off asks for your password once and hands open items back to the principal), and 3 standard fee heads will be created. You can change every switch afterwards.`)) return;
+    setApplying(true); setApplyMsg(null);
+    try {
+      const reg = await apiGet<{ plugins: { plugin_id: string; enabled: boolean }[] }>('/plugins');
+      const current = new Map(reg.plugins.map(p => [p.plugin_id, p.enabled]));
+      const toEnable = [...want].filter(id => !current.get(id));
+      const toDisable = [...current.entries()].filter(([id, on]) => on && !want.has(id)).map(([id]) => id);
+      let enabled = 0, disabled = 0, heads = 0, headsExisted = 0;
+      const errs: string[] = [];
+      for (const id of toEnable) {
+        try { await apiPost(`/plugins/${id}/enable`, {}); enabled++; }
+        catch (e) { errs.push(`${id}: ${friendly(e)}`); }
+      }
+      for (const id of toDisable) {
+        try { await apiPost(`/plugins/${id}/disable`, {}); disabled++; }
+        catch (e) { errs.push(`${id}: ${friendly(e)}`); }
+      }
+      for (const h of STANDARD_HEADS) {
+        try { await apiCreateFeeHead({ name: h.name, category: h.category, glLedgerName: h.glLedgerName }); heads++; }
+        catch (e) {
+          const status = (e as { status?: number }).status;
+          if (status === 409 || /already exists/i.test((e as Error).message)) headsExisted++;
+          else errs.push(`${h.name}: ${friendly(e)}`);
+        }
+      }
+      setApplyMsg(`Done: ${enabled} switched on, ${disabled} switched off, ${heads + headsExisted} fee heads ready${headsExisted ? ` (${headsExisted} already existed)` : ''}.${errs.length ? ` ${errs.length} need attention: ${errs.join('; ')}` : ''}`);
+      toast({ title: errs.length ? 'Setup applied with warnings' : 'Setup applied', sub: `${enabled} on · ${disabled} off · ${heads + headsExisted} fee heads`, tone: errs.length ? 'info' : 'success' });
+      setTick(t => t + 1);
+    } catch (e) { setApplyMsg(`Could not apply: ${friendly(e)}`); toast({ title: 'Setup not applied', sub: friendly(e), tone: 'error' }); }
+    finally { setApplying(false); }
+  };
   useEffect(() => {
     if (live.role !== 'owner') return;
     let dead = false;
@@ -113,14 +181,73 @@ export default function PeopleAdmin() {
     return () => { dead = true; };
   }, [tick]);
 
+  /* The roster, for the two pickers that need a real child: "who is this parent's child" (G-2) and
+     "which pupil gets a portal account" (G-1). Read once per refresh, kept as id+name only — this
+     console has no business holding the whole roster in component state. */
+  useEffect(() => {
+    let dead = false;
+    if (!canAdmin && !canRoster) return () => { dead = true; };
+    apiStudents({ limit: '500' })
+      .then(r => {
+        if (dead) return;
+        setRoster((r.students ?? []).map((s: Record<string, unknown>) => ({
+          id: String(s.id), name: String(s.name),
+          grade: s.grade == null ? undefined : String(s.grade),
+          section: s.section == null ? undefined : String(s.section),
+        })));
+      })
+      .catch(() => { /* the pickers degrade to a typed id; the doors still validate */ });
+    return () => { dead = true; };
+  }, [tick, canAdmin, canRoster]);
+
   const create = async () => {
     if (!name.trim() || !email.trim()) { toast({ title: 'Name and email are both needed', tone: 'info' }); return; }
+    /* G-2: a parent account with no child link is an account that can never see anything. The
+       server has always accepted `phone` (the structural match POST /students makes) and
+       `studentId` (writes family.child_link AND app.guardians) — the form simply never asked for
+       either, so the one value the link is keyed on was unreachable. Now it does. */
+    if (role === 'parent' && !phone.trim() && !childId) {
+      toast({ title: 'Give the parent a phone number or pick their child', sub: 'Without one of these the account will never see a child.', tone: 'info' });
+      return;
+    }
     setCreating(true);
     try {
-      const r = await adminCreateUser({ name: name.trim(), email: email.trim(), role });
-      setTempPassword({ email: r.user.email ?? email.trim(), password: r.tempPassword });
-      setName(''); setEmail('');
-      toast({ title: 'Account created', sub: `${ROLE_LABEL[role] ?? role} · share the one-time password now`, tone: 'success' });
+      const r = await adminCreateUser({
+        name: name.trim(), email: email.trim(), role,
+        ...(phone.trim() ? { phone: phone.trim() } : {}),
+        ...(role === 'parent' && childId ? { studentId: childId } : {}),
+      });
+      setTempPassword({ email: r.user.email ?? email.trim(), password: r.temporaryPassword ?? '' });
+      setName(''); setEmail(''); setPhone(''); setChildId('');
+      toast({
+        title: 'Account created',
+        sub: `${roleLabel(role)} · share the one-time password now${role === 'parent' && childId ? ' · linked to their child' : ''}`,
+        tone: 'success',
+      });
+      setTick(t => t + 1);
+    } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
+    finally { setCreating(false); }
+  };
+
+  /* G-1: a pupil's portal account, created FROM THE ROSTER ROW — that is where a school is when it
+     wants a child to have an account, and it is the only place the structural binding
+     (`app.students.user_id`) can be made. The account and the child are then the same thing, so a
+     school with two children of the same name does not depend on a name match to find the right
+     one. */
+  const [portalFor, setPortalFor] = useState<{ id: string; name: string; grade?: string; section?: string } | null>(null);
+  const [portalEmail, setPortalEmail] = useState('');
+
+  const createPortalAccount = async () => {
+    if (!portalFor) return;
+    if (!portalEmail.trim()) { toast({ title: 'An email is needed — the pupil signs in with it', tone: 'info' }); return; }
+    setCreating(true);
+    try {
+      const r = await adminCreateUser({
+        name: portalFor.name, email: portalEmail.trim(), role: 'student', studentId: portalFor.id,
+      });
+      setTempPassword({ email: r.user.email ?? portalEmail.trim(), password: r.temporaryPassword ?? '' });
+      setPortalFor(null); setPortalEmail('');
+      toast({ title: `Portal account created for ${portalFor.name}`, sub: 'Share the one-time password. They change it at first sign-in.', tone: 'success' });
       setTick(t => t + 1);
     } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
     finally { setCreating(false); }
@@ -140,7 +267,7 @@ export default function PeopleAdmin() {
     if (!window.confirm(`Generate a new password for ${u.name}? Their current password stops working immediately.`)) return;
     try {
       const r = await adminResetPassword(u.id);
-      setTempPassword({ email: u.email, password: r.tempPassword });
+      setTempPassword({ email: u.email, password: r.temporaryPassword });
       toast({ title: 'New one-time password issued', tone: 'success' });
     } catch (e) { toast({ title: friendly(e), tone: 'error' }); }
   };
@@ -180,7 +307,7 @@ export default function PeopleAdmin() {
       if (lcPhone.trim()) patch.guardian_phone = lcPhone.trim();
       if (lcBus.trim()) patch.bus_route = lcBus.trim();
       const r = await apiUpdateStudent(lcId.trim(), patch);
-      toast({ title: `${r.student.name ?? 'Student'} updated`, sub: 'The change is on the student ledger with an audit entry.', tone: 'success' });
+      toast({ title: `${r.student.name ?? 'Student'} updated`, sub: 'The change is on the student school records with an audit entry.', tone: 'success' });
       setLcName(''); setLcGuardian(''); setLcPhone(''); setLcBus('');
     } catch (e) { toast({ title: 'Could not update', sub: friendly(e), tone: 'error' }); }
     finally { setLcBusy(false); }
@@ -217,7 +344,7 @@ export default function PeopleAdmin() {
       <PageHead
         title="People console"
         sub="Create accounts, suspend or restore access, move students between classes, and bring in students from a spreadsheet"
-        actions={<Badge tone="accent" dot>people.admin</Badge>}
+        actions={<Badge tone="accent" dot>{pluginLabel('people.admin')}</Badge>}
       />
 
       {setup && !setup.checklist.every(c => c.done) && (
@@ -227,14 +354,46 @@ export default function PeopleAdmin() {
               <a key={c.id} href={c.href} style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}>
                 <span style={{
                   width: 20, height: 20, borderRadius: 10, flexShrink: 0, display: 'grid', placeItems: 'center',
-                  border: `1.5px solid ${c.done ? 'var(--ok, #1a7f37)' : 'var(--line)'}`,
-                  background: c.done ? 'var(--ok-weak, rgba(26,127,55,.12))' : 'transparent',
-                  color: 'var(--ok, #1a7f37)', fontSize: 12,
+                  border: `1.5px solid ${c.done ? 'var(--success-text)' : 'var(--border)'}`,
+                  background: c.done ? 'var(--success-weak)' : 'transparent',
+                  color: 'var(--success-text)', fontSize: 12,
                 }}>{c.done ? '✓' : ''}</span>
                 <span style={{ fontSize: 13.5, color: c.done ? 'var(--text-2)' : 'var(--text-1)', textDecoration: c.done ? 'line-through' : 'none' }}>{c.label}</span>
                 {!c.done && <span style={{ marginLeft: 'auto', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 600 }}>Go →</span>}
               </a>
             ))}
+          </div>
+        </Card>
+      )}
+
+      {/* 0.3 guided setup — size presets. Owner-only, always available (not just while the
+          checklist is open): schools change size, and every switch stays flippable afterwards
+          on the Add-ons screen. */}
+      {live.role === 'owner' && (
+        <Card style={{ marginBottom: 'var(--s-4)' }} head="Guided setup" sub="Pick your school size, then Apply. This switches modules on/off and creates the 3 standard fee heads — after that, set up your classes.">
+          {/* 0.3 guided setup — size presets. Reversible: every switch remains
+              flippable afterwards on the Add-ons screen. */}
+          <div>
+            <div role="radiogroup" aria-label="School size" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
+              {(['small', 'standard', 'large'] as const).map(s => (
+                <button key={s} role="radio" aria-checked={sizePreset === s}
+                  onClick={() => { setSizePreset(s); setApplyMsg(null); }}
+                  style={{
+                    padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+                    border: `1px solid ${sizePreset === s ? 'var(--accent)' : 'var(--border)'}`,
+                    background: sizePreset === s ? 'var(--accent-weak)' : 'transparent',
+                    fontWeight: sizePreset === s ? 600 : 400,
+                  }}>{PRESET_LABEL[s]}</button>
+              ))}
+            </div>
+            <div className="u-small" style={{ lineHeight: 1.6 }}>
+              {PRESET_WILL[sizePreset]} Plus 3 fee heads: Tuition (TUIT), Transport (TRANS), Activity (ACT) — ones that already exist are left alone.
+            </div>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+              <Button onClick={applyPreset} disabled={applying}>{applying ? 'Applying…' : 'Apply setup'}</Button>
+              <Link to="/classes" style={{ color: 'var(--accent-text)', fontSize: 13.5, fontWeight: 600 }}>Set up classes &amp; sections →</Link>
+            </div>
+            {applyMsg && <div className="u-small" style={{ marginTop: 8, lineHeight: 1.55 }}>{applyMsg}</div>}
           </div>
         </Card>
       )}
@@ -246,8 +405,8 @@ export default function PeopleAdmin() {
               onClick={() => setPane(id)}
               style={{
                 padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
-                border: `1px solid ${pane === id ? 'var(--accent)' : 'var(--line)'}`,
-                background: pane === id ? 'var(--accent-soft, rgba(0,0,0,0.04))' : 'transparent',
+                border: `1px solid ${pane === id ? 'var(--accent)' : 'var(--border)'}`,
+                background: pane === id ? 'var(--accent-weak)' : 'transparent',
                 fontWeight: pane === id ? 600 : 400,
               }}>{label}</button>
           ))}
@@ -271,16 +430,35 @@ export default function PeopleAdmin() {
                 <label style={{ display: 'grid', gap: 4 }}>
                   <span style={{ fontSize: 13, opacity: 0.75 }}>Role in the school</span>
                   <select value={role} onChange={e => setRole(e.target.value)} aria-label="Role">
-                    {ROLE_OPTIONS.map(r => <option key={r} value={r}>{ROLE_LABEL[r] ?? r}</option>)}
+                    {roleOptions.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
                   </select>
                 </label>
+                {/* G-2: the phone is how a family is reached (notices, absences, bus delays) AND how
+                    an account is matched to a child when the office does not pick one below. */}
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 13, opacity: 0.75 }}>Phone (WhatsApp / SMS)</span>
+                  <input value={phone} onChange={e => setPhone(e.target.value)} type="tel" placeholder="+91 98450 00101" aria-label="Phone" />
+                </label>
+                {role === 'parent' && (
+                  <label style={{ display: 'grid', gap: 4 }}>
+                    <span style={{ fontSize: 13, opacity: 0.75 }}>Their child (optional)</span>
+                    <select value={childId} onChange={e => setChildId(e.target.value)} aria-label="Their child">
+                      <option value="">Pick a pupil…</option>
+                      {roster.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}{s.grade ? ` · ${gradeLabel(s.grade)}${s.section ? ` ${s.section}` : ''}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <div style={{ display: 'flex', alignItems: 'end' }}>
                   <Button onClick={create} disabled={creating}>{creating ? 'Creating…' : 'Create account'}</Button>
                 </div>
               </div>
             )}
             {tempPassword && (
-              <div style={{ marginTop: 14, padding: 14, borderRadius: 10, border: '1px solid var(--warning)', background: 'var(--warning-soft, rgba(255,190,0,0.08))' }}>
+              <div style={{ marginTop: 14, padding: 14, borderRadius: 10, border: '1px solid var(--warning)', background: 'var(--warning-weak)' }}>
                 <strong>One-time password for {tempPassword.email}</strong>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6 }}>
                   <code style={{ fontSize: 16, letterSpacing: 1 }}>{tempPassword.password}</code>
@@ -297,7 +475,7 @@ export default function PeopleAdmin() {
                 <DataTable
                   columns={[
                     { key: 'name', label: 'Name' },
-                    { key: 'role', label: 'Role' },
+                    { key: 'role', label: 'Role', render: (u: AdminUser) => roleLabel(u.role) },
                     { key: 'email', label: 'Sign-in email' },
                     { key: 'status', label: 'Status', render: (u: AdminUser) => u.active ? <Badge tone="success">Active</Badge> : <Badge tone="danger">Suspended</Badge> },
                     { key: 'actions', label: 'Actions', render: (u: AdminUser) => (
@@ -316,6 +494,53 @@ export default function PeopleAdmin() {
                 />
               )}
           </Card>
+
+          {/* G-1 · the pupil portal. The server issues `role: 'student'` and ~20 `/student/*` doors
+              exist, but nothing here could ever create the account — so the entire student portal had
+              no possible user. A pupil's account is made FROM THEIR ROSTER ROW, which is also the
+              only place the structural binding (`app.students.user_id`) can be written, so a school
+              with two children of the same name still gets the right child on the right login. */}
+          <Card headAs="h2" head="Give a pupil a portal account"
+            sub="Pupils sign in on a shared school computer to see their own homework, results and tasks. Pick the child from the roster; the account is bound to that record.">
+            {!canAdmin ? (
+              <Empty title="Owner or IT admin only" sub="Ask the owner or IT admin to create accounts." />
+            ) : !roster.length ? (
+              <Empty title="No pupils on the roster yet" sub="Enrol a pupil on the People screen first, then come back to give them an account." />
+            ) : portalFor ? (
+              <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', alignItems: 'end' }}>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 13, opacity: 0.75 }}>Pupil</span>
+                  <input readOnly value={`${portalFor.name} · ${gradeLabel(portalFor.grade)}${portalFor.section ? ` ${portalFor.section}` : ''}`} aria-label="Pupil" />
+                </label>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 13, opacity: 0.75 }}>Sign-in email</span>
+                  <input value={portalEmail} onChange={e => setPortalEmail(e.target.value)} type="email" placeholder="child@school.edu" aria-label="Sign-in email" />
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button onClick={createPortalAccount} disabled={creating}>{creating ? 'Creating…' : 'Create portal account'}</Button>
+                  <Button variant="ghost" onClick={() => { setPortalFor(null); setPortalEmail(''); }}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', alignItems: 'end' }}>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 13, opacity: 0.75 }}>Pupil</span>
+                  <select aria-label="Pupil" defaultValue="" onChange={e => {
+                    const picked = roster.find(s => s.id === e.target.value);
+                    setPortalFor(picked ?? null);
+                  }}>
+                    <option value="">Choose a pupil…</option>
+                    {roster.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} · {gradeLabel(s.grade)}{s.section ? ` ${s.section}` : ''}</option>
+                    ))}
+                  </select>
+                </label>
+                <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+                  {roster.length} active {roster.length === 1 ? 'pupil' : 'pupils'} on the roster. A school should not have to hand-create hundreds of these.
+                </span>
+              </div>
+            )}
+          </Card>
         </>
       )}
 
@@ -333,7 +558,7 @@ export default function PeopleAdmin() {
                 <span style={{ fontSize: 13, opacity: 0.75 }}>New class</span>
                 <select value={toGrade} onChange={e => { setToGrade(e.target.value); setToSection(''); }} aria-label="New class">
                   <option value="">Select…</option>
-                  {classes.map(c => <option key={c.grade} value={c.grade}>Class {c.grade}</option>)}
+                  {classes.map(c => <option key={c.grade} value={c.grade}>{classLabel(c.grade)}</option>)}
                 </select>
               </label>
               <label style={{ display: 'grid', gap: 4 }}>
@@ -364,7 +589,7 @@ export default function PeopleAdmin() {
       )}
 
       {pane === 'lifecycle' && (
-        <Card headAs="h2" head="Edit a record · withdraw a student" sub="Direct actions on the student ledger (people.admin doors). Withdrawal keeps attendance, fees and guardian links; the bus seat is released and the action is audited.">
+        <Card headAs="h2" head="Edit a record · withdraw a student" sub="Direct actions on a student's school records. Withdrawal keeps attendance, fees and guardian links; the bus seat is released and the action is audited.">
           {!canRoster ? (
             <Empty title="Owner, Principal or Coordinator only" />
           ) : (
@@ -394,8 +619,12 @@ export default function PeopleAdmin() {
                   <input type="date" value={wdDate} onChange={e => setWdDate(e.target.value)} aria-label="Effective date" /></label>
                 <label style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 13, opacity: 0.75 }}>Last school (optional)</span>
                   <input value={wdSchool} onChange={e => setWdSchool(e.target.value)} aria-label="Last school" /></label>
-                <div><Button variant="danger" onClick={lcWithdraw} disabled={lcBusy}>{lcBusy ? 'Working…' : 'Withdraw'}</Button></div>
-                <span style={{ fontSize: 12, opacity: 0.65 }}>Owner or Principal only. Cannot be undone from the app — re-admission creates a fresh record.</span>
+                <div><Button variant="danger" onClick={lcWithdraw} disabled={lcBusy || !canWithdraw}>{lcBusy ? 'Working…' : 'Withdraw'}</Button></div>
+                <span style={{ fontSize: 12, opacity: 0.65 }}>
+                  {canWithdraw
+                    ? 'Cannot be undone from the app — re-admission creates a fresh record.'
+                    : 'Withdrawal is the owner or principal\u2019s decision. A coordinator can move a student between classes but cannot end their enrolment.'}
+                </span>
               </div>
             </div>
           )}

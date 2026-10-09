@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Empty, Skeleton } from '../../../components/ui';
 import { Icon as IconSet, type IconName } from '../../../components/Icon';
+import { roleLabel, humanize } from '../../../lib/labels';
+import { fmtDate as sharedFmtDate } from '../../../lib/format';
 import { libraryDeskBooks, libraryMembers, type LibraryBook, type LibraryBorrower } from '../../../services/adminApi';
 
 /** The icon set is a map of components, not a single component — this renders one by name. */
@@ -13,11 +15,13 @@ export function DeskIcon({ name, size = 16 }: { name: IconName; size?: number })
 }
 
 export const inr = (c: number) => `₹${((c ?? 0) / 100).toFixed(2)}`;
-export const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleDateString() : '—');
+/* Delegates to the shared guarded formatter so a malformed date can never
+   render the literal string "Invalid Date" here either. */
+export const fmtDate = (d?: string | null) => (d ? sharedFmtDate(d) : '—');
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 
 export function Kpi({ label, value, sub, tone, onClick }: { label: string; value: React.ReactNode; sub?: string; tone?: 'accent' | 'warn' | 'danger' | 'success'; onClick?: () => void }) {
-  const color = tone === 'danger' ? 'var(--danger, #c0392b)' : tone === 'warn' ? 'var(--warn, #b7791f)' : tone === 'success' ? 'var(--success, #2f855a)' : undefined;
+  const color = tone === 'danger' ? 'var(--danger-text)' : tone === 'warn' ? 'var(--warning-text)' : tone === 'success' ? 'var(--success-text)' : undefined;
   return (
     <div onClick={onClick} style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-lg)', padding: '12px 14px', background: 'var(--surface-1)', cursor: onClick ? 'pointer' : 'default' }}>
       <div className="u-xs u-muted">{label}</div>
@@ -75,11 +79,11 @@ export function BorrowerPicker({ onPick, placeholder = 'Search name, admission n
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderBottom: '1px solid var(--border-subtle)', background: 'transparent', cursor: 'pointer' }}>
               <span>
                 <span style={{ fontWeight: 600 }}>{b.name}</span>
-                <span className="u-xs u-muted" style={{ marginLeft: 8 }}>{b.type === 'student' ? `${b.grade}-${b.section}` : b.role}</span>
+                <span className="u-xs u-muted" style={{ marginLeft: 8 }}>{b.type === 'student' ? `${b.grade}-${b.section}` : roleLabel(b.role)}</span>
                 <span className="u-xs u-muted" style={{ display: 'block' }}>{b.identifier}</span>
               </span>
               <span style={{ textAlign: 'right' }}>
-                <Badge tone={b.type === 'student' ? 'info' : 'neutral'}>{b.type}</Badge>
+                <Badge tone={b.type === 'student' ? 'info' : 'neutral'}>{humanize(b.type)}</Badge>
                 <span className="u-xs u-muted" style={{ display: 'block', marginTop: 2 }}>
                   {b.openLoans} out{b.duesCents ? ` · ${inr(b.duesCents)} due` : ''}
                 </span>

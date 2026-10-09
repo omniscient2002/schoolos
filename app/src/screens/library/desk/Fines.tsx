@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Button, Badge, DataTable, ErrorState, Empty, useToast } from '../../../components/ui';
 import { friendly } from '../../../lib/friendlyErrors';
+import { statusLabel, humanize } from '../../../lib/labels';
 import { libraryFines, librarySettleFine, type LibraryFine } from '../../../services/adminApi';
 import { fmtDate, inr } from './shared';
 
@@ -28,7 +29,7 @@ export default function Fines() {
   return (
     <Card headAs="h2" head="Fines" sub="Mark paid at the counter, or waive with a reason"
       actions={<select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Fine status" style={{ width: 160 }}>
-        {['outstanding', 'paid', 'waived', ''].map((s) => <option key={s || 'all'} value={s}>{s || 'all'}</option>)}
+        {['outstanding', 'paid', 'waived', ''].map((s) => <option key={s || 'all'} value={s}>{s ? statusLabel(s) : 'All'}</option>)}
       </select>}>
       {rows === null ? <Empty title="Loading…" /> : rows.length === 0 ? (
         <Empty title="No fines" sub={status === 'outstanding' ? 'Nothing to collect.' : 'Nothing here.'} />
@@ -37,10 +38,10 @@ export default function Fines() {
           columns={[
             { key: 'who', label: 'Borrower', render: (f: LibraryFine) => f.borrower_name ?? '—' },
             { key: 'book', label: 'Book', render: (f: LibraryFine) => f.book_title ?? '—' },
-            { key: 'cause', label: 'Reason', render: (f: LibraryFine) => <Badge tone={f.cause === 'lost' ? 'danger' : f.cause === 'damage' ? 'warning' : 'info'}>{f.cause}</Badge> },
+            { key: 'cause', label: 'Reason', render: (f: LibraryFine) => <Badge tone={f.cause === 'lost' ? 'danger' : f.cause === 'damage' ? 'warning' : 'info'}>{humanize(f.cause)}</Badge> },
             { key: 'amt', label: 'Amount', render: (f: LibraryFine) => inr(f.amount_cents) },
             { key: 'when', label: 'Assessed', render: (f: LibraryFine) => fmtDate(f.assessed_at) },
-            { key: 'status', label: 'Status', render: (f: LibraryFine) => <Badge tone={f.status === 'outstanding' ? 'warning' : 'success'}>{f.status}</Badge> },
+            { key: 'status', label: 'Status', render: (f: LibraryFine) => <Badge tone={f.status === 'outstanding' ? 'warning' : 'success'}>{statusLabel(f.status)}</Badge> },
             { key: 'act', label: '', render: (f: LibraryFine) => f.status === 'outstanding' ? (
               <>
                 <Button variant="ghost" onClick={() => run(() => librarySettleFine(f.id, 'pay'), 'Fine marked paid')}>Paid</Button>
