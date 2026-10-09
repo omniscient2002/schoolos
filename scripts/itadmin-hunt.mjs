@@ -6,7 +6,7 @@ const U = Date.now().toString(36);
 
 // 1. signup school
 const su = await fetch(API + '/onboard/signup', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.99.0.1' },
-  body: JSON.stringify({ schoolName: 'IT Hunt ' + U, ownerName: 'Hunt Owner', ownerEmail: '`owner-${U}@ithunt.test`', ownerPassword: 'hunt-pass-1' }) });
+  body: JSON.stringify({ schoolName: 'IT Hunt ' + U, ownerName: 'Hunt Owner', ownerEmail: `owner-${U}@ithunt.test`, ownerPassword: 'hunt-pass-1' }) });
 const suBody = await su.json();
 console.log('signup:', su.status, suBody.user?.role);
 const ownerTok = suBody.token;
