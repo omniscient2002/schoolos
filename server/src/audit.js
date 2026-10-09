@@ -25,12 +25,25 @@ export async function auditLog(client, tenantId, entry) {
     `SELECT hash FROM app.audit_log WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, [tenantId]);
   const prevHash = prev.rows[0]?.hash ?? 'GENESIS';
   const at = new Date().toISOString();
-  const r = await client.query(
-    `SELECT * FROM app.audit_append($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [tenantId, entry.actor, entry.actorRole, entry.action, entry.recordType, entry.recordRef ?? null,
+  const args15 = [tenantId, entry.actor, entry.actorRole, entry.action, entry.recordType, entry.recordRef ?? null,
      entry.reason ?? null, entry.policyRef ?? null, entry.aiInvolved ?? false, entry.risk ?? 'low',
-     entry.outcome ?? null, prevHash, null /* p_hash ignored: the DB pins the hash (migration 075) */, at]);
-  return r.rows[0];
+     entry.outcome ?? null, prevHash, null /* p_hash ignored: the DB pins the hash (migration 075) */, at,
+     /* F-19: caller IP lands in NEW.ip (migration 148 overload); the 075 trigger
+        hashes it with the rest. */
+     entry.ip ?? null];
+  try {
+    const r = await client.query(
+      `SELECT * FROM app.audit_append($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, args15);
+    return r.rows[0];
+  } catch (e) {
+    // Pre-148 database: the 15-arg overload does not exist yet — the 14-arg
+    // function still does. Same idiom as the outbox/retention workers'
+    // self-ensured columns: tolerate, never hard-crash the ledger path.
+    if (e?.code !== '42883') throw e;
+    const r = await client.query(
+      `SELECT * FROM app.audit_append($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, args15.slice(0, 14));
+    return r.rows[0];
+  }
 }
 
 /** Emit an event with the v2 envelope (docs/12 §10) + outbox linkage. */

@@ -112,3 +112,17 @@ export async function raiseDiscrepancyActions(query, tenantId, report) {
 
 /** The `payment_events.kind` a class maps to. All discrepancies are `disputed`; resolution is separate. */
 export const discrepancyKind = () => 'disputed';
+
+/**
+ * Record one sweep in `app.recon_runs` (migration 147) so the mismatch queue header
+ * can say when the ledger was last compared and what it found. History only —
+ * writing the row moves no money and clears no flag.
+ */
+export async function recordReconRun(query, tenantId, { source, byUserId = null, report, actionsRaised = 0 }) {
+  const r = await query(
+    `INSERT INTO app.recon_runs (tenant_id, source, ran_by, ghost, missing, orphan, amount_mismatch, actions_raised)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, ran_at`,
+    [tenantId, source, byUserId, report.ghost.length, report.missing.length, report.orphan.length,
+      report.mismatch.length, actionsRaised]);
+  return r.rows[0];
+}

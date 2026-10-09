@@ -62,7 +62,28 @@ export async function buildApp(opts = {}) {
   // new work while existing requests drain.
   app.decorate('schoolosDraining', false);
 
-  await app.register(cors, { origin: config.corsOrigins, credentials: false }); // auth is header-borne; no cookies yet
+  // CORS-1: @fastify/cors v11 defaults `methods` to 'GET,HEAD,POST' ONLY. Every PUT/PATCH/DELETE
+  // door in this API therefore failed its browser preflight whenever the SPA is served from a
+  // different origin than the API (exactly what VITE_API_BASE supports): PUT /school/classes,
+  // PUT /fees/settings, PATCH /plugins/people.admin/students/:id, PATCH/PUT/DELETE on the
+  // library, DELETE /api-keys/:id, DELETE /roles/:key … all returned
+  // "Method PUT is not allowed by Access-Control-Allow-Methods" and never reached a handler.
+  // The list must name every method the router actually registers.
+  //
+  // `allowedHeaders` is deliberately NOT pinned. The default reflects whatever the browser
+  // asks for, and the API reads headers this file cannot enumerate from one place:
+  // `idempotency-key` (POST /fees/payments), `x-api-key` (bearer sibling), `x-razorpay-signature`
+  // (the payment webhook), `x-step-up-password`. An explicit list is how you accidentally
+  // break one of them and never notice, because every server-side test passes.
+  // `exposedHeaders` is purely additive — nothing reads a response header today that could not
+  // before — and it is what lets liveApi.ts quote x-request-id in its error messages.
+  await app.register(cors, {
+    origin: config.corsOrigins,
+    credentials: false, // auth is header-borne (bearer); cookies are the same-origin production path
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    exposedHeaders: ['x-request-id', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-tenant-hint', 'content-disposition'],
+    maxAge: 600,
+  });
   await app.register(jwt, { secret: config.jwtSecret, sign: { expiresIn: config.jwtTtl } });
   await app.register(rateLimit, {
     max: config.rateLimitMax,
@@ -129,6 +150,14 @@ export async function buildApp(opts = {}) {
     ]);
     return csrf;
   };
+  /* C-3: /auth/login auto-logs-in, so the session cookie has to be issued from more than one
+     module. /onboard/signup is documented as returning "the same { token, user } shape as
+     /auth/login" — it returned the same BODY but not the cookie, so a self-signed-up owner had
+     a bearer and no durable session: on a cold open (production rides the HttpOnly cookie and
+     exchanges it via POST /auth/renew) they were bounced straight back to /login. Expose the
+     helper on the instance so registerOnboarding can issue the pair the same way. */
+  app.decorate('issueSessionCookies', (reply, token) => issueSessionCookies(reply, token));
+
   const clearSessionCookies = (reply) => {
     reply.header('set-cookie', [
       `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict${COOKIE_SECURE ? '; Secure' : ''}; Max-Age=0`,
@@ -408,7 +437,7 @@ export async function buildApp(opts = {}) {
     // session issue (password · OTP · SSO · MFA-verify · renew), so a
     // provisioned-with-temp-password account is restricted no matter how it
     // signed in. Password login surfaces the restriction as 403 + reason.
-    const s = await issueSession(user, 'password', reply);
+    const s = await issueSession(user, 'password', reply, req.ip);
     if (s.mustChange) {
       return reply.code(403).send({
         error: 'Your account uses a temporary password — set a new one before continuing.',
@@ -428,7 +457,7 @@ export async function buildApp(opts = {}) {
     if (req.auth?.via === 'api-key') return reply.code(403).send({ error: 'API keys do not renew sessions.' });
     const u = await sysq(`SELECT id, tenant_id, name, role, email, session_epoch, force_change FROM app.users WHERE id=$1 AND active`, [req.user.id]);
     if (!u.rows[0]) return reply.code(401).send({ error: 'account disabled' });
-    const s = await issueSession(u.rows[0], 'renew', reply);
+    const s = await issueSession(u.rows[0], 'renew', reply, req.ip);
     // S0 fix A6: retire the token being renewed — without this the old jti
     // stayed valid until natural expiry alongside its replacement.
     if (req.auth?.jti) {
@@ -443,12 +472,12 @@ export async function buildApp(opts = {}) {
   // D-37(c): the single shared session-issue helper. Stamps `mustChange` from
   // the user row (never from the caller's word), sets cookies, audits, and
   // returns the shape every auth door answers with.
-  const issueSession = async (user, via, reply) => {
+  const issueSession = async (user, via, reply, ip = null) => {
     const mustChange = !!user.force_change;
     const token = app.jwt.sign({ sub: user.id, role: user.role, tenant: user.tenant_id, name: user.name, jti: randomUUID(), ep: user.session_epoch ?? 1, ...(mustChange ? { mustChange: true } : {}) },
       user.role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
     await withUser(user.tenant_id, user.role, (c) =>
-      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: `Signed in (${via})`, recordType: 'Auth', recordRef: via === 'phone' ? user.phone : user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `JWT issued${mustChange ? ' (restricted — password change required)' : ''}${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
+      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: `Signed in (${via})`, recordType: 'Auth', recordRef: via === 'phone' ? user.phone : user.email, policyRef: 'Platform §2.4 (identity & access)', ip, outcome: `JWT issued${mustChange ? ' (restricted — password change required)' : ''}${user.role === 'student' ? ` (short-lived shared-computer session, ${config.studentSessionTtl})` : ''}` }));
     issueSessionCookies(reply, token);
     return { mustChange, token, user: { id: user.id, name: user.name, role: user.role, email: user.email, tenantId: user.tenant_id } };
   };
@@ -763,7 +792,7 @@ export async function buildApp(opts = {}) {
     // AUTH-3: a phone code is a weaker factor than the enrollee's TOTP — it must
     // not downgrade the account. Challenge before a session is issued.
     if (mfaPending) return mfaChallenge(user, reply, 'one-time code verified');
-    return issueSession(user, 'phone', reply);
+    return issueSession(user, 'phone', reply, req.ip);
   });
 
   // --- Google SSO (OAuth 2.0 authorization code flow) ---
@@ -830,7 +859,7 @@ export async function buildApp(opts = {}) {
       }
       // AUTH-3: Google must not downgrade an MFA-enrolled staff account.
       if (u.rows[0].mfa_enabled) return mfaChallenge(u.rows[0], reply, 'google sign-in verified');
-      return issueSession(u.rows[0], 'google-sso', reply);
+      return issueSession(u.rows[0], 'google-sso', reply, req.ip);
     } catch (e) { req.log.error(e); return reply.code(502).send({ error: 'google sso unreachable' }); }
   });
 
@@ -848,7 +877,7 @@ export async function buildApp(opts = {}) {
     if (!u.rows[0]) return reply.code(403).send({ error: `no SchoolOS account for ${email}` });
     // AUTH-3: the dev simulator models the SSO path — same second-factor rule.
     if (u.rows[0].mfa_enabled) return mfaChallenge(u.rows[0], reply, 'dev SSO verified');
-    return issueSession(u.rows[0], 'google-sso (dev simulator)', reply);
+    return issueSession(u.rows[0], 'google-sso (dev simulator)', reply, req.ip);
   });
 
   // --- logout (audited) ---
@@ -895,7 +924,7 @@ export async function buildApp(opts = {}) {
       await sysq(`DELETE FROM auth.revoked_token WHERE exp < now()`); // opportunistic cleanup
     }
     await withUser(req.user.tenant_id, req.user.role, (c) =>
-      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access) · StudentOS §78 shared computers', outcome: 'session revoked (jti denylist) · browser storage wipe requested (Clear-Site-Data)' }));
+      auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Signed out', recordType: 'Auth', recordRef: req.user.email, policyRef: 'Platform §2.4 (identity & access) · StudentOS §78 shared computers', ip: req.ip ?? null, outcome: 'session revoked (jti denylist) · browser storage wipe requested (Clear-Site-Data)' }));
     return { ok: true };
   });
 
@@ -955,7 +984,7 @@ export async function buildApp(opts = {}) {
                ON CONFLICT (jti) DO NOTHING`, [req.auth.jti, req.user.tenant_id, oldExp]);
     }
     await withUser(user.tenant_id, user.role, (c) =>
-      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: 'Switched school', recordType: 'Auth', recordRef: user.email, policyRef: 'Platform §2.4 (identity & access)', outcome: `session re-issued against ${user.tenant_name}${mustChange ? ' (force_change pending — restricted)' : ''}${req.auth?.jti ? ' · previous session retired' : ''}` }));
+      auditLog(c, user.tenant_id, { actor: user.name, actorRole: user.role, action: 'Switched school', recordType: 'Auth', recordRef: user.email, policyRef: 'Platform §2.4 (identity & access)', ip: req.ip ?? null, outcome: `session re-issued against ${user.tenant_name}${mustChange ? ' (force_change pending — restricted)' : ''}${req.auth?.jti ? ' · previous session retired' : ''}` }));
     issueSessionCookies(reply, token);
     return { ok: true, token, mustChange, tenant: { tenantId: user.tenant_id, name: user.tenant_name }, user: { id: user.id, name: user.name, role: user.role, email: user.email, tenantId: user.tenant_id } };
   });
@@ -976,7 +1005,7 @@ export async function buildApp(opts = {}) {
     await withUser(u.rows[0].tenant_id, u.rows[0].role, async (c) => {
       await c.query(`UPDATE app.users SET password_hash=$1, session_epoch=$2, force_change=false WHERE id=$3`,
         [hashPassword(newPassword), epoch, u.rows[0].id]);
-      await auditLog(c, u.rows[0].tenant_id, { actor: u.rows[0].name, actorRole: u.rows[0].role, action: 'Password changed', recordType: 'Auth', recordRef: u.rows[0].email, policyRef: 'Platform §2.4 (identity & access)', outcome: `password set by the account owner · session_epoch → ${epoch} (older sessions revoked)` });
+      await auditLog(c, u.rows[0].tenant_id, { actor: u.rows[0].name, actorRole: u.rows[0].role, action: 'Password changed', recordType: 'Auth', recordRef: u.rows[0].email, policyRef: 'Platform §2.4 (identity & access)', ip: req.ip ?? null, outcome: `password set by the account owner · session_epoch → ${epoch} (older sessions revoked)` });
     });
     const token = app.jwt.sign({ sub: u.rows[0].id, role: u.rows[0].role, tenant: u.rows[0].tenant_id, name: u.rows[0].name, jti: randomUUID(), ep: epoch },
       u.rows[0].role === 'student' ? { expiresIn: config.studentSessionTtl } : {});
@@ -1286,7 +1315,7 @@ export async function buildApp(opts = {}) {
       // second-factor detail on top of the shared 'Signed in (…)' row.
       const u = await sysq(`SELECT id, tenant_id, name, role, email, session_epoch, force_change FROM app.users WHERE id=$1 AND active`, [userId]);
       if (!u.rows[0]) return reply.code(401).send({ error: 'account disabled' });
-      const s = await issueSession(u.rows[0], usedRecovery ? 'MFA recovery code' : 'MFA', reply);
+      const s = await issueSession(u.rows[0], usedRecovery ? 'MFA recovery code' : 'MFA', reply, req.ip);
       await withUser(u.rows[0].tenant_id, u.rows[0].role, (c) =>
         auditLog(c, u.rows[0].tenant_id, { actor: u.rows[0].name, actorRole: u.rows[0].role, action: 'MFA second factor verified', recordType: 'Auth', recordRef: u.rows[0].email, policyRef: 'Platform §2.4 (identity & access)', outcome: usedRecovery ? 'recovery code consumed (single-use)' : 'TOTP verified · 30s window' }));
       return { mustChange: s.mustChange, token: s.token, user: s.user };
@@ -1523,18 +1552,19 @@ export async function buildApp(opts = {}) {
     const first = (capability) => providers(capability)[0];
     const on = (capability) => Boolean(first(capability));
     const s = (capability) => first(capability)?.settings ?? {};
+    /* L1 · `configured` has to mean "delivers somewhere other than the log". A rail left on its
+       default `logger` provider writes a structured line and answers ok — it sends nothing — and
+       reporting that as configured put a green "Connected" badge over a school whose absence
+       notices were going nowhere. That is the Reception "Desk online" defect wearing different
+       clothes, so the rule is stated once here and both rails answer it the same way. */
+    const providerOf = (capability, envKey) => process.env[envKey] ?? s(capability).provider ?? null;
+    const delivers = (p) => !!p && String(p).toLowerCase() !== 'logger';
+    const smsProvider = providerOf('auth.otp', 'SMS_PROVIDER');
+    const waProvider = providerOf('comms.whatsapp.delivery', 'WHATSAPP_BSP_PROVIDER');
     return {
       rails: {
-        // rails.sms is settings-driven (provider 'logger' default, 'http-generic'
-        // over env) — configured = operator env OR the rail enabled with settings.
-        sms: {
-          configured: !!process.env.SMS_PROVIDER || on('auth.otp'),
-          provider: process.env.SMS_PROVIDER ?? s('auth.otp').provider ?? null,
-        },
-        whatsapp: {
-          configured: !!process.env.WHATSAPP_BSP_PROVIDER || on('comms.whatsapp.delivery'),
-          provider: process.env.WHATSAPP_BSP_PROVIDER ?? s('comms.whatsapp.delivery').provider ?? null,
-        },
+        sms: { configured: delivers(smsProvider), provider: smsProvider, sandbox: !delivers(smsProvider) },
+        whatsapp: { configured: delivers(waProvider), provider: waProvider, sandbox: !delivers(waProvider) },
         razorpay: { configured: !!(process.env.RAZORPAY_KEY_ID ?? s('fees.razorpay.gateway').key_id) },
         files: { configured: true }, // artifact store is kernel-native (docs/12 §3)
         // S0 fix A2: the registry/catalog id is 'library' — 'library.core' never
@@ -1561,6 +1591,17 @@ export async function buildApp(opts = {}) {
       if (!pluginId || !purpose || input == null) return reply.code(400).send({ error: 'pluginId, purpose and input are required' });
       if (req.user.role === 'student') return reply.code(403).send({ error: 'AI doors are staff-only.' });
       const r = await gateway.call({ tenantId: req.user.tenant_id, userId: req.user.id, pluginId, purpose, provider, input, settings });
+      // F-15: this was the only mutating door with no audit row. The gateway's own
+      // app.ai_calls ledger records the attempt; the audit ledger records the ACT.
+      // Best-effort by design (gateway S0-B6 precedent): a ledger write failure must
+      // not turn a budget answer or a provider result into a 500.
+      try {
+        await withUser(req.user.tenant_id, req.user.role, (c) =>
+          auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role,
+            action: `AI call (${r.ok ? 'ok' : r.code ?? 'error'})`, recordType: 'AI', recordRef: `${pluginId} · ${purpose}`,
+            reason: 'staff AI use', policyRef: 'Platform §10 (AI gateway)', ip: req.ip ?? null,
+            outcome: r.ok ? `provider ${r.provider ?? provider ?? 'logger'} · ${r.tokensIn ?? 0}+${r.tokensOut ?? 0} tokens` : String(r.error ?? 'failed').slice(0, 200) }));
+      } catch (e) { req.log?.error?.({ err: e }, 'ai/call audit write failed'); }
       if (!r.ok && r.code === 'budget') return reply.code(429).send({ error: r.error, code: 'budget' });
       if (!r.ok) return reply.code(503).send({ error: r.error ?? 'AI provider unavailable', code: r.code ?? 'unconfigured' });
       return r;

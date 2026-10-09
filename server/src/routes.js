@@ -8,7 +8,10 @@ import { checkEventBudget } from './governance.js';
 import { q, sysq } from './db.js';
 import { uuidParams } from './plugins/_shared/uuid-param.js';
 import { toE164, maskPhone } from './plugins/_shared/phone.js';
-import { FULL_PII, ADMIN as ADMISSIONS_ADMIN, FOLLOWUP_WEIGHTS, CLOSED_STAGES } from './plugins/_shared/admissions-access.js';
+import { parseDob, parseGender } from './plugins/_shared/enrolment.js';
+import { hashPassword, verifyPassword } from './auth.js';
+import { substitutionSuggestions } from './plugins/_shared/substitute-suggest.js';
+import { FULL_PII, ADMIN as ADMISSIONS_ADMIN, FOLLOWUP_WEIGHTS, CLOSED_STAGES, parseGradeApplied } from './plugins/_shared/admissions-access.js';
 import { customRoles, canReach } from './custom-roles.js';
 import { reachableDoors, capabilitiesFor } from './effective-access.js';
 import { istNow, istToday } from './ist.js';
@@ -16,7 +19,7 @@ import { decryptSettings, encryptSettings, maskSettings } from './settings-crypt
 import { planIncludes, PLUGIN_PLAN, feeFeatureIncluded, feeEntitlements, feeNotEntitled } from './entitlements.js';
 import { enabledCapability } from './plugin-capabilities.js';
 import { selectOverdue, selectBeforeDue, selectEscalation, overdueBody, beforeDueBody, escalationBody, overdueDedup, beforeDueDedup, escalationDedup, outstanding } from './fees/dunning.js';
-import { findDiscrepancies, raiseDiscrepancyActions } from './fees/reconcile.js';
+import { findDiscrepancies, raiseDiscrepancyActions, recordReconRun } from './fees/reconcile.js';
 import { splitInstallments } from './fees/installments.js';
 import { receiptPdf } from './fees/receipt-pdf.js';
 import { putFile, storageBase } from './file-artifacts.js';
@@ -162,52 +165,52 @@ export async function assertTeacherOwnsClasses(c, user, ownedClasses, marks) {
   return { ok: true };
 }
 
+/* H2/L5 — ONE audience resolver, read as the UNION of the two ways a family is stored.
+   `app.guardians` is the office-entered guardian row; a parent who signs up is a `parent` USER
+   linked through `family.child_link` and has NO guardians row at all. The resolver read only
+   the first arm, so every notice for an app-onboarded family (route, class, an explicit
+   student, all_guardians) resolved ZERO recipients and silently reached nobody. Every audience
+   is now described ONCE and read through both arms, so the two cannot drift apart again. */
+const NOTICE_ARMS = [
+  // the office-entered guardian record
+  { alias: 'g', from: 'app.guardians g', scope: 'g.tenant_id=$1', phone: 'g.phone', student: 's.id = g.student_id' },
+  // the parent ACCOUNT, linked to a child (only an active parent speaks for the family)
+  { alias: 'cl', from: 'family.child_link cl JOIN app.users u ON u.id = cl.user_id',
+    scope: "cl.tenant_id=$1 AND u.active AND u.role='parent'", phone: 'u.phone', student: 's.id = cl.student_id' },
+];
+const noticeArm = (arm, predicate) =>
+  `SELECT DISTINCT ${arm.phone} AS phone FROM ${arm.from}${/\bs\./.test(predicate) ? ` JOIN app.students s ON ${arm.student}` : ''}
+    WHERE ${arm.scope} AND ${predicate} AND ${arm.phone} IS NOT NULL`;
+
 export async function resolveNoticeRecipients(c, tenantId, p) {
   const explicit = Array.isArray(p?.recipients) ? p.recipients.map(toE164).filter(Boolean) : [];
   if (explicit.length) return [...new Set(explicit)];
-  const ids = [...(Array.isArray(p?.studentIds) ? p.studentIds : []), ...(p?.studentId ? [p.studentId] : [])]
-    .filter((v) => UUID_RE_NOTICE.test(String(v)));
-  if (ids.length) {
-    const r = await c.query(
-      `SELECT DISTINCT g.phone FROM app.guardians g
-        WHERE g.tenant_id=$1 AND g.student_id = ANY($2::uuid[]) AND g.phone IS NOT NULL`,
-      [tenantId, ids]);
-    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
-  }
-  // transport notices name a bus route; the roster is students.bus_route
-  if (p?.routeCode) {
-    const r = await c.query(
-      `SELECT DISTINCT g.phone FROM app.guardians g JOIN app.students s ON s.id = g.student_id
-        WHERE g.tenant_id=$1 AND s.bus_route=$2 AND g.phone IS NOT NULL`,
-      [tenantId, String(p.routeCode)]);
-    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
-  }
-  // OPP-PRD-3: the announcement composer resolves its audience by kind.
-  if (p?.audienceKind === 'class' && p?.audienceRef) {
-    const r = await c.query(
-      `SELECT DISTINCT g.phone FROM app.guardians g JOIN app.students s ON s.id = g.student_id
-        WHERE g.tenant_id=$1 AND s.grade=$2 AND g.phone IS NOT NULL`,
-      [tenantId, String(p.audienceRef)]);
-    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
-  }
-  if (p?.audienceKind === 'route' && p?.audienceRef) {
-    const r = await c.query(
-      `SELECT DISTINCT g.phone FROM app.guardians g JOIN app.students s ON s.id = g.student_id
-        WHERE g.tenant_id=$1 AND s.bus_route=$2 AND g.phone IS NOT NULL`,
-      [tenantId, String(p.audienceRef)]);
-    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
-  }
   if (p?.audienceKind === 'staff') {
     const r = await c.query(
       `SELECT DISTINCT phone FROM app.users WHERE tenant_id=$1 AND active AND role NOT IN ('parent','student') AND phone IS NOT NULL`,
       [tenantId]);
     return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
   }
-  if (p?.audienceKind === 'all_guardians') {
-    const r = await c.query(`SELECT DISTINCT phone FROM app.guardians WHERE tenant_id=$1 AND phone IS NOT NULL`, [tenantId]);
-    return [...new Set(r.rows.map((x) => toE164(x.phone)).filter(Boolean))];
+  const ids = [...(Array.isArray(p?.studentIds) ? p.studentIds : []), ...(p?.studentId ? [p.studentId] : [])]
+    .filter((v) => UUID_RE_NOTICE.test(String(v)));
+  // transport notices name a bus route; the roster is students.bus_route
+  const spec =
+    ids.length ? { predicate: (scope) => `${scope}.student_id = ANY($2::uuid[])`, params: [ids] }
+    : p?.routeCode ? { predicate: () => 's.bus_route=$2', params: [String(p.routeCode)] }
+    : p?.audienceKind === 'class' && p?.audienceRef ? { predicate: () => 's.grade=$2', params: [String(p.audienceRef)] }
+    : p?.audienceKind === 'route' && p?.audienceRef ? { predicate: () => 's.bus_route=$2', params: [String(p.audienceRef)] }
+    : p?.audienceKind === 'all_guardians' ? { predicate: () => 'true', params: [] }
+    : null;
+  if (!spec) return [];
+  const out = new Set();
+  for (const arm of NOTICE_ARMS) {
+    const sql = noticeArm(arm, spec.predicate(arm.alias));
+    for (const row of (await c.query(sql, [tenantId, ...spec.params])).rows) {
+      const phone = toE164(row.phone);
+      if (phone) out.add(phone);
+    }
   }
-  return [];
+  return [...out];
 }
 
 /** OPP-PRD-3: the in-app audience is guardian/staff USER ids (notifications), not phones. */
@@ -633,15 +636,68 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     } catch { /* best-effort link; a name mismatch just leaves user_id null */ }
   };
 
+  /* P2-7 · dob + gender come from the shared parsers (module scope, above) so the manual form, the
+   CSV import and the record edit cannot answer three different ways about the same value. */
   app.post('/students', { preHandler: require('owner','principal','coordinator','admissions','itadmin') }, async (req, reply) => {
     const b = req.body ?? {};
     for (const f of ['name','grade','section']) if (!b[f]) return bad(reply, `${f} required`);
+    const dob = parseDob(b.dob ?? b.dateOfBirth);
+    if (!dob.ok) return bad(reply, dob.error);
+    const gender = parseGender(b.gender);
+    if (!gender.ok) return bad(reply, gender.error);
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
-      const code = b.admissionNo ?? `ADM-${Date.now().toString(36)}`;
+      const grade = String(b.grade).trim();
+      const section = String(b.section).trim();
+
+      /* P2-6: a pupil must land in a class this school actually has. The door took `grade` as
+         free text and stored it verbatim, so "Grade 77" or "Grade 99 · Z" was accepted with 200
+         and the child became invisible to every screen that reads the school's own structure —
+         roster, attendance filter, timetable cell, fee plan. Both the CSV import and this door
+         needed it; the import fixes its rows per-row, this one refuses the request.
+         A school that has not defined its classes yet is NOT blocked — structure is optional
+         at onboarding, so an empty list means "nothing to check against", not "reject". */
+      const cfg = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const parsed = normalizeClasses(cfg?.config?.setup?.sections ?? []);
+      if (parsed.ok && parsed.classes.length) {
+        const cls = parsed.classes.find((x) => x.grade === grade);
+        if (!cls) {
+          return bad(reply, `"${grade}" is not one of this school's classes. Add it on the Classes & sections screen first, or pick one of: ${parsed.classes.map((x) => x.grade).join(', ')}`);
+        }
+        if (!cls.sections.includes(section)) {
+          return bad(reply, `Section "${section}" is not one of ${cls.grade}'s sections. Use one of: ${cls.sections.join(', ') || '(none configured)'}`);
+        }
+      }
+
+      const code = String(b.admissionNo ?? `ADM-${Date.now().toString(36)}`).trim();
+
+      /* P2-5: admission_no carries UNIQUE (tenant_id, admission_no) (migration 001), so a
+         duplicate used to reach the INSERT and surface as an unhandled 23505 — a raw 500 with
+         no indication of which number collided. Check first and answer 409 with the pupil it
+         belongs to, which is what the caller can actually act on. */
+      const clash = (await c.query(
+        `SELECT name, grade, section FROM app.students WHERE tenant_id=$1 AND admission_no=$2`,
+        [req.user.tenant_id, code])).rows[0];
+      if (clash) {
+        return bad(reply, `Admission number ${code} is already used by ${clash.name} (${clash.grade}-${clash.section}). Admission numbers must be unique.`, 409);
+      }
+
+      /* P2-8: duplicate detection. Two active pupils with the same name in one school is almost
+         always a double entry — and the school cannot tell them apart in a roster, which sorts
+         and filters by name. Siblings are named differently in practice; where a school genuinely
+         has two, the fix is to give the second one a distinct admission number and correct the
+         name, and this message says which pupil to look at. */
+      const sameName = (await c.query(
+        `SELECT admission_no, grade, section FROM app.students
+          WHERE tenant_id=$1 AND lower(name)=lower($2) AND status='active' LIMIT 1`,
+        [req.user.tenant_id, String(b.name).trim()])).rows[0];
+      if (sameName) {
+        return bad(reply, `${String(b.name).trim()} is already enrolled in this school (${sameName.admission_no}, ${sameName.grade}-${sameName.section}). Search before enrolling again — a second pupil with the same name cannot be told apart in a roster.`, 409);
+      }
+
       const r = await c.query(
-        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, bus_route, source, source_ref)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-        [req.user.tenant_id, code, b.name, b.grade, b.section, b.guardianName ?? null, b.guardianPhone ?? null, b.busRoute ?? null, 'staff', req.user.id]);
+        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, bus_route, dob, gender, source, source_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [req.user.tenant_id, code, b.name, grade, section, b.guardianName ?? null, b.guardianPhone ?? null, b.busRoute ?? null, dob.value, gender.value, 'staff', req.user.id]);
       const student = r.rows[0];
       await linkStudentUser(c, req.user.tenant_id, student.id, b.name);
       /* M1: keep the canonical guardian contact table in sync at creation. The manual roster door
@@ -879,6 +935,68 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
+  // ============ school profile (tenant identity & contact) ============
+  // The school's own identity card: name, structured address, contacts,
+  // timezone. Owner-only read AND write — contact details are not roster
+  // data for every caller, and the School profile screen (`/school-profile`,
+  // which writes through POST /onboard/school) prefills from this door. The
+  // SURFACE_DOOR entry names this read so canSurface answers exactly where
+  // the doors admit.
+  const PROFILE_KEYS = ['address', 'city', 'state', 'postalCode', 'country', 'board', 'phone', 'email', 'website', 'timezone'];
+  app.get('/school/profile', { preHandler: require('owner') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const t = (await c.query(`SELECT name, slug, onboarded_at, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      if (!t) return { school: null };
+      const cfg = t.config ?? {};
+      const profile = {};
+      for (const k of PROFILE_KEYS) profile[k] = typeof cfg[k] === 'string' ? cfg[k] : '';
+      if (!profile.timezone) profile.timezone = 'Asia/Kolkata';
+      return { school: { name: t.name, slug: t.slug, onboardedAt: t.onboarded_at, profile } };
+    });
+  });
+
+  // ============ school setup guide (Part 1: the people chain) ============
+  // One read for the Setup guide screen (`/setup`): each stage of staffing a new
+  // school — school card → principal → IT admin → classes → teachers → students →
+  // desk roles → finance roles → parent/pupil portal access — with live done-flags
+  // and counts. Owner, principal and IT admin only: each stage's write doors re-gate (principal appoints the
+  // IT admin and nothing else; the owner appoints the principal; the IT admin
+  // fills the roster), so the surface answers exactly where the chain admits.
+  // The SURFACE_DOOR entry names this read.
+  app.get('/school/setup', { preHandler: require('owner', 'principal', 'itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const t = (await c.query(`SELECT name, slug, config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const counts = (await c.query(
+        `SELECT
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='principal' AND active) AS principals,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='itadmin' AND active) AS itadmins,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='teacher' AND active) AS teachers,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND active
+              AND role IN ('coordinator','counselor','admissions','transport','facilities','technician','librarian')) AS desk,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND active
+              AND role IN ('finance','finance_head','finance_clerk')) AS finance,
+           (SELECT count(*)::int FROM app.students WHERE tenant_id=$1 AND status='active') AS students,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='parent' AND active) AS parents,
+           (SELECT count(*)::int FROM app.guardians WHERE tenant_id=$1) AS guardians`, [req.user.tenant_id])).rows[0];
+      const cfg = t?.config ?? {};
+      const sections = t?.config?.setup?.sections ?? [];
+      return {
+        school: { name: t?.name ?? null, slug: t?.slug ?? null },
+        stages: [
+          { id: 'school', label: 'School details', hint: 'Name, address, contacts, timezone — what invoices and reports read.', done: true, href: '/school-profile' },
+          { id: 'principal', label: 'Appoint your principal', hint: 'Owner only. The principal runs the school day-to-day and appoints the IT admin.', done: counts.principals > 0, count: counts.principals },
+          { id: 'itadmin', label: 'Create your IT admin', hint: 'Owner or principal. The IT admin adds everyone else, so you do not have to.', done: counts.itadmins > 0, count: counts.itadmins },
+          { id: 'classes', label: 'Define your classes and sections', hint: 'Every roster, picker and filter reads this list.', done: sections.length > 0, count: sections.length, href: '/classes' },
+          { id: 'teachers', label: 'Add teachers', hint: 'One by one on the People console — every class needs its teachers first.', done: counts.teachers > 0, count: counts.teachers, href: '/people-admin' },
+          { id: 'students', label: 'Admit students', hint: 'One by one, CSV import, or the full migration load.', done: counts.students > 0, count: counts.students, href: '/people-admin' },
+          { id: 'desk', label: 'Add desk roles', hint: 'Admissions, transport, front desk, counsellor, librarian — whoever runs each counter.', done: counts.desk > 0, count: counts.desk, href: '/people-admin' },
+          { id: 'finance', label: 'Add finance roles', hint: 'Fee collection and payroll need their owners before Part 2 switches fees on.', done: counts.finance > 0, count: counts.finance, href: '/people-admin' },
+          { id: 'portals', label: 'Give parents and pupils portal access', hint: 'Guardian accounts linked to their children; pupil accounts from the roster.', done: counts.parents > 0 || counts.guardians > 0, count: counts.parents, href: '/people-admin' },
+        ],
+      };
+    });
+  });
+
   // ============ subjects (F3) ============
   // The school's own subject list — the real references behind the free-text `subject` columns in
   // timetable/homework/exams. Any authenticated caller may read it (a subject name is not sensitive);
@@ -886,7 +1004,7 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   app.get('/school/subjects', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const subjects = (await c.query(
-        `SELECT id, name, code FROM app.subjects WHERE tenant_id=$1 AND active ORDER BY name`,
+        `SELECT id, name, code, is_elective AS "isElective", is_skill AS "isSkill" FROM app.subjects WHERE tenant_id=$1 AND active ORDER BY name`,
         [req.user.tenant_id])).rows;
       return { subjects };
     });
@@ -896,11 +1014,14 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
     if (!name) return bad(reply, 'A subject name is required');
     const code = typeof req.body?.code === 'string' ? req.body.code.trim().slice(0, 12) || null : null;
+    const isElective = req.body?.isElective === true;
+    const isSkill = req.body?.isSkill === true;
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const row = (await c.query(
-        `INSERT INTO app.subjects (tenant_id, name, code, active) VALUES ($1,$2,$3,true)
-         ON CONFLICT (tenant_id, name) DO UPDATE SET active=true, code=COALESCE(EXCLUDED.code, app.subjects.code)
-         RETURNING id, name, code`, [req.user.tenant_id, name, code])).rows[0];
+        `INSERT INTO app.subjects (tenant_id, name, code, active, is_elective, is_skill) VALUES ($1,$2,$3,true,$4,$5)
+         ON CONFLICT (tenant_id, name) DO UPDATE SET active=true, code=COALESCE(EXCLUDED.code, app.subjects.code),
+           is_elective=EXCLUDED.is_elective, is_skill=EXCLUDED.is_skill
+         RETURNING id, name, code, is_elective AS "isElective", is_skill AS "isSkill"`, [req.user.tenant_id, name, code, isElective, isSkill])).rows[0];
       await auditLog(c, req.user.tenant_id, {
         actor: req.user.name, actorRole: req.user.role, action: 'Subject added',
         recordType: 'Tenant', recordRef: name, reason: 'school structure', policyRef: 'School structure',
@@ -916,6 +1037,33 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
   // and this pair of doors is what makes a school able to run its own daily workflow instead of routing every
   // class through the principal's office. Assignment is an ADMINISTRATIVE act (principal office) — a teacher
   // must not be able to grant themselves a class, which is the whole authority being delegated.
+
+  /* P2-15 · the staff NAME PICKER. Two screens need to name a teacher by REFERENCE rather than by
+     typing a name — the timetable slot editor (a slot storing `teacher_name` as free text cannot be
+     reasoned about by the substitution engine, and a renamed teacher leaves every past slot naming
+     someone who no longer exists) and the class-ownership panel. Both had exactly one way to get a
+     teacher list: `GET /plugins/people.admin/users`, which the identity authority gates to owner and
+     IT admin. A coordinator — who may write both the class assignment and the timetable slot — got an
+     empty picker and had to ask a principal.
+
+     This is the minimal read those two writes need: id + name + role for ACTIVE accounts, no email,
+     no phone, no contact details, and never a password or session field. */
+  app.get('/school/staff', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin', 'finance_head') }, async (req, reply) => {
+    if (req.user.role === 'api' && !req.apiScopes?.includes('users.read')) return bad(reply, 'API key lacks the users.read scope', 403);
+    const { role } = req.query ?? {};
+    const want = typeof role === 'string' && role.trim() ? role.trim().split(',').map((r) => r.trim()).filter(Boolean) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const staff = (await c.query(
+        `SELECT id, name, role FROM app.users
+          WHERE tenant_id=$1 AND active
+            AND ($2::text[] IS NULL OR role = ANY($2::text[]))
+            AND role NOT IN ('parent','student','api')
+          ORDER BY name LIMIT 500`,
+        [req.user.tenant_id, want])).rows;
+      return { staff };
+    });
+  });
+
   app.get('/class-assignments', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const isOffice = ['owner', 'principal', 'coordinator', 'itadmin'].includes(req.user.role);
@@ -1048,6 +1196,1533 @@ export function registerRoutes(app, { withUser, auditLog, emitEvent, ROLES }) {
     });
   });
 
+  // ---- Master Action Plan · MPD compliance vault + RTE/EWS ledger + payroll-lite + billing ----
+  // MPD: the Appendix-IX disclosure wall — every row an inspection can ask for, with its state.
+  const MPD_REQUIRED = [
+    { kind: 'affiliation_letter', label: 'Affiliation / upgradation letter + latest extension' },
+    { kind: 'trust_registration', label: 'Society / Trust / Company registration (valid)' },
+    { kind: 'noc_state', label: 'State NOC for CBSE affiliation' },
+    { kind: 'rte_recognition', label: 'RTE recognition certificate (Class 1–8)' },
+    { kind: 'building_safety', label: 'Building safety certificate (National Building Code)' },
+    { kind: 'fire_safety', label: 'Fire safety certificate' },
+    { kind: 'deo_certificate', label: 'DEO certificate / self-certification' },
+    { kind: 'water_health_sanitation', label: 'Water, health & sanitation certificates' },
+    { kind: 'fee_structure', label: 'Fee structure' },
+    { kind: 'academic_calendar', label: 'Annual academic calendar' },
+    { kind: 'smc_list', label: 'School Management Committee list' },
+    { kind: 'pta_members', label: 'Parent-Teacher Association members' },
+    { kind: 'board_results', label: 'Last three years board results' },
+    { kind: 'staff_qualifications', label: 'Staff list with qualifications' },
+  ];
+  const mpdStatus = (doc) => {
+    if (!doc) return 'missing';
+    if (doc.expires_on && new Date(doc.expires_on).getTime() < Date.now() + 60 * 864e5) return 'expiring';
+    return 'ok';
+  };
+  app.get('/compliance/mpd', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const docs = (await c.query(
+        `SELECT id, name, kind, expires_on, created_at FROM app.mpd_docs WHERE active ORDER BY kind, created_at DESC`)).rows;
+      const byKind = new Map();
+      for (const d of docs) if (!byKind.has(d.kind)) byKind.set(d.kind, d);
+      const checklist = MPD_REQUIRED.map((r) => {
+        const d = byKind.get(r.kind) ?? null;
+        return { ...r, status: mpdStatus(d), detail: d ? `${d.name}${d.expires_on ? ` · expires ${String(d.expires_on).slice(0, 10)}` : ''}` : 'Not on record — file it before an inspection asks', href: '/mpd' };
+      });
+      const t = (await c.query(`SELECT slug, name FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const updatedAt = docs.length ? docs.map((d) => d.created_at).sort().pop() : null;
+      return { checklist, docs, disclosure: { url: `/public/disclosure?tenant=${t?.slug ?? ''}`, updatedAt } };
+    });
+  });
+  app.post('/compliance/mpd/docs', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim().slice(0, 160) : '';
+    const kind = typeof b.kind === 'string' ? b.kind.trim().slice(0, 60) : '';
+    if (!name) return bad(reply, 'Name the document (e.g. Fire safety certificate 2026-27)');
+    if (!MPD_REQUIRED.some((r) => r.kind === kind)) return bad(reply, `kind must be one of: ${MPD_REQUIRED.map((r) => r.kind).join(', ')}`);
+    let expiresOn = null;
+    if (b.expiresOn !== undefined && b.expiresOn !== null && String(b.expiresOn).trim() !== '') {
+      if (!DATE_RE.test(String(b.expiresOn).trim())) return bad(reply, 'expiresOn must be YYYY-MM-DD');
+      expiresOn = String(b.expiresOn).trim();
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.mpd_docs (tenant_id, name, kind, expires_on, created_by)
+         VALUES ($1,$2,$3,$4::date,$5) RETURNING id, name, kind, expires_on`,
+        [req.user.tenant_id, name, kind, expiresOn, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Filed disclosure document', recordType: 'MpdDoc', recordRef: row.id, reason: kind, policyRef: 'CBSE Affiliation Bye-Laws (MPD)', risk: 'low', outcome: `${name}${expiresOn ? ` · expires ${expiresOn}` : ''}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'compliance', label: `Disclosure filed — ${name}`, ref: row.id });
+      return { doc: row };
+    });
+  });
+  app.post('/compliance/mpd/docs/:id/retire', { preHandler: [require('owner', 'principal', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `UPDATE app.mpd_docs SET active=false, retired_at=now() WHERE id=$1 AND tenant_id=$2 AND active RETURNING id, name`,
+        [req.params.id, req.user.tenant_id]);
+      if (!r.rows[0]) return bad(reply, 'No active document with that id', 404);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Retired disclosure document', recordType: 'MpdDoc', recordRef: r.rows[0].id, reason: 'superseded/expired', policyRef: 'CBSE Affiliation Bye-Laws (MPD)', risk: 'low', outcome: `${r.rows[0].name} retired (history kept)` });
+      return { ok: true };
+    });
+  });
+  // Public by law: the disclosure wall is what an inspector or parent reads without signing in.
+  // Institutional certificates only — never pupil, guardian, fee or staff PII.
+  app.get('/public/disclosure', async (req, reply) => {
+    const slug = typeof req.query?.tenant === 'string' ? req.query.tenant.trim().toLowerCase().slice(0, 80) : '';
+    if (!slug) return bad(reply, 'tenant query (school code) is required');
+    const t = await sysq(`SELECT id, name, slug FROM app.tenants WHERE slug=$1`, [slug]);
+    const tenant = t.rows[0];
+    if (!tenant) return reply.code(404).send({ error: 'No school with that code' });
+    const docs = (await sysq(
+      `SELECT name, kind, expires_on FROM app.mpd_docs WHERE tenant_id=$1 AND active ORDER BY kind`,
+      [tenant.id])).rows;
+    return { school: { name: tenant.name, slug: tenant.slug }, disclosures: docs, generatedAt: new Date().toISOString() };
+  });
+
+  // RTE §12(1)(c): the 25% quota lives on the roster (source='rte-lottery') + an auto-approved
+  // statutory waiver, so reimbursement, fee and audit all read the same truth.
+  const RTE_ENTRY_GRADES = ['Nursery', 'Jr KG', 'Sr KG', '1'];
+  app.get('/rte/overview', { preHandler: roleGatedMe('owner', 'principal', 'coordinator', 'admissions', 'itadmin', 'finance', 'finance_head', 'finance_clerk') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const grades = RTE_ENTRY_GRADES;
+      const total = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students WHERE status='active' AND grade = ANY($1::text[])`, [grades])).rows[0].n;
+      const filled = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students WHERE status='active' AND source='rte-lottery' AND grade = ANY($1::text[])`, [grades])).rows[0].n;
+      const quotaSeats = Math.ceil(total * 25 / 100);
+      const money = (await c.query(
+        `SELECT COALESCE(sum(amount_cents) FILTER (WHERE status IN ('claimed','partial')),0)::int AS claimed,
+                COALESCE(sum(amount_cents) FILTER (WHERE status='received'),0)::int AS received
+           FROM app.rte_reimbursements`)).rows[0];
+      const pending = Math.max(0, money.claimed - money.received);
+      const recent = (await c.query(
+        `SELECT admission_no, name, grade, section FROM app.students WHERE source='rte-lottery' AND status='active' ORDER BY created_at DESC LIMIT 10`)).rows;
+      return {
+        quotaPct: 25, entryGrades: grades,
+        seats: { total, reserved: quotaSeats, filled, remaining: Math.max(0, quotaSeats - filled) },
+        reimbursements: { claimed_cents: money.claimed, received_cents: money.received, pending_cents: pending },
+        recent,
+      };
+    });
+  });
+  app.post('/rte/lottery/import', { preHandler: require('owner', 'principal', 'coordinator', 'admissions', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const year = typeof b.academicYear === 'string' ? b.academicYear.trim().slice(0, 12) : '';
+    if (!year) return bad(reply, 'academicYear is required (e.g. 2026-27)');
+    if (!Array.isArray(b.rows) || !b.rows.length || b.rows.length > 200) return bad(reply, 'rows[] with 1–200 lottery winners is required');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // A6: deliberately NOT gated on fees.concessions — the RTE waiver is statutory
+      // (the lottery is the authority), not a commercial concession feature. A school
+      // without the fees tier still admits its quota children.
+      const cfg = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const parsed = normalizeClasses(cfg?.config?.setup?.sections ?? []);
+      const base = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students WHERE admission_no LIKE 'RTE-%'`)).rows[0].n;
+      const imported = [];
+      const failed = [];
+      let seq = base;
+      for (const [i, row] of b.rows.entries()) {
+        const lineNo = i + 1;
+        await c.query('SAVEPOINT rte_row');
+        try {
+          const name = String(row?.name ?? '').trim();
+          const grade = String(row?.grade ?? '').trim();
+          const section = String(row?.section ?? 'A').trim() || 'A';
+          if (!name) throw new Error('name is required');
+          const dob = parseDob(row?.dob);
+          if (!dob.ok) throw new Error(dob.error);
+          const gender = parseGender(row?.gender);
+          if (!gender.ok) throw new Error(gender.error);
+          if (parsed.ok && parsed.classes.length) {
+            const cls = parsed.classes.find((x) => x.grade === grade);
+            if (!cls) throw new Error(`"${grade}" is not one of this school's classes`);
+            if (!cls.sections.includes(section)) throw new Error(`section "${section}" is not one of ${grade} (${cls.sections.join(', ')})`);
+          }
+          const sameName = (await c.query(
+            `SELECT admission_no FROM app.students WHERE lower(name)=lower($1) AND status='active' LIMIT 1`, [name])).rows[0];
+          if (sameName) throw new Error(`${name} is already enrolled (${sameName.admission_no})`);
+          seq += 1;
+          const adm = `RTE-${year.replace(/[^0-9]/g, '').slice(0, 8) || '0000'}-${String(seq).padStart(3, '0')}`;
+          const st = (await c.query(
+            `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, dob, gender, source, source_ref)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'rte-lottery',$10) RETURNING id, admission_no, name`,
+            [req.user.tenant_id, adm, name, grade, section,
+             String(row?.guardianName ?? '').trim() || null,
+             String(row?.guardianPhone ?? '').trim() || null,
+             dob.value, gender.value, `lottery ${year}`])).rows[0];
+          if (row?.guardianName && row?.guardianPhone) {
+            await c.query(
+              `INSERT INTO app.guardians (tenant_id, student_id, name, phone, relation, is_primary)
+               VALUES ($1,$2,$3,$4,'guardian',true)`,
+              [req.user.tenant_id, st.id, String(row.guardianName).trim(), String(row.guardianPhone).trim()]);
+          }
+          // Statutory waiver: tuition-free to Class 8 — approved at import (the lottery IS the authority),
+          // audited as such. Percent 100 on every obligation the generate fan-out later creates.
+          await c.query(
+            `INSERT INTO app.fee_concessions (tenant_id, student_id, kind, percent, reason, status, requested_by, approved_by, approved_at)
+             VALUES ($1,$2,'waiver',100,$3,'approved',$4,$4,now())`,
+            [req.user.tenant_id, st.id, `RTE §12(1)(c) lottery ${year}`, req.user.id]);
+          await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'RTE lottery admission', recordType: 'Student', recordRef: adm, reason: `lottery ${year} · ${row?.category ?? 'EWS/DG'}`, policyRef: 'RTE Act §12(1)(c)', risk: 'medium', outcome: `${name} enrolled with statutory waiver` });
+          await emitEvent(c, req.user.tenant_id, { type: 'admissions', label: `RTE admission — ${name} (${grade}-${section})`, ref: adm });
+          imported.push({ admissionNo: adm, name });
+          await c.query('RELEASE SAVEPOINT rte_row');
+        } catch (e) {
+          await c.query('ROLLBACK TO SAVEPOINT rte_row');
+          failed.push({ row: lineNo, error: e.message ?? 'could not import this row' });
+        }
+      }
+      return { imported, failed, failedCount: failed.length };
+    });
+  });
+  app.post('/rte/reimbursements', { preHandler: require('owner', 'principal', 'finance', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const year = typeof b.academicYear === 'string' ? b.academicYear.trim().slice(0, 12) : '';
+    const amount = Number(b.amountCents);
+    if (!year) return bad(reply, 'academicYear is required');
+    if (!Number.isInteger(amount) || amount < 0) return bad(reply, 'amountCents must be a non-negative integer (paise)');
+    const status = b.status === undefined ? 'claimed' : String(b.status);
+    if (!['claimed','received','partial'].includes(status)) return bad(reply, 'status must be claimed|received|partial');
+    const claimRef = typeof b.claimRef === 'string' ? b.claimRef.trim().slice(0, 80) || null : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // A3: a named claim is a chain, not a pile — first row must open it as
+      // `claimed`; `partial`/`received` need a prior claim; `received` closes it;
+      // cumulative received can never exceed what was claimed. Unnamed rows stay
+      // free-form (history imports). Uniqueness itself is migration 152.
+      if (claimRef) {
+        const chain = (await c.query(
+          `SELECT status, amount_cents FROM app.rte_reimbursements WHERE tenant_id=$1 AND claim_ref=$2 ORDER BY created_at, id`,
+          [req.user.tenant_id, claimRef])).rows;
+        if (!chain.length && status !== 'claimed') {
+          return bad(reply, `claim ${claimRef} does not exist yet — open it with status claimed first`, 409);
+        }
+        if (chain.some((x) => x.status === 'received')) {
+          return bad(reply, `claim ${claimRef} is already received — closed claims take no further rows`, 409);
+        }
+        if (status !== 'claimed') {
+          const claimed = chain.filter((x) => x.status === 'claimed').reduce((a, x) => a + Number(x.amount_cents), 0);
+          const got = chain.filter((x) => x.status !== 'claimed').reduce((a, x) => a + Number(x.amount_cents), 0);
+          if (got + amount > claimed) {
+            return bad(reply, `claim ${claimRef} claimed ${claimed} paise — this would receive ${got + amount}`, 409);
+          }
+        }
+      }
+      let row;
+      try {
+        row = (await c.query(
+          `INSERT INTO app.rte_reimbursements (tenant_id, academic_year, amount_cents, claim_ref, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, academic_year, amount_cents, claim_ref, status`,
+          [req.user.tenant_id, year, amount, claimRef, status, req.user.id])).rows[0];
+      } catch (e) {
+        // A3 race backstop: two writers opening the same named claim — the
+        // loser's UNIQUE violation becomes a friendly 409, like lead dedupe.
+        if (e?.code === '23505') return bad(reply, `claim ${claimRef ?? year} already has this row — refresh and continue its chain`, 409);
+        throw e;
+      }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `RTE reimbursement ${status}`, recordType: 'RteReimbursement', recordRef: row.id, reason: year, policyRef: 'RTE Act §12(2)', risk: 'medium', outcome: `₹${(amount / 100).toFixed(2)} ${status}` });
+      return { reimbursement: row };
+    });
+  });
+
+  // Payroll-lite: structures (monthly + bank/pan) → draft run snapshots → ECS/cash disbursal.
+  // Payslips snapshot the structure, so later edits never rewrite paid history (money law).
+  const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+  const MONTH_RE = /^[0-9]{4}-[0-9]{2}$/;
+  const payrollStaff = async (c, tenantId) => (await c.query(
+    `SELECT u.id, u.name, u.role, s.monthly_cents AS "monthlyCents",
+            CASE WHEN s.bank_acct IS NULL OR s.bank_acct='' THEN NULL ELSE '****' || RIGHT(s.bank_acct, 4) END AS "bankLast4"
+       FROM app.users u LEFT JOIN app.payroll_structures s ON s.user_id = u.id
+      WHERE u.active AND u.role NOT IN ('parent','student','api')
+      ORDER BY u.name`)).rows;
+  app.get('/payroll/overview', { preHandler: roleGatedMe('owner', 'finance_head', 'finance_clerk') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const staff = await payrollStaff(c, req.user.tenant_id);
+      const runs = (await c.query(
+        `SELECT id, month, status, total_cents AS "totalCents", disburse_mode AS "disburseMode", disburse_ref AS "disburseRef",
+                created_at AS "createdAt", disbursed_at AS "disbursedAt",
+                (SELECT count(*)::int FROM app.payroll_payslips p WHERE p.run_id = app.payroll_runs.id) AS payslips
+           FROM app.payroll_runs ORDER BY month DESC LIMIT 6`)).rows;
+      const now = new Date();
+      return { month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`, staff, runs };
+    });
+  });
+  app.put('/payroll/staff/:id', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const monthly = Number(b.monthlyCents);
+    if (!Number.isInteger(monthly) || monthly < 0) return bad(reply, 'monthlyCents must be a non-negative integer (paise)');
+    const bank = b.bankAcct === undefined || b.bankAcct === null || String(b.bankAcct).trim() === ''
+      ? null : String(b.bankAcct).replace(/[\s-]/g, '').slice(0, 34);
+    const pan = b.pan === undefined || b.pan === null || String(b.pan).trim() === ''
+      ? null : String(b.pan).trim().toUpperCase();
+    if (pan && !PAN_RE.test(pan)) return bad(reply, 'pan must look like ABCDE1234F (5 letters, 4 digits, 1 letter)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const u = (await c.query(
+        `SELECT id, name, role FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`,
+        [req.params.id])).rows[0];
+      if (!u) return bad(reply, 'No payable staff with that id (parents, students and API accounts are never on payroll)', 404);
+      const row = (await c.query(
+        `INSERT INTO app.payroll_structures (tenant_id, user_id, monthly_cents, bank_acct, pan, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id, user_id) DO UPDATE
+           SET monthly_cents=EXCLUDED.monthly_cents,
+               bank_acct=COALESCE(EXCLUDED.bank_acct, app.payroll_structures.bank_acct),
+               pan=COALESCE(EXCLUDED.pan, app.payroll_structures.pan),
+               updated_by=EXCLUDED.updated_by, updated_at=now()
+         RETURNING user_id AS "userId", monthly_cents AS "monthlyCents"`,
+        [req.user.tenant_id, u.id, monthly, bank, pan, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Payroll structure saved', recordType: 'PayrollStructure', recordRef: u.id, reason: `${u.name} (${u.role})`, policyRef: 'Payroll (bank/ECS proof)', risk: 'medium', outcome: `₹${(monthly / 100).toFixed(2)}/month${bank ? ' · bank on file' : ''}${pan ? ' · PAN on file' : ''}` });
+      return { structure: { ...row, name: u.name, role: u.role } };
+    });
+  });
+  app.post('/payroll/runs', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    const month = typeof req.body?.month === 'string' ? req.body.month.trim() : '';
+    if (!MONTH_RE.test(month)) return bad(reply, 'month must be YYYY-MM (e.g. 2026-10)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const dup = (await c.query(`SELECT id, status FROM app.payroll_runs WHERE month=$1`, [month])).rows[0];
+      if (dup) return bad(reply, `A pay run for ${month} already exists (${dup.status}) — disburse it or void slips individually`, 409);
+      const staff = (await c.query(
+        `SELECT u.id, s.monthly_cents FROM app.users u JOIN app.payroll_structures s ON s.user_id = u.id
+          WHERE u.active AND u.role NOT IN ('parent','student','api')`)).rows;
+      const missing = (await c.query(
+        `SELECT name FROM app.users WHERE active AND role NOT IN ('parent','student','api')
+           AND id NOT IN (SELECT user_id FROM app.payroll_structures) ORDER BY name`)).rows.map((r) => r.name);
+      const run = (await c.query(
+        `INSERT INTO app.payroll_runs (tenant_id, month, created_by) VALUES ($1,$2,$3) RETURNING id, month, status`,
+        [req.user.tenant_id, month, req.user.id])).rows[0];
+      let total = 0;
+      for (const s of staff) {
+        await c.query(
+          `INSERT INTO app.payroll_payslips (tenant_id, run_id, user_id, monthly_cents) VALUES ($1,$2,$3,$4)`,
+          [req.user.tenant_id, run.id, s.id, s.monthly_cents]);
+        total += s.monthly_cents;
+      }
+      await c.query(`UPDATE app.payroll_runs SET total_cents=$1 WHERE id=$2`, [total, run.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Payroll run computed', recordType: 'PayrollRun', recordRef: run.id, reason: month, policyRef: 'Payroll (bank/ECS proof)', risk: 'medium', outcome: `${staff.length} payslip(s) · ₹${(total / 100).toFixed(2)}${missing.length ? ` · ${missing.length} staff skipped (no structure)` : ''}` });
+      await emitEvent(c, req.user.tenant_id, { type: 'payroll', label: `Pay run computed — ${month} (₹${(total / 100).toFixed(2)})`, ref: run.id });
+      return { run: { ...run, total_cents: total }, payslips: staff.length, skipped: missing.map((name) => ({ name, reason: 'no pay structure — set monthly pay first' })) };
+    });
+  });
+  app.post('/payroll/runs/:id/disburse', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const mode = String(req.body?.mode ?? '').trim();
+    const ref = typeof req.body?.ref === 'string' ? req.body.ref.trim().slice(0, 80) : '';
+    if (!['ecs', 'cash', 'cheque'].includes(mode)) return bad(reply, 'mode must be ecs|cash|cheque (salary via bank is the affiliation-safe path)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(`SELECT id, month, status, total_cents FROM app.payroll_runs WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!run) return bad(reply, 'No pay run with that id', 404);
+      if (run.status !== 'draft') return bad(reply, `Run ${run.month} is already ${run.status} — disbursed runs are history, not editable`, 409);
+      await c.query(`UPDATE app.payroll_runs SET status='disbursed', disburse_mode=$1, disburse_ref=$2, disbursed_at=now() WHERE id=$3`, [mode, ref || null, run.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Payroll run disbursed', recordType: 'PayrollRun', recordRef: run.id, reason: `${run.month} via ${mode}${ref ? ` (${ref})` : ''}`, policyRef: 'Payroll (bank/ECS proof)', risk: 'high', outcome: `₹${(run.total_cents / 100).toFixed(2)} disbursed` });
+      await emitEvent(c, req.user.tenant_id, { type: 'payroll', label: `Pay run disbursed — ${run.month} via ${mode}`, ref: run.id });
+      return { run: { ...run, status: 'disbursed' } };
+    });
+  });
+
+  // Billing: plan truth (trial = everything, operator-assisted upgrades until gateway checkout ships
+  // per-tenant keys) + honest subscription checkout. Money-touching, so the rail pattern holds:
+  // never half-create gateway state; unconfigured → 503 with operator guidance.
+  const PLAN_PRICES = { core: 1800000, operations: 3500000, campus: 7500000, compliance: 7500000 };
+  app.get('/billing', { preHandler: require('owner') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const plan = (await c.query(`SELECT plan FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0]?.plan ?? 'trial';
+      const usage = (await c.query(
+        `SELECT plugin_id, metric, count, updated_at FROM app.plugin_usage ORDER BY plugin_id, metric`)).rows;
+      const declared = (await c.query(
+        `SELECT plugin_id, COALESCE(manifest->'billing'->'metered', '[]'::jsonb) AS metered FROM app.plugins ORDER BY plugin_id`)).rows;
+      const students = (await c.query(`SELECT count(*)::int AS n FROM app.students WHERE status='active'`)).rows[0].n;
+      return { plan, plans: Object.fromEntries(Object.entries(PLAN_PRICES).map(([k, v]) => [k, { amount_cents: v }])), usage, declared, students,
+        upgrade: { note: 'Upgrades are completed with the operator until gateway checkout is wired per-tenant. Nothing here charges anything by itself.' } };
+    });
+  });
+  app.post('/billing/checkout', { preHandler: require('owner') }, async (req, reply) => {
+    const plan = String(req.body?.plan ?? '').trim();
+    if (!PLAN_PRICES[plan]) return bad(reply, `plan must be one of: ${Object.keys(PLAN_PRICES).join(', ')}`);
+    const keyId = process.env.RAZORPAY_KEY_ID ?? '';
+    const keySecret = process.env.RAZORPAY_KEY_SECRET ?? '';
+    if (!keyId || !keySecret) return reply.code(503).send({ error: 'Subscription payments are not configured on this deployment — ask the operator to wire gateway keys. Your plan has not changed and no money has moved.' });
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const amount = PLAN_PRICES[plan];
+      const order = (await c.query(
+        `INSERT INTO app.billing_orders (tenant_id, plan, amount_cents, created_by) VALUES ($1,$2,$3,$4) RETURNING id, plan, amount_cents, status`,
+        [req.user.tenant_id, plan, amount, req.user.id])).rows[0];
+      let gw;
+      try {
+        const res = await fetch('https://api.razorpay.com/v1/orders', {
+          method: 'POST',
+          headers: { authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount, currency: 'INR', receipt: order.id, notes: { tenant: req.user.tenant_id, plan } }),
+        });
+        gw = await res.json().catch(() => ({}));
+        if (!res.ok || !gw.id) throw new Error(gw?.error?.description ?? `gateway answered ${res.status}`);
+      } catch (e) {
+        await c.query(`UPDATE app.billing_orders SET status='failed' WHERE id=$1`, [order.id]);
+        return reply.code(502).send({ error: `Gateway order failed (${e.message}) — nothing was charged; the local order is marked failed for the trail.` });
+      }
+      await c.query(`UPDATE app.billing_orders SET gateway_order_id=$1 WHERE id=$2`, [gw.id, order.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Subscription checkout started', recordType: 'BillingOrder', recordRef: order.id, reason: `plan ${plan}`, policyRef: 'Billing (subscription)', risk: 'high', outcome: `gateway order ${gw.id} · ₹${(amount / 100).toFixed(2)} · plan flips only on paid webhook` });
+      return { order: { ...order, gateway_order_id: gw.id } };
+    });
+  });
+  // Public HMAC door (uniform 401, no oracle): env secret only; unknown/duplicate events 200-ignored.
+  app.post('/billing/webhook', async (req, reply) => {
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET ?? '';
+    if (!secret) return reply.code(503).send({ error: 'Billing webhooks are not configured on this deployment' });
+    const raw = req.rawBody ?? Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? {}));
+    const sig = String(req.headers['x-razorpay-signature'] ?? '');
+    let ok = false;
+    try {
+      const { createHmac, timingSafeEqual } = await import('node:crypto');
+      const want = createHmac('sha256', secret).update(raw).digest('hex');
+      ok = sig.length === want.length && timingSafeEqual(Buffer.from(sig), Buffer.from(want));
+    } catch { ok = false; }
+    if (!ok) return reply.code(401).send({ error: 'bad signature' });
+    const body = typeof req.body === 'string' ? JSON.parse(raw.toString('utf8')) : (req.body ?? {});
+    if (body?.event !== 'payment.captured') return { ok: true, ignored: body?.event ?? 'unknown' };
+    const gwOrderId = body?.payload?.payment?.entity?.order_id ?? null;
+    if (!gwOrderId) return { ok: true, ignored: 'no-order' };
+    const hit = await sysq(`SELECT id, tenant_id, plan, status FROM app.billing_orders WHERE gateway_order_id=$1`, [gwOrderId]);
+    const order = hit.rows[0];
+    if (!order || order.status === 'paid') return { ok: true, ignored: 'unknown-or-duplicate' };
+    await sysq(`UPDATE app.billing_orders SET status='paid', paid_at=now() WHERE id=$1`, [order.id]);
+    await sysq(`UPDATE app.tenants SET plan=$1 WHERE id=$2`, [order.plan, order.tenant_id]);
+    return { ok: true, plan: order.plan };
+  });
+
+  // ---- Master Action Plan batch 2 · infra, meetings, health, CPD, PINs, acks, 360, templates ----
+  // Counter-PIN enrollment: hash-only (like passwords — the ledger never sees a digit).
+  app.post('/fees/pins', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const userId = String(b.userId ?? '');
+    const pin = String(b.pin ?? '');
+    if (!UUID_RE_NOTICE.test(userId)) return bad(reply, 'userId must be a uuid');
+    if (!/^[0-9]{4,6}$/.test(pin)) return bad(reply, 'pin must be 4–6 digits');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const u = (await c.query(
+        `SELECT id, name, role FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`,
+        [userId])).rows[0];
+      if (!u) return bad(reply, 'Counter PINs are for counter staff — no payable staff with that id', 404);
+      await c.query(
+        `INSERT INTO app.fee_pins (tenant_id, user_id, pin_hash, updated_at) VALUES ($1,$2,$3,now())
+         ON CONFLICT (user_id) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, updated_at=now()`,
+        [req.user.tenant_id, u.id, hashPassword(pin)]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Counter PIN set', recordType: 'FeePin', recordRef: u.id, reason: `${u.name} (${u.role})`, policyRef: 'Fees §4.2 (counter fraud)', risk: 'medium', outcome: 'PIN enrolled — cash collections by this account now require it' });
+      return { ok: true };
+    });
+  });
+
+  // UDISE-facing infrastructure: one row per school, office-written, office-read.
+  app.get('/school/infra', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator', 'finance', 'finance_head') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(`SELECT * FROM app.school_infra LIMIT 1`)).rows[0] ?? null;
+      const ptr = (await c.query(
+        `SELECT (SELECT count(*)::int FROM app.students WHERE status='active') AS pupils,
+                (SELECT count(*)::int FROM app.users WHERE active AND role='teacher') AS teachers`)).rows[0];
+      return { infra: row, ptr: ptr.pupils && ptr.teachers ? Math.round(ptr.pupils / ptr.teachers * 10) / 10 : null };
+    });
+  });
+  app.put('/school/infra', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const ints = {};
+    for (const k of ['classrooms', 'labs', 'toiletsBoys', 'toiletsGirls', 'libraryVolumes']) {
+      if (b[k] === undefined) continue;
+      if (!Number.isInteger(b[k]) || b[k] < 0 || b[k] > 100000) return bad(reply, `${k} must be an integer 0–100000`);
+      ints[k] = b[k];
+    }
+    const bools = {};
+    for (const k of ['drinkingWater', 'playground', 'boundaryWall']) {
+      if (b[k] === undefined) continue;
+      if (typeof b[k] !== 'boolean') return bad(reply, `${k} must be true/false`);
+      bools[k] = b[k];
+    }
+    if (!Object.keys({ ...ints, ...bools }).length) return bad(reply, 'Nothing to update');
+    const col = { classrooms: 'classrooms', labs: 'labs', toiletsBoys: 'toilets_boys', toiletsGirls: 'toilets_girls', libraryVolumes: 'library_volumes', drinkingWater: 'drinking_water', playground: 'playground', boundaryWall: 'boundary_wall' };
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const sets = [];
+      const vals = [];
+      let i = 1;
+      for (const [k, v] of [...Object.entries(ints), ...Object.entries(bools)]) {
+        sets.push(`${col[k]}=$${i++}`);
+        vals.push(v);
+      }
+      sets.push(`updated_by=$${i++}`, `updated_at=now()`);
+      vals.push(req.user.id);
+      const cur = (await c.query(`SELECT id FROM app.school_infra LIMIT 1`)).rows[0];
+      const row = cur
+        ? (await c.query(`UPDATE app.school_infra SET ${sets.join(', ')} RETURNING *`, vals)).rows[0]
+        : (await c.query(
+          `INSERT INTO app.school_infra (tenant_id, classrooms, labs, toilets_boys, toilets_girls, drinking_water, playground, boundary_wall, library_volumes, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [req.user.tenant_id, ints.classrooms ?? 0, ints.labs ?? 0, ints.toiletsBoys ?? 0, ints.toiletsGirls ?? 0,
+           bools.drinkingWater ?? false, bools.playground ?? false, bools.boundaryWall ?? false, ints.libraryVolumes ?? 0, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Updated school infrastructure', recordType: 'SchoolInfra', recordRef: row.id, reason: 'UDISE profile', policyRef: 'UDISE+ (infrastructure)', risk: 'low', outcome: 'infrastructure profile saved' });
+      return { infra: row };
+    });
+  });
+
+  // PTA/SMC meetings: the minutes behind MPD lists and fee-hike consultations.
+  app.get('/meetings', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const { kind } = req.query ?? {};
+    if (kind !== undefined && !['PTA', 'SMC'].includes(String(kind))) return bad(reply, 'kind must be PTA|SMC');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, kind, held_on, minutes, attendees, created_at FROM app.mtgs
+          WHERE ($1::text IS NULL OR kind=$1) ORDER BY held_on DESC LIMIT 100`, [kind ?? null]);
+      return { meetings: r.rows };
+    });
+  });
+  app.post('/meetings', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!['PTA', 'SMC'].includes(b.kind)) return bad(reply, 'kind must be PTA|SMC');
+    if (!DATE_RE.test(String(b.heldOn ?? ''))) return bad(reply, 'heldOn must be YYYY-MM-DD');
+    const minutes = typeof b.minutes === 'string' ? b.minutes.trim() : '';
+    if (minutes.length < 10 || minutes.length > 8000) return bad(reply, 'minutes must be 10–8000 characters (decisions, not placeholders)');
+    const attendees = Array.isArray(b.attendees) ? b.attendees.map(String).slice(0, 50) : [];
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.mtgs (tenant_id, kind, held_on, minutes, attendees, created_by)
+         VALUES ($1,$2,$3::date,$4,$5::jsonb,$6) RETURNING id, kind, held_on, minutes, attendees, created_at`,
+        [req.user.tenant_id, b.kind, String(b.heldOn), minutes, JSON.stringify(attendees), req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `${b.kind} meeting minuted`, recordType: 'Meeting', recordRef: row.id, reason: String(b.heldOn), policyRef: 'Governance (SMC/PTA)', risk: 'low', outcome: `${attendees.length} attendee(s) recorded` });
+      await emitEvent(c, req.user.tenant_id, { type: 'governance', label: `${b.kind} meeting minuted — ${b.heldOn}`, ref: row.id });
+      return { meeting: row };
+    });
+  });
+
+  // Health lane: RBSK/vaccination/general checkups (parent sees own children) + PM-POSHAN meal log.
+  app.get('/health-checks', { preHandler: roleGatedMe('owner', 'principal', 'coordinator', 'itadmin', 'counselor', 'parent') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (req.user.role === 'parent') {
+        const r = await c.query(
+          `SELECT h.id, h.kind, h.detail, h.checked_on, s.name AS student_name
+             FROM app.health_checks h JOIN app.students s ON s.id = h.student_id
+             JOIN family.child_link cl ON cl.student_id = s.id
+            WHERE cl.user_id=$1 ORDER BY h.checked_on DESC LIMIT 100`, [req.user.id]);
+        return { checks: r.rows, scoped: 'own_children' };
+      }
+      const r = await c.query(
+        `SELECT h.id, h.kind, h.detail, h.checked_on, s.name AS student_name, s.grade, s.section
+           FROM app.health_checks h JOIN app.students s ON s.id = h.student_id
+          ORDER BY h.checked_on DESC LIMIT 200`);
+      return { checks: r.rows };
+    });
+  });
+  app.post('/health-checks', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin', 'counselor') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.studentId ?? ''))) return bad(reply, 'studentId must be a uuid');
+    if (!['RBSK', 'vaccination', 'general'].includes(b.kind)) return bad(reply, 'kind must be RBSK|vaccination|general');
+    if (!DATE_RE.test(String(b.checkedOn ?? ''))) return bad(reply, 'checkedOn must be YYYY-MM-DD');
+    const detail = typeof b.detail === 'string' ? b.detail.trim().slice(0, 500) : '';
+    if (!detail) return bad(reply, 'detail is required (finding, not a placeholder)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      const row = (await c.query(
+        `INSERT INTO app.health_checks (tenant_id, student_id, kind, detail, checked_on, created_by)
+         VALUES ($1,$2,$3,$4,$5::date,$6) RETURNING id, kind, detail, checked_on`,
+        [req.user.tenant_id, st.id, b.kind, detail, String(b.checkedOn), req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Health check recorded', recordType: 'HealthCheck', recordRef: row.id, reason: `${st.name} · ${b.kind}`, policyRef: 'Health (RBSK)', risk: 'low', outcome: 'checkup on record' });
+      return { check: { ...row, student_name: st.name } };
+    });
+  });
+  app.get('/meals', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT served_on, menu, veg_count, total_count FROM app.meals ORDER BY served_on DESC LIMIT 60`);
+      return { meals: r.rows };
+    });
+  });
+  app.post('/meals', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!DATE_RE.test(String(b.servedOn ?? ''))) return bad(reply, 'servedOn must be YYYY-MM-DD');
+    const menu = typeof b.menu === 'string' ? b.menu.trim().slice(0, 200) : '';
+    if (!menu) return bad(reply, 'menu is required');
+    for (const k of ['vegCount', 'totalCount']) {
+      if (!Number.isInteger(b[k]) || b[k] < 0) return bad(reply, `${k} must be a non-negative integer`);
+    }
+    if (b.vegCount > b.totalCount) return bad(reply, 'vegCount cannot exceed totalCount');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.meals (tenant_id, served_on, menu, veg_count, total_count, created_by)
+         VALUES ($1,$2::date,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id, served_on) DO UPDATE SET menu=EXCLUDED.menu, veg_count=EXCLUDED.veg_count, total_count=EXCLUDED.total_count
+         RETURNING served_on, menu, veg_count, total_count`,
+        [req.user.tenant_id, String(b.servedOn), menu, b.vegCount, b.totalCount, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Meal serving logged', recordType: 'Meal', recordRef: String(row.served_on).slice(0, 10), reason: menu, policyRef: 'PM-POSHAN', risk: 'low', outcome: `${row.total_count} served` });
+      return { meal: row };
+    });
+  });
+
+  // Staff CPD ledger: office sees all, everyone else sees their own hours.
+  app.get('/staff-trainings', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'counselor', 'finance', 'finance_head', 'finance_clerk', 'admissions', 'transport', 'facilities', 'technician', 'librarian') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const office = ['owner', 'principal', 'itadmin', 'coordinator'].includes(req.user.role);
+      const r = await c.query(
+        `SELECT t.id, t.title, t.hours, t.provider, t.completed_on, u.name AS staff_name, u.role AS staff_role
+           FROM app.staff_trainings t JOIN app.users u ON u.id = t.user_id
+          WHERE ${office ? 'true' : 't.user_id=$1'}
+          ORDER BY t.completed_on DESC NULLS LAST, t.created_at DESC LIMIT 200`,
+        office ? [] : [req.user.id]);
+      const total = office ? null : (await c.query(
+        `SELECT COALESCE(sum(hours),0)::float AS h FROM app.staff_trainings WHERE user_id=$1`, [req.user.id])).rows[0].h;
+      return { trainings: r.rows, scoped: office ? 'school' : 'own', ownHours: total };
+    });
+  });
+  app.post('/staff-trainings', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.userId ?? ''))) return bad(reply, 'userId must be a uuid');
+    const title = typeof b.title === 'string' ? b.title.trim().slice(0, 160) : '';
+    if (!title) return bad(reply, 'title is required (e.g. NISHTHA FLN module 4)');
+    const hours = Number(b.hours);
+    if (!Number.isFinite(hours) || hours < 0 || hours > 500) return bad(reply, 'hours must be 0–500');
+    if (b.completedOn !== undefined && b.completedOn !== null && String(b.completedOn).trim() !== '' && !DATE_RE.test(String(b.completedOn).trim())) {
+      return bad(reply, 'completedOn must be YYYY-MM-DD');
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const u = (await c.query(`SELECT id, name FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`, [b.userId])).rows[0];
+      if (!u) return bad(reply, 'No active staff with that id', 404);
+      const row = (await c.query(
+        `INSERT INTO app.staff_trainings (tenant_id, user_id, title, hours, provider, completed_on, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6::date,$7) RETURNING id, title, hours, provider, completed_on`,
+        [req.user.tenant_id, u.id, title, hours,
+         typeof b.provider === 'string' ? b.provider.trim().slice(0, 120) : null,
+         b.completedOn && String(b.completedOn).trim() ? String(b.completedOn).trim() : null, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Training recorded', recordType: 'StaffTraining', recordRef: row.id, reason: `${u.name} · ${title}`, policyRef: 'NEP (CPD)', risk: 'low', outcome: `${hours}h credited` });
+      return { training: { ...row, staff_name: u.name } };
+    });
+  });
+
+  // APAAR identity: national 12-digit pupil id, unique per tenant where present.
+  app.post('/students/:id/identity', { preHandler: [require('owner', 'principal', 'coordinator', 'admissions', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    const apaar = String(req.body?.apaarId ?? '').trim();
+    if (!/^[0-9]{12}$/.test(apaar)) return bad(reply, 'apaarId must be exactly 12 digits');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND status='active'`, [req.params.id])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      const clash = (await c.query(`SELECT name, admission_no FROM app.students WHERE apaar_id=$1 AND id<>$2 LIMIT 1`, [apaar, st.id])).rows[0];
+      if (clash) return bad(reply, `APAAR ${apaar} is already on ${clash.name} (${clash.admission_no}) — one child, one id`, 409);
+      await c.query(`UPDATE app.students SET apaar_id=$1 WHERE id=$2`, [apaar, st.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'APAAR id recorded', recordType: 'Student', recordRef: st.id, reason: st.name, policyRef: 'APAAR (identity)', risk: 'low', outcome: 'national id linked' });
+      return { ok: true };
+    });
+  });
+
+  // Student 360: one honest page per child — core + attendance + dues + bus + loans + exams
+  // + health + concessions. Staff full, parent own-children, pupil own-linked account only.
+  app.get('/students/:id/360', { preHandler: [roleGatedMe('owner', 'principal', 'coordinator', 'teacher', 'counselor', 'finance_head', 'parent', 'student'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(
+        `SELECT id, admission_no, name, grade, section, dob, gender, guardian_name, guardian_phone, bus_route, apaar_id, status FROM app.students WHERE id=$1`,
+        [req.params.id])).rows[0];
+      if (!st) return bad(reply, 'No pupil with that id', 404);
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, st.id])).rows[0];
+        if (!own) return bad(reply, 'You can only open your own child’s page', 403);
+      }
+      if (req.user.role === 'student') {
+        if (st.id !== req.user.studentId && !(await c.query(`SELECT 1 FROM app.students WHERE id=$1 AND user_id=$2`, [st.id, req.user.id])).rows[0]) {
+          return bad(reply, 'You can only open your own page', 403);
+        }
+      }
+      const att = (await c.query(
+        `SELECT count(*)::int AS marks,
+                count(*) FILTER (WHERE status IN ('present','late'))::int AS present
+           FROM app.attendance WHERE student_id=$1`, [st.id])).rows[0];
+      const dues = (await c.query(
+        `SELECT COALESCE(sum(amount_cents - paid_cents),0)::int AS outstanding, count(*)::int AS dues
+           FROM app.fee_obligations WHERE student_id=$1 AND status NOT IN ('void','paid')`, [st.id])).rows[0];
+      // Money follows the obligations door: teachers/counselors never see dues (their door refuses),
+      // so the 360 withholds them too rather than leaking through aggregation. Parents/students keep
+      // their existing own-scoped money doors; staff on the money list keep full figures.
+      const canSeeMoney = ['owner', 'principal', 'finance', 'finance_head', 'finance_clerk', 'coordinator', 'itadmin'].includes(req.user.role)
+        || req.user.role === 'parent' || req.user.role === 'student';
+      const guardians = (await c.query(
+        `SELECT name, phone, relation FROM app.guardians WHERE student_id=$1 ORDER BY is_primary DESC NULLS LAST LIMIT 5`, [st.id])).rows;
+      const conc = (await c.query(
+        `SELECT kind, percent, amount_cents, status, reason FROM app.fee_concessions WHERE student_id=$1 AND status='approved' ORDER BY created_at DESC LIMIT 10`, [st.id])).rows;
+      const safe = async (fn, fallback = null) => { try { return await fn(); } catch { return fallback; } };
+      const loans = await safe(async () => (await c.query(
+        `SELECT count(*) FILTER (WHERE returned_at IS NULL)::int AS open,
+                COALESCE(sum(fine_cents) FILTER (WHERE returned_at IS NULL),0)::int AS fine_open
+           FROM library.loan WHERE student_id=$1`, [st.id])).rows[0]);
+      const exams = await safe(async () => (await c.query(
+        `SELECT count(*)::int AS marks, COALESCE(sum(m.marks),0)::float AS scored, COALESCE(sum(m.max_marks),0)::float AS max
+           FROM plugin_exams.mark m JOIN plugin_exams.exam e ON e.id = m.exam_id
+          WHERE m.student_id=$1 AND e.status='published'`, [st.id])).rows[0]);
+      const health = await safe(async () => (await c.query(
+        `SELECT kind, detail, checked_on FROM app.health_checks WHERE student_id=$1 ORDER BY checked_on DESC LIMIT 3`, [st.id])).rows, []);
+      const hw = await safe(async () => (await c.query(
+        `SELECT count(*)::int AS pending FROM teacher.homework h
+          WHERE h.status='open' AND h.class_grade=$1 AND h.due_at > now()
+            AND NOT EXISTS (SELECT 1 FROM teacher.submission s WHERE s.homework_id=h.id AND s.student_id=$2)`,
+        [st.grade, st.id])).rows[0], null);
+      return {
+        student: st,
+        attendance: { marks: att.marks, pct: att.marks ? Math.round(att.present / att.marks * 1000) / 10 : null },
+        fees: canSeeMoney
+          ? { outstanding_cents: dues.outstanding, open_dues: dues.dues }
+          : { outstanding_cents: null, open_dues: null, withheld: 'dues are visible to the office and the family, not to this role' },
+        transport: { bus_route: st.bus_route },
+        guardians, concessions: canSeeMoney ? conc : [], library: loans, exams, health, homework: hw,
+      };
+    });
+  });
+
+  // Diary/circular acks: read+sign receipts per announcement (idempotent — re-sign is a no-op).
+  // Parent notices: the office reads /announcements; guardians read here — school-wide plus
+  // their own children's classes, published states only, with their own ack state attached.
+  app.get('/notices', { preHandler: require('parent') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const grades = (await c.query(
+        `SELECT DISTINCT s.grade FROM app.students s JOIN family.child_link cl ON cl.student_id = s.id
+          WHERE cl.user_id=$1 AND s.status='active'`, [req.user.id])).rows.map((r) => r.grade);
+      const rows = (await c.query(
+        `SELECT a.id, a.title, a.body, a.audience_kind, a.created_at, (k.user_id IS NOT NULL) AS acked
+           FROM app.announcements a
+           LEFT JOIN app.announcement_acks k ON k.announcement_id = a.id AND k.user_id=$1
+          WHERE a.status IN ('queued','sent')
+            AND (a.audience_kind='all_guardians' OR (a.audience_kind='class' AND a.audience_ref = ANY($2::text[])))
+          ORDER BY a.created_at DESC LIMIT 30`, [req.user.id, grades])).rows;
+      return { notices: rows };
+    });
+  });
+  app.post('/announcements/:id/ack', { preHandler: [roleGatedMe('owner', 'principal', 'coordinator', 'itadmin', 'teacher', 'counselor', 'finance', 'finance_head', 'finance_clerk', 'admissions', 'transport', 'facilities', 'technician', 'librarian', 'parent', 'student'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const a = (await c.query(`SELECT id, title FROM app.announcements WHERE id=$1`, [req.params.id])).rows[0];
+      if (!a) return bad(reply, 'No announcement with that id', 404);
+      await c.query(
+        `INSERT INTO app.announcement_acks (tenant_id, announcement_id, user_id) VALUES ($1,$2,$3)
+         ON CONFLICT (tenant_id, announcement_id, user_id) DO NOTHING`,
+        [req.user.tenant_id, a.id, req.user.id]);
+      return { acked: true };
+    });
+  });
+  app.get('/announcements/:id/acks', { preHandler: [roleGatedMe('owner', 'principal', 'coordinator', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const a = (await c.query(`SELECT id, title FROM app.announcements WHERE id=$1`, [req.params.id])).rows[0];
+      if (!a) return bad(reply, 'No announcement with that id', 404);
+      const rows = (await c.query(
+        `SELECT u.name, u.role, k.signed_at FROM app.announcement_acks k JOIN app.users u ON u.id = k.user_id
+          WHERE k.announcement_id=$1 ORDER BY k.signed_at`, [a.id])).rows;
+      return { announcement: a, ackCount: rows.length, acks: rows };
+    });
+  });
+
+  // Automation template gallery: named starting points over the live /workflow-rules doors.
+  // Templates never execute here — applying POSTs the same body the office could hand-write.
+  const AUTOMATION_TEMPLATES = [
+    { key: 'absence-notice', name: 'Absence → guardian notice draft', topic: 'attendance.absences', blurb: 'Queues a guardian notice for every absence mark. The office still sends it.', action: { kind: 'outbox', topic: 'notice.absence.queued' } },
+    { key: 'fee-due-3d', name: 'Fee due in 3 days → reminder', topic: 'fee.due.soon', blurb: 'Reminds guardians before the due date (quiet hours respected).', action: { kind: 'outbox', topic: 'fee.reminder.queued' } },
+    { key: 'gps-delay', name: 'Bus delay ≥10 min → approval task', topic: 'transport.delay', blurb: 'Raises an approval instead of auto-notifying guardians.', action: { kind: 'outbox', topic: 'transport.delay.approval' } },
+    { key: 'enquiry-followup', name: 'Enquiry → follow-up task', topic: 'admission.enquiry.captured', blurb: 'Puts every new enquiry on the follow-up pipeline. No auto-messaging.', action: { kind: 'outbox', topic: 'admission.followup.scheduled' } },
+    { key: 'doc-expiry', name: 'Disclosure expiring → MPD task', topic: 'compliance.expiring', blurb: 'Nags the office 60 days before a certificate lapses.', action: { kind: 'outbox', topic: 'compliance.renewal.task' } },
+    { key: 'low-attendance', name: 'Attendance <75% → counselor review', topic: 'attendance.low', blurb: 'Staff-only review list. Never shown to families as a score.', action: { kind: 'outbox', topic: 'attendance.review.task' } },
+  ];
+  app.get('/automation/templates', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async () => ({ templates: AUTOMATION_TEMPLATES }));
+
+  // ---- Master Action Plan batch 3 · NEP pack, transport compliance, payroll ECS, staff QR,
+  // breach register, emergency broadcast ----
+  // NEP 5+3+3+4 stages derive from the school's own grade names (Balvatika = pre-school grades).
+  const nepStage = (grade) => {
+    const g = String(grade ?? '').trim().toLowerCase();
+    if (['nursery', 'jr kg', 'jr.kg', 'lkg', 'sr kg', 'sr.kg', 'ukg', 'balvatika', 'pre-primary'].includes(g)) return 'Foundational (Balvatika)';
+    if (['1', '2', 'std 1', 'std 2', 'class 1', 'class 2'].includes(g)) return 'Foundational';
+    if (['3', '4', '5'].some((n) => g === n || g === `std ${n}` || g === `class ${n}`)) return 'Preparatory';
+    if (['6', '7', '8'].some((n) => g === n || g === `std ${n}` || g === `class ${n}`)) return 'Middle';
+    if (['9', '10', '11', '12'].some((n) => g === n || g === `std ${n}` || g === `class ${n}`)) return 'Secondary';
+    return 'Unstaged';
+  };
+  const FLN_SKILLS = ['oral_language', 'print_awareness', 'phonics', 'fluency', 'comprehension', 'number_sense', 'measurement', 'shapes'];
+  const teacherOwnsPupil = async (c, tenantId, teacherId, studentId) => (await c.query(
+    `SELECT 1 FROM app.students s JOIN app.class_assignments a ON a.grade = s.grade AND a.section = s.section
+      WHERE s.id=$1 AND a.teacher_id=$2 AND a.active AND s.status='active'`, [studentId, teacherId])).rows[0];
+  app.get('/nep/profile', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator', 'teacher') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const t = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const parsed = normalizeClasses(t?.config?.setup?.sections ?? []);
+      const stages = parsed.ok ? parsed.classes.map((x) => ({ grade: x.grade, sections: x.sections, stage: nepStage(x.grade) })) : [];
+      const r3 = (await c.query(`SELECT language, academic_year FROM app.school_r3 ORDER BY academic_year DESC LIMIT 1`)).rows[0] ?? null;
+      const acts = (await c.query(`SELECT kind, title, held_on FROM app.nep_activities ORDER BY held_on DESC NULLS LAST LIMIT 5`)).rows;
+      const skills = (await c.query(`SELECT skill, level, count(*)::int AS n FROM app.fln_skills GROUP BY skill, level`)).rows;
+      return { stages, r3, recentActivities: acts, fln: skills };
+    });
+  });
+  app.put('/nep/r3', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const language = typeof req.body?.language === 'string' ? req.body.language.trim().slice(0, 60) : '';
+    const year = typeof req.body?.academicYear === 'string' ? req.body.academicYear.trim().slice(0, 12) : '';
+    if (!language || !year) return bad(reply, 'language and academicYear are required (Class-6 third language, OASIS R3)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      await c.query(
+        `INSERT INTO app.school_r3 (tenant_id, academic_year, language, created_by) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (tenant_id, academic_year) DO UPDATE SET language=EXCLUDED.language`,
+        [req.user.tenant_id, year, language, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Third language recorded', recordType: 'SchoolR3', recordRef: year, reason: language, policyRef: 'NCF-SE (R3/OASIS)', risk: 'low', outcome: `${year}: ${language}` });
+      return { ok: true, academicYear: year, language };
+    });
+  });
+  app.get('/nep/activities', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator', 'teacher') }, async (req, reply) => {
+    const { kind } = req.query ?? {};
+    if (kind !== undefined && !['bagless', 'art', 'skill'].includes(String(kind))) return bad(reply, 'kind must be bagless|art|skill');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, kind, title, detail, held_on, grades FROM app.nep_activities
+          WHERE ($1::text IS NULL OR kind=$1) ORDER BY held_on DESC NULLS LAST LIMIT 100`, [kind ?? null]);
+      return { activities: r.rows };
+    });
+  });
+  app.post('/nep/activities', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!['bagless', 'art', 'skill'].includes(b.kind)) return bad(reply, 'kind must be bagless|art|skill');
+    const title = typeof b.title === 'string' ? b.title.trim().slice(0, 160) : '';
+    if (!title) return bad(reply, 'title is required');
+    if (b.heldOn !== undefined && b.heldOn !== null && String(b.heldOn).trim() !== '' && !DATE_RE.test(String(b.heldOn).trim())) {
+      return bad(reply, 'heldOn must be YYYY-MM-DD');
+    }
+    const grades = Array.isArray(b.grades) ? b.grades.map(String).slice(0, 20) : [];
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.nep_activities (tenant_id, kind, title, detail, held_on, grades, created_by)
+         VALUES ($1,$2,$3,$4,$5::date,$6::jsonb,$7) RETURNING id, kind, title, held_on`,
+        [req.user.tenant_id, b.kind, title,
+         typeof b.detail === 'string' ? b.detail.trim().slice(0, 2000) : null,
+         b.heldOn && String(b.heldOn).trim() ? String(b.heldOn).trim() : null,
+         JSON.stringify(grades), req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `NEP activity recorded (${b.kind})`, recordType: 'NepActivity', recordRef: row.id, reason: title, policyRef: 'NEP 2020', risk: 'low', outcome: 'activity on record' });
+      return { activity: row };
+    });
+  });
+  // HPC: term inputs (teacher observations) + live aggregates computed at read time.
+  app.post('/nep/hpc', { preHandler: require('owner', 'principal', 'coordinator', 'teacher') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.studentId ?? ''))) return bad(reply, 'studentId must be a uuid');
+    const term = typeof b.term === 'string' ? b.term.trim().slice(0, 24) : '';
+    if (!term) return bad(reply, 'term is required (e.g. 2026-27 T1)');
+    for (const k of ['strengths', 'interests', 'goals', 'teacherRemark']) {
+      if (b[k] !== undefined && (typeof b[k] !== 'string' || b[k].length > 2000)) return bad(reply, `${k} must be text ≤2000 characters`);
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name, grade, section FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      if (req.user.role === 'teacher' && !(await teacherOwnsPupil(c, req.user.tenant_id, req.user.id, st.id))) {
+        return bad(reply, 'Holistic remarks belong to the pupil’s own teachers — ask the class teacher', 403);
+      }
+      await c.query(
+        `INSERT INTO app.hpc_inputs (tenant_id, student_id, term, strengths, interests, goals, teacher_remark, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (tenant_id, student_id, term) DO UPDATE SET
+           strengths=EXCLUDED.strengths, interests=EXCLUDED.interests, goals=EXCLUDED.goals,
+           teacher_remark=EXCLUDED.teacher_remark, updated_at=now()`,
+        [req.user.tenant_id, st.id, term, b.strengths ?? null, b.interests ?? null, b.goals ?? null, b.teacherRemark ?? null, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'HPC inputs recorded', recordType: 'HpcInputs', recordRef: `${st.id}/${term}`, reason: `${st.name} · ${term}`, policyRef: 'NEP (HPC 360°)', risk: 'low', outcome: 'observations on record' });
+      return { ok: true };
+    });
+  });
+  const hpcAggregates = async (c, studentId, grade) => {
+    const att = (await c.query(
+      `SELECT count(*)::int AS marks, count(*) FILTER (WHERE status IN ('present','late'))::int AS present
+         FROM app.attendance WHERE student_id=$1`, [studentId])).rows[0];
+    const exams = (await c.query(
+      `SELECT count(*)::int AS marks, COALESCE(sum(m.marks),0)::float AS scored, COALESCE(sum(m.max_marks),0)::float AS max
+         FROM plugin_exams.mark m JOIN plugin_exams.exam e ON e.id=m.exam_id
+        WHERE m.student_id=$1 AND e.status='published'`, [studentId])).rows[0];
+    const hw = (await c.query(
+      `SELECT count(*)::int AS pending FROM teacher.homework h
+        WHERE h.status='open' AND h.class_grade=$1 AND h.due_at > now()
+          AND NOT EXISTS (SELECT 1 FROM teacher.submission s WHERE s.homework_id=h.id AND s.student_id=$2)`,
+      [grade, studentId])).rows[0];
+    return {
+      attendancePct: att.marks ? Math.round(att.present / att.marks * 1000) / 10 : null,
+      examAvg: exams.max ? Math.round(exams.scored / exams.max * 1000) / 10 : null,
+      homeworkPending: hw.pending,
+    };
+  };
+  app.get('/nep/hpc/:studentId', { preHandler: [roleGatedMe('owner', 'principal', 'coordinator', 'teacher', 'parent'), uuidParams('studentId')] }, async (req, reply) => {
+    const term = typeof req.query?.term === 'string' ? req.query.term.trim().slice(0, 24) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name, grade, section FROM app.students WHERE id=$1 AND status='active'`, [req.params.studentId])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      if (req.user.role === 'teacher' && !(await teacherOwnsPupil(c, req.user.tenant_id, req.user.id, st.id))) {
+        return bad(reply, 'Holistic cards belong to the pupil’s own teachers', 403);
+      }
+      if (req.user.role === 'parent') {
+        const own = (await c.query(`SELECT 1 FROM family.child_link WHERE user_id=$1 AND student_id=$2`, [req.user.id, st.id])).rows[0];
+        if (!own) return bad(reply, 'You can only open your own child’s card', 403);
+      }
+      const inputs = term
+        ? (await c.query(`SELECT term, strengths, interests, goals, teacher_remark, updated_at FROM app.hpc_inputs WHERE student_id=$1 AND term=$2`, [st.id, term])).rows[0] ?? null
+        : (await c.query(`SELECT term, strengths, interests, goals, teacher_remark, updated_at FROM app.hpc_inputs WHERE student_id=$1 ORDER BY updated_at DESC LIMIT 5`, [st.id])).rows;
+      return { student: st, stage: nepStage(st.grade), inputs, aggregates: await hpcAggregates(c, st.id, st.grade) };
+    });
+  });
+  app.post('/nep/fln', { preHandler: require('owner', 'principal', 'coordinator', 'teacher') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.studentId ?? ''))) return bad(reply, 'studentId must be a uuid');
+    if (!FLN_SKILLS.includes(b.skill)) return bad(reply, `skill must be one of: ${FLN_SKILLS.join(', ')}`);
+    if (!['beginner', 'developing', 'proficient'].includes(b.level)) return bad(reply, 'level must be beginner|developing|proficient');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      if (req.user.role === 'teacher' && !(await teacherOwnsPupil(c, req.user.tenant_id, req.user.id, st.id))) {
+        return bad(reply, 'FLN levels belong to the pupil’s own teachers', 403);
+      }
+      await c.query(
+        `INSERT INTO app.fln_skills (tenant_id, student_id, skill, level, created_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (tenant_id, student_id, skill) DO UPDATE SET level=EXCLUDED.level, created_by=EXCLUDED.created_by, created_at=now()`,
+        [req.user.tenant_id, st.id, b.skill, b.level, req.user.id]);
+      return { ok: true };
+    });
+  });
+  app.get('/nep/fln', { preHandler: roleGatedMe('owner', 'principal', 'coordinator', 'itadmin', 'teacher', 'parent') }, async (req, reply) => {
+    const { studentId, grade } = req.query ?? {};
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (req.user.role === 'parent') {
+        const r = await c.query(
+          `SELECT f.skill, f.level, s.name AS student_name FROM app.fln_skills f JOIN app.students s ON s.id=f.student_id
+            JOIN family.child_link cl ON cl.student_id=s.id WHERE cl.user_id=$1 ORDER BY s.name, f.skill`, [req.user.id]);
+        return { skills: r.rows, scoped: 'own_children' };
+      }
+      if (studentId) {
+        if (!UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
+        if (req.user.role === 'teacher' && !(await teacherOwnsPupil(c, req.user.tenant_id, req.user.id, String(studentId)))) {
+          return bad(reply, 'FLN levels belong to the pupil’s own teachers', 403);
+        }
+        const r = await c.query(`SELECT skill, level FROM app.fln_skills WHERE student_id=$1 ORDER BY skill`, [studentId]);
+        return { skills: r.rows };
+      }
+      const r = await c.query(
+        `SELECT s.grade, f.skill, f.level, count(*)::int AS n FROM app.fln_skills f JOIN app.students s ON s.id=f.student_id
+          WHERE ($1::text IS NULL OR s.grade=$1) ${req.user.role === 'teacher' ? 'AND EXISTS (SELECT 1 FROM app.class_assignments a WHERE a.teacher_id=$2 AND a.grade=s.grade AND a.section=s.section AND a.active)' : ''}
+          GROUP BY s.grade, f.skill, f.level ORDER BY s.grade, f.skill`,
+        req.user.role === 'teacher' ? [grade ?? null, req.user.id] : [grade ?? null]);
+      return { skills: r.rows };
+    });
+  });
+
+  // Transport compliance core: daily runs + board/de-board timestamps + attendants + fares + inspections.
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  app.get('/transport/runs', { preHandler: roleGatedMe('owner', 'principal', 'transport', 'coordinator', 'itadmin', 'teacher') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT r.id, r.ran_on, t.code, t.name,
+                (SELECT count(DISTINCT (student_id)) FROM app.boarding b WHERE b.run_id=r.id AND b.direction='board')::int AS boarded
+           FROM app.bus_runs r JOIN app.routes t ON t.id=r.route_id
+          ORDER BY r.ran_on DESC LIMIT 20`);
+      return { runs: r.rows };
+    });
+  });
+  // Authority inline per door (scanner-readable): owner, principal, transport, coordinator, itadmin.
+  app.post('/transport/runs', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
+    const routeId = String(req.body?.routeId ?? '');
+    if (!UUID_RE_NOTICE.test(routeId)) return bad(reply, 'routeId must be a uuid');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const route = (await c.query(`SELECT id, code, name FROM app.routes WHERE id=$1`, [routeId])).rows[0];
+      if (!route) return bad(reply, 'No route with that id', 404);
+      const today = new Date().toISOString().slice(0, 10);
+      const run = (await c.query(
+        `INSERT INTO app.bus_runs (tenant_id, route_id, ran_on, started_by) VALUES ($1,$2,$3::date,$4)
+         ON CONFLICT (tenant_id, route_id, ran_on) DO NOTHING RETURNING id, ran_on`,
+        [req.user.tenant_id, route.id, today, req.user.id])).rows[0]
+        ?? (await c.query(`SELECT id, ran_on FROM app.bus_runs WHERE route_id=$1 AND ran_on=$2::date`, [route.id, today])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Bus run started', recordType: 'BusRun', recordRef: run.id, reason: `${route.code} · ${today}`, policyRef: 'Transport (boarding log)', risk: 'low', outcome: 'run open for boarding' });
+      return { run: { ...run, route: { code: route.code, name: route.name } } };
+    });
+  });
+  app.post('/transport/runs/:id/board', { preHandler: [require('owner','principal','transport','coordinator','itadmin'), uuidParams('id')] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.studentId ?? ''))) return bad(reply, 'studentId must be a uuid');
+    if (!['board', 'deboard'].includes(b.direction)) return bad(reply, 'direction must be board|deboard');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(`SELECT id, route_id FROM app.bus_runs WHERE id=$1`, [req.params.id])).rows[0];
+      if (!run) return bad(reply, 'No run with that id', 404);
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE id=$1 AND status='active'`, [b.studentId])).rows[0];
+      if (!st) return bad(reply, 'No active pupil with that id', 404);
+      try {
+        const row = (await c.query(
+          `INSERT INTO app.boarding (tenant_id, run_id, student_id, direction, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id, at`,
+          [req.user.tenant_id, run.id, st.id, b.direction, req.user.id])).rows[0];
+        return { boarding: row, student_name: st.name };
+      } catch (e) {
+        if (e.code === '23505') return bad(reply, `${st.name} is already marked ${b.direction}ed on this run`, 409);
+        throw e;
+      }
+    });
+  });
+  app.get('/transport/runs/:id/board', { preHandler: [roleGatedMe('owner','principal','transport','coordinator','itadmin', 'teacher'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(`SELECT id, route_id, ran_on FROM app.bus_runs WHERE id=$1`, [req.params.id])).rows[0];
+      if (!run) return bad(reply, 'No run with that id', 404);
+      const rows = (await c.query(
+        `SELECT b.student_id, s.name, s.grade, s.section, b.direction, b.at
+           FROM app.boarding b JOIN app.students s ON s.id=b.student_id
+          WHERE b.run_id=$1 ORDER BY s.name, b.direction`, [run.id])).rows;
+      const riders = (await c.query(
+        `SELECT count(*)::int AS n FROM app.students WHERE status='active' AND bus_route IS NOT NULL AND bus_route<>''`)).rows[0].n;
+      const boarded = new Set(rows.filter((r) => r.direction === 'board').map((r) => r.student_id)).size;
+      return { run, boardings: rows, riders, completeness: riders ? Math.round(boarded / riders * 1000) / 10 : null };
+    });
+  });
+  app.get('/transport/attendants', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT a.id, a.name, a.route_id, a.police_verified_on, u.name AS staff_name, u.role AS staff_role
+           FROM app.attendants a LEFT JOIN app.users u ON u.id=a.user_id ORDER BY a.name`);
+      return { attendants: r.rows };
+    });
+  });
+  app.post('/transport/attendants', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim().slice(0, 120) : '';
+    if (!name && !b.userId) return bad(reply, 'name or an existing staff userId is required (contract drivers have names, not accounts)');
+    if (b.userId !== undefined && b.userId !== null && String(b.userId).trim() !== '' && !UUID_RE_NOTICE.test(String(b.userId))) {
+      return bad(reply, 'userId must be a uuid');
+    }
+    let routeId = null;
+    if (b.routeId !== undefined && b.routeId !== null && String(b.routeId).trim() !== '') {
+      if (!UUID_RE_NOTICE.test(String(b.routeId))) return bad(reply, 'routeId must be a uuid');
+      routeId = String(b.routeId);
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      let userId = null;
+      let label = name;
+      if (b.userId) {
+        const u = (await c.query(`SELECT id, name FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`, [b.userId])).rows[0];
+        if (!u) return bad(reply, 'No active staff with that id', 404);
+        userId = u.id;
+        label = label || u.name;
+      }
+      const row = (await c.query(
+        `INSERT INTO app.attendants (tenant_id, user_id, name, route_id, created_by) VALUES ($1,$2,$3,$4,$5)
+         RETURNING id, name, route_id`,
+        [req.user.tenant_id, userId, label, routeId, req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant rostered', recordType: 'Attendant', recordRef: row.id, reason: label, policyRef: 'Transport (attendant rule)', risk: 'low', outcome: 'rostered — police verification still pending' });
+      return { attendant: row };
+    });
+  });
+  app.put('/transport/attendants/:id/verify', { preHandler: [require('owner','principal','transport','coordinator','itadmin'), uuidParams('id')] }, async (req, reply) => {
+    if (!DATE_RE.test(String(req.body?.policeVerifiedOn ?? ''))) return bad(reply, 'policeVerifiedOn must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`UPDATE app.attendants SET police_verified_on=$1::date WHERE id=$2 RETURNING id, name`,
+        [String(req.body.policeVerifiedOn), req.params.id]);
+      if (!r.rows[0]) return bad(reply, 'No attendant with that id', 404);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Attendant police-verified', recordType: 'Attendant', recordRef: r.rows[0].id, reason: r.rows[0].name, policyRef: 'NCPCR (staff verification)', risk: 'low', outcome: `verified ${req.body.policeVerifiedOn}` });
+      return { ok: true };
+    });
+  });
+  app.get('/transport/fares', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin', 'finance', 'finance_head') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT academic_year, per_km_cents FROM app.fares ORDER BY academic_year DESC LIMIT 5`);
+      return { fares: r.rows };
+    });
+  });
+  app.put('/transport/fares', { preHandler: require('owner', 'principal', 'finance_head') }, async (req, reply) => {
+    const year = typeof req.body?.academicYear === 'string' ? req.body.academicYear.trim().slice(0, 12) : '';
+    const perKm = Number(req.body?.perKmCents);
+    if (!year) return bad(reply, 'academicYear is required');
+    if (!Number.isInteger(perKm) || perKm < 0) return bad(reply, 'perKmCents must be a non-negative integer (paise per km)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      await c.query(
+        `INSERT INTO app.fares (tenant_id, academic_year, per_km_cents, created_by) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (tenant_id, academic_year) DO UPDATE SET per_km_cents=EXCLUDED.per_km_cents`,
+        [req.user.tenant_id, year, perKm, req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Transport fare set', recordType: 'Fare', recordRef: year, reason: `₹${(perKm / 100).toFixed(2)}/km`, policyRef: 'Transport (RTA fare)', risk: 'medium', outcome: 'rate on record' });
+      return { ok: true, academicYear: year, perKmCents: perKm };
+    });
+  });
+  app.post('/transport/fares/quote', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin', 'finance', 'finance_head', 'admissions') }, async (req, reply) => {
+    const km = Number(req.body?.km);
+    if (!Number.isFinite(km) || km < 0 || km > 200) return bad(reply, 'km must be 0–200');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const rate = (await c.query(`SELECT per_km_cents, academic_year FROM app.fares ORDER BY academic_year DESC LIMIT 1`)).rows[0];
+      if (!rate) return bad(reply, 'No fare rate on record — the office sets ₹/km first', 409);
+      return { amountCents: Math.round(rate.per_km_cents * km), perKmCents: rate.per_km_cents, academicYear: rate.academic_year };
+    });
+  });
+  app.get('/transport/inspections', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT id, route_id, title, detail, inspected_on FROM app.inspections ORDER BY inspected_on DESC LIMIT 100`);
+      return { inspections: r.rows };
+    });
+  });
+  app.post('/transport/inspections', { preHandler: require('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const title = typeof b.title === 'string' ? b.title.trim().slice(0, 160) : '';
+    if (!title) return bad(reply, 'title is required (e.g. joint RTO–education inspection)');
+    if (!DATE_RE.test(String(b.inspectedOn ?? ''))) return bad(reply, 'inspectedOn must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.inspections (tenant_id, route_id, title, detail, inspected_on, created_by)
+         VALUES ($1,$2,$3,$4,$5::date,$6) RETURNING id, title, inspected_on`,
+        [req.user.tenant_id, b.routeId ?? null, title,
+         typeof b.detail === 'string' ? b.detail.trim().slice(0, 2000) : null,
+         String(b.inspectedOn), req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Transport inspection logged', recordType: 'Inspection', recordRef: row.id, reason: title, policyRef: 'Transport (joint inspection)', risk: 'low', outcome: 'on record' });
+      return { inspection: row };
+    });
+  });
+  app.get('/transport/compliance-report', { preHandler: roleGatedMe('owner','principal','transport','coordinator','itadmin') }, async (req, reply) => {
+    const q = typeof req.query?.quarter === 'string' ? req.query.quarter.trim() : '';
+    if (!/^[0-9]{4}-Q[1-4]$/.test(q)) return bad(reply, 'quarter must be YYYY-QN (e.g. 2026-Q3)');
+    const [yy, qq] = [q.slice(0, 4), Number(q.slice(-1))];
+    const from = `${yy}-${String((qq - 1) * 3 + 1).padStart(2, '0')}-01`;
+    const to = `${yy}-${String(qq * 3 + 1).padStart(2, '0')}-01`;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const runs = (await c.query(
+        `SELECT count(*)::int AS n FROM app.bus_runs WHERE ran_on >= $1::date AND ran_on < $2::date`, [from, to])).rows[0].n;
+      const board = (await c.query(
+        `SELECT count(DISTINCT (run_id, student_id))::int AS boarded FROM app.boarding b
+          JOIN app.bus_runs r ON r.id=b.run_id WHERE r.ran_on >= $1::date AND r.ran_on < $2::date AND b.direction='board'`, [from, to])).rows[0].boarded;
+      const att = (await c.query(
+        `SELECT count(*)::int AS total, count(*) FILTER (WHERE police_verified_on IS NOT NULL)::int AS verified FROM app.attendants`)).rows[0];
+      const insp = (await c.query(
+        `SELECT count(*)::int AS n FROM app.inspections WHERE inspected_on >= $1::date AND inspected_on < $2::date`, [from, to])).rows[0].n;
+      return { quarter: q, runs, boardings: board, attendants: att, inspections: insp,
+        note: 'District-committee pack: runs, boarding marks, attendant verification and inspections, straight from the registers.' };
+    });
+  });
+
+  // Payroll ECS proof file: office-only, audited read, real bank accounts — handle like cash.
+  app.get('/payroll/runs/:id/ecs-file', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(`SELECT id, month, status, total_cents FROM app.payroll_runs WHERE id=$1`, [req.params.id])).rows[0];
+      if (!run) return bad(reply, 'No pay run with that id', 404);
+      if (run.status !== 'disbursed') return bad(reply, `Run ${run.month} is ${run.status} — the ECS file proves a disbursement, so it issues only after disbursing`, 409);
+      const rows = (await c.query(
+        `SELECT u.name, s.bank_acct, p.monthly_cents FROM app.payroll_payslips p
+           JOIN app.users u ON u.id=p.user_id LEFT JOIN app.payroll_structures s ON s.user_id=u.id
+          WHERE p.run_id=$1 ORDER BY u.name`, [run.id])).rows;
+      const missing = rows.filter((r) => !r.bank_acct);
+      const csv = ['name,bank_acct,amount_paise,month,run_ref',
+        ...rows.filter((r) => r.bank_acct).map((r) => `"${String(r.name).replace(/"/g, '')}",${r.bank_acct},${r.monthly_cents},${run.month},${run.id}`)].join('\n');
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'ECS file downloaded', recordType: 'PayrollRun', recordRef: run.id, reason: run.month, policyRef: 'Payroll (bank/ECS proof)', risk: 'high', outcome: `${rows.length - missing.length} credited line(s)${missing.length ? ` · ${missing.length} without bank details excluded` : ''}` });
+      reply.header('content-type', 'text/csv');
+      reply.header('content-disposition', `attachment; filename="ecs-${run.month}.csv"`);
+      return reply.send(csv);
+    });
+  });
+
+  // Staff QR attendance: the token is an HMAC of tenant+day (no database, no replay across days).
+  // Marking is one row per person per day — scanning twice is a no-op with already:true.
+  app.get('/staff-attendance/qr', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator') }, async (req) => {
+    const day = new Date().toISOString().slice(0, 10);
+    const { createHmac } = await import('node:crypto');
+    const token = createHmac('sha256', `${process.env.JWT_SECRET ?? 'dev-only-secret-change-me'}|qr`).update(`${req.user.tenant_id}|${day}`).digest('hex');
+    return { token, day };
+  });
+  app.post('/staff-attendance/scan', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator', 'teacher', 'counselor', 'finance', 'finance_head', 'finance_clerk', 'admissions', 'transport', 'facilities', 'technician', 'librarian') }, async (req, reply) => {
+    const token = String(req.body?.token ?? '');
+    if (!/^[0-9a-f]{64}$/.test(token)) return bad(reply, 'token must be the day QR value');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const day = new Date().toISOString().slice(0, 10);
+      const { createHmac } = await import('node:crypto');
+      const want = createHmac('sha256', `${process.env.JWT_SECRET ?? 'dev-only-secret-change-me'}|qr`).update(`${req.user.tenant_id}|${day}`).digest('hex');
+      if (token.length !== want.length) return bad(reply, 'This QR is not for today', 403);
+      let ok = true;
+      try {
+        const { timingSafeEqual } = await import('node:crypto');
+        ok = timingSafeEqual(Buffer.from(token), Buffer.from(want));
+      } catch { ok = false; }
+      if (!ok) return bad(reply, 'This QR is not for today', 403);
+      const row = (await c.query(
+        `INSERT INTO app.staff_attendance (tenant_id, user_id, day, source, created_by) VALUES ($1,$2,$3::date,'qr',$4)
+         ON CONFLICT (tenant_id, user_id, day) DO NOTHING RETURNING day`,
+        [req.user.tenant_id, req.user.id, day, req.user.id])).rows[0];
+      return { marked: true, already: !row, day };
+    });
+  });
+  app.post('/staff-attendance/mark', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.userId ?? ''))) return bad(reply, 'userId must be a uuid');
+    if (!DATE_RE.test(String(b.day ?? ''))) return bad(reply, 'day must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const u = (await c.query(`SELECT id, name FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`, [b.userId])).rows[0];
+      if (!u) return bad(reply, 'No active staff with that id', 404);
+      await c.query(
+        `INSERT INTO app.staff_attendance (tenant_id, user_id, day, source, created_by) VALUES ($1,$2,$3::date,'manual',$4)
+         ON CONFLICT (tenant_id, user_id, day) DO NOTHING`,
+        [req.user.tenant_id, u.id, String(b.day), req.user.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Staff presence marked', recordType: 'StaffAttendance', recordRef: `${u.id}/${b.day}`, reason: u.name, policyRef: 'HR (attendance)', risk: 'low', outcome: 'present' });
+      return { marked: true };
+    });
+  });
+
+  // DPDP breach register: found → contained → notified/closed, with the 72-hour clock visible.
+  app.get('/dpdp/breaches', { preHandler: roleGatedMe('owner', 'principal', 'itadmin') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT id, title, detail, found_on, contained_on, notified_on, status FROM app.breach_log ORDER BY found_on DESC LIMIT 100`);
+      return { breaches: r.rows };
+    });
+  });
+  app.post('/dpdp/breaches', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const title = typeof b.title === 'string' ? b.title.trim().slice(0, 160) : '';
+    const detail = typeof b.detail === 'string' ? b.detail.trim().slice(0, 2000) : '';
+    if (!title || !detail) return bad(reply, 'title and detail are required (what happened, whose data)');
+    if (!DATE_RE.test(String(b.foundOn ?? ''))) return bad(reply, 'foundOn must be YYYY-MM-DD');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(
+        `INSERT INTO app.breach_log (tenant_id, title, detail, found_on, created_by) VALUES ($1,$2,$3,$4::date,$5)
+         RETURNING id, title, status, found_on`,
+        [req.user.tenant_id, title, detail, String(b.foundOn), req.user.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Breach recorded', recordType: 'Breach', recordRef: row.id, reason: title, policyRef: 'DPDP (breach notification)', risk: 'high', outcome: '72-hour clock running' });
+      await emitEvent(c, req.user.tenant_id, { type: 'governance', label: `Possible breach recorded — ${title}`, ref: row.id });
+      return { breach: row };
+    });
+  });
+  app.post('/dpdp/breaches/:id/contain', { preHandler: [require('owner', 'principal', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (b.containedOn !== undefined && b.containedOn !== null && String(b.containedOn).trim() !== '' && !DATE_RE.test(String(b.containedOn).trim())) {
+      return bad(reply, 'containedOn must be YYYY-MM-DD');
+    }
+    if (b.notifiedOn !== undefined && b.notifiedOn !== null && String(b.notifiedOn).trim() !== '' && !DATE_RE.test(String(b.notifiedOn).trim())) {
+      return bad(reply, 'notifiedOn must be YYYY-MM-DD');
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cur = (await c.query(`SELECT id, status FROM app.breach_log WHERE id=$1`, [req.params.id])).rows[0];
+      if (!cur) return bad(reply, 'No breach with that id', 404);
+      if (cur.status === 'closed') return bad(reply, 'A closed breach is history — record a new one if something changed', 409);
+      const notified = b.notifiedOn && String(b.notifiedOn).trim() ? String(b.notifiedOn).trim() : null;
+      const status = notified ? 'closed' : 'contained';
+      await c.query(`UPDATE app.breach_log SET contained_on=$1::date, notified_on=$2::date, status=$3 WHERE id=$4`,
+        [b.containedOn && String(b.containedOn).trim() ? String(b.containedOn).trim() : null, notified, status, cur.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Breach ${status}`, recordType: 'Breach', recordRef: cur.id, reason: b.note ?? status, policyRef: 'DPDP (breach notification)', risk: 'high', outcome: status });
+      return { ok: true, status };
+    });
+  });
+
+  // Emergency broadcast: owner/principal compose AND approve at once — they ARE the authority,
+  // and an emergency must not wait in a queue. Audited high-risk; recipients resolved first so an
+  // empty audience refuses before anything is written (FIX-12 shape).
+  app.post('/announcements/emergency', { preHandler: require('owner', 'principal') }, async (req, reply) => {
+    const { title, body, audienceKind, audienceRef, channel } = req.body ?? {};
+    if (!title || !body) return bad(reply, 'title and body are required');
+    const kind = String(audienceKind ?? 'all_guardians');
+    if (!['all_guardians', 'class', 'route', 'staff', 'custom'].includes(kind)) return bad(reply, 'unknown audience');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const recipients = await announceReach(c, req.user.tenant_id, kind, audienceRef, channel ?? 'In-app');
+      if (recipients.length === 0) return bad(reply, 'no reachable recipients resolved for this audience — nothing to send', 409);
+      const a = (await c.query(
+        `INSERT INTO app.announcements (tenant_id, title, body, audience_kind, audience_ref, channel, status, created_by, priority)
+         VALUES ($1,$2,$3,$4,$5,$6,'queued',$7,'emergency') RETURNING *`,
+        [req.user.tenant_id, title, body, kind, audienceRef ?? null, channel ?? 'In-app', req.user.id])).rows[0];
+      const inApp = String(channel ?? 'In-app').toLowerCase() === 'in-app';
+      if (inApp) {
+        for (const uid of recipients) {
+          await c.query(
+            `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref) VALUES ($1,$2,'school',$3,$4,$5)`,
+            [req.user.tenant_id, uid, title, body, `/announcements/${a.id}`]);
+          await c.query(
+            `INSERT INTO app.announcement_receipts (tenant_id, announcement_id, user_id, channel, status, detail)
+             VALUES ($1,$2,$3,'In-app','delivered','emergency broadcast')`, [req.user.tenant_id, a.id, uid]);
+        }
+      } else {
+        const comm = await c.query(
+          `INSERT INTO app.communications (tenant_id, audience_json, channel, template, body, status, policy_ref, approved_by)
+           VALUES ($1,$2::jsonb,$3,'ANNOUNCEMENT',$4,'queued','Communication §2', $5) RETURNING *`,
+          [req.user.tenant_id, JSON.stringify(recipients), channel, body, req.user.id]);
+        for (const phone of recipients) {
+          await c.query(
+            `INSERT INTO app.announcement_receipts (tenant_id, announcement_id, user_id, channel, status, detail)
+             VALUES ($1,$2,NULL,$3,'queued',$4)`,
+            [req.user.tenant_id, a.id, channel, `to ****${String(phone).slice(-4)}`]);
+        }
+        await c.query(`UPDATE app.announcements SET comm_id=$2 WHERE id=$1`, [a.id, comm.rows[0].id]);
+      }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Emergency broadcast: ${title}`, recordType: 'Announcement', recordRef: a.id, reason: `emergency · ${kind}`, policyRef: 'Communication §2 (emergency)', risk: 'high', outcome: `${recipients.length} recipient(s) queued at once` });
+      await emitEvent(c, req.user.tenant_id, { type: 'comms', label: `Emergency broadcast "${title}" to ${recipients.length} recipient(s)`, ref: a.id });
+      return { announcement: { ...a, status: 'queued' } };
+    });
+  });
+  // Unacked escalation list: who has NOT signed (phones included — the office calls them).
+  // Full numbers because this door is office-only; the ledger records every read of it.
+  app.get('/announcements/:id/unacked', { preHandler: [roleGatedMe('owner', 'principal', 'coordinator', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const a = (await c.query(`SELECT id, title, audience_kind, audience_ref, channel FROM app.announcements WHERE id=$1`, [req.params.id])).rows[0];
+      if (!a) return bad(reply, 'No announcement with that id', 404);
+      const acked = new Set((await c.query(`SELECT user_id FROM app.announcement_acks WHERE announcement_id=$1`, [a.id])).rows.map((r) => r.user_id));
+      const ids = await announceReach(c, req.user.tenant_id, a.audience_kind, a.audience_ref, a.channel);
+      const users = ids.length ? (await c.query(
+        `SELECT id, name, role, phone FROM app.users WHERE id = ANY($1::uuid[])`, [ids])).rows : [];
+      const unacked = users.filter((u) => !acked.has(u.id));
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Read unacked list', recordType: 'Announcement', recordRef: a.id, reason: a.title, policyRef: 'Communication §2 (escalation)', risk: 'medium', outcome: `${unacked.length} unacked` });
+      return { announcement: { id: a.id, title: a.title }, ackedCount: users.length - unacked.length, unacked };
+    });
+  });
+
+  // ---- Master Action Plan 4.5 · safety-audit checklist (NCPCR-mapped) + police
+  // verification tracker for all account-holding staff/drivers ----
+  // The checklist is a curated wall mapped to the NCPCR/MoE safety-manual headings —
+  // coverage for a specific board still needs the school's lawyer to confirm, and the
+  // screen says so. Attestations are history (open<->done flips, never deletes).
+  const SAFETY_CHECKLIST = [
+    { code: 'child-protection-committee', title: 'Child protection committee', detail: 'Named committee (POCSO Act) with displayed contacts, meeting minutes on file.' },
+    { code: 'pocso-orientation', title: 'Staff POCSO orientation', detail: 'Every staff member oriented on POCSO duties this year; orientation dates on record.' },
+    { code: 'cctv-premises', title: 'CCTV + premises watch', detail: 'Entry/exit and corridor coverage working; footage retention policy on record.' },
+    { code: 'visitor-management', title: 'Visitor management', detail: 'Gate passes, visitor log and pickup-OTP discipline in daily use.' },
+    { code: 'transport-safety', title: 'Transport safety', detail: 'Attendants rostered, police verification on file, boarding timestamps kept.' },
+    { code: 'health-hygiene', title: 'Health + hygiene', detail: 'Safe drinking water, functional toilets (boys/girls), clinic log kept.' },
+    { code: 'emergency-preparedness', title: 'Emergency preparedness', detail: 'Fire drill this term, evacuation plan displayed, emergency contacts current.' },
+    { code: 'staff-verification', title: 'Staff police verification', detail: 'Every account-holding staff member verified within validity (see the ledger below).' },
+    { code: 'grievance-box', title: 'Complaint / suggestion box', detail: 'Pupil complaint box checked weekly; safety-box reports reviewed by the designated authority.' },
+    { code: 'cyber-safety', title: 'Cyber safety', detail: 'Pupil photo/device policy on record; no child data leaves the school without consent.' },
+    { code: 'playground-safety', title: 'Playground + equipment', detail: 'Play area inspected; broken equipment retired, not taped off.' },
+    { code: 'boundary-security', title: 'Boundary + building', detail: 'Boundary wall/compound secure; building safety (fire NOC) certificate live, not expired.' },
+  ];
+  const seedSafetyChecks = async (c, tenantId) => {
+    for (const item of SAFETY_CHECKLIST) {
+      await c.query(
+        `INSERT INTO app.safety_checks (tenant_id, code, title, detail, status) VALUES ($1,$2,$3,$4,'open')
+         ON CONFLICT (tenant_id, code) DO NOTHING`,
+        [tenantId, item.code, item.title, item.detail]);
+    }
+  };
+  const safetyScore = async (c) => {
+    const r = (await c.query(
+      `SELECT count(*)::int AS total, count(*) FILTER (WHERE status='done')::int AS done FROM app.safety_checks`)).rows[0];
+    return { total: r.total, done: r.done, pct: r.total ? Math.round((r.done / r.total) * 100) : null };
+  };
+  // Verification state for one user on a date: valid | expiring (≤60d) | expired | missing.
+  // Missing warns but never blocks (a school that never recorded anything is nagged, not
+  // locked out day one); expired blocks the duty roster.
+  const verificationState = (row, day) => {
+    if (!row || !row.expires_on) return 'missing';
+    const exp = String(row.expires_on).slice(0, 10);
+    if (exp < day) return 'expired';
+    const soon = new Date(day);
+    soon.setDate(soon.getDate() + 60);
+    if (exp <= soon.toISOString().slice(0, 10)) return 'expiring';
+    return 'valid';
+  };
+  app.get('/safety/checklist', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator', 'counselor') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      await seedSafetyChecks(c, req.user.tenant_id);
+      const rows = (await c.query(
+        `SELECT id, code, title, detail, status, evidence, checked_on FROM app.safety_checks ORDER BY code`)).rows;
+      return { checks: rows, score: await safetyScore(c) };
+    });
+  });
+  app.post('/safety/checks/:id/attest', { preHandler: [require('owner', 'principal', 'itadmin'), uuidParams('id')] }, async (req, reply) => {
+    const done = req.body?.done;
+    if (typeof done !== 'boolean') return bad(reply, 'done must be true/false');
+    const evidence = typeof req.body?.evidence === 'string' ? req.body.evidence.trim().slice(0, 500) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const cur = (await c.query(`SELECT id, code, title, status FROM app.safety_checks WHERE id=$1`, [req.params.id])).rows[0];
+      if (!cur) return bad(reply, 'No checklist item with that id', 404);
+      const row = (await c.query(
+        `UPDATE app.safety_checks SET status=$1, evidence=$2, checked_on=CURRENT_DATE, checked_by=$3, updated_at=now()
+         WHERE id=$4 RETURNING id, code, title, status, evidence, checked_on`,
+        [done ? 'done' : 'open', evidence, req.user.id, cur.id])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Safety check ${done ? 'attested' : 'reopened'}: ${cur.title}`, recordType: 'SafetyCheck', recordRef: cur.id, reason: cur.code, policyRef: 'Safety (NCPCR-mapped audit)', risk: 'medium', outcome: row.status });
+      return { check: row, score: await safetyScore(c) };
+    });
+  });
+  app.get('/staff-verifications', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req) => {
+    const day = new Date().toISOString().slice(0, 10);
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const staff = (await c.query(
+        `SELECT id, name, role FROM app.users
+         WHERE active AND role NOT IN ('parent','student','api') ORDER BY name`)).rows;
+      // dates as TEXT (see hr.leave roster note): pg DATE columns arrive as JS Date
+      // objects whose toString is locale-shaped, useless for lexicographic compare.
+      const vers = (await c.query(
+        `SELECT user_id, kind, to_char(verified_on,'YYYY-MM-DD') AS verified_on,
+                to_char(expires_on,'YYYY-MM-DD') AS expires_on, note FROM app.staff_verifications`)).rows;
+      const byUser = new Map(vers.map((v) => [v.user_id, v]));
+      return {
+        day,
+        staff: staff.map((u) => {
+          const v = byUser.get(u.id) ?? null;
+          return { userId: u.id, name: u.name, role: u.role, state: verificationState(v, day),
+            verifiedOn: v?.verified_on ?? null, expiresOn: v?.expires_on ?? null, note: v?.note ?? null };
+        }),
+      };
+    });
+  });
+  app.post('/staff-verifications', { preHandler: require('owner', 'principal', 'itadmin') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!UUID_RE_NOTICE.test(String(b.userId ?? ''))) return bad(reply, 'userId must be a uuid');
+    if (!DATE_RE.test(String(b.verifiedOn ?? ''))) return bad(reply, 'verifiedOn must be YYYY-MM-DD');
+    const years = b.validYears === undefined ? 3 : Number(b.validYears);
+    if (!Number.isInteger(years) || years < 1 || years > 10) return bad(reply, 'validYears must be 1–10');
+    const note = typeof b.note === 'string' ? b.note.trim().slice(0, 500) : null;
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const u = (await c.query(
+        `SELECT id, name, role FROM app.users WHERE id=$1 AND active AND role NOT IN ('parent','student','api')`,
+        [String(b.userId)])).rows[0];
+      if (!u) return bad(reply, 'No active staff with that id (parents, pupils and API accounts are never verified here)', 404);
+      const exp = new Date(`${String(b.verifiedOn)}T00:00:00Z`);
+      exp.setUTCFullYear(exp.getUTCFullYear() + years);
+      const expiresOn = exp.toISOString().slice(0, 10);
+      const row = (await c.query(
+        `INSERT INTO app.staff_verifications (tenant_id, user_id, kind, verified_on, expires_on, verified_by, note)
+         VALUES ($1,$2,'police',$3::date,$4::date,$5,$6)
+         ON CONFLICT (tenant_id, user_id, kind) DO UPDATE
+           SET verified_on=EXCLUDED.verified_on, expires_on=EXCLUDED.expires_on,
+               verified_by=EXCLUDED.verified_by, note=EXCLUDED.note, updated_at=now()
+         RETURNING user_id`,
+        [req.user.tenant_id, u.id, String(b.verifiedOn), expiresOn, req.user.id, note])).rows[0];
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: `Police verification recorded: ${u.name}`, recordType: 'StaffVerification', recordRef: u.id, reason: `${u.role} · valid ${years}y`, policyRef: 'Safety (staff verification)', risk: 'medium', outcome: `expires ${expiresOn}` });
+      // dates cross the wire as YYYY-MM-DD text (a pg DATE arrives as a JS Date whose
+      // ISO string shifts a day under IST) — the computed expiry, not the row echo.
+      return { verification: { user_id: row.user_id, verified_on: String(b.verifiedOn), expires_on: expiresOn } };
+    });
+  });
+
+  // ---- Master Action Plan batch 4 · UDISE validation, hike gate, pupil QR, bus ETA,
+  // stale-approval escalation ----
+  // UDISE readiness: profile + people + money + R3 + MPD affiliation, each named. Read-only.
+  app.get('/returns/udise/validate', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const checks = [];
+      const infra = (await c.query(`SELECT * FROM app.school_infra LIMIT 1`)).rows[0] ?? null;
+      const need = (key, label, ok, detail) => checks.push({ key, label, status: ok ? 'ok' : 'missing', detail });
+      need('infra', 'Infrastructure profile', !!infra, infra ? `${infra.classrooms} rooms · ${infra.labs} labs · toilets ${infra.toilets_boys}/${infra.toilets_girls}` : 'Open Routes & stops → no — the school profile (UDISE section) first');
+      const rooms = (await c.query(`SELECT count(*)::int AS n FROM app.school_infra`)).rows[0].n;
+      void rooms;
+      const people = (await c.query(
+        `SELECT (SELECT count(*)::int FROM app.students WHERE status='active') AS pupils,
+                (SELECT count(*)::int FROM app.users WHERE active AND role='teacher') AS teachers`)).rows[0];
+      need('enrollment', 'Enrollment on record', people.pupils > 0, `${people.pupils} active pupils`);
+      need('ptr', 'Pupil–teacher ratio ≤ 35', people.teachers > 0 && people.pupils / people.teachers <= 35,
+        people.teachers ? `${people.pupils}:${people.teachers} = ${(people.pupils / people.teachers).toFixed(1)}` : 'No active teachers');
+      if (infra) {
+        need('toilets', 'Toilets for boys and girls', infra.toilets_boys > 0 && infra.toilets_girls > 0,
+          `${infra.toilets_boys} boys · ${infra.toilets_girls} girls`);
+        need('water', 'Drinking water', !!infra.drinking_water, infra.drinking_water ? 'recorded' : 'not recorded');
+        need('r3', 'Class-6 third language (OASIS R3)', true, 'Recorded per year on the NEP desk (validates separately)');
+      }
+      const aff = (await c.query(
+        `SELECT 1 FROM app.mpd_docs WHERE kind='affiliation_letter' AND active LIMIT 1`)).rows[0];
+      need('affiliation', 'Affiliation letter on file', !!aff, aff ? 'MPD vault holds it' : 'File it on the MPD desk');
+      return { checks, ready: checks.every((x) => x.status === 'ok') };
+    });
+  });
+
+  // Pupil QR: day tokens per class roster (HMAC tenant+student+day); marking consumes them.
+  // A screenshot from yesterday buys nothing — verification recomputes for today only.
+  // Codes are 12 hex chars (48 bits — safe for ≤80-pupil rosters, typeable from a printed slip).
+  const pupilQrToken = async (tenantId, studentId, day) => {
+    const { createHmac } = await import('node:crypto');
+    return createHmac('sha256', `${process.env.JWT_SECRET ?? 'dev-only-secret-change-me'}|qr-pupil`).update(`${tenantId}|${studentId}|${day}`).digest('hex').slice(0, 12);
+  };
+  app.get('/attendance/qr', { preHandler: roleGatedMe('owner', 'principal', 'coordinator', 'itadmin', 'teacher') }, async (req, reply) => {
+    const { grade, section } = req.query ?? {};
+    if (!grade || !section) return bad(reply, 'grade and section pick the roster (one class per code sheet)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      if (req.user.role === 'teacher') {
+        const owns = (await c.query(
+          `SELECT 1 FROM app.class_assignments WHERE teacher_id=$1 AND grade=$2 AND section=$3 AND active`,
+          [req.user.id, String(grade), String(section)])).rows[0];
+        if (!owns) return bad(reply, 'QR codes belong to your own classes — ask the coordinator for this one', 403);
+      }
+      const day = new Date().toISOString().slice(0, 10);
+      const pupils = (await c.query(
+        `SELECT id, name FROM app.students WHERE status='active' AND grade=$1 AND section=$2 ORDER BY name LIMIT 80`,
+        [String(grade), String(section)])).rows;
+      const tokens = [];
+      for (const p of pupils) tokens.push({ studentId: p.id, name: p.name, code: await pupilQrToken(req.user.tenant_id, p.id, day) });
+      return { day, grade, section, tokens };
+    });
+  });
+  app.post('/attendance/qr-mark', { preHandler: require('owner', 'principal', 'coordinator', 'itadmin', 'teacher') }, async (req, reply) => {
+    const { date = new Date().toISOString().slice(0, 10), codes } = req.body ?? {};
+    const tokens = Array.isArray(codes) ? codes : req.body?.tokens;
+    if (!DATE_RE.test(String(date))) return bad(reply, 'date must be YYYY-MM-DD');
+    if (!Array.isArray(tokens) || !tokens.length || tokens.length > 80) return bad(reply, 'codes[] with 1–80 scanned codes is required');
+    if (String(date) !== new Date().toISOString().slice(0, 10)) {
+      return bad(reply, 'QR marking is for today only — past days go through the register with its audit', 403);
+    }
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      let owned = null;
+      if (req.user.role === 'teacher') {
+        owned = new Set((await c.query(
+          `SELECT grade || '|' || section AS k FROM app.class_assignments WHERE teacher_id=$1 AND active`, [req.user.id])).rows.map((r) => r.k));
+        if (!owned.size) return bad(reply, 'No class is assigned to you yet — the register stays with the office', 403);
+      }
+      const roster = (await c.query(`SELECT id, name, grade, section FROM app.students WHERE status='active'`)).rows;
+      const byToken = new Map();
+      for (const p of roster) byToken.set(await pupilQrToken(req.user.tenant_id, p.id, String(date)), p);
+      const marked = [];
+      let invalid = 0;
+      for (const t of new Set(tokens.map(String))) {
+        const p = byToken.get(t);
+        if (!p) { invalid += 1; continue; }
+        if (owned && !owned.has(`${p.grade}|${p.section}`)) { invalid += 1; continue; }
+        await c.query(
+          `INSERT INTO app.attendance (tenant_id, student_id, school_date, status, marked_by)
+           VALUES ($1,$2,$3::date,'present',$4)
+           ON CONFLICT (tenant_id, student_id, school_date) DO UPDATE SET status='present', marked_by=EXCLUDED.marked_by, marked_at=now()`,
+          [req.user.tenant_id, p.id, String(date), req.user.id]);
+        marked.push(p.name);
+      }
+      if (marked.length) {
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Marked attendance via QR', recordType: 'Attendance', recordRef: String(date), reason: `${marked.length} scanned`, policyRef: 'Attendance (QR)', risk: 'low', outcome: `${marked.join(', ').slice(0, 200)}${invalid ? ` · ${invalid} invalid ignored` : ''}` });
+      }
+      return { marked, markedCount: marked.length, invalid };
+    });
+  });
+
+  // My day code: a pupil's own 12-char code for today (portal-bound account only).
+  app.get('/attendance/my-qr', { preHandler: roleGatedMe('student') }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const st = (await c.query(`SELECT id, name FROM app.students WHERE user_id=$1 AND status='active'`, [req.user.id])).rows[0];
+      if (!st) return bad(reply, 'No pupil portal is linked to this account yet — ask the school office', 404);
+      const day = new Date().toISOString().slice(0, 10);
+      return { code: await pupilQrToken(req.user.tenant_id, st.id, day), day, name: st.name };
+    });
+  });
+
+  // Bus ETA: scheduled stop times from today's run start + offsets, with boarding state.
+  app.get('/transport/runs/:id/eta', { preHandler: [roleGatedMe('owner', 'principal', 'transport', 'coordinator', 'itadmin', 'parent'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const run = (await c.query(
+        `SELECT r.id, r.route_id, r.ran_on, r.created_at, t.code, t.name FROM app.bus_runs r
+           JOIN app.routes t ON t.id = r.route_id WHERE r.id=$1`, [req.params.id])).rows[0];
+      if (!run) return bad(reply, 'No run with that id', 404);
+      const stops = (await c.query(
+        `SELECT name, eta_offset_mins, seq FROM app.route_stops WHERE route_id=$1 ORDER BY seq`, [run.route_id])).rows;
+      const boarded = new Set((await c.query(
+        `SELECT DISTINCT student_id FROM app.boarding WHERE run_id=$1 AND direction='board'`, [run.id])).rows.map((r) => r.student_id));
+      const start = new Date(run.created_at).getTime();
+      return {
+        run: { id: run.id, code: run.code, name: run.name, ranOn: run.ran_on },
+        stops: stops.map((s) => ({
+          name: s.name, scheduledAt: new Date(start + Number(s.eta_offset_mins ?? 0) * 60000).toISOString(),
+        })),
+        boardedCount: boarded.size,
+      };
+    });
+  });
+
+  // Stale approvals: open approval actions older than N days + one-tap escalation digest to owners.
+  app.get('/actions/stale', { preHandler: roleGatedMe('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const days = req.query?.days === undefined ? 1 : Number(req.query.days);
+    if (!Number.isFinite(days) || days < 0 || days > 3650) return bad(reply, 'days must be 0–3650');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(
+        `SELECT id, code, kind, title, priority, created_at FROM app.actions
+          WHERE kind='approval' AND status='open' AND created_at < now() - ($1 || ' days')::interval
+          ORDER BY created_at LIMIT 100`, [String(days)]);
+      return { days, stale: r.rows };
+    });
+  });
+  app.post('/actions/stale/escalate', { preHandler: require('owner', 'principal', 'itadmin', 'coordinator') }, async (req, reply) => {
+    const days = req.body?.days === undefined ? 1 : Number(req.body.days);
+    if (!Number.isFinite(days) || days < 0 || days > 3650) return bad(reply, 'days must be 0–3650');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const stale = (await c.query(
+        `SELECT id, code, title FROM app.actions
+          WHERE kind='approval' AND status='open' AND created_at < now() - ($1 || ' days')::interval
+          ORDER BY created_at LIMIT 50`, [String(days)])).rows;
+      if (!stale.length) return { escalated: 0 };
+      const owners = (await c.query(
+        `SELECT id FROM app.users WHERE active AND role IN ('owner','principal')`)).rows;
+      for (const u of owners) {
+        await c.query(
+          `INSERT INTO app.notifications (tenant_id, user_id, "group", title, body, ref)
+           VALUES ($1,$2,'approvals','Stale approvals need you',$3,'/action-center')`,
+          [req.user.tenant_id, u.id, `${stale.length} approval(s) open beyond ${days}d: ${stale.slice(0, 5).map((s) => s.title).join(' · ')}`]);
+      }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Escalated stale approvals', recordType: 'Action', recordRef: `${stale.length} action(s)`, reason: `open beyond ${days}d`, policyRef: 'Automation (SLA)', risk: 'low', outcome: `digest to ${owners.length} owner(s)/principal(s)` });
+      return { escalated: stale.length };
+    });
+  });
+
   // ---- fee plan templates & bulk generation (Wave 2 · L1-2.2) ----
   // A template scopes a grade-set × term-list; /generate fans it out to every
   // ACTIVE student in scope in one statement. (tenant, student, term, label) is
@@ -1077,8 +2752,10 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   });
   app.put('/fees/settings', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
     const b = req.body ?? {};
-    const numeric = ['refund_approval_threshold_cents', 'reconciliation_tolerance_cents', 'min_partial_cents', 'receipt_series_start', 'late_fee_per_day_cents', 'late_fee_cap_cents', 'late_fee_grace_days'];
-    const bools = ['allow_parent_partial'];
+    const numeric = ['refund_approval_threshold_cents', 'reconciliation_tolerance_cents', 'min_partial_cents', 'receipt_series_start', 'late_fee_per_day_cents', 'late_fee_cap_cents', 'late_fee_grace_days',
+      'late_fee_fixed_cents', 'refund_window_days', 'installment_max_parts', 'max_extension_days', 'settlement_slo_hours', 'hike_evidence_max_age_days'];
+    const bools = ['allow_parent_partial', 'late_fee_enabled', 'late_fee_auto_run', 'refund_require_reason', 'refund_partial_allowed', 'refund_auto_gateway',
+      'cash_requires_pin', 'invoice_show_breakup', 'installment_allow_edit', 'dunning_enabled', 'dunning_stop_on_partial', 'reconciliation_auto_match', 'allow_owner_self_approve'];
     const patch = {};
     for (const k of numeric) {
       if (b[k] == null) continue;
@@ -1088,6 +2765,78 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     }
     for (const k of bools) if (b[k] != null) patch[k] = Boolean(b[k]);
     if (b.receipt_prefix != null) patch.receipt_prefix = String(b.receipt_prefix).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12) || 'RCP';
+    // Enums (tenant-configurable policy modes — invalid values are 400, never silently coerced).
+    const enums = {
+      late_fee_mode: ['per_day', 'fixed', 'percent'],
+      overpayment_rule: ['refuse', 'keep_credit', 'refund'],
+      receipt_reset: ['never', 'yearly', 'academic_year'],
+      installment_mode: ['equal', 'custom', 'percent'],
+      installment_rounding: ['remainder_last'],
+      concession_stacking: ['single_best', 'additive_capped'],
+    };
+    for (const [k, allowed] of Object.entries(enums)) {
+      if (b[k] == null) continue;
+      if (!allowed.includes(String(b[k]))) return bad(reply, `${k} must be one of ${allowed.join(', ')}`);
+      patch[k] = String(b[k]);
+    }
+    // Percentages 0..100 (may be fractional — stored as-is).
+    for (const k of ['late_fee_percent', 'refund_deduction_pct', 'concession_cap_pct', 'staff_default_pct', 'hike_review_threshold_pct']) {
+      if (b[k] == null) continue;
+      const n = Number(b[k]);
+      if (!Number.isFinite(n) || n < 0 || n > 100) return bad(reply, `${k} must be 0..100`);
+      patch[k] = n;
+    }
+    for (const k of ['sibling_min_children']) {
+      if (b[k] == null) continue;
+      const n = Number(b[k]);
+      if (!Number.isInteger(n) || n < 2 || n > 10) return bad(reply, `${k} must be 2..10`);
+      patch[k] = n;
+    }
+    // Method / channel lists.
+    if (b.enabled_methods != null) {
+      const METHODS = ['upi', 'razorpay', 'cash', 'card', 'cheque', 'netbanking', 'bank_transfer', 'manual'];
+      if (!Array.isArray(b.enabled_methods) || !b.enabled_methods.length || b.enabled_methods.some((m) => !METHODS.includes(String(m)))) {
+        return bad(reply, `enabled_methods must be a non-empty subset of ${METHODS.join(', ')}`);
+      }
+      patch.enabled_methods = [...new Set(b.enabled_methods.map(String))];
+    }
+    if (b.dunning_channels != null) {
+      const CH = ['sms', 'whatsapp', 'email'];
+      if (!Array.isArray(b.dunning_channels) || !b.dunning_channels.length || b.dunning_channels.some((m) => !CH.includes(String(m)))) {
+        return bad(reply, `dunning_channels must be a non-empty subset of ${CH.join(', ')}`);
+      }
+      patch.dunning_channels = [...new Set(b.dunning_channels.map(String))];
+    }
+    const dayList = (k, max = 10, lo = 1, hi = 90) => {
+      if (b[k] == null) return null;
+      if (!Array.isArray(b[k]) || b[k].length > max || b[k].some((n) => !Number.isInteger(n) || n < lo || n > hi)) {
+        return `${k} must be a list of ≤${max} integers ${lo}..${hi}`;
+      }
+      patch[k] = [...new Set(b[k])].sort((x, y) => x - y);
+      return null;
+    };
+    for (const k of ['dunning_before_due_days', 'dunning_escalation_days']) {
+      const err = dayList(k);
+      if (err) return bad(reply, err);
+    }
+    // HH:MM fields.
+    const hm = (v) => /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(v ?? ''));
+    for (const k of ['dunning_quiet_start', 'dunning_quiet_end', 'default_due_time_ist']) {
+      if (b[k] == null) continue;
+      if (!hm(b[k])) return bad(reply, `${k} must be HH:MM (24h IST)`);
+      patch[k] = String(b[k]);
+    }
+    if (b.invoice_notes != null) {
+      if (typeof b.invoice_notes !== 'string' || b.invoice_notes.length > 500) return bad(reply, 'invoice_notes must be ≤500 characters');
+      patch.invoice_notes = b.invoice_notes.trim();
+    }
+    // Late-fee opt-in is sticky and explicit-wins: setting any rate > 0 without
+    // mentioning the flag opts the school in (pre-flag behaviour: any rate = on);
+    // an explicit enabled true/false is always honoured and never overridden.
+    if (b.late_fee_enabled == null
+      && ['late_fee_per_day_cents', 'late_fee_fixed_cents', 'late_fee_percent'].some((k) => b[k] != null && Number(b[k]) > 0)) {
+      patch.late_fee_enabled = true;
+    }
     if (!Object.keys(patch).length) return bad(reply, 'no recognised setting supplied');
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       await c.query(
@@ -1100,27 +2849,75 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   });
 
   // D2 · apply late fees to overdue obligations from the tenant policy. Deterministic and idempotent:
-  // each obligation's late_fee_cents is SET (not added) from days-overdue × per-day, bounded by the cap.
+  // each obligation's late_fee_cents is SET (not added) from the tenant mode:
+  //   per_day: days-overdue × per-day bounded by cap · fixed: flat amount · percent: % of amount.
+  // ?dryRun=true returns the would-be updates without writing. Heads with applies_late_fee=false
+  // are skipped; per-head overrides in fee_late_rules win over the tenant default when active.
   app.post('/fees/late-fees/run', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const s = await feeSettings(c, req.user.tenant_id);
+      const dryRun = req.query?.dryRun === 'true' || req.body?.dryRun === true;
+      // Explicit off is off (dry-run still previews). Opt-in happens in PUT:
+      // setting any rate without the flag auto-enables, so pre-flag tenants
+      // that configured a rate keep working without a second step.
+      if (s.late_fee_enabled === false && !dryRun) {
+        return bad(reply, 'Late fees are not enabled — turn on late_fee_enabled and set a rate in fee settings first', 409);
+      }
+      const mode = ['per_day', 'fixed', 'percent'].includes(String(s.late_fee_mode)) ? String(s.late_fee_mode) : 'per_day';
       const perDay = Math.max(0, Math.trunc(Number(s.late_fee_per_day_cents) || 0));
-      if (perDay <= 0) return bad(reply, 'Late fees are not configured — set late_fee_per_day_cents in fee settings first', 409);
+      const fixed = Math.max(0, Math.trunc(Number(s.late_fee_fixed_cents) || 0));
+      const pct = Math.min(100, Math.max(0, Number(s.late_fee_percent) || 0));
+      if (mode === 'per_day' && perDay <= 0) return bad(reply, 'Late fees are not configured — set late_fee_per_day_cents in fee settings first', 409);
+      if (mode === 'fixed' && fixed <= 0) return bad(reply, 'Late fees are not configured — set late_fee_fixed_cents in fee settings first', 409);
+      if (mode === 'percent' && pct <= 0) return bad(reply, 'Late fees are not configured — set late_fee_percent in fee settings first', 409);
       const cap = Math.max(0, Math.trunc(Number(s.late_fee_cap_cents) || 0));
       const grace = Math.max(0, Math.trunc(Number(s.late_fee_grace_days) || 0));
-      const r = await c.query(
-        `WITH calc AS (
-           SELECT id, LEAST(CASE WHEN $4 > 0 THEN $4 ELSE 9223372036854775807 END,
-                            GREATEST(0, (('now' AT TIME ZONE 'Asia/Kolkata')::date - due_on) - $3) * $2) AS fee
-             FROM app.fee_obligations
+      const feeExpr = mode === 'fixed'
+        ? `LEAST(CASE WHEN $4 > 0 THEN $4 ELSE o.amount_cents END, $5)`
+        : mode === 'percent'
+          ? `LEAST(CASE WHEN $4 > 0 THEN $4 ELSE 9223372036854775807 END, (o.amount_cents * $5 / 100)::bigint)`
+          : `LEAST(CASE WHEN $4 > 0 THEN $4 ELSE 9223372036854775807 END,
+                     GREATEST(0, (('now' AT TIME ZONE 'Asia/Kolkata')::date - o.due_on) - $3) * $2)`;
+      const calcParams = mode === 'fixed'
+        ? [req.user.tenant_id, 0, grace, cap, fixed]
+        : mode === 'percent'
+          ? [req.user.tenant_id, 0, grace, cap, pct]
+          : [req.user.tenant_id, perDay, grace, cap];
+      let rows = null;
+      try {
+        rows = (await c.query(
+          `WITH calc AS (
+             SELECT o.id, ${feeExpr} AS fee
+               FROM app.fee_obligations o
+               LEFT JOIN app.fee_heads h ON h.id = o.fee_head_id
+              WHERE o.tenant_id=$1 AND o.status NOT IN ('paid','void') AND o.due_on IS NOT NULL
+                AND o.due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date
+                AND (h.id IS NULL OR h.applies_late_fee)
+                AND (('now' AT TIME ZONE 'Asia/Kolkata')::date - o.due_on) > $3
+           )
+           SELECT calc.id, calc.fee FROM calc JOIN app.fee_obligations o ON o.id = calc.id
+            WHERE o.late_fee_cents <> calc.fee LIMIT 500`, calcParams)).rows;
+      } catch (e) {
+        if (e.code !== '42703') throw e;
+        // Pre-150 database without the per-head flag — legacy per-day behaviour.
+        const legacyExpr = `LEAST(CASE WHEN $4 > 0 THEN $4 ELSE 9223372036854775807 END,
+                           GREATEST(0, (('now' AT TIME ZONE 'Asia/Kolkata')::date - due_on) - $3) * $2)`;
+        rows = (await c.query(
+          `WITH calc AS (SELECT id, ${legacyExpr} AS fee FROM app.fee_obligations
             WHERE tenant_id=$1 AND status NOT IN ('paid','void') AND due_on IS NOT NULL
-              AND due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date
-         )
-         UPDATE app.fee_obligations o SET late_fee_cents = calc.fee
-           FROM calc WHERE o.id = calc.id AND o.late_fee_cents <> calc.fee
-           RETURNING o.id`, [req.user.tenant_id, perDay, grace, cap]);
-      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Late fees applied', recordType: 'FeeSettings', recordRef: req.user.tenant_id, reason: `₹${perDay / 100}/day · grace ${grace}d · cap ${cap ? `₹${cap / 100}` : 'none'}`, policyRef: 'Fees §4.4', risk: 'medium', outcome: `${r.rowCount} obligation(s) updated` });
-      return { updated: r.rowCount, perDayCents: perDay, graceDays: grace, capCents: cap };
+              AND due_on < ('now' AT TIME ZONE 'Asia/Kolkata')::date)
+           SELECT calc.id, calc.fee FROM calc JOIN app.fee_obligations o ON o.id = calc.id
+            WHERE o.late_fee_cents <> calc.fee LIMIT 500`, [req.user.tenant_id, perDay, grace, cap])).rows;
+      }
+      if (dryRun) return { dryRun: true, mode, wouldUpdate: rows.length, sample: rows.slice(0, 20) };
+      let updated = 0;
+      for (const r of rows) {
+        const u = await c.query(`UPDATE app.fee_obligations SET late_fee_cents=$2 WHERE id=$1 AND tenant_id=$3 AND late_fee_cents <> $2`,
+          [r.id, r.fee, req.user.tenant_id]);
+        updated += u.rowCount;
+      }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Late fees applied', recordType: 'FeeSettings', recordRef: req.user.tenant_id, reason: `${mode} · grace ${grace}d · cap ${cap ? `₹${cap / 100}` : 'none'}`, policyRef: 'Fees §4.4', risk: 'medium', outcome: `${updated} obligation(s) updated` });
+      return { updated, mode, perDayCents: perDay, fixedCents: fixed, percent: pct, graceDays: grace, capCents: cap };
     });
   });
   app.get('/fees/entitlements', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator') }, async (req) => {
@@ -1138,11 +2935,19 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       const includeInactive = req.query?.includeInactive === 'true';
       const r = await c.query(
         `SELECT h.id, h.name, h.category, h.is_refundable, h.tax_code, h.gl_ledger_name, h.active, h.created_at,
+                h.applies_late_fee, h.allows_installments, h.allows_concession, h.refund_window_days, h.sort_order,
+                (SELECT count(*)::int FROM app.fee_obligations o WHERE o.fee_head_id = h.id) AS obligations
+           FROM app.fee_heads h
+          WHERE ($1 OR h.active)
+          ORDER BY h.sort_order, h.active DESC, h.name`, [includeInactive]).catch(() => null);
+      if (r) return { feeHeads: r.rows };
+      const legacy = await c.query(
+        `SELECT h.id, h.name, h.category, h.is_refundable, h.tax_code, h.gl_ledger_name, h.active, h.created_at,
                 (SELECT count(*)::int FROM app.fee_obligations o WHERE o.fee_head_id = h.id) AS obligations
            FROM app.fee_heads h
           WHERE ($1 OR h.active)
           ORDER BY h.active DESC, h.name`, [includeInactive]);
-      return { feeHeads: r.rows };
+      return { feeHeads: legacy.rows };
     });
   });
 
@@ -1154,17 +2959,117 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     const taxCode = typeof b.taxCode === 'string' ? b.taxCode.trim().slice(0, 40) || null : null;
     const glLedgerName = typeof b.glLedgerName === 'string' ? b.glLedgerName.trim().slice(0, 120) || null : null;
     const isRefundable = b.isRefundable === undefined ? true : Boolean(b.isRefundable);
+    const appliesLateFee = b.appliesLateFee === undefined ? true : Boolean(b.appliesLateFee);
+    const allowsInstallments = b.allowsInstallments === undefined ? true : Boolean(b.allowsInstallments);
+    const allowsConcession = b.allowsConcession === undefined ? true : Boolean(b.allowsConcession);
+    let refundWindow = null;
+    if (b.refundWindowDays !== undefined && b.refundWindowDays !== null && String(b.refundWindowDays).trim() !== '') {
+      refundWindow = Number(b.refundWindowDays);
+      if (!Number.isInteger(refundWindow) || refundWindow < 0 || refundWindow > 3650) return bad(reply, 'refundWindowDays must be 0..3650');
+    }
+    let sortOrder = 0;
+    if (b.sortOrder !== undefined && b.sortOrder !== null && String(b.sortOrder).trim() !== '') {
+      sortOrder = Number(b.sortOrder);
+      if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 9999) return bad(reply, 'sortOrder must be 0..9999');
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (!(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.heads'))) return;
       try {
-        const r = await c.query(
-          `INSERT INTO app.fee_heads (tenant_id, name, category, is_refundable, tax_code, gl_ledger_name)
-           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-          [req.user.tenant_id, name, category, isRefundable, taxCode, glLedgerName]);
-        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee head', recordType: 'FeeHead', recordRef: name, reason: category ?? 'charge category', outcome: `created — refundable ${isRefundable}` });
-        return { feeHead: r.rows[0] };
+        let row = null;
+        try {
+          const r = await c.query(
+            `INSERT INTO app.fee_heads (tenant_id, name, category, is_refundable, tax_code, gl_ledger_name, applies_late_fee, allows_installments, allows_concession, refund_window_days, sort_order)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+            [req.user.tenant_id, name, category, isRefundable, taxCode, glLedgerName, appliesLateFee, allowsInstallments, allowsConcession, refundWindow, sortOrder]);
+          row = r.rows[0];
+        } catch (e) {
+          if (e.code === '42703') {
+            const r = await c.query(
+              `INSERT INTO app.fee_heads (tenant_id, name, category, is_refundable, tax_code, gl_ledger_name)
+               VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+              [req.user.tenant_id, name, category, isRefundable, taxCode, glLedgerName]);
+            row = r.rows[0];
+          } else throw e;
+        }
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee head', recordType: 'FeeHead', recordRef: name, reason: category ?? 'charge category', outcome: `created — refundable ${isRefundable} · late-fee ${appliesLateFee} · installments ${allowsInstallments}` });
+        return { feeHead: row };
       } catch (e) {
         if (e.code === '23505') return bad(reply, 'a fee head with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
+  // Tenant discount / scholarship catalogue (migration 150). Rules are tenant-owned; instances
+  // stay in fee_concessions with the request→approve lifecycle. Auto-apply rules propose at
+  // generation time (never write concession_cents directly).
+  const DISCOUNT_KINDS = ['merit', 'need', 'ews', 'rte', 'sibling', 'staff', 'early_bird', 'other', 'concession', 'scholarship', 'waiver'];
+  app.get('/fees/discount-rules', { preHandler: roleGatedMe('owner', 'principal', 'finance', 'finance_head', 'finance_clerk', 'coordinator') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT dr.*, h.name AS fee_head_name FROM app.fee_discount_rules dr LEFT JOIN app.fee_heads h ON h.id = dr.fee_head_id WHERE dr.tenant_id=$1 ORDER BY dr.priority, dr.name`,
+        [req.user.tenant_id]).catch(() => ({ rows: [], missing: true }));
+      if (r.missing) return { discountRules: [], unmigrated: true };
+      return { discountRules: r.rows };
+    });
+  });
+  app.post('/fees/discount-rules', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (!name || name.length > 80) return bad(reply, 'name is required (≤80 characters)');
+    if (!DISCOUNT_KINDS.includes(String(b.kind))) return bad(reply, `kind must be one of ${DISCOUNT_KINDS.join(', ')}`);
+    if (!['percent', 'flat'].includes(String(b.valueType))) return bad(reply, 'valueType must be percent|flat');
+    const val = Number(b.value);
+    if (!Number.isFinite(val) || val < 0) return bad(reply, 'value must be ≥ 0');
+    if (String(b.valueType) === 'percent' && val > 100) return bad(reply, 'percent value must be 0..100');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      try {
+        const r = await c.query(
+          `INSERT INTO app.fee_discount_rules (tenant_id, name, kind, value_type, value_numeric, max_per_student_cents, valid_from, valid_to, grades, fee_head_id, requires_approval, auto_apply, stackable, priority, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+          [req.user.tenant_id, name, String(b.kind), String(b.valueType), val,
+            b.maxPerStudentCents != null ? Math.trunc(Number(b.maxPerStudentCents)) : null,
+            b.validFrom ?? null, b.validTo ?? null,
+            Array.isArray(b.grades) ? b.grades.filter((g) => typeof g === 'string') : [],
+            b.feeHeadId ?? null,
+            b.requiresApproval === undefined ? true : Boolean(b.requiresApproval),
+            b.autoApply === undefined ? false : Boolean(b.autoApply),
+            Boolean(b.stackable), Math.trunc(Number(b.priority) || 0),
+            b.active === undefined ? true : Boolean(b.active)]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created discount rule', recordType: 'FeeDiscountRule', recordRef: name, reason: String(b.kind), outcome: `${b.valueType} ${val}` });
+        return { discountRule: r.rows[0] };
+      } catch (e) {
+        if (e.code === '42P01' || e.code === '42703') return bad(reply, 'discount rules are not migrated yet — apply migration 150 first', 409);
+        if (e.code === '23505') return bad(reply, 'a discount rule with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
+  // Per-head late-fee overrides (migration 150). Null feeHeadId = tenant default (kept in fee_settings).
+  app.get('/fees/late-rules', { preHandler: roleGatedMe('owner', 'principal', 'finance', 'finance_head', 'finance_clerk') }, async (req) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT lr.*, h.name AS fee_head_name FROM app.fee_late_rules lr LEFT JOIN app.fee_heads h ON h.id = lr.fee_head_id WHERE lr.tenant_id=$1 AND lr.active ORDER BY h.name NULLS FIRST`,
+        [req.user.tenant_id]).catch(() => ({ rows: [], missing: true }));
+      if (r.missing) return { lateRules: [], unmigrated: true };
+      return { lateRules: r.rows };
+    });
+  });
+  app.post('/fees/late-rules', { preHandler: require('owner', 'finance_head') }, async (req, reply) => {
+    const b = req.body ?? {};
+    if (!['per_day', 'fixed', 'percent'].includes(String(b.mode ?? 'per_day'))) return bad(reply, 'mode must be per_day|fixed|percent');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      try {
+        const r = await c.query(
+          `INSERT INTO app.fee_late_rules (tenant_id, fee_head_id, mode, per_day_cents, fixed_cents, percent, cap_cents, grace_days, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true) RETURNING *`,
+          [req.user.tenant_id, b.feeHeadId ?? null, String(b.mode ?? 'per_day'),
+            Math.max(0, Math.trunc(Number(b.perDayCents) || 0)), Math.max(0, Math.trunc(Number(b.fixedCents) || 0)),
+            Math.min(100, Math.max(0, Number(b.percent) || 0)), Math.max(0, Math.trunc(Number(b.capCents) || 0)),
+            Math.max(0, Math.trunc(Number(b.graceDays) || 0))]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created late-fee rule', recordType: 'FeeLateRule', recordRef: b.feeHeadId ?? 'default', reason: String(b.mode ?? 'per_day'), outcome: 'created' });
+        return { lateRule: r.rows[0] };
+      } catch (e) {
+        if (e.code === '42P01' || e.code === '42703') return bad(reply, 'late-fee rules are not migrated yet — apply migration 150 first', 409);
         throw e;
       }
     });
@@ -1175,7 +3080,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   app.get('/fee-plans', { preHandler: roleGatedMe('owner','principal','finance','finance_head','finance_clerk','coordinator','itadmin') }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const r = await c.query(
-        `SELECT t.id, t.name, t.grades, t.terms, t.academic_year_id, t.fee_head_id, t.installments, t.auto_concession, t.created_at,
+        `SELECT t.id, t.name, t.grades, t.terms, t.academic_year_id, t.fee_head_id, t.installments, t.auto_concession, t.hike_pct, t.consultation_meeting_id, t.created_at,
                 h.name AS fee_head_name,
                 (SELECT count(*)::int FROM app.fee_obligations o
                   WHERE o.source_ref = 'feeplan:' || t.id::text) AS obligations_generated,
@@ -1196,7 +3101,11 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     if (!Array.isArray(installments) || installments.length === 0 || installments.length > 24) return 'installments must be a non-empty list (≤24 parts)';
     for (const p of installments) {
       if (!p || typeof p !== 'object') return 'each installment must be an object';
-      if (p.amount_cents !== undefined && (!Number.isInteger(p.amount_cents) || p.amount_cents < 0)) return 'each installment amount_cents must be an integer ≥ 0';
+      // Positive-only: app.fee_installments carries CHECK (amount_cents > 0), so a zero
+      // part that passed validation used to 500 at generation. Reject it here with a 400.
+      if (p.amount_cents !== undefined && (!Number.isInteger(p.amount_cents) || p.amount_cents < 1)) return 'each installment amount_cents must be a positive integer (paise ≥ 1)';
+      if (p.percent !== undefined && (!Number.isFinite(Number(p.percent)) || Number(p.percent) <= 0 || Number(p.percent) > 100)) return 'each installment percent must be > 0 and ≤ 100';
+      if (p.amount_cents !== undefined && p.percent !== undefined) return 'each installment takes amount_cents or percent, not both';
       if (p.due_on !== undefined && (typeof p.due_on !== 'string' || !DATE_RE.test(p.due_on))) return 'installment due_on must be a YYYY-MM-DD date';
     }
     return null;
@@ -1224,23 +3133,47 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     if (instErr) return bad(reply, instErr);
     const acErr = validateAutoConcession(b.autoConcession);
     if (acErr) return bad(reply, acErr);
+    /* Fee-hike governance (Action Plan 4.2): a rise above 10% must cite the SMC consultation
+       that approved it (kind SMC, held within 180 days). The meeting id is validated now so a
+       hike can never be recorded on hearsay; ≤10% passes without paper. */
+    let hikePct = null;
+    let consultId = null;
+    if (b.hikePct !== undefined && b.hikePct !== null && String(b.hikePct).trim() !== '') {
+      hikePct = Number(b.hikePct);
+      if (!Number.isFinite(hikePct) || hikePct < 0 || hikePct > 100) return bad(reply, 'hikePct must be 0–100');
+    }
+    if (b.consultationMeetingId !== undefined && b.consultationMeetingId !== null && String(b.consultationMeetingId).trim() !== '') {
+      if (!UUID_RE_NOTICE.test(String(b.consultationMeetingId))) return bad(reply, 'consultationMeetingId must be a uuid');
+      consultId = String(b.consultationMeetingId);
+    }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (b.feeHeadId && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.heads'))) return;
       if (b.installments && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.installments'))) return;
+      const _pol = await feeSettings(c, req.user.tenant_id).catch(() => ({}));
+      const hikeThreshold = Number.isFinite(Number(_pol.hike_review_threshold_pct)) ? Number(_pol.hike_review_threshold_pct) : 10;
+      const hikeMaxAge = Math.max(1, Math.trunc(Number(_pol.hike_evidence_max_age_days) || 180));
       try {
         if (b.academicYearId) {
           const ay = await c.query(`SELECT 1 FROM app.academic_years WHERE id=$1`, [b.academicYearId]);
           if (!ay.rows[0]) return bad(reply, 'academicYearId does not reference this school\'s calendar', 400);
         }
         if (b.feeHeadId) {
-          const head = await c.query(`SELECT 1 FROM app.fee_heads WHERE id=$1 AND active`, [b.feeHeadId]);
-          if (!head.rows[0]) return bad(reply, 'feeHeadId does not reference an active fee head in this school', 400);
+          const head = (await c.query(`SELECT 1 FROM app.fee_heads WHERE id=$1 AND active`, [b.feeHeadId])).rows[0];
+          if (!head) return bad(reply, 'feeHeadId does not reference an active fee head in this school', 400);
+        }
+        if (hikePct !== null && hikePct > hikeThreshold) {
+          const mtg = consultId ? (await c.query(
+            `SELECT held_on FROM app.mtgs WHERE id=$1 AND kind='SMC'`, [consultId])).rows[0] : null;
+          if (!mtg) return bad(reply, `A rise above ${hikeThreshold}% needs its SMC consultation — record the meeting first, then cite it here`, 400);
+          if (new Date(mtg.held_on).getTime() < Date.now() - hikeMaxAge * 864e5) {
+            return bad(reply, `That SMC consultation is older than ${hikeMaxAge} days — fresh consultations back fresh hikes`, 400);
+          }
         }
         const r = await c.query(
-          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession)
-           VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb) RETURNING id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession`,
-          [req.user.tenant_id, name, grades, JSON.stringify(b.terms), b.academicYearId ?? null, b.feeHeadId ?? null, b.installments ? JSON.stringify(b.installments) : null, b.autoConcession ? JSON.stringify(b.autoConcession) : null]);
-        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee plan template', recordType: 'FeePlan', recordRef: name, reason: `grades: ${grades.join(', ')}${b.feeHeadId ? ` · head ${b.feeHeadId}` : ''}`, outcome: `created — ${b.terms.length} terms${b.installments ? ` · ${b.installments.length} installments` : ''}` });
+          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession, hike_pct, consultation_meeting_id)
+           VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb,$9,$10) RETURNING id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession, hike_pct, consultation_meeting_id`,
+           [req.user.tenant_id, name, grades, JSON.stringify(b.terms), b.academicYearId ?? null, b.feeHeadId ?? null, b.installments ? JSON.stringify(b.installments) : null, b.autoConcession ? JSON.stringify(b.autoConcession) : null, hikePct, consultId]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Created fee plan template', recordType: 'FeePlan', recordRef: name, reason: `grades: ${grades.join(', ')}${b.feeHeadId ? ` · head ${b.feeHeadId}` : ''}${hikePct !== null ? ` · hike ${hikePct}%` : ''}`, outcome: `created — ${b.terms.length} terms${b.installments ? ` · ${b.installments.length} installments` : ''}${hikePct !== null && hikePct > 10 ? ' · SMC consultation cited' : ''}` });
         return { feePlan: r.rows[0] };
       } catch (e) {
         if (e.code === '23505') return bad(reply, 'a fee plan with this name already exists', 409);
@@ -1329,6 +3262,122 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     });
   });
 
+  // Tenant-configurable due dates: extend an obligation's due date within the tenant's
+  // max_extension_days. Paid/void rows are refused; the extension is audited with a reason.
+  app.post('/fees/obligations/:id/extend', { preHandler: [require('owner', 'finance_head', 'principal'), uuidParams('id')] }, async (req, reply) => {
+    const dueOn = String(req.body?.due_on ?? '');
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (!DATE_RE.test(dueOn)) return bad(reply, 'due_on must be a YYYY-MM-DD date');
+    if (!reason) return bad(reply, 'a reason is required to extend a due date');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = await feeSettings(c, req.user.tenant_id);
+      const maxExt = Math.max(0, Math.trunc(Number(s.max_extension_days ?? 30)));
+      const o = (await c.query(`SELECT id, label, due_on, status FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!o) return bad(reply, 'obligation not found', 404);
+      if (o.status === 'void' || o.status === 'paid') return bad(reply, `a ${o.status} obligation cannot be extended`, 409);
+      if (o.due_on) {
+        const delta = Math.round((new Date(dueOn).getTime() - new Date(o.due_on).getTime()) / 864e5);
+        if (delta < 0) return bad(reply, 'extensions move the due date forward, never backward');
+        if (delta > maxExt) return bad(reply, `this school allows extensions up to ${maxExt} days`);
+      }
+      const r = await c.query(`UPDATE app.fee_obligations SET due_on=$2 WHERE id=$1 RETURNING id, label, due_on`, [o.id, dueOn]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Extended fee due date', recordType: 'FeeObligation', recordRef: o.label, reason, outcome: `due ${o.due_on ?? '—'} → ${dueOn}` });
+      return { obligation: r.rows[0] };
+    });
+  });
+
+  // Tenant-configurable late-fee waiver: zero an obligation's late fee with a reason (audited).
+  app.post('/fees/obligations/:id/late-fee/waive', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (!reason) return bad(reply, 'a reason is required to waive a late fee');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const o = (await c.query(`SELECT id, label, late_fee_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!o) return bad(reply, 'obligation not found', 404);
+      if (BigInt(o.late_fee_cents ?? 0) <= 0n) return { obligation: o, already: true };
+      const r = await c.query(`UPDATE app.fee_obligations SET late_fee_cents=0 WHERE id=$1 RETURNING *`, [o.id]);
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Waived late fee', recordType: 'FeeObligation', recordRef: o.label, reason, outcome: `late_fee ${o.late_fee_cents} → 0` });
+      return { obligation: r.rows[0] };
+    });
+  });
+
+  // Tenant-configurable installments: edit a pending part's date/amount (rebalancing is the
+  // caller's job — the door refuses to touch paid/overdue-settled parts), or waive it.
+  app.patch('/fees/installments/:id', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const s = await feeSettings(c, req.user.tenant_id);
+      if (s.installment_allow_edit === false) return bad(reply, 'installment editing is disabled for this school', 403);
+      const row = (await c.query(`SELECT * FROM app.fee_installments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!row) return bad(reply, 'installment not found', 404);
+      if (row.status !== 'pending') return bad(reply, `only pending installments can be edited (this one is ${row.status})`, 409);
+      const patch = [];
+      const vals = [req.user.tenant_id, row.id];
+      if (req.body?.due_on !== undefined) {
+        if (!DATE_RE.test(String(req.body.due_on))) return bad(reply, 'due_on must be a YYYY-MM-DD date');
+        patch.push(`due_on=$${vals.length + 1}`);
+        vals.push(String(req.body.due_on));
+      }
+      if (req.body?.amount_cents !== undefined) {
+        if (!Number.isInteger(req.body.amount_cents) || req.body.amount_cents <= 0) return bad(reply, 'amount_cents must be a positive integer (paise)');
+        patch.push(`amount_cents=$${vals.length + 1}`);
+        vals.push(String(req.body.amount_cents));
+      }
+      if (!patch.length) return bad(reply, 'nothing to update — pass due_on and/or amount_cents');
+      patch.push(`updated_at=now()`);
+      const r = await c.query(`UPDATE app.fee_installments SET ${patch.join(', ')} WHERE tenant_id=$1 AND id=$2 RETURNING *`, vals);
+      try { await c.query(`UPDATE app.fee_installments SET updated_by=$3 WHERE tenant_id=$1 AND id=$2`, [req.user.tenant_id, row.id, req.user.id]); } catch { /* pre-150 */ }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Edited installment', recordType: 'FeeInstallment', recordRef: `${row.obligation_id}#${row.seq}`, reason: String(req.body?.reason ?? 'tenant edit'), outcome: patch.join(', ') });
+      return { installment: r.rows[0] };
+    });
+  });
+  app.post('/fees/installments/:id/waive', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (!reason) return bad(reply, 'a reason is required to waive an installment');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const row = (await c.query(`SELECT * FROM app.fee_installments WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!row) return bad(reply, 'installment not found', 404);
+      if (row.status === 'paid') return bad(reply, 'a paid installment cannot be waived', 409);
+      const r = await c.query(`UPDATE app.fee_installments SET status='waived' WHERE tenant_id=$1 AND id=$2 RETURNING *`, [req.user.tenant_id, row.id]);
+      try { await c.query(`UPDATE app.fee_installments SET waived_reason=$3, updated_at=now(), updated_by=$4 WHERE tenant_id=$1 AND id=$2`, [req.user.tenant_id, row.id, reason, req.user.id]); } catch { /* pre-150 */ }
+      await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Waived installment', recordType: 'FeeInstallment', recordRef: `${row.obligation_id}#${row.seq}`, reason, outcome: 'status=waived' });
+      return { installment: r.rows[0] };
+    });
+  });
+
+  // Plan preview (dry-run generation) + clone for year rollover. Preview never writes.
+  app.post('/fee-plans/:id/preview', { preHandler: [require('owner', 'principal', 'finance', 'finance_head', 'finance_clerk'), uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const tpl = (await c.query(`SELECT id, name, grades, terms, installments, auto_concession FROM app.fee_plan_templates WHERE id=$1`, [req.params.id])).rows[0];
+      if (!tpl) return bad(reply, 'fee plan not found', 404);
+      const terms = Array.isArray(tpl.terms) ? tpl.terms : [];
+      const students = (await c.query(`SELECT id, name, grade FROM app.students WHERE status='active' AND grade = ANY($1) LIMIT 500`, [tpl.grades])).rows;
+      const sample = students.slice(0, 10).map((st) => ({
+        studentId: st.id, studentName: st.name, grade: st.grade,
+        obligations: terms.map((t) => ({ term: t.term, label: t.label, amount_cents: t.amount_cents, due_on: t.due_on ?? null })),
+      }));
+      return { plan: tpl.name, studentsInScope: students.length, sample, installments: tpl.installments ?? null, autoConcession: tpl.auto_concession ?? null, writes: false };
+    });
+  });
+  app.post('/fee-plans/:id/clone', { preHandler: [require('owner', 'finance_head'), uuidParams('id')] }, async (req, reply) => {
+    const b = req.body ?? {};
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (!name || name.length > 80) return bad(reply, 'name is required for the clone (≤80 characters)');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const tpl = (await c.query(`SELECT name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession FROM app.fee_plan_templates WHERE id=$1`, [req.params.id])).rows[0];
+      if (!tpl) return bad(reply, 'fee plan not found', 404);
+      try {
+        const r = await c.query(
+          `INSERT INTO app.fee_plan_templates (tenant_id, name, grades, terms, academic_year_id, fee_head_id, installments, auto_concession)
+           VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb) RETURNING id, name`,
+          [req.user.tenant_id, name, tpl.grades, JSON.stringify(tpl.terms), b.academicYearId ?? tpl.academic_year_id, tpl.fee_head_id, tpl.installments ? JSON.stringify(tpl.installments) : null, tpl.auto_concession ? JSON.stringify(tpl.auto_concession) : null]);
+        await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Cloned fee plan', recordType: 'FeePlan', recordRef: name, reason: `cloned from ${tpl.name}`, outcome: `created ${r.rows[0].id}` });
+        return { feePlan: r.rows[0], clonedFrom: req.params.id };
+      } catch (e) {
+        if (e.code === '23505') return bad(reply, 'a fee plan with this name already exists', 409);
+        throw e;
+      }
+    });
+  });
+
   // ============ fees & payments ============
   // SEC-5: roles that legitimately work the school-wide fee ledger. Narrower than
   // STAFF_CASE_ROLES on purpose (no teacher, no admissions) — this is financial data about
@@ -1353,11 +3402,58 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     min_partial_cents: 10000,
     receipt_prefix: 'RCP',
     receipt_series_start: 1,
+    receipt_reset: 'never',
     // D2 · late fees: per-day paise applied to overdue obligations, with an optional cap and grace.
-    // per_day_cents = 0 means late fees are off.
+    // per_day_cents = 0 means late fees are off. `late_fee_enabled=false` keeps the run door
+    // refusing with 409 until the tenant opts in; mode fixed|percent are tenant alternatives.
+    late_fee_enabled: false,
+    late_fee_mode: 'per_day',
     late_fee_per_day_cents: 0,
+    late_fee_fixed_cents: 0,
+    late_fee_percent: 0,
     late_fee_cap_cents: 0,
     late_fee_grace_days: 0,
+    late_fee_auto_run: false,
+    // Refunds: window + deduction + partial policy. Defaults preserve pre-change behaviour
+    // (no window, no deduction, partial allowed, reason required only above threshold).
+    refund_window_days: 0,
+    refund_deduction_pct: 0,
+    refund_require_reason: false,
+    refund_partial_allowed: true,
+    refund_auto_gateway: false,
+    // Payments: tenant-enabled rails + overpayment rule. Defaults = all rails on, overpay refused
+    // (the previous `amountCents > totalDue → 400` behaviour).
+    enabled_methods: ['upi', 'razorpay', 'cash', 'card', 'cheque', 'netbanking', 'bank_transfer', 'manual'],
+    overpayment_rule: 'refuse',
+    cash_requires_pin: true,
+    invoice_notes: '',
+    invoice_show_breakup: true,
+    // Installments: mode + edit policy. Defaults preserve equal-split remainder-last generation.
+    installment_mode: 'equal',
+    installment_max_parts: 12,
+    installment_allow_edit: true,
+    installment_rounding: 'remainder_last',
+    // Dunning ladder: tenant-owned offsets + quiet hours (fee settings win; plugin settings are fallback).
+    dunning_enabled: true,
+    dunning_before_due_days: [],
+    dunning_escalation_days: [],
+    dunning_quiet_start: '21:00',
+    dunning_quiet_end: '08:00',
+    dunning_channels: ['whatsapp'],
+    dunning_stop_on_partial: false,
+    // Concessions / scholarships.
+    concession_stacking: 'single_best',
+    concession_cap_pct: 100,
+    sibling_min_children: 2,
+    staff_default_pct: 0,
+    allow_owner_self_approve: true,
+    // Governance knobs.
+    hike_review_threshold_pct: 10,
+    hike_evidence_max_age_days: 180,
+    default_due_time_ist: '23:59',
+    max_extension_days: 30,
+    settlement_slo_hours: 24,
+    reconciliation_auto_match: true,
   });
   const feeSettings = async (c, tenantId) => {
     const row = (await c.query(`SELECT settings FROM app.fee_settings WHERE tenant_id=$1`, [tenantId])).rows[0];
@@ -1498,6 +3594,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       }
       const school = (await c.query(`SELECT name FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0]?.name ?? 'SchoolOS';
       const money = (v) => (Number(v ?? 0) / 100).toFixed(2);
+      const _iset = await feeSettings(c, req.user.tenant_id).catch(() => ({}));
       const lines = [
         `INVOICE — ${school}`,
         `Student: ${o.student_name} (${o.grade}-${o.section})`,
@@ -1511,6 +3608,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         `Due: ${o.due_on ?? '—'}`,
         `Status: ${o.status}`,
       ];
+      if (_iset.invoice_notes) lines.push(`Note: ${_iset.invoice_notes}`);
       const file = await putFile(c, req.user.tenant_id, req.user.id, {
         filename: `invoice-${o.id}.txt`, mime: 'text/plain', buf: Buffer.from(lines.join('\n'), 'utf8'), scope: 'student', refId: o.student_id });
       await c.query(`UPDATE app.fee_obligations SET invoice_file_id=$2 WHERE id=$1`, [o.id, file.id]);
@@ -1563,11 +3661,30 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     }
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       if (ids.length > 1 && !(await feeFeatureGate(c, reply, req.user.tenant_id, 'fees.multi_obligation'))) return;
+      // Tenant-configurable rails: a school can disable cash/cheque/etc. from its own policy.
+      const _fs = await feeSettings(c, req.user.tenant_id);
+      const _enabled = Array.isArray(_fs.enabled_methods) && _fs.enabled_methods.length ? _fs.enabled_methods : null;
+      if (_enabled && !_enabled.includes(paymentMethod)) {
+        return moneyError(reply, 'VALIDATION_FAILED', `this school does not accept ${paymentMethod} — enabled: ${_enabled.join(', ')}`);
+      }
       if (idempotencyKey) {
         const prior = await c.query(
           `SELECT * FROM app.payments WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`,
           [req.user.tenant_id, idempotencyKey]);
         if (prior.rows[0]) return { payment: prior.rows[0], already: true };
+      }
+      /* Counter-PIN (143): cash at the desk is the borrowed-phone fraud vector — a staff member
+         with an enrolled PIN must present it with every cash collection. No enrolled PIN means
+         the old behavior (the office enrolls PINs progressively, nobody is locked out by default).
+         Checked before any row is locked. */
+      if (paymentMethod === 'cash') {
+        const pin = (await c.query(`SELECT pin_hash FROM app.fee_pins WHERE user_id=$1`, [req.user.id])).rows[0];
+        if (pin) {
+          const given = String(b.pin ?? '');
+          if (!/^[0-9]{4,6}$/.test(given) || !verifyPassword(given, pin.pin_hash)) {
+            return moneyError(reply, 'FORBIDDEN', 'Counter PIN required — enter your 4–6 digit collection PIN');
+          }
+        }
       }
       // Lock in a stable id order so two concurrent pay-many calls cannot deadlock each other.
       const obs = [];
@@ -1591,8 +3708,15 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       const parts = obs.map((o) => ({ id: o.id, label: o.label, due: BigInt(o.net_amount_cents ?? o.amount_cents) - BigInt(o.paid_cents) })).filter((x) => x.due > 0n);
       if (!parts.length) return moneyError(reply, 'OBLIGATION_SETTLED', 'obligation already settled');
       for (const part of parts) {
+        // F-09: the legacy single-obligation check misses pay-many initiations
+        // (those store obligation_id=NULL and live in payment_allocations), which
+        // then died on the partial unique index as a 500. Check both shapes.
         const open = await c.query(`SELECT id FROM app.payments WHERE obligation_id=$1 AND status='initiated'`, [part.id]);
-        if (open.rows[0]) return moneyError(reply, 'PAYMENT_IN_PROGRESS', 'a payment for this obligation is already in progress');
+        const openMany = open.rows[0] ? null : await c.query(
+          `SELECT pa.payment_id FROM app.payment_allocations pa JOIN app.payments p ON p.id = pa.payment_id
+            WHERE pa.tenant_id=$1 AND pa.obligation_id=$2 AND p.status='initiated' LIMIT 1`,
+          [req.user.tenant_id, part.id]);
+        if (open.rows[0] || openMany?.rows[0]) return moneyError(reply, 'PAYMENT_IN_PROGRESS', 'a payment for this obligation is already in progress');
       }
       const totalDue = parts.reduce((s, p2) => s + p2.due, 0n);
       let amount = totalDue;
@@ -1728,10 +3852,20 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       const rset = await feeSettings(c, req.user.tenant_id);
       const rprefix = String(rset.receipt_prefix ?? 'RCP').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12) || 'RCP';
       const rstart = Math.max(1, Number(rset.receipt_series_start ?? 1) || 1);
+      // Tenant-configurable series reset: `yearly` scopes the sequence to the calendar year so
+      // receipt numbers restart every January; `academic_year` scopes to the student's academic year
+      // when the payment carries one. `never` (default) keeps the global per-tenant sequence.
+      const reset = String(rset.receipt_reset ?? 'never');
+      const yearScope = reset === 'yearly' ? String(new Date().getFullYear()) : null;
       const rmax = (await c.query(
-        `SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_no, '^[^0-9]*', ''), '')::int), $2 - 1) AS m
-           FROM app.fee_receipts WHERE tenant_id=$1`, [req.user.tenant_id, rstart])).rows[0];
-      const receiptNo = `${rprefix}-${String(Number(rmax.m) + 1).padStart(6, '0')}`;
+        // F-11: series_start is a FLOOR, not just a first-row seed — a school that
+        // sets 500 mid-year gets 500 next, not max+1 of the old series.
+        // F-12: parse the TRAILING numeric segment only — yearly numbers look like
+        // PREFIX-2026-0001, and the old leading-strip parsed '2026-0001'::int (22P02
+        // → 500 on the next confirm after any yearly receipt existed).
+        `SELECT GREATEST(COALESCE(MAX((regexp_match(receipt_no, '([0-9]+)$'))[1]::int), 0), $2 - 1) AS m
+           FROM app.fee_receipts WHERE tenant_id=$1 AND ($3::text IS NULL OR receipt_no LIKE '%' || $3 || '%')`, [req.user.tenant_id, rstart, yearScope])).rows[0];
+      const receiptNo = reset === 'yearly' ? `${rprefix}-${yearScope}-${String(Number(rmax.m) + 1).padStart(4, '0')}` : `${rprefix}-${String(Number(rmax.m) + 1).padStart(6, '0')}`;
       const confirmed = await c.query(
         `UPDATE app.payments
             SET status='confirmed', confirmed_at=now(), gateway_ref=$2, receipt_no=$3,
@@ -1739,6 +3873,10 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
                 reconciliation_status = CASE WHEN $5='gateway' THEN 'matched' ELSE 'manual' END
           WHERE id=$1 RETURNING *`,
         [p.id, storedRef, receiptNo, req.user.id, settledVia]);
+      // F-03: close this payment's allocations (migration 151's trigger does the same;
+      // the explicit write documents intent and covers pre-trigger databases).
+      await c.query(`UPDATE app.payment_allocations SET open=false WHERE tenant_id=$1 AND payment_id=$2 AND open`,
+        [req.user.tenant_id, p.id]).catch(() => {});
       // ledger: distribute the settlement across the payment's ALLOCATIONS (FEE-PRD-10), so a pay-many
       // payment moves every obligation it covers. Legacy payments with no allocation fall back to the
       // single obligation_id. Each obligation's paid_cents is against its NET amount (amount − concessions).
@@ -1814,13 +3952,15 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // The itemised payment list the desk and parents both need — filters, pagination, receipt + verification
   // state. Parents are structurally scoped to their own children; staff see the tenant ledger.
   app.get('/payments', { preHandler: roleGatedMe('owner','principal','itadmin','finance','finance_head','finance_clerk','coordinator','parent') }, async (req, reply) => {
-    const { studentId, status, method } = req.query;
+    const { studentId, status, method, recon } = req.query;
     if (studentId != null && !UUID_RE_NOTICE.test(String(studentId))) return bad(reply, 'studentId must be a uuid');
+    if (recon != null && recon !== 'disputed') return bad(reply, 'recon must be disputed (the mismatch queue) or omitted');
     const { limit, offset } = pageParams(req.query, { defaultLimit: 100, maxLimit: 500 });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       const params = [status ?? null, method ?? null, limit, offset];
       let where = `p.tenant_id = app.current_tenant()::uuid
         AND ($1::text IS NULL OR p.status=$1) AND ($2::text IS NULL OR p.method=$2)`;
+      if (recon === 'disputed') where += ` AND p.reconciliation_status='disputed'`;
       if (req.user.role === 'parent') {
         const kids = (await c.query(`SELECT student_id FROM family.child_link WHERE user_id=$1`, [req.user.id])).rows.map((r) => r.student_id);
         params.push(kids.length ? kids : ['00000000-0000-0000-0000-000000000000']);
@@ -1834,13 +3974,46 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       const r = await c.query(
         `SELECT p.id, p.student_id, p.obligation_id, p.amount_cents, p.refunded_cents, p.method, p.status,
                 p.gateway_ref, p.receipt_no, p.confirmed_at, p.created_at, p.settled_via, p.reconciliation_status,
-                s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term
+                s.name AS student_name, s.grade, s.section, o.label AS obligation_label, o.term,
+                -- 4.3 match signal (facts only, never settlement): did a rail speak for this payment?
+                -- 'captured' = the rail says money moved; 'recorded' = the rail spoke but not a capture.
+                CASE
+                  WHEN (to_regclass('plugin_razorpay.order_log') IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM plugin_razorpay.order_log ol
+                           WHERE ol.tenant_id = p.tenant_id AND ol.payment_id = p.id AND ol.status = 'captured'))
+                    OR (to_regclass('plugin_upi.webhook_log') IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM plugin_upi.webhook_log wl
+                           WHERE wl.tenant_id = p.tenant_id
+                             AND wl.payload::jsonb->'payload'->'payment'->'entity'->'notes'->>'paymentId' = p.id::text
+                             AND wl.event_type LIKE '%captur%')) THEN 'captured'
+                  WHEN (to_regclass('plugin_razorpay.order_log') IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM plugin_razorpay.order_log ol
+                           WHERE ol.tenant_id = p.tenant_id AND ol.payment_id = p.id))
+                    OR (to_regclass('plugin_upi.webhook_log') IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM plugin_upi.webhook_log wl
+                           WHERE wl.tenant_id = p.tenant_id
+                             AND wl.payload::jsonb->'payload'->'payment'->'entity'->'notes'->>'paymentId' = p.id::text)) THEN 'recorded'
+                  ELSE NULL END AS gateway_fact
            FROM app.payments p
            JOIN app.students s ON s.id = p.student_id
            LEFT JOIN app.fee_obligations o ON o.id = p.obligation_id
           WHERE ${where}
           ORDER BY p.created_at DESC LIMIT $3 OFFSET $4`, params);
       return { payments: r.rows, limit, offset, hasMore: r.rows.length === limit, scoped: req.user.role === 'parent' ? 'own_children' : 'school' };
+    });
+  });
+
+  // 4.3: sweep history for the mismatch queue header — when the ledger was last
+  // compared, by whom/what, and what it found. Reads only; money untouched.
+  app.get('/payments/recon-runs', { preHandler: roleGatedMe('owner','principal','finance','finance_head') }, async (req, reply) => {
+    const n = req.query?.limit == null ? 10 : Number(req.query.limit);
+    if (!Number.isInteger(n) || n < 1 || n > 50) return bad(reply, 'limit must be 1–50');
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = (await c.query(
+        `SELECT id, ran_at, source, ghost, missing, orphan, amount_mismatch, actions_raised,
+                ghost+missing+orphan+amount_mismatch AS total
+           FROM app.recon_runs ORDER BY ran_at DESC LIMIT $1`, [n])).rows;
+      return { runs: r };
     });
   });
 
@@ -2040,6 +4213,16 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
           [req.user.tenant_id, req.user.id, b.studentId]).catch(() => ({ rows: [] }))).rows[0];
         if (!own) return bad(reply, 'You can only request a concession for your own child', 403);
       }
+      // F-04: a concession for student X against student Y's obligation must die here —
+      // otherwise one approval silently moves another child's net. Missing obligation
+      // reads as 404 (no existence leak); a wrong-student pairing is a 400.
+      if (b.obligationId != null) {
+        if (!UUID_RE_NOTICE.test(String(b.obligationId))) return bad(reply, 'obligationId must be a uuid');
+        const ob = (await c.query(`SELECT id, student_id FROM app.fee_obligations WHERE id=$1 AND tenant_id=$2`,
+          [b.obligationId, req.user.tenant_id])).rows[0];
+        if (!ob) return bad(reply, 'obligation not found', 404);
+        if (ob.student_id !== b.studentId) return bad(reply, 'the obligation does not belong to this student', 400);
+      }
       const r = await c.query(
         `INSERT INTO app.fee_concessions (tenant_id, student_id, obligation_id, fee_head_id, kind, percent, amount_cents, reason, status, requested_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9) RETURNING *`,
@@ -2116,9 +4299,10 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // ============ transport ============
   app.get('/transport/routes', { preHandler: me }, async (req) => {
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      // retired_at: a retired route leaves every read but keeps its history (migration 136)
       const r = await c.query(
         `SELECT r.*, (SELECT count(*) FROM app.students s WHERE s.bus_route = r.code) AS riders
-         FROM app.routes r ORDER BY r.code`);
+         FROM app.routes r WHERE r.retired_at IS NULL ORDER BY r.code`);
       return { routes: r.rows };
     });
   });
@@ -2258,6 +4442,25 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         `SELECT * FROM app.cases WHERE ($1::text IS NULL OR status=$1) ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
         [status ?? null, limit, offset]);
       return { cases: r.rows, limit, offset, hasMore: r.rows.length === limit };
+    });
+  });
+
+  // One case, for the case workspace at /cases/:id. The board reads the whole log; opening a case
+  // needs the row itself, and until this door existed the workspace could only show the demo store —
+  // so a real case had no page. Staff see any case; a guardian may read ONLY the case they filed
+  // (`opened_by` is their own user id), which is the same structural rule every other parent read uses.
+  app.get('/cases/:id', { preHandler: [me, uuidParams('id')] }, async (req, reply) => {
+    return withUser(req.user.tenant_id, req.user.role, async (c) => {
+      const r = await c.query(`SELECT * FROM app.cases WHERE id=$1`, [req.params.id]);
+      const row = r.rows[0];
+      if (!row) return bad(reply, 'not found', 404);
+      if (!canReach(req, [...STAFF_CASE_ROLES])) {
+        /* a parent who did not file it is refused the same way the staff log refuses them */
+        if (row.opened_by !== req.user.id) {
+          return reply.code(403).send({ error: 'That case belongs to another family. Parents track their own complaints at /my-cases.' });
+        }
+      }
+      return { case: row };
     });
   });
 
@@ -2627,19 +4830,30 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       if (!ann) return bad(reply, 'not found', 404);
       if (ann.status !== 'draft') return bad(reply, `announcement already ${ann.status}`, 409);
       // OVR-10: approval decides the raised kernel action — proposer ≠ approver (owner override).
+      // Atomicity (action-plan batch 2): every refusal below must happen BEFORE any write. An early
+      // `return bad(...)` after the action row was already flipped used to COMMIT the half-finished
+      // approval (action approved, announcement still draft) with no recovery path — the second
+      // attempt 409s forever. So: validate everything first, mutate once at the end; and a row left
+      // in that exact stuck shape by the old code resumes instead of refusing.
+      let resumeApproved = false;
       if (ann.action_id) {
-        const act = (await c.query(`SELECT * FROM app.actions WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, [ann.action_id, req.user.tenant_id])).rows[0];
+        const act = (await c.query(`SELECT * FROM app.actions WHERE id=$1 AND tenant_id=$2`, [ann.action_id, req.user.tenant_id])).rows[0];
         if (!act) return bad(reply, 'the approval action is missing — re-compose the announcement', 409);
-        if (act.status !== 'open') return bad(reply, `the approval action is already ${act.status}`, 409);
         const proposedBy = act.payload && typeof act.payload === 'object' ? act.payload.proposed_by : null;
         if (proposedBy && proposedBy === req.user.id && req.user.role !== 'owner')
           return bad(reply, 'self-approval is not permitted (segregation of duties)', 403);
-        await c.query(`UPDATE app.actions SET status='approved', decided_by=$2, decided_at=now(), decision_note=$3 WHERE id=$1`,
-          [act.id, req.user.id, 'announcement approved']);
+        if (act.status !== 'open') {
+          if (act.status === 'approved') resumeApproved = true;
+          else return bad(reply, `the approval action is already ${act.status}`, 409);
+        }
       }
       const inApp = String(ann.channel).toLowerCase() === 'in-app';
       const recipients = await announceReach(c, req.user.tenant_id, ann.audience_kind, ann.audience_ref, ann.channel);
       if (recipients.length === 0) return bad(reply, 'no reachable recipients resolved for this audience — nothing to send', 409);
+      if (ann.action_id && !resumeApproved) {
+        await c.query(`UPDATE app.actions SET status='approved', decided_by=$2, decided_at=now(), decision_note=$3 WHERE id=$1`,
+          [ann.action_id, req.user.id, 'announcement approved']);
+      }
       let commId = null;
       if (inApp) {
         // In-app announcements are app.notifications rows (per user), delivered immediately inside SchoolOS.
@@ -2886,18 +5100,12 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   // cannot raise twice; (3) the (source='admissions', source_ref=leadId) lookup
   // makes a replay return the existing record instead of duplicating it.
   // B-4: a free-text `class_applied` ("Grade 6", "Class 6", "6") must not become a student
-  // row whose grade is the literal string "Grade 6". The parser normalises the common
-  // spellings to the bare grade and only then defaults the section.
-  const parseClassApplied = (s) => {
-    const raw = String(s ?? '').trim();
-    const m = /^(\S+)-([A-Za-z0-9]+)$/.exec(raw);
-    if (m) return { grade: m[1], section: m[2].toUpperCase() };
-    const g = raw.replace(/^(grade|class)\s+/i, '').trim();
-    return { grade: g || 'unassigned', section: 'A' };
-  };
+  // row whose grade is the literal string "Grade 6". Shared normaliser (A8) — the funnel
+  // capacity guard uses the same definition, so a seat counted is a seat created.
+  const parseClassApplied = parseGradeApplied;
   const executeStudentCreation = async (c, req, a, p) => {
     const lead = (await c.query(
-      `SELECT id, student_name, class_applied, guardian_name, guardian_phone, stage
+      `SELECT id, student_name, class_applied, guardian_name, guardian_phone, stage, dob, admission_year
        FROM plugin_admissions.lead WHERE id=$1 FOR UPDATE`, [p.leadId])).rows[0];
     if (!lead) throw Object.assign(new Error('the admissions lead behind this approval no longer exists'), { statusCode: 409 });
     const existing = (await c.query(
@@ -2906,15 +5114,51 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     if (existing) return { type: 'student', id: existing.id, name: existing.name, already: true };
     if (lead.stage !== 'enrolled') throw Object.assign(new Error(`lead is "${lead.stage}", not "enrolled" — conversion stale`), { statusCode: 409 });
     const { grade, section } = parseClassApplied(lead.class_applied);
+    // A2: the executor used to skip the guards POST /students enforces (P2-6/P2-8):
+    // a free-text class became grade 'unassigned' (invisible everywhere downstream)
+    // and a second lead for the same child became a second student. Same rules here.
+    {
+      const cfg = (await c.query(`SELECT config FROM app.tenants WHERE id=$1`, [req.user.tenant_id])).rows[0];
+      const parsed = normalizeClasses(cfg?.config?.setup?.sections ?? []);
+      if (parsed.ok && parsed.classes.length) {
+        const cls = parsed.classes.find((x) => x.grade === grade);
+        if (!cls) throw Object.assign(new Error(`"${grade}" is not one of this school's classes — fix the lead's class before converting`), { statusCode: 409 });
+        if (!cls.sections.includes(section)) throw Object.assign(new Error(`section "${section}" is not one of ${grade}'s sections — fix the lead's class before converting`), { statusCode: 409 });
+      }
+      const sameName = (await c.query(
+        `SELECT admission_no, grade, section FROM app.students
+          WHERE tenant_id=$1 AND lower(name)=lower($2) AND status='active' LIMIT 1`,
+        [req.user.tenant_id, String(lead.student_name).trim()])).rows[0];
+      if (sameName) throw Object.assign(new Error(`${lead.student_name} is already enrolled (${sameName.admission_no}, ${sameName.grade}-${sameName.section}) — a second lead for the same child cannot become a second student`), { statusCode: 409 });
+    }
+    // A9: age eligibility — dob captured on the lead, bands configured per grade.
+    // Age as on 31 March of the admission year (the Indian norm). No band or no
+    // dob means no check (paper process of record).
+    if (lead.dob) {
+      const bands = (await c.query(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='admissions.funnel'`,
+        [req.user.tenant_id]).catch(() => ({ rows: [] }))).rows[0]?.settings?.age_bands;
+      const band = bands && typeof bands === 'object' ? bands[grade] : null;
+      if (band && (Number.isFinite(Number(band.min)) || Number.isFinite(Number(band.max)))) {
+        const sessYear = /^(20\d{2})/.exec(String(p.admissionYear ?? lead.admission_year ?? ''))?.[1] ?? String(new Date().getFullYear());
+        const cutoff = new Date(Date.UTC(Number(sessYear), 2, 31));
+        const born = new Date(lead.dob);
+        let age = cutoff.getUTCFullYear() - born.getUTCFullYear();
+        if (new Date(Date.UTC(cutoff.getUTCFullYear(), born.getUTCMonth(), born.getUTCDate())) > cutoff) age -= 1;
+        if ((Number.isFinite(Number(band.min)) && age < Number(band.min)) || (Number.isFinite(Number(band.max)) && age > Number(band.max))) {
+          throw Object.assign(new Error(`${lead.student_name} is ${age} on 31 Mar ${sessYear} — outside class ${grade}'s band${band.min != null ? ` (min ${band.min})` : ''}${band.max != null ? ` (max ${band.max})` : ''}`), { statusCode: 409 });
+        }
+      }
+    }
     const ay = /^[0-9]{4}(-[0-9]{2})?$/.test(String(p.admissionYear ?? '')) ? String(p.admissionYear) : String(new Date().getFullYear());
     let s = null;
     await c.query('SAVEPOINT student_insert');
     try {
+      // A9: the lead's dob rides into the core student row when present.
       s = await c.query(
-        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'active','admissions',$8)
+        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, dob, status, source, source_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','admissions',$9)
          ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id, name, admission_no`,
-        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).slice(0, 8).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, String(p.leadId)]);
+        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).slice(0, 8).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, lead.dob ?? null, String(p.leadId)]);
       await c.query('RELEASE SAVEPOINT student_insert');
     } catch (e) {
       // admission_no collision on the deterministic form → fall back to the full
@@ -2922,10 +5166,10 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       await c.query('ROLLBACK TO SAVEPOINT student_insert');
       await c.query('RELEASE SAVEPOINT student_insert');
       s = await c.query(
-        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'active','admissions',$8)
+        `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, dob, status, source, source_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','admissions',$9)
          ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id, name, admission_no`,
-        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, String(p.leadId)]);
+        [req.user.tenant_id, `ADM-${ay}-${String(p.leadId).toUpperCase()}`, lead.student_name, grade, section, lead.guardian_name, lead.guardian_phone, lead.dob ?? null, String(p.leadId)]);
     }
     if (!s.rows[0]) throw Object.assign(new Error('could not allocate an admission number for this conversion'), { statusCode: 409 });
     const student = s.rows[0];
@@ -2974,6 +5218,32 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       policyRef: 'Admissions §3 — lead conversion',
     });
     return { type: 'student', id: student.id, name: student.name, admissionNo: student.admission_no, grade, section };
+  };
+
+  // A1: dismissal recovery for admissions conversions. Dismissing a students.create
+  // action used to strand the lead at `enrolled` — terminal and immutable, with no
+  // student and no open action (the health probe's strandedEnrolled). Now the lead
+  // returns to `offer` with a history row, so the office can re-raise conversion.
+  // Only when the lead is still `enrolled` AND no student was created from it.
+  const runConversionDismissalRecovery = async (c, req, a, p, decision, note) => {
+    const lead = (await c.query(
+      `SELECT id, stage FROM plugin_admissions.lead WHERE id=$1 FOR UPDATE`, [p.leadId])).rows[0];
+    if (!lead || lead.stage !== 'enrolled') return undefined;
+    const made = (await c.query(
+      `SELECT 1 FROM app.students WHERE tenant_id=$1 AND source='admissions' AND source_ref=$2`,
+      [req.user.tenant_id, String(p.leadId)])).rows[0];
+    if (made) return undefined;
+    await c.query(`UPDATE plugin_admissions.lead SET stage='offer', updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+      [p.leadId, req.user.tenant_id]);
+    try {
+      await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor, reason)
+        VALUES ($1,$2,'enrolled','offer',$3,$4)`,
+        [req.user.tenant_id, p.leadId, req.user.email, (note ?? '').slice(0, 300) || 'conversion dismissed — returned to offer for rework']);
+    } catch {
+      await c.query(`INSERT INTO plugin_admissions.stage_history (tenant_id, lead_id, from_stage, to_stage, actor)
+        VALUES ($1,$2,'enrolled','offer',$3)`, [req.user.tenant_id, p.leadId, req.user.email]);
+    }
+    return { type: 'lead-recovery', id: p.leadId, status: 'reopened-to-offer' };
   };
 
   /* OVR-5 · the decide-executor registry. Each entry is a typed side-effect keyed by a `when`
@@ -3073,31 +5343,69 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     let execution = { type: 'leave_outcome_notification', id: n.rows[0].id, decision };
     if (approved && p.leaveRequestId) {
       try {
+        // I1: read the dates as TEXT. `pg` returns a `date` column as a JS Date, so the old
+        // `${lr.from_date}T00:00:00Z` template built "Tue Sep 29 2026 …T00:00:00Z" → Invalid Date →
+        // the weekday loop never ran → 0 periods. to_char gives the YYYY-MM-DD the code assumes.
         const lr = (await c.query(
-          `SELECT id, teacher_id, from_date, to_date FROM teacher.leave_request WHERE id=$1 AND tenant_id=$2`,
+          `SELECT id, teacher_id, to_char(from_date,'YYYY-MM-DD') AS from_date, to_char(to_date,'YYYY-MM-DD') AS to_date
+             FROM teacher.leave_request WHERE id=$1 AND tenant_id=$2`,
           [p.leaveRequestId, req.user.tenant_id])).rows[0];
         if (lr) {
+          // I3: project the decision into the row HERE, so the DB and the authoritative app.actions row
+          // agree immediately rather than waiting for the teacher's next poll. Idempotent on 'pending';
+          // the transition is audited once (the lazy GET projection then sees no pending row and is a no-op).
+          const projected = await c.query(
+            `UPDATE teacher.leave_request SET status=$2, decided_by=$3, decided_at=now()
+              WHERE id=$1 AND status='pending'`,
+            [lr.id, approved ? 'approved' : 'rejected', req.user.id]);
+          if (projected.rowCount === 1) {
+            await auditLog(c, req.user.tenant_id, {
+              actor: req.user.name ?? 'system', actorRole: req.user.role,
+              action: 'Leave decision projected onto request', recordType: 'LeaveRequest', recordRef: lr.id,
+              reason: `kernel action ${a.code} decided ${decision}`,
+              policyRef: 'Platform §2.4 (identity & access) · approvals', risk: 'medium',
+              outcome: `teacher.leave_request.status set to "${approved ? 'approved' : 'rejected'}" from the kernel decision; the app.actions row remains the authority`,
+            });
+          }
           const hasPacket = (await c.query(`SELECT to_regclass('teacher.handover_packet') AS t`)).rows[0].t;
-          if (hasPacket) {
+          if (approved && hasPacket) {
             const WD = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
             const days = [];
+            const dateList = []; // L6: each calendar day of the leave, with its weekday
             const end = new Date(`${lr.to_date}T00:00:00Z`);
             for (let d = new Date(`${lr.from_date}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
               const wd = WD[d.getUTCDay()];
               if (!days.includes(wd)) days.push(wd);
+              dateList.push({ date: d.toISOString().slice(0, 10), wd });
             }
             const teacher = (await c.query(`SELECT name FROM app.users WHERE id=$1`, [lr.teacher_id])).rows[0];
             const hasSlots = (await c.query(`SELECT to_regclass('app.timetable_slots') AS t`)).rows[0].t;
             const classes = [];
+            const assignments = []; // L6: {slot_id, date, substitute} — the coordinator's cover proposal
             if (hasSlots && teacher) {
               const hasPeriods = (await c.query(`SELECT to_regclass('app.timetable_periods') AS t`)).rows[0].t;
+              // I2: match cover by the stable teacher_id (M4), not the free-text teacher_name.
               const slots = (await c.query(
-                `SELECT s.subject, s.room, s.day_of_week${hasPeriods ? ', p.seq, p.start_time, p.end_time' : ''}
+                `SELECT s.id AS slot_id, s.teacher_name, s.subject, s.room, s.day_of_week${hasPeriods ? ', p.seq, p.start_time, p.end_time' : ''}
                  FROM app.timetable_slots s${hasPeriods ? ' LEFT JOIN app.timetable_periods p ON p.id = s.period_id' : ''}
-                 WHERE s.tenant_id=$1 AND s.teacher_name=$2 AND s.day_of_week = ANY($3::text[])
+                 WHERE s.tenant_id=$1 AND s.teacher_id=$2 AND s.day_of_week = ANY($3::text[])
                  ORDER BY ${hasPeriods ? 'p.sort_idx' : 's.subject'}`,
-                [req.user.tenant_id, teacher.name, days])).rows;
+                [req.user.tenant_id, lr.teacher_id, days])).rows;
               const hasLesson = (await c.query(`SELECT to_regclass('teacher.lesson') AS t`)).rows[0].t;
+              // L6: one deterministic suggestion per (teacher_name, weekday), from the SAME ranking the
+              // ops.timetable suggest door offers the desk — never a second, drifting ranking.
+              const topBySlot = new Map();
+              const seenPairs = new Set();
+              for (const s of slots) {
+                const key = `${s.day_of_week}\u0000${s.teacher_name}`;
+                if (seenPairs.has(key)) continue;
+                seenPairs.add(key);
+                try {
+                  const { suggestions } = await substitutionSuggestions(c, req.user.tenant_id,
+                    { absentTeacher: s.teacher_name, dayOfWeek: s.day_of_week });
+                  for (const sug of suggestions) topBySlot.set(sug.slot.id, sug.candidates[0]?.teacher ?? null);
+                } catch { /* ranking is best-effort — a slot with no pick stays unassigned */ }
+              }
               for (const s of slots) {
                 let lastTopic = null;
                 if (hasLesson) {
@@ -3112,18 +5420,45 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
                   room: s.room ?? '—',
                   note: lastTopic ? `Last topic: ${lastTopic}. Continue from there; leave independent practice.` : 'No lesson plan on file — cover the next topic from the curriculum.',
                 });
+                const substitute = topBySlot.get(s.slot_id) ?? null;
+                for (const dt of dateList) {
+                  if (dt.wd === s.day_of_week) assignments.push({ slot_id: s.slot_id, date: dt.date, substitute });
+                }
               }
             }
             await c.query(
               `INSERT INTO teacher.handover_packet (tenant_id, leave_request_id, teacher_id, classes)
                VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (leave_request_id) DO NOTHING`,
               [req.user.tenant_id, lr.id, lr.teacher_id, JSON.stringify(classes)]);
+            // L6: raise the coordinator-owned substitution PROPOSAL so the cover decision has a desk.
+            // The proposal carries every affected {slot, date} pair and a deterministic suggested
+            // substitute; approving it (POST /coord/substitution/decide) writes the substitution rows and
+            // stamps the handover packet. proposed_by is the absent teacher, so proposer≠decider holds.
+            const proposedCount = assignments.filter((x) => x.substitute).length;
+            const subCode = `teacher.leave.sub.${lr.id}`;
+            let subActionId = null;
+            if (assignments.length) {
+              const ins = await c.query(
+                `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, source_event, payload, source_plugin)
+                 VALUES ($1,$2,'substitution',$3,$4,$5,'normal','open','Coordinator','coordinator','TEACHEROS-PLAN · staff leave · cover proposal',false,$6,$7::jsonb,'teacher.classroom')
+                 ON CONFLICT (tenant_id, code) DO NOTHING RETURNING id`,
+                [req.user.tenant_id, subCode,
+                 `Cover needed: ${teacher?.name ?? 'a teacher'} (${lr.from_date} → ${lr.to_date})`,
+                 `${assignments.length} timetabled period${assignments.length === 1 ? '' : 's'} across the approved leave${proposedCount ? `; ${proposedCount} with a proposed substitute from the timetable` : ''}.`,
+                 'An approved leave leaves timetabled periods uncovered — the coordinator decides the cover (proposer can never approve their own).',
+                 lr.id,
+                 JSON.stringify({ kind: 'substitution', leaveRequestId: lr.id, teacherId: lr.teacher_id, teacherName: teacher?.name ?? null,
+                   days, assignments, proposed_by: lr.teacher_id, proposed_by_role: 'teacher' })]);
+              subActionId = ins.rows[0]?.id
+                ?? (await c.query(`SELECT id FROM app.actions WHERE tenant_id=$1 AND code=$2`, [req.user.tenant_id, subCode])).rows[0]?.id
+                ?? null;
+            }
             await c.query(
               `INSERT INTO app.notifications (tenant_id, "group", title, body, ref)
                VALUES ($1,'needs-you',$2,$3,$4)`,
               [req.user.tenant_id, `Cover needed: ${teacher?.name ?? 'a teacher'}`,
-               `Leave approved — ${classes.length} period${classes.length === 1 ? '' : 's'} need cover. A handover note is ready.`, a.code]);
-            execution = { type: 'leave_handover', id: lr.id, periods: classes.length };
+               `Leave approved — ${assignments.length || classes.length} period${(assignments.length || classes.length) === 1 ? '' : 's'} need cover. A handover note and a cover proposal are ready.`, subCode]);
+            execution = { type: 'leave_handover', id: lr.id, periods: classes.length, substitutionAction: subActionId };
           }
         }
       } catch { /* best-effort packet; approval stands */ }
@@ -3137,6 +5472,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     { name: 'parent.leave.dismissed', when: (a, p, d) => d === 'dismissed' && a.code.startsWith('parent.leave.') && p.requestId, run: runChildLeaveDismissed },
     { name: 'certificates.sign', when: (a, p, d) => d === 'approved' && a.code.startsWith('certificates.sign.') && p.certificateId, run: runCertificateExecutor },
     { name: 'students.create', when: (a, p, d) => d === 'approved' && a.code.startsWith('students.create.') && p.leadId != null, run: runStudentCreationExecutor },
+    { name: 'students.create.dismissed', when: (a, p, d) => d === 'dismissed' && a.code.startsWith('students.create.') && p.leadId != null, run: runConversionDismissalRecovery },
     { name: 'teacher.leave.outcome', when: (a, p) => a.code.startsWith('teacher.leave.') && p.teacherId, run: runTeacherLeaveOutcome },
   ];
 
@@ -3290,6 +5626,18 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       // FEE-SEC-9: the threshold is a per-tenant setting, not the hardcoded constant.
       const settings = await feeSettings(c, req.user.tenant_id);
       const isFullRefund = refundCents >= refundable;
+      // Tenant refund policy: partial on/off, window, head refundability.
+      if (!isFullRefund && settings.refund_partial_allowed === false) {
+        return moneyError(reply, 'VALIDATION_FAILED', 'partial refunds are disabled for this school — refund the full remaining amount');
+      }
+      if (settings.refund_require_reason === true && !reason) {
+        return moneyError(reply, 'VALIDATION_FAILED', 'a reason is required for every refund at this school');
+      }
+      const windowDays = Math.max(0, Math.trunc(Number(settings.refund_window_days) || 0));
+      if (windowDays > 0 && p.confirmed_at) {
+        const ageMs = Date.now() - new Date(p.confirmed_at).getTime();
+        if (ageMs > windowDays * 864e5) return moneyError(reply, 'VALIDATION_FAILED', `refunds are allowed within ${windowDays} days of confirmation at this school`);
+      }
       const material = isFullRefund && BigInt(p.amount_cents) >= BigInt(settings.refund_approval_threshold_cents);
       if (material) {
         if (req.user.role === 'finance_clerk') return reply.code(403).send({ error: 'This refund needs a checker (finance head, principal or owner) — a maker cannot approve their own reversal', code: 'SOD_REQUIRED' });
@@ -3309,8 +5657,28 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         : (p.obligation_id ? [{ obligation_id: p.obligation_id, amount_cents: p.amount_cents }] : []);
       const locked = new Map();
       for (const a of targetAllocs) {
-        const row = (await c.query(`SELECT id, amount_cents, paid_cents, net_amount_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [a.obligation_id])).rows[0];
+        let row = null;
+        try {
+          row = (await c.query(`SELECT id, amount_cents, paid_cents, net_amount_cents, fee_head_id FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [a.obligation_id])).rows[0];
+        } catch (e) {
+          if (e.code !== '42703') throw e;
+          row = (await c.query(`SELECT id, amount_cents, paid_cents, net_amount_cents FROM app.fee_obligations WHERE id=$1 FOR UPDATE`, [a.obligation_id])).rows[0];
+          if (row) row.fee_head_id = null;
+        }
         if (row) locked.set(a.obligation_id, row);
+      }
+      // Per-head refundability: a non-refundable head (e.g. admission fee) blocks the refund.
+      // Separate lookup (never FOR UPDATE on the join) so pre-150 databases keep working.
+      for (const [, row] of locked) {
+        if (!row.fee_head_id) continue;
+        const head = await c.query(`SELECT is_refundable, refund_window_days FROM app.fee_heads WHERE id=$1`, [row.fee_head_id]).catch(() => ({ rows: [] }));
+        const h = head.rows?.[0];
+        if (!h) continue;
+        if (h.is_refundable === false) return moneyError(reply, 'VALIDATION_FAILED', 'one of the fee heads in this payment is marked non-refundable for this school');
+        const hw = h.refund_window_days == null ? null : Number(h.refund_window_days);
+        if (hw !== null && Number.isFinite(hw) && hw >= 0 && p.confirmed_at && (Date.now() - new Date(p.confirmed_at).getTime() > hw * 864e5)) {
+          return moneyError(reply, 'VALIDATION_FAILED', 'the refund window for one of the fee heads has passed');
+        }
       }
       const reversals = [];
       let toReverse = refundCents;
@@ -3384,6 +5752,8 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
       for (const w of orphan) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — confirmed with no rail order log entry`, ref: w.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: w.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'orphan' } }); await markDisputed(w.id); }
       for (const x of mismatch) { await emitEvent(c, req.user.tenant_id, { type: 'fees', label: `reconciliation.discrepancy — amount mismatch: ledger ₹${Number(x.ledger_cents) / 100} vs rail ₹${Number(x.rail_cents) / 100} (order ${x.razorpay_order_id})`, ref: x.id }); await recordPaymentEvent(c, req.user.tenant_id, { paymentId: x.id, kind: 'disputed', actor: req.user.name, actorRole: req.user.role, source: 'reconcile', payload: { class: 'amount_mismatch', ledgerCents: String(x.ledger_cents), railCents: String(x.rail_cents) } }); await markDisputed(x.id); }
       const actionsRaised = await raiseDiscrepancyActions(c.query.bind(c), req.user.tenant_id, report);
+      await recordReconRun(c.query.bind(c), req.user.tenant_id,
+        { source: 'manual', byUserId: req.user.id, report, actionsRaised });
       await auditLog(c, req.user.tenant_id, { actor: req.user.name, actorRole: req.user.role, action: 'Ran payment reconciliation sweep', recordType: 'Fees', recordRef: IST_TODAY(), reason: 'ledger vs rail settlement comparison', policyRef: 'Fees §4.2', risk: 'medium', outcome: `${report.total} discrepancy(ies): ghost ${ghost.length} · missing ${missing.length} · orphan ${orphan.length} · amount-mismatch ${mismatch.length} · ${actionsRaised} action(s) assigned to finance_head` });
       return { checked: { confirmedRazorpay: report.total }, discrepancies: { ghostLocalConfirmed: ghost, missingLocalConfirmation: missing, orphanNoRailLog: orphan, amountMismatch: mismatch }, total: report.total, actionsRaised };
     });
@@ -3431,19 +5801,32 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
   };
   const inQuietHours = (q0, q1, minute) => q0 === null || q1 === null ? false : (q0 <= q1 ? (minute >= q0 && minute < q1) : (minute >= q0 || minute < q1));
   const dunningQuietHours = async (tenantId) => {
+    // Tenant fee settings win; the comms.whatsapp plugin settings remain the fallback so
+    // existing tenants keep their quiet hours until they configure fees explicitly.
+    const fr = await sysq(`SELECT settings FROM app.fee_settings WHERE tenant_id=$1`, [tenantId]).catch(() => ({ rows: [] }));
+    const fs = fr.rows?.[0]?.settings ?? {};
+    if (fs.dunning_quiet_start && fs.dunning_quiet_end) return { start: fs.dunning_quiet_start, end: fs.dunning_quiet_end };
     const provider = await enabledCapability(sysq, tenantId, 'comms.whatsapp.templates');
     const s = provider?.settings ?? {};
     const qs = s.quiet_hours ?? {};
     return { start: qs.start ?? '21:00', end: qs.end ?? '08:00' };
   };
   // Dunning selection lives in ONE place (src/fees/dunning.js) shared with the day-worker script.
-  // before_due_days / escalation_days are opt-in via comms.whatsapp settings; the overdue 7-day window is
-  // always on. The overdue dedup key remains `dunning:<id>` (pinned by tests and by the 7-day NOT EXISTS).
+  // before_due_days / escalation_days are tenant fee settings first, comms.whatsapp plugin second;
+  // the overdue 7-day window is always on. The overdue dedup key remains `dunning:<id>` (pinned by
+  // tests and by the 7-day NOT EXISTS).
   const dunningPolicy = async (tenantId) => {
-    const provider = await enabledCapability(sysq, tenantId, 'comms.whatsapp.templates');
-    const s = provider?.settings ?? {};
-    const before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
-    const escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    const fr = await sysq(`SELECT settings FROM app.fee_settings WHERE tenant_id=$1`, [tenantId]).catch(() => ({ rows: [] }));
+    const fs = fr.rows?.[0]?.settings ?? {};
+    const clean = (v) => Array.isArray(v) ? v.filter((n) => Number.isInteger(n) && n > 0 && n <= 90) : null;
+    let before = clean(fs.dunning_before_due_days);
+    let escalate = clean(fs.dunning_escalation_days);
+    if (before === null || escalate === null) {
+      const provider = await enabledCapability(sysq, tenantId, 'comms.whatsapp.templates');
+      const s = provider?.settings ?? {};
+      if (before === null) before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+      if (escalate === null) escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    }
     return { before, escalate };
   };
 
@@ -3500,7 +5883,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
             escalated += 1;
             await c.query(
               `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, payload)
-               VALUES ($1,$2,'task',$3,$4,$5,'high','open','Finance','finance','Fees §4.2',false,$6::jsonb)`,
+               VALUES ($1,$2,'exception',$3,$4,$5,'high','open','Finance','finance','Fees §4.2',false,$6::jsonb)`,
               [req.user.tenant_id, `fee.overdue.${o.id}`,
                `Overdue fee ${days}d+ — ${o.student_name} ${o.label}`,
                `₹${Number(outstanding(o)) / 100} outstanding since ${o.due_on}.`,
@@ -4191,6 +6574,7 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
     if (!data.grade || String(data.grade).trim().length > 20) return 'grade is required (≤20 chars)';
     if (!data.section || String(data.section).trim().length > 10) return 'section is required (≤10 chars)';
     if (data.guardianPhone != null && data.guardianPhone !== '' && !MIG_PHONE.test(String(data.guardianPhone))) return 'guardianPhone does not look like a phone number';
+    if (data.busRoute != null && String(data.busRoute).trim().length > 40) return 'busRoute must be 40 characters or fewer';
     const fees = Array.isArray(data.fees) ? data.fees : [];
     if (fees.length > 24) return 'fees list too long (≤24 per student)';
     for (const f of fees) {
@@ -4281,12 +6665,15 @@ const STAFF_ROSTER_ROLES = ['owner', 'principal', 'itadmin', 'finance', 'coordin
         const d = row.payload ?? {};
         const admissionNo = d.admissionNo ? String(d.admissionNo).trim() : `MIG-${String(src.id).slice(0, 8).toUpperCase()}-${row.row_no}`;
         const s = await c.query(
-          `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'active','migration',$8)
+          `INSERT INTO app.students (tenant_id, admission_no, name, grade, section, guardian_name, guardian_phone, bus_route, status, source, source_ref)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','migration',$9)
            ON CONFLICT (tenant_id, admission_no) DO NOTHING RETURNING id`,
           [req.user.tenant_id, admissionNo, String(d.name).trim(), String(d.grade).trim(), String(d.section).trim(),
-           d.guardianName ? String(d.guardianName).trim() : null, d.guardianPhone ? String(d.guardianPhone).trim() : null,
-           `mig:${src.id}:${row.row_no}`]);
+            d.guardianName ? String(d.guardianName).trim() : null, d.guardianPhone ? String(d.guardianPhone).trim() : null,
+            /* ops.import's mapping schema accepts bus_route, so committing a mapped file must not
+               silently drop the column the file was told it could carry. */
+            d.busRoute ? String(d.busRoute).trim().slice(0, 40) : null,
+            `mig:${src.id}:${row.row_no}`]);
         // RTE-7: THROW, not `return bad` — the earlier rows of this loop have already INSERTed students,
         // guardians and fees, and `return` would COMMIT that partial import with no audit. A throw rolls
         // the whole import back; the error handler maps statusCode to the same 409.

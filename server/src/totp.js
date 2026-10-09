@@ -44,8 +44,10 @@ export function verifyTotp(secretB32, code, { window = 1, stepSeconds = 30, now 
 export function verifyTotpStep(secretB32, code, { window = 1, stepSeconds = 30, now = Date.now() } = {}) {
   if (!/^\d{6}$/.test(String(code ?? ''))) return null;
   const step = Math.floor(now / 1000 / stepSeconds);
+  // F-09: constant-time compare — the module ships constantTimeEqual for exactly
+  // this; a `===` here leaks the match position through timing on a 6-digit code.
   for (let d = -window; d <= window; d++) {
-    if (totpAt(secretB32, step + d) === String(code)) return step + d;
+    if (constantTimeEqual(totpAt(secretB32, step + d), String(code))) return step + d;
   }
   return null;
 }

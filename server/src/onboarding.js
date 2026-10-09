@@ -21,6 +21,7 @@ import { auditLog, emitEvent } from './audit.js';
 import { ensurePluginCatalog, DEFAULT_ON } from './plugin-catalog.js';
 import { q, sysq, withUser } from './db.js';
 import { hashPassword } from './auth.js';
+import { toE164 } from './plugins/_shared/phone.js';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -48,6 +49,59 @@ async function uniqueSlug(base) {
   throw new Error('could not derive a unique school code — try a different name');
 }
 
+/* School profile — the identity card every future module reads. Stored in
+   `app.tenants.config` beside the original address/board/phone keys (no new
+   columns), so old and new schools share one shape:
+     · structured address (line/city/state/postalCode/country) — invoices,
+       report cards, tax and transport need parts, not a blob
+     · contact email + website — printed on invoices, report cards, parent comms
+     · timezone — IANA, validated. Attendance, sessions, timetables and reports
+       all schedule in this; a school must never inherit the server's locale.
+   Caps are REJECTED here, never silently sliced (the old slice-on-write hid
+   data loss): over-long values answer 400 naming the field. */
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+const PROFILE_CAPS = {
+  address: 300, city: 80, state: 80, postalCode: 20, country: 80,
+  board: 60, phone: 30, email: 120, website: 120, timezone: 80,
+};
+const WEBSITE_RE = /^(https?:\/\/)?[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/\S*)?$/i;
+
+const isValidTimeZone = (tz) => {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; }
+  catch { return false; }
+};
+
+/* Validate + normalise one profile value. Returns { value } for storage, or
+   { error } with the 400 message. `undefined` means "not supplied" (signup);
+   empty string means "clear it" (profile update) — the caller decides which
+   keys to pass, this only judges them. */
+function profileValue(key, raw) {
+  if (raw === undefined) return {};
+  const s = String(raw).trim();
+  if (!s) return { value: '' };
+  if (key === 'email') {
+    const v = s.toLowerCase();
+    if (!EMAIL_RE.test(v)) return { error: 'Enter a valid school email address' };
+    return { value: v.slice(0, PROFILE_CAPS.email) };
+  }
+  if (key === 'website') {
+    if (s.length > PROFILE_CAPS.website || !WEBSITE_RE.test(s)) {
+      return { error: 'Enter a valid website, e.g. yourschool.in' };
+    }
+    return { value: (/^https?:\/\//i.test(s) ? s : `https://${s}`).slice(0, PROFILE_CAPS.website) };
+  }
+  if (key === 'timezone') {
+    if (s.length > PROFILE_CAPS.timezone || !isValidTimeZone(s)) {
+      return { error: 'Pick a valid timezone, e.g. Asia/Kolkata' };
+    }
+    return { value: s };
+  }
+  const cap = PROFILE_CAPS[key];
+  if (cap === undefined) return {};
+  if (s.length > cap) return { error: `School ${key} must be ${cap} characters or fewer` };
+  return { value: s };
+}
+
 export function registerOnboarding(app) {
   // --- public: the school-owner signup door -------------------------------
   app.post('/onboard/signup', { config: { rateLimit: { max: 3, timeWindow: '1 minute' } } }, async (req, reply) => {
@@ -66,6 +120,14 @@ export function registerOnboarding(app) {
     if (!ownerName) return reply.code(400).send({ error: 'Enter your full name' });
     if (!EMAIL_RE.test(ownerEmail)) return reply.code(400).send({ error: 'Enter a valid email address — you will sign in with it' });
     if (ownerPassword.length < 8) return reply.code(400).send({ error: 'Choose a password of at least 8 characters' });
+    /* Owner phone (optional): normalised to E.164 through the project's ONE
+       normaliser — the stored shape the OTP doors look up, so a number saved
+       here can actually sign in, receive resets and be MFA-reached later. */
+    let ownerPhone = null;
+    if (typeof b.ownerPhone === 'string' && b.ownerPhone.trim()) {
+      ownerPhone = toE164(b.ownerPhone);
+      if (!ownerPhone) return reply.code(400).send({ error: 'That phone number is not usable — enter it with the country code, e.g. +91 98450 00101' });
+    }
     const sections = Array.isArray(b.sections) && b.sections.length
       ? b.sections.slice(0, 15).map((s) => ({
           grade: String(s?.grade ?? '').trim(),
@@ -74,12 +136,19 @@ export function registerOnboarding(app) {
       : DEFAULT_SECTIONS;
 
     const slug = await uniqueSlug(schoolName);
-    const config = {
-      ...(typeof b.address === 'string' && b.address.trim() ? { address: b.address.trim().slice(0, 300) } : {}),
-      ...(typeof b.board === 'string' && b.board.trim() ? { board: b.board.trim().slice(0, 60) } : {}),
-      ...(typeof b.phone === 'string' && b.phone.trim() ? { phone: b.phone.trim().slice(0, 20) } : {}),
-      setup: { sections, source: 'self-signup', at: new Date().toISOString() },
-    };
+    /* Every profile key goes through the shared validator (reject, never
+       silent-slice). Timezone defaults when omitted — a school must always
+       have one, and the signup form proposes the browser's own zone. */
+    const config = {};
+    for (const key of Object.keys(PROFILE_CAPS)) {
+      const raw = key === 'timezone' && (b.timezone === undefined || (typeof b.timezone === 'string' && !b.timezone.trim()))
+        ? DEFAULT_TIMEZONE
+        : b[key];
+      const r = profileValue(key, raw);
+      if (r.error) return reply.code(400).send({ error: r.error });
+      if (r.value) config[key] = r.value;
+    }
+    config.setup = { sections, source: 'self-signup', at: new Date().toISOString() };
     const passwordHash = hashPassword(ownerPassword);
 
     // ONE owner-path transaction: tenant + owner + ledger + event, or nothing.
@@ -97,9 +166,9 @@ export function registerOnboarding(app) {
          benefit, so `force_change` is deliberately left at its default (false). The account still
          carries `session_epoch`/MFA/idle protections like every other. */
       const u = (await client.query(
-        `INSERT INTO app.users (tenant_id, email, name, role, password_hash, active)
-         VALUES ($1,$2,$3,'owner',$4,true) RETURNING id, email, name, role, tenant_id, session_epoch`,
-        [t.id, ownerEmail, ownerName, passwordHash])).rows[0];
+        `INSERT INTO app.users (tenant_id, email, name, role, password_hash, phone, active)
+         VALUES ($1,$2,$3,'owner',$4,$5,true) RETURNING id, email, name, role, tenant_id, session_epoch`,
+        [t.id, ownerEmail, ownerName, passwordHash, ownerPhone])).rows[0];
       /* Every school is born with its full plugin catalog (docs/12): rows land
          'registered' — the plugin manager has real switches on day one and
          enabling stays an audited owner action. RLS on app.plugins checks
@@ -110,6 +179,7 @@ export function registerOnboarding(app) {
         actor: ownerName, actorRole: 'platform', action: 'Tenant onboarded (self-signup)',
         recordType: 'Tenant', recordRef: `${t.slug} · ${ownerEmail}`,
         reason: 'school-owner signup', policyRef: 'Platform §1.1 (tenant provisioning)', risk: 'medium',
+        ip: req.ip ?? null,
         outcome: `school '${t.name}' created with its first owner — no student data yet` });
       await emitEvent(client, t.id,
         { type: 'platform', label: `New school onboarded: ${t.name} (${t.slug})` },
@@ -119,6 +189,14 @@ export function registerOnboarding(app) {
       /* S0 fix C1: stamp the session epoch like every other issue path —
          a future epoch default would otherwise lock fresh signups out. */
       const token = app.jwt.sign({ sub: u.id, role: u.role, tenant: u.tenant_id, name: u.name, jti: randomUUID(), ep: u.session_epoch ?? 1 }, {});
+      /* C-3: issue the session cookies as /auth/login does. This handler has always returned the
+         same { token, user } BODY, but not the HttpOnly `schoolos_session` + `schoolos_csrf`
+         pair — so in a same-origin deployment, where the cookie is the durable credential and a
+         cold open exchanges it for a bearer via POST /auth/renew, a freshly signed-up owner was
+         bounced straight back to /login on the first refresh. The bearer alone is memory-only on
+         the client by design (FEX-3), so without the cookie there was no durable session at all.
+         Issued AFTER the COMMIT so a cookie is never minted for a transaction that rolled back. */
+      app.issueSessionCookies(reply, token);
       return { token, user: { id: u.id, name: u.name, role: u.role, email: u.email, tenantId: u.tenant_id },
         tenant: { id: t.id, slug: t.slug, name: t.name },
         next: { checklist: ['/onboard/status'] } };
@@ -142,17 +220,20 @@ export function registerOnboarding(app) {
     if (req.user.role !== 'owner') return reply.code(403).send({ error: 'Only the school owner can change the school profile' });
     const b = req.body ?? {};
     /* No campuses: a school is ONE site. A second site is a second tenant, not a campus of this one. */
-    const allowed = ['schoolName', 'address', 'board', 'phone'];
+    const allowed = ['schoolName', ...Object.keys(PROFILE_CAPS)];
     const patches = {};
     if (b.schoolName !== undefined) {
       const n = String(b.schoolName).trim();
       if (n.length < 3 || n.length > 120) return reply.code(400).send({ error: 'School name must be 3–120 characters' });
       patches.name = n;
     }
-    for (const k of ['address', 'board', 'phone']) {
-      if (b[k] !== undefined) patches[`config.${k}`] = String(b[k]).trim().slice(0, k === 'address' ? 300 : 60);
+    for (const k of Object.keys(PROFILE_CAPS)) {
+      if (b[k] === undefined) continue;
+      const r = profileValue(k, b[k]);
+      if (r.error) return reply.code(400).send({ error: r.error });
+      patches[`config.${k}`] = r.value ?? '';
     }
-    if (!Object.keys(patches).length) return reply.code(400).send({ error: 'Nothing to update — send schoolName, address, board or phone' });
+    if (!Object.keys(patches).length) return reply.code(400).send({ error: `Nothing to update — send ${allowed.join(', ')}` });
     return withUser(req.user.tenant_id, req.user.role, async (c) => {
       // RTE-19: lock the row for the JSONB read-modify-write. Without `FOR UPDATE` a concurrent profile
       // update loses one writer's `config` change.
@@ -163,7 +244,7 @@ export function registerOnboarding(app) {
       const vals = [];
       let i = 1;
       if (patches.name) { sets.push(`name=$${i++}`); vals.push(patches.name); }
-      for (const key of ['address', 'board', 'phone']) {
+      for (const key of Object.keys(PROFILE_CAPS)) {
         if (patches[`config.${key}`] !== undefined) { nextConfig[key] = patches[`config.${key}`]; }
       }
       sets.push(`config=$${i++}`, `onboarded_via=COALESCE(onboarded_via,'self-signup')`);
@@ -188,7 +269,10 @@ export function registerOnboarding(app) {
       const counts = (await c.query(
         `SELECT
            (SELECT count(*)::int FROM app.students WHERE tenant_id=$1 AND status='active') AS students,
-           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='itadmin') AS itadmins,
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='principal' AND active) AS principals,
+           /* suspended IT admins do not count: a suspended sole IT admin must
+              reopen the step, exactly like GET /school/setup reports it */
+           (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND role='itadmin' AND active) AS itadmins,
            (SELECT count(*)::int FROM app.users WHERE tenant_id=$1 AND active) AS accounts,
            (SELECT count(*)::int FROM app.plugins WHERE tenant_id=$1 AND status='enabled') AS plugins_enabled`, [req.user.tenant_id])).rows[0];
       const sections = t?.config?.setup?.sections ?? [];
@@ -196,10 +280,11 @@ export function registerOnboarding(app) {
         school: { name: t?.name, slug: t?.slug, onboardedAt: t?.onboarded_at, sections },
         counts,
         checklist: [
+          { id: 'principal', label: 'Appoint your principal (owner only)', done: counts.principals > 0, href: '/setup' },
           { id: 'classes', label: 'Define your classes and sections', done: sections.length > 0, href: '/classes' },
-          { id: 'itadmin', label: 'Create your IT admin (they can add the rest of the staff)', done: counts.itadmins > 0, href: '/people-admin' },
+          { id: 'itadmin', label: 'Create your IT admin (they can add the rest of the staff)', done: counts.itadmins > 0, href: '/setup' },
           { id: 'students', label: 'Admit your first students', done: counts.students > 0, href: '/people-admin' },
-          /* S0 fix C10: five modules are born enabled (DEFAULT_ON) — counting
+          /* S0 fix C10: four modules are born enabled (DEFAULT_ON) — counting
              them made this item born-done and useless. It completes only when
              the school switches on something beyond its birth set. */
           { id: 'plugins', label: 'Switch on the modules you need (library, fees, transport…)', done: counts.plugins_enabled > DEFAULT_ON.size, href: '/plugins' },

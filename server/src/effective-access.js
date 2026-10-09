@@ -28,6 +28,12 @@ export const SURFACE_DOOR = Object.freeze({
   '/attendance': 'GET /attendance',
   /* the class/section structure editor: owner, principal and IT admin (the write door is the gate) */
   '/classes': 'PUT /school/classes',
+  /* the School profile screen: the read door is owner-gated, so canSurface answers exactly
+     where both profile doors admit (writes go through POST /onboard/school, also owner-only) */
+  '/school-profile': 'GET /school/profile',
+  /* the Setup guide: the read door admits owner/principal/itadmin — the people-chain stages —
+     so each role sees the guide exactly where its stage doors admit */
+  '/setup': 'GET /school/setup',
   /* M3: the timetable write surface — renderable when the grid read door is reachable (the writes re-gate) */
   '/timetable': 'GET /plugins/ops.timetable/grid',
   '/admissions': 'GET /admissions/followups',
@@ -74,6 +80,21 @@ export const SURFACE_DOOR = Object.freeze({
      cross-domain management read those roles hold rather than the owner/itadmin-only metrics door. */
   '/group': 'GET /reports/fees/summary',
   '/transport': 'GET /transport/routes',
+  /* H1: the transport write screen. Gated on the plugin's OWN route door rather than the kernel read,
+     because a school with the add-on off has no routes to write — and canSurface fails closed, so an
+     unmapped surface would hide a real screen (FEX-5). */
+  '/transport/setup': 'GET /plugins/transport.gps/routes',
+  /* health.clinic: the infirmary log's own read door. Gated on the plugin's read rather than a role
+     list, because the read is nurse-lane PII by design (DPDP) — the map inherits that decision instead
+     of restating it, and the screen asks the same question before it calls anything. */
+  '/clinic': 'GET /plugins/health.clinic/visits',
+  /* The returns surface is three add-ons in one place (UDISE, CBSE OASIS, Tally). It is mapped to the
+     office-tier UDISE read so the surface is renderable for the roles that file returns; each CARD
+     inside asks its own door's gate, so a finance-only role sees the accountant's card alone. */
+  '/returns': 'GET /plugins/ops.udise/columns',
+  /* Safety (4.5): the audit wall + verification ledger read their own doors. Mapped to the
+     checklist read so the surface renders for the desks that attest; each card re-gates. */
+  '/safety': 'GET /safety/checklist',
   '/migration': 'GET /migration/sources',
   '/roles': 'GET /roles',
   '/plugins': 'GET /plugins',
@@ -98,6 +119,14 @@ export const SURFACE_DOOR = Object.freeze({
   '/insights': 'GET /reports/fees/summary',
   '/reports': 'GET /plugins/ops.bi/fees/aging',
   '/people-admin': 'GET /plugins/people.admin/users',
+  /* Master Action Plan (MPD center, RTE ledger, payroll-lite, billing): kernel doors, each names
+     its real read door so Guard/canSurface render exactly where the doors admit. */
+  '/mpd': 'GET /compliance/mpd',
+  '/rte': 'GET /rte/overview',
+  '/payroll': 'GET /payroll/overview',
+  '/billing': 'GET /billing',
+  /* Action Plan batch 3 (NEP pack): the classroom-policy surface names its profile door. */
+  '/nep': 'GET /nep/profile',
   /* OPP: owner/principal oversight product surfaces each name their real door. */
   '/board-pack': 'GET /reports/board-pack',
   '/principal-brief': 'GET /brief/principal',
