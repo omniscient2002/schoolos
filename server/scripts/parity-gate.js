@@ -97,6 +97,11 @@ const exportUsedInUI = (svcFile, name) => {
     if (new RegExp(`import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*['"][^'"]*\\b${base}\\b['"]`).test(src)) return true;
     if (new RegExp(`import\\s+\\*\\s+as\\s+\\w+\\s+from\\s+['"][^'"]*\\b${base}\\b['"]`).test(src)
       && new RegExp(`\\b${name}\\b`).test(src)) return true;
+    // Dynamic imports — `import('../services/x').then(({ name }) => …)` / `await import('…')`
+    // plus a use of the wrapper name. The batch 2–4 screens load complianceApi
+    // lazily; a lazy caller is still a caller, so the gate must see it.
+    if (new RegExp(`import\\(\\s*['"][^'"]*\\b${base}\\b[^'"]*['"]\\s*\\)`).test(src)
+      && new RegExp(`\\b${name}\\b`).test(src)) return true;
   }
   return false;
 };
@@ -150,6 +155,13 @@ const API_ONLY_ALLOWLIST = [
   { re: /^POST \/transport\/events$/, why: 'called by the transport worker/kernel; the UI badge is read-only' },
   { re: /^POST \/payments\/([^/]+\/refund|reconcile)$/, why: 'owner/finance API; refunds run from the gateway/ops tooling' },
   { re: /^(POST|DELETE) \/(plugins\/|student\/|ptm\/|safety\/|teacher\/|interventions\/|parent\/leave-request|coord\/duty\/allocate)/, why: 'plugin runtime door reached from its own plugin screen (dynamic import); covered by plugin-conformance' },
+  /* Named rather than swept into the generic plugin line, because this one is a DESIGN decision and
+     deserves to be re-read when the import story changes: `ops.import` is the mapping validator and
+     shadow loader, and its own manifest says the engine is "importable by the kernel migration doors;
+     commit authority stays with the kernel". The SPA drives the KERNEL doors on /migration (source →
+     stage → analyze), so a second screen for the engine would be two import surfaces over one job.
+     If a school-facing mapping UI is ever built, this line goes with it. */
+  { re: /^(GET|POST) \/plugins\/ops\.import\//, why: 'engine-only by design — the /migration screen drives the kernel import doors, which hold commit authority (manifest: "importable by the kernel migration doors")' },
   { re: /^PUT \/plugins\/library\/desk\/settings\/notifications$/, why: 'backward-compat alias of /desk/settings (same saveDeskSettings handler); the sectioned desk screen saves via /desk/settings' },
   { re: /^POST \/parent\/requests\/[^/]+\/transition$/, why: 'school/office ticket-transition door — the parent request center is read-only to parents by design; the office surface lands with the PU-2 flows' },
   /* ── GET doors (TEST-2: the gate now scans reads too). Each reason names why no shipped screen
@@ -170,6 +182,18 @@ const API_ONLY_ALLOWLIST = [
   { re: /^(GET|POST) \/delegations$/, why: 'owner/principal delegation console (OPP-OVR-2) — UI lane in flight' },
   { re: /^POST \/owner\/actions$/, why: 'owner/principal action raise (OPP spine) — UI lane in flight' },
   { re: /^GET \/reports\/snapshots$/, why: 'board/inspection pack read (OPP-DAT-2) — UI lane in flight' },
+  /* Public page by design: the MPD desk renders its URL as an outbound link for
+     inspectors (a browser opens it, the app never fetches it) — no in-app caller
+     is the correct shape, not a gap. */
+  { re: /^GET \/public\/disclosure$/, why: 'unauthenticated public disclosure page — opened via outbound link from the MPD desk, never fetched by the app' },
+  /* Tenant-configurability pass (fees settings/rules + admissions repair): finance
+     policy doors whose desk screens land with the finance UI lane. Covered by the
+     fee drill suites (role 93/93 + edge 37/37) and admissions-fixes (14/14) until
+     the screens ship — then these lines go with the buttons. */
+  { re: /^(GET|POST) \/fees\/(discount-rules|late-rules)$/, why: 'finance policy catalogue API — no desk screen yet; covered by fee drills' },
+  { re: /^POST \/fee-plans\/:id\/(preview|clone)$/, why: 'fee-plan desk API (dry-run + year rollover) — screen buttons land with the finance UI lane; covered by fee drills' },
+  { re: /^POST \/fees\/obligations\/:id\/(extend|late-fee\/waive)$/, why: 'obligation relief API — desk actions land with the finance UI lane; covered by fee drills' },
+  { re: /^(PATCH|POST) \/fees\/installments\/:id(\/waive)?$/, why: 'installment edit/waive API — desk actions land with the finance UI lane; covered by fee drills' },
 ];
 const allowReason = (door) => API_ONLY_ALLOWLIST.find((a) => a.re.test(`${door.method} ${door.path}`));
 const yellowAll = verdicts.filter((x) => x.verdict !== 'wired');

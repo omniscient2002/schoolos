@@ -12,7 +12,7 @@
 import { pathToFileURL } from 'node:url';
 import { sysq, tx } from '../src/db.js';
 import { emitEvent } from '../src/audit.js';
-import { findDiscrepancies, raiseDiscrepancyActions, CLASSES } from '../src/fees/reconcile.js';
+import { findDiscrepancies, raiseDiscrepancyActions, recordReconRun, CLASSES } from '../src/fees/reconcile.js';
 
 // Reconciliation is an all-tenant maintenance job; `sysq` is the explicit
 // privileged path, rather than an unreviewable owner Client created here.
@@ -37,7 +37,10 @@ export async function runReconciliation({ toleranceFor } = {}) {
   for (const t of tenants) {
     const toleranceCents = typeof toleranceFor === 'function' ? await toleranceFor(t.id) : 0;
     const found = await findDiscrepancies(q, t.id, { toleranceCents });
-    if (found.total === 0) continue;
+    if (found.total === 0) {
+      await recordReconRun(q, t.id, { source: 'worker', byUserId: null, report: found, actionsRaised: 0 });
+      continue;
+    }
     for (const klass of CLASSES) {
       for (const p of (found[klass === 'amount_mismatch' ? 'mismatch' : klass] ?? [])) {
         await q(`UPDATE app.payments SET reconciliation_status='disputed' WHERE id=$1 AND tenant_id=$2`, [p.id, t.id]);
@@ -52,6 +55,9 @@ export async function runReconciliation({ toleranceFor } = {}) {
       }
     }
     const raised = await raiseDiscrepancyActions(q, t.id, found);
+    // 4.3: every swept tenant gets a history row (clean sweeps too — "last run
+    // clean" is the signal the queue header shows), same helper as the HTTP door.
+    await recordReconRun(q, t.id, { source: 'worker', byUserId: null, report: found, actionsRaised: raised });
     report.actionsRaised += raised;
     report.tenants.push({
       slug: t.slug, ghostLocalConfirmed: found.ghost.length, missingLocalConfirmation: found.missing.length,

@@ -82,6 +82,31 @@ export async function runDunningHook({ runDunning = null, quiet = null } = {}) {
   }
 }
 
+// ── 5. admissions follow-up SLA (A5) ─────────────────────────────────────────
+// Same sweep as POST /plugins/admissions.funnel/sla/run (shared sla.js — door and
+// cron can never diverge). Stuck leads (>7d untouched) get one notification per
+// lead per day + an outbox event with the identical topic/payload shape. A failing
+// sweep logs `skipped` and never crashes the day (containment, like dunning).
+export async function runAdmissionsFollowupHook({ runSla = null } = {}) {
+  try {
+    const sweep = runSla ?? (await import('../src/plugins/admissions.funnel/sla.js')).runFollowupSla;
+    const tenants = (await pool.query(`SELECT id, slug FROM app.tenants ORDER BY slug`)).rows;
+    let scanned = 0; let raised = 0;
+    for (const t of tenants) {
+      const out = await sweep((text, params) => pool.query(text, params), t.id, { actor: 'day-worker',
+        emit: async (topic, payload) => pool.query(
+          `INSERT INTO app.outbox (tenant_id, topic, payload) VALUES ($1,$2,$3::jsonb)`,
+          [t.id, topic, JSON.stringify(payload)]) });
+      scanned += out.scanned; raised += out.raised;
+    }
+    line('day.admissions.followup', { status: 'ok', tenants: tenants.length, scanned, raised });
+    return { status: 'ok', scanned, raised };
+  } catch (e) {
+    line('day.admissions.followup', { status: 'skipped', reason: e.message });
+    return { status: 'skipped', reason: e.message };
+  }
+}
+
 // NOTE (TODO_FIX_MAP L4): homework reminders are NOT a step here on purpose. day-worker runs at 03:05
 // IST, inside the comms quiet hours (21:00–08:00), so a sweep with the shared quiet-hours guard would
 // silently skip every night. scripts/homework-reminders.js is scheduled on its own evening cron line
@@ -366,6 +391,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     ['tally', runTallySummary],
     ['retention', runRetention],
     ['dunning', runDunningHook],
+    ['admissions-followup', runAdmissionsFollowupHook],
     ['library', runLibraryReminders],
     ['library-expiry', runLibraryReservationExpiry],
     ['principal-brief', runPrincipalBrief],

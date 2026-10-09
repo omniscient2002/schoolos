@@ -50,8 +50,19 @@ export async function runDunning({ q = defaultQ, quiet = null } = {}) {
 
   const tenants = (await q(`SELECT id, slug FROM app.tenants ORDER BY slug`)).rows;
   for (const t of tenants) {
+    // F-14 parity: fee_settings owns the ladder + quiet hours (plugin is fallback),
+    // exactly like the HTTP door's dunningPolicy/dunningQuietHours. A tenant that
+    // configures everything in Fee policy gets the same sweep from cron and door.
+    const fs = (await q(`SELECT settings FROM app.fee_settings WHERE tenant_id=$1`, [t.id]).catch(() => ({ rows: [] }))).rows[0]?.settings ?? {};
+    const clean = (v) => Array.isArray(v) ? v.filter((n) => Number.isInteger(n) && n > 0 && n <= 90) : null;
     const s = (await q(`SELECT settings FROM app.plugins WHERE tenant_id=$1 AND plugin_id='comms.whatsapp'`, [t.id])).rows[0]?.settings ?? {};
-    const quietHours = s.quiet_hours ?? { start: '21:00', end: '08:00' };
+    let before = clean(fs.dunning_before_due_days);
+    let escalate = clean(fs.dunning_escalation_days);
+    if (before === null) before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    if (escalate === null) escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
+    const quietStart = fs.dunning_quiet_start ?? s.quiet_hours?.start ?? '21:00';
+    const quietEnd = fs.dunning_quiet_end ?? s.quiet_hours?.end ?? '08:00';
+    const quietHours = { start: quietStart, end: quietEnd };
     const q0 = parseHm(quietHours.start), q1 = parseHm(quietHours.end);
     if (quiet === null && inQuiet(q0, q1, IST_MINUTE())) {
       report.quietHoursSkipped.push({ slug: t.slug, quietHours });
@@ -59,8 +70,6 @@ export async function runDunning({ q = defaultQ, quiet = null } = {}) {
       continue;
     }
     const today = IST_TODAY();
-    const before = Array.isArray(s.before_due_days) ? s.before_due_days.filter((n) => Number.isInteger(n) && n > 0) : [];
-    const escalate = Array.isArray(s.escalation_days) ? s.escalation_days.filter((n) => Number.isInteger(n) && n > 0) : [];
     const queue = async (o, { kind, dedup, body, offsetDays }) => {
       if (!o.guardian_phone) { skippedNoContact += 1; return 0; }
       const inserted = await q(
@@ -77,12 +86,30 @@ export async function runDunning({ q = defaultQ, quiet = null } = {}) {
       }
       return inserted.rowCount;
     };
-    let queued = 0; let skippedNoContact = 0;
+    let queued = 0; let skippedNoContact = 0; let escalated = 0;
     for (const o of await selectOverdue(q, t.id, today)) queued += await queue(o, { kind: 'overdue', dedup: overdueDedup(o.id), body: overdueBody(o) });
     for (const offset of before) for (const o of await selectBeforeDue(q, t.id, today, offset)) queued += await queue(o, { kind: 'before_due', dedup: beforeDueDedup(o.id, offset), body: beforeDueBody(o), offsetDays: offset });
-    for (const days of escalate) for (const o of await selectEscalation(q, t.id, today, days)) queued += await queue(o, { kind: 'escalation', dedup: escalationDedup(o.id, days), body: escalationBody(o), offsetDays: days });
-    report.tenants.push({ slug: t.slug, queued, skippedNoContact });
+    // F-14 parity: escalation raises a finance Action like the door (kind exception —
+    // 'task' violates actions_kind_check). Idempotent via code-unique ON CONFLICT.
+    for (const days of escalate) for (const o of await selectEscalation(q, t.id, today, days)) {
+      const n = await queue(o, { kind: 'escalation', dedup: escalationDedup(o.id, days), body: escalationBody(o), offsetDays: days });
+      if (n > 0) {
+        escalated += 1;
+        const due = (() => { try { return (BigInt(o.net_amount_cents ?? o.amount_cents) - BigInt(o.paid_cents)).toString(); } catch { return '?'; } })();
+        await q(
+          `INSERT INTO app.actions (tenant_id, code, kind, title, detail, why, priority, status, owner, owner_role, policy_ref, ai_involved, payload)
+           VALUES ($1,$2,'exception',$3,$4,$5,'high','open','Finance','finance','Fees §4.2',false,$6::jsonb)
+           ON CONFLICT (tenant_id, code) DO NOTHING`,
+          [t.id, `fee.overdue.${o.id}`,
+           `Overdue fee ${days}d+ — ${o.student_name} ${o.label}`,
+           `₹${Number(due) / 100} outstanding since ${o.due_on}.`,
+           'Fee escalation policy: an aged overdue obligation needs a human decision.',
+           JSON.stringify({ obligationId: o.id, daysOverdue: days, raised_by: 'dunning-worker' })]);
+      }
+    }
+    report.tenants.push({ slug: t.slug, queued, skippedNoContact, escalated });
     report.queuedTotal += queued;
+    report.escalatedTotal = (report.escalatedTotal ?? 0) + escalated;
   }
   return { ...report, queued: report.queuedTotal };
 }

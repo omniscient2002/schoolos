@@ -40,6 +40,8 @@ export const PUBLIC_ALLOWLIST = [
   { path: '/me/mfa/verify', why: 'dual-path door (L2-3.2): authed enrollment-confirm OR pre-auth login challenge (5-min mfaPending token limited to this door); rate-limited 10/min' },
   { path: '/plugins/payments.upi/webhook', why: 'HMAC-signature verified in-handler (UPI_WEBHOOK_SECRET), raw-body parser' },
   { path: '/plugins/payments.razorpay/webhook', why: 'HMAC-signature verified in-handler (RAZORPAY_WEBHOOK_SECRET / settings webhook_secret), raw-body parser, replay dedupe' },
+  { path: '/public/disclosure', why: 'MPD public wall (142): institutional certificates only (name/kind/expiry) — no pupil, guardian, fee or staff PII; unknown slug 404s without distinguishing' },
+  { path: '/billing/webhook', why: 'HMAC-signature verified in-handler (RAZORPAY_WEBHOOK_SECRET, env-only, deployment path), raw-body parser; uniform 401, unknown/duplicate events 200-ignored; flips tenant plan only on payment.captured for a known order' },
 ];
 
 const GUARD_RE = /preHandler:\s*(\[[^\]]*\]|[\w$.]+(?:\(([^()]|\([^()]*\))*\))?)/s;

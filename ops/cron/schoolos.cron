@@ -63,12 +63,14 @@ PGDATABASE=schoolos
 45 2 * * * cd $SCHOOLOS_HOME/server && NODE_ENV=production node scripts/health-probe.js
 
 # ── 03:05 IST weekdays: the umbrella day-worker (all steps except the principal brief) ──────────────
-# scripts/day-worker.js sequences the tally export, the retention pass and the dunning sweep. Named
+# scripts/day-worker.js sequences the tally export, the retention pass, the dunning sweep
+# and the admissions follow-up SLA sweep. Named
 # steps are listed explicitly so the principal brief is EXCLUDED here and runs at 07:00 instead (a brief
 # computed at 03:05 reports 3am absentees, not the school day's).
 # Weekdays only: there is no school business to act on over the weekend, and running it daily would
 # double-queue dunning reminders against the same dedup keys as the 03:30 job below.
-5 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js preventive tally retention dunning library library-expiry compliance action-sla owner-security >> /var/log/schoolos/day-worker.log 2>&1
+# (A5: admissions-followup is idempotent per lead per day, so weekday runs never double-chase.)
+5 3 * * 1-5 cd $SCHOOLOS_HOME/server && mkdir -p /var/log/schoolos && node scripts/day-worker.js preventive tally retention dunning admissions-followup library library-expiry compliance action-sla owner-security >> /var/log/schoolos/day-worker.log 2>&1
 
 # ── 07:00 IST weekdays: the principal's morning brief (OPP-DEL-7) ───────────────────────────────────
 # The one screen ROLE-NEEDS §4 asks for, computed at the START of the school day so "today's absentees"
