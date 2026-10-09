@@ -26,6 +26,7 @@ import { createCustomRoles } from '../src/custom-roles.js';
 import { patternCovers, maskDecision, granted, grantedAny, roleOrGrant } from '../../app/src/lib/grants.ts';
 import { canSurface } from '../../app/src/lib/effective.ts';
 import { mapAccountRole, isLightRole, KNOWN_ROLES, UNKNOWN_ROLE_FALLBACK } from '../../app/src/lib/roles.ts';
+import { roleLabel } from '../../app/src/lib/labels.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const serverRule = createCustomRoles({ withUser: async () => { throw new Error('pure matcher only — no DB'); } });
@@ -109,18 +110,25 @@ describe('the librarian role renders its controls (RBAC-3)', () => {
     assert.equal(grantedAny({ role: 'owner' }, []), false, 'no doors named → no grant');
   });
 
-  test('the provisioning screen offers every role the console can actually create (RBAC-2 follow-up)', () => {
+  test('the provisioning screen offers every role the console can actually create (RBAC-2 follow-up)', async () => {
     // The reviewer's finding: the server accepted `counselor` while the only place a school appoints people
-    // listed ten roles without it — the new role was reachable only by hand-written requests. A label list is
-    // not testable through the DOM (no runner), so this is a source check, the same form the library test
-    // above uses: the options must be DERIVED, and every derived role must have a label to render.
-    const src = readFileSync(join(HERE, '../../app/src/screens/PeopleAdmin.tsx'), 'utf8');
-    assert.match(src, /ROLE_OPTIONS\s*=\s*KNOWN_ROLES/, 'the option list must derive from the one role declaration');
-    assert.ok(!/ROLE_OPTIONS\s*=\s*\[/.test(src), 'a hand-written list is how it fell behind');
-    const labels = (src.match(/const ROLE_LABEL[\s\S]*?\n\};/) ?? [''])[0];
-    for (const r of KNOWN_ROLES) {
-      if (r === 'owner' || r === 'student') continue;   // not provisioned through this console by design
-      assert.ok(labels.includes(r + ':'), `ROLE_LABEL must cover ${r} or the dropdown shows a raw key`);
+    // listed ten roles without it — the new role was reachable only by hand-written requests.
+    //
+    // This used to be a SOURCE grep for a `const ROLE_LABEL = { … }` block declared inside PeopleAdmin.tsx, and
+    // it failed the moment those labels moved to `lib/labels.ts` — a refactor that made the app better. A test
+    // that greps another package's source asserts the SHAPE of an implementation, not its behaviour: it breaks
+    // on any legitimate move and would pass again if someone re-declared a local map without wiring it up. So
+    // it now calls the real function the screen renders with (PRE-1).
+    const { PROVISIONABLE_ROLES } = await import('../../app/src/lib/roles.ts');
+    const ROLE_OPTIONS = [...PROVISIONABLE_ROLES];
+    assert.ok(!ROLE_OPTIONS.includes('owner'), 'owners are provisioned at tenant bootstrap, not here');
+    const server = await import('../src/auth.js');
+    const issuable = server.ROLES_NO_OWNER ?? server.ROLES.filter((r) => r !== 'owner');
+    for (const r of issuable) {
+      assert.ok(ROLE_OPTIONS.includes(r), `the server issues ${r}, so the provisioning screen must offer it`);
+      const label = roleLabel(r);
+      assert.ok(typeof label === 'string' && label.trim().length > 0, `${r} must render a human label`);
+      assert.notEqual(label, r, `${r} would render as a raw key`);
     }
   });
 

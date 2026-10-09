@@ -89,7 +89,7 @@ describe('admissions.funnel v1.3 — domain completion', () => {
     assert.equal(list.json().activities.length, 1);
     assert.equal(list.json().activities[0].kind, 'interview');
     const d = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${id}/documents`,
-      payload: { fileId: '11111111-2222-3333-4444-555555555555', label: 'Birth certificate' }, headers: H(adm.token) });
+      payload: { fileId: (await sql(`INSERT INTO app.files (tenant_id,filename,mime,bytes,sha256,storage_path,scope) VALUES ((SELECT tenant_id FROM plugin_admissions.lead WHERE id=$1),'bc.pdf','application/pdf',10,'x','t/b.pdf','general') RETURNING id`, [id])).rows[0].id, label: 'Birth certificate' }, headers: H(adm.token) });
     assert.equal(d.statusCode, 200, d.body);
     assert.equal(d.json().documents.length, 1);
     assert.equal(d.json().documents[0].label, 'Birth certificate');
@@ -141,12 +141,22 @@ describe('admissions.funnel v1.3 — domain completion', () => {
     for (const to of ['form', 'interaction', 'offer', 'enrolled']) {
       await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${id}/stage`, payload: { to }, headers: H(adm.token) });
     }
-    // dismiss the action so the lead is stranded at enrolled
+    // dismiss the action — A1 recovery returns the lead to offer (no stranding).
     const act = (await sql(`SELECT id FROM app.actions WHERE payload->>'leadId'=$1 AND status='open'`, [id])).rows[0];
-    await app.inject({ method: 'POST', url: `/actions/${act.id}/decide`, payload: { decision: 'dismissed' }, headers: H(o.token) });
+    await app.inject({ method: 'POST', url: `/actions/${act.id}/decide`, payload: { decision: 'dismissed', note: 'v13 drill' }, headers: H(o.token) });
+    const back = (await sql(`SELECT stage FROM plugin_admissions.lead WHERE id=$1`, [id])).rows[0];
+    assert.equal(back.stage, 'offer', 'dismissal recovers the lead to offer (A1) — no stranding');
+    // craft a genuinely stranded row (pre-A1 shape) by hand: enrolled, no student, no action.
+    const stranded = (await sql(`INSERT INTO plugin_admissions.lead (tenant_id,student_name,guardian_phone,class_applied,stage,admission_year)
+      VALUES ((SELECT tenant_id FROM plugin_admissions.lead WHERE id=$1),'Stranded Two','+919800001010','8','enrolled','2026-27') RETURNING id`, [id])).rows[0];
     const h2 = await app.inject({ method: 'GET', url: '/plugins/admissions.funnel/health', headers: H(o.token) });
     assert.equal(h2.json().healthy, false);
-    assert.ok(h2.json().orphans.strandedEnrolled.some((x) => x.id === id), 'stranded enrolled lead surfaced');
+    assert.ok(h2.json().orphans.strandedEnrolled.some((x) => x.id === stranded.id), 'stranded enrolled lead surfaced');
+    // and the repair door clears exactly it
+    const rep = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${stranded.id}/reopen`, headers: H(o.token), payload: { reason: 'v13 repair' } });
+    assert.equal(rep.statusCode, 200, rep.body);
+    const h3 = await app.inject({ method: 'GET', url: '/plugins/admissions.funnel/health', headers: H(o.token) });
+    assert.ok(!h3.json().orphans.strandedEnrolled.some((x) => x.id === stranded.id), 'repaired lead leaves the orphan list');
   });
 
   test('8 · SLA sweep escalates a stuck lead once per day', async () => {

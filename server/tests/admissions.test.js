@@ -162,7 +162,12 @@ describe('admissions.funnel (wave-2 #1 · migrations 018+022 · India-admissions
     const l2 = c.json().leadId;
     const w = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${l2}/stage`,
       payload: { to: 'withdrawn' }, headers: H(fin.token) });
-    assert.equal(w.statusCode, 200);
+    assert.equal(w.statusCode, 400, 'A15: side exits need a reason');
+    const w2 = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${l2}/stage`,
+      payload: { to: 'withdrawn', reason: 'family relocated' }, headers: H(fin.token) });
+    assert.equal(w2.statusCode, 200);
+    const hist = await app.inject({ method: 'GET', url: `/plugins/admissions.funnel/leads/${l2}/history`, headers: H(fin.token) });
+    assert.match(JSON.stringify(hist.json().history), /relocated/, 'reason stored on the history trail');
     const revive = await app.inject({ method: 'POST', url: `/plugins/admissions.funnel/leads/${l2}/stage`,
       payload: { to: 'form' }, headers: H(fin.token) });
     assert.equal(revive.statusCode, 409, 'withdrawn is terminal — immutable');

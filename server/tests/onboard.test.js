@@ -215,3 +215,93 @@ test('11 · non-owner cannot update the school profile', async () => {
   const upd = await authed(token, '/onboard/school', { method: 'POST', body: JSON.stringify({ board: 'HACKED' }) });
   assert.equal(upd.status, 403, 'only owners touch the tenant profile');
 });
+
+test('11b · suspending the only IT admin reopens the step on BOTH status doors', async () => {
+  const s = await signup({ schoolName: 'Suspend Reopens School', ownerName: 'Susp Owner', ownerEmail: 'susp@suspend.test', ownerPassword: 'suspend-11' });
+  assert.equal(s.status, 200);
+  const ownerToken = (await s.json()).token;
+  const mk = await authed(ownerToken, '/plugins/people.admin/users', { method: 'POST', body: JSON.stringify({ name: 'Temp It', email: 'temp.it@suspend.test', role: 'itadmin' }) });
+  assert.equal(mk.status, 200);
+  const itId = (await mk.json()).user.id;
+  const susp = await authed(ownerToken, `/plugins/people.admin/users/${itId}/suspend`, { method: 'POST', body: JSON.stringify({ reason: 'test suspension' }) });
+  assert.equal(susp.status, 200);
+  const st = await (await authed(ownerToken, '/onboard/status')).json();
+  assert.equal(st.checklist.find(c => c.id === 'itadmin').done, false, 'suspended IT admin does not complete /onboard/status');
+  const setup = await (await authed(ownerToken, '/school/setup')).json();
+  assert.equal(setup.stages.find(x => x.id === 'itadmin').done, false, 'suspended IT admin does not complete /school/setup either — the doors agree');
+});
+
+test('12 · signup captures the full profile: structured address, contacts, timezone, owner phone', async () => {
+  const r = await signup({
+    schoolName: 'Full Profile Academy', address: '14 MG Road', city: 'Pune', state: 'Maharashtra',
+    postalCode: '411001', country: 'India', board: 'CBSE', phone: '+91 20 4000 1234',
+    email: 'Office@FullProfile.test', website: 'fullprofile.test', timezone: 'Asia/Dubai',
+    ownerName: 'Full Owner', ownerEmail: 'owner@fullprofile.test', ownerPassword: 'full-profile-1',
+    ownerPhone: '+91 98765 43210',
+  });
+  assert.equal(r.status, 200, `full signup: ${r.status}`);
+  const t = (await globals.q(`SELECT config FROM app.tenants WHERE slug='full-profile-academy'`)).rows[0];
+  assert.equal(t.config.address, '14 MG Road');
+  assert.equal(t.config.city, 'Pune');
+  assert.equal(t.config.state, 'Maharashtra');
+  assert.equal(t.config.postalCode, '411001');
+  assert.equal(t.config.country, 'India');
+  assert.equal(t.config.board, 'CBSE');
+  assert.equal(t.config.phone, '+91 20 4000 1234');
+  assert.equal(t.config.email, 'office@fullprofile.test', 'school email lowercased');
+  assert.equal(t.config.website, 'https://fullprofile.test', 'bare domain gains the scheme');
+  assert.equal(t.config.timezone, 'Asia/Dubai');
+  const u = (await globals.q(`SELECT phone FROM app.users WHERE tenant_id=(SELECT id FROM app.tenants WHERE slug='full-profile-academy')`)).rows[0];
+  assert.equal(u.phone, '+919876543210', 'owner phone stored normalised E.164');
+});
+
+test('12b · timezone defaults when omitted', async () => {
+  const r = await signup({ schoolName: 'Default Zone School', ownerName: 'Zed Owner', ownerEmail: 'zed@defaultzone.test', ownerPassword: 'default-zone-1' });
+  assert.equal(r.status, 200);
+  const t = (await globals.q(`SELECT config->>'timezone' AS tz FROM app.tenants WHERE slug='default-zone-school'`)).rows[0];
+  assert.equal(t.tz, 'Asia/Kolkata');
+});
+
+test('13 · validation: bad timezone / school email / owner phone → 400', async () => {
+  const base_body = { schoolName: 'Rejected Fields School', ownerName: 'R J', ownerEmail: 'rj@rejected.test', ownerPassword: 'rejected-11' };
+  for (const [extra, hint] of [
+    [{ timezone: 'Mars/Olympus' }, 'timezone'],
+    [{ email: 'not-an-email' }, 'school email'],
+    [{ ownerPhone: '123' }, 'owner phone'],
+    [{ website: 'not a website!!' }, 'website'],
+    [{ phone: 'x'.repeat(31) }, 'over-long phone'],
+  ]) {
+    const r = await signup({ ...base_body, ...extra });
+    assert.equal(r.status, 400, `400 for bad ${hint}: ${r.status}`);
+  }
+});
+
+test('14 · owner updates the new profile keys → persisted + audited', async () => {
+  const login = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.60.0.14' }, body: JSON.stringify({ email: 'owner@fullprofile.test', password: 'full-profile-1' }) });
+  const { token } = await login.json();
+  const r = await authed(token, '/onboard/school', { method: 'POST', body: JSON.stringify({ city: 'Mumbai', timezone: 'Asia/Kolkata', email: 'hello@fullprofile.test', website: 'https://www.fullprofile.test' }) });
+  assert.equal(r.status, 200);
+  const t = (await globals.q(`SELECT config->>'city' AS city, config->>'timezone' AS tz, config->>'email' AS email, config->>'website' AS web FROM app.tenants WHERE slug='full-profile-academy'`)).rows[0];
+  assert.equal(t.city, 'Mumbai');
+  assert.equal(t.tz, 'Asia/Kolkata');
+  assert.equal(t.email, 'hello@fullprofile.test');
+  assert.equal(t.web, 'https://www.fullprofile.test');
+  const bad = await authed(token, '/onboard/school', { method: 'POST', body: JSON.stringify({ timezone: 'Mars/Olympus' }) });
+  assert.equal(bad.status, 400, 'invalid timezone rejected on update too');
+});
+
+test('15 · GET /school/profile: owner reads the card, non-owner refused', async () => {
+  const login = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.60.0.15' }, body: JSON.stringify({ email: 'owner@fullprofile.test', password: 'full-profile-1' }) });
+  const { token } = await login.json();
+  const r = await authed(token, '/school/profile');
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.equal(body.school.name, 'Full Profile Academy');
+  assert.equal(body.school.profile.city, 'Mumbai', 'reads back the updated card');
+  assert.equal(body.school.profile.timezone, 'Asia/Kolkata');
+
+  const t = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.60.0.16' }, body: JSON.stringify({ email: 'teacher@meridian.edu', password: 'schoolos-demo' }) });
+  const teacher = await t.json();
+  const denied = await authed(teacher.token, '/school/profile');
+  assert.equal(denied.status, 403, 'profile read is owner-only, like the write');
+});

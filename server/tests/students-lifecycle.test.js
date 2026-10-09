@@ -205,7 +205,12 @@ test('lifecycle: parent/student get 403 on promote; promote of a withdrawn stude
 });
 
 test('FIX-ITADMIN: itadmin may admit a student; parent/student are still refused', async () => {
-  const body = { name: 'Itadmin Admitted', grade: '4', section: 'B', guardianName: 'IA Guardian', guardianPhone: '+91 9800001234' };
+  // Grade 6, section B: the seeded school runs grades 6-10 with sections A/B/C. This used to
+  // say grade 4, which no longer enrols — P2-6 made POST /students check the class against the
+  // school's own structure, so a permission fixture that names a class the school does not run
+  // now fails with an accurate 400 instead of quietly creating an unreachable pupil. The test is
+  // about WHO may enrol, so keep the class valid and let it test only that.
+  const body = { name: 'Itadmin Admitted', grade: '6', section: 'B', guardianName: 'IA Guardian', guardianPhone: '+91 9800001234' };
   const ok = await app.inject({ method: 'POST', url: '/students', headers: H(itadmin.token), payload: body });
   assert.equal(ok.statusCode, 200, ok.body);
   assert.equal(ok.json().student.name, 'Itadmin Admitted');

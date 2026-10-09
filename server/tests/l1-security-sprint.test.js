@@ -274,7 +274,7 @@ describe('L1 security sprint (054)', () => {
       // (raising an unattributed students.create action), then tries to approve it
       const pr = await loginAs(app, 'principal@meridian.edu');
       const lead = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads',
-        payload: { studentName: 'L1 Probe Kid', guardianName: 'L1 Guardian', guardianPhone: '9876511111', classApplied: '4-B' }, headers: H(pr.token) });
+        payload: { studentName: 'L1 Probe Kid', guardianName: 'L1 Guardian', guardianPhone: '9876511111', classApplied: '6-B' }, headers: H(pr.token) });
       assert.equal(lead.statusCode, 200, lead.body);
       const leadId = lead.json().leadId;
       for (const to of ['form', 'interaction', 'offer', 'enrolled']) {

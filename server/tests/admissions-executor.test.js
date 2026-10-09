@@ -38,7 +38,7 @@ const convertLead = async (studentName, phone) => {
   // OVR-4: the funnel now stamps `proposed_by`, so the conversion is attributed to the principal
   // (a different user from the owner who decides). The self-approval rule is then exercised honestly.
   const mk = await app.inject({ method: 'POST', url: '/plugins/admissions.funnel/leads', payload: {
-    studentName, guardianName: `Guardian of ${studentName}`, guardianPhone: phone, classApplied: '5-A', source: 'walk-in',
+    studentName, guardianName: `Guardian of ${studentName}`, guardianPhone: phone, classApplied: '6-A', source: 'walk-in',
   }, headers: H(principalToken) });
   assert.equal(mk.statusCode, 200, mk.body);
   const leadId = mk.json().leadId;
@@ -59,7 +59,7 @@ test('AE · approve → student exists with guardian + enrollment_history admiss
   const ex = r.json().execution;
   assert.equal(ex.type, 'student');
   assert.match(ex.admissionNo, /^ADM-\d{4}(-\d{2})?-[0-9A-F-]+$/i);
-  assert.equal(ex.grade, '5');
+  assert.equal(ex.grade, '6');
   assert.equal(ex.section, 'A');
   const s = (await sql(`SELECT admission_no, name, grade, section, guardian_name, guardian_phone, status, source, source_ref
                         FROM app.students WHERE id=$1`, [ex.id])).rows[0];
@@ -67,14 +67,14 @@ test('AE · approve → student exists with guardian + enrollment_history admiss
   assert.equal(s.source_ref, leadId);
   assert.equal(s.status, 'active');
   assert.equal(s.name, 'Aarav Executor');
-  assert.equal(s.grade, '5');
+  assert.equal(s.grade, '6');
   assert.equal(s.section, 'A');
   const g = (await sql(`SELECT name, phone, is_primary FROM app.guardians WHERE student_id=$1`, [ex.id])).rows[0];
   assert.equal(g.name, 'Guardian of Aarav Executor');
   assert.equal(g.phone, '+919000005001');
   assert.equal(g.is_primary, true);
   const eh = (await sql(`SELECT from_grade, from_section, to_grade, to_section, reason FROM app.enrollment_history WHERE student_id=$1`, [ex.id])).rows[0];
-  assert.equal(eh.to_grade, '5');
+  assert.equal(eh.to_grade, '6');
   assert.equal(eh.reason.includes('students.create.'), true, 'history row carries the action provenance');
   const a = (await sql(`SELECT status FROM app.actions WHERE id=$1`, [actionId])).rows[0];
   assert.equal(a.status, 'approved');
@@ -95,7 +95,7 @@ test('AE · approve → student exists with guardian + enrollment_history admiss
     'the row must name the ACT, so a reader is not left inferring it from the record type');
   assert.ok(led[0].action.includes(ex.admissionNo),
     'the audit row must carry the admission number — joining the ledger to the register must not require a guess');
-  assert.ok(led[0].action.includes('5-A'), 'and the class the student was placed in');
+  assert.ok(led[0].action.includes('6-A'), 'and the class the student was placed in');
   assert.ok(led[0].action.includes('primary guardian recorded'),
     'and whether guardian PII was written, which is the part of this mutation with privacy consequences');
   assert.ok(led[0].actor, 'an audit row with no actor cannot be attributed and answers nothing');

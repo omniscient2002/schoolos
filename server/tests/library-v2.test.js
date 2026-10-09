@@ -98,6 +98,33 @@ describe('library v2 · catalog, copies and circulation', () => {
     assert.equal(JSON.parse(copies.body).copies.filter((c) => c.book_id === bookId).length, 2, 'two copy rows exist');
   });
 
+  test('a bulk catalog import writes the batch in one transaction and emits ONE summary event (D5)', async () => {
+    const countEvents = async () => (await sql(
+      `SELECT count(*)::int n FROM app.outbox WHERE emitted_by='plugin:library' AND topic='library.catalog.imported.v1'`)).rows[0].n;
+    const before = await countEvents();
+    const stamp = Date.now();
+    const books = Array.from({ length: 25 }, (_, i) => ({ title: `Bulk Title ${i}`, author: `Author ${i}`, copies: 2, code: `BULK-${stamp}-${i}` }));
+    const r = await j('POST', '/plugins/library/books/bulk', lib.token, { books });
+    assert.equal(r.statusCode, 200, brief(r));
+    assert.equal(JSON.parse(r.body).inserted, 25, 'every valid title is written');
+    assert.equal(JSON.parse(r.body).copies, 50, 'every copy row is created');
+    assert.equal(await countEvents() - before, 1, 'the whole import is ONE summary event — the event budget is never tripped');
+    const cat = await j('GET', `/plugins/library/desk/books?search=Bulk Title 24`, lib.token);
+    assert.ok(JSON.parse(cat.body).books.some((b) => b.title === 'Bulk Title 24'), 'the imported title is catalogued');
+    // all-or-nothing: one invalid row means nothing is written
+    const bad = await j('POST', '/plugins/library/books/bulk', lib.token, { books: [
+      { title: 'Valid But Unwritten', copies: 1, code: `BULK-BAD-${stamp}` },
+      { title: '', copies: 1 },
+    ] });
+    assert.equal(bad.statusCode, 409, brief(bad));
+    const wrote = (await sql(`SELECT count(*)::int n FROM library.book WHERE tenant_id=$1 AND title='Valid But Unwritten'`, [tenantId])).rows[0].n;
+    assert.equal(wrote, 0, 'a rejected batch writes nothing');
+    // a coordinator (not the librarian desk) is refused
+    const coord = await makeStaff('coordinator', `c.bulk.${stamp}@meridian.edu`);
+    const refused = await j('POST', '/plugins/library/books/bulk', coord.token, { books: [{ title: 'Nope', copies: 1 }] });
+    assert.equal(refused.statusCode, 403, 'bulk import is librarian-desk only');
+  });
+
   test('list doors carry the pagination envelope and clamp an oversized limit (LMS-14)', async () => {
     await j('POST', '/plugins/library/books', lib.token, { title: 'Page One', copies: 1 });
     const one = await j('GET', '/plugins/library/desk/books?limit=1&offset=0', lib.token);

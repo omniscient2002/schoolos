@@ -57,8 +57,16 @@ test('people.admin: provisions a teacher with a generated temp password (force_c
   assert.equal(row.force_change, true, 'generated temp ⇒ force_change stamped');
 });
 
-test('people.admin: duplicate email → 409 friendly (SAVEPOINT pattern, not a 500)', async () => {
+// FIX-11: a pupil portal account without a roster binding is a login the student plane cannot
+// pin to a child (G-1 orphan) — the roster flow always supplies studentId, so the bare door refuses.
+test('people.admin: role=student without studentId → 400 roster-required (no orphan accounts)', async () => {
   const r = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token),
+    payload: { email: 'waveb.orphan@meridian.edu', name: 'Wave B Orphan', role: 'student' } });
+  assert.equal(r.statusCode, 400, r.body);
+  assert.match(r.json().error, /roster/i, 'points at the roster flow');
+});
+
+test('people.admin: duplicate email → 409 friendly (SAVEPOINT pattern, not a 500)', async () => {  const r = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token),
     payload: { email: 'waveb.teacher@meridian.edu', name: 'Second Attempt', role: 'teacher' } });
   assert.equal(r.statusCode, 409, r.body);
   assert.match(r.json().error, /already exists/i);
@@ -149,7 +157,11 @@ test('people.admin: CSV import — valid rows inserted, bad rows land in failed[
     'Import Two,7,B,,Guardian Two,+919000000002',             // no admission_no → auto-generated
     ',7,C,WB-IMP-0003,,',                                      // bad: missing name
     'Import Four,7,C,WB-IMP-0001,,',                           // bad: duplicate admission within file
-    `Import Five,7,D,${anyAdmission},,`,                       // bad: admission already on the roster (23505)
+    // bad: admission already on the roster (23505 at INSERT). The section is a REAL one for grade 7
+    // on purpose: the door now validates the class BEFORE it inserts (P2-6), so a row with an
+    // invented section fails earlier and this one would never reach the unique violation it exists
+    // to exercise. Two validation layers, two rows — that is the behaviour being pinned.
+    `Import Five,7,B,${anyAdmission},,`,
   ].join('\n');
   const r = await app.inject({ method: 'POST', url: '/plugins/people.admin/import/students', headers: H(coordinator.token),
     payload: { csv } });
@@ -253,9 +265,11 @@ test('files.store: base64 upload whitelists types, stores sha256, guardian-of-ch
   assert.equal(okDl.headers['content-disposition'].includes('worksheet.pdf'), true, 'original filename rides the download');
   assert.equal(okDl.rawPayload.toString(), bytes.toString(), 'bytes round-trip');
 
-  // stranger (a parent with no child_link to this student) is 403 — audited refusal
+  // stranger (a parent with no child_link to this student) is 403 — audited refusal.
+  // The parent carries a phone (door-side G-2: a parent needs a phone or a linked
+  // child) but still no child_link, which is what the download door decides on.
   const mk = await app.inject({ method: 'POST', url: '/plugins/people.admin/users', headers: H(owner.token),
-    payload: { email: 'waveb.stranger@meridian.edu', name: 'Stranger Parent', role: 'parent' } });
+    payload: { email: 'waveb.stranger@meridian.edu', name: 'Stranger Parent', role: 'parent', phone: '+919000000099' } });
   assert.equal(mk.statusCode, 200, mk.body);
   const stranger = await loginAs(app, 'waveb.stranger@meridian.edu', mk.json().temporaryPassword);
   const nope = await app.inject({ method: 'GET', url: `/plugins/files.store/${fileId}/download`, headers: { authorization: `Bearer ${stranger.token}` } });

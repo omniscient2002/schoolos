@@ -464,3 +464,31 @@ test('teacher roster is scoped to assigned classes and refuses students/parents'
   assert.ok(Array.isArray(r.json().students));
   assert.equal((await app.inject({ method: 'GET', url: '/plugins/teacher.classroom/roster', headers: H(student.token) })).statusCode, 403);
 });
+
+test('F-16 · bound pupil account submits against its own roster row (structural identity, not name)', async () => {
+  const { pool } = await import('../src/db.js');
+  const tenant = (await pool.query(`SELECT tenant_id FROM app.users WHERE email='owner@meridian.edu'`)).rows[0].tenant_id;
+  const stu = (await pool.query(`SELECT id FROM app.users WHERE tenant_id=$1 AND email='student2@meridian.edu'`, [tenant])).rows[0];
+  const diyas = (await pool.query(`SELECT id, section, admission_no FROM app.students WHERE tenant_id=$1 AND lower(name)='diya nair' AND grade='8' AND status='active' ORDER BY admission_no`, [tenant])).rows;
+  assert.ok(diyas.length >= 2, 'seed carries same-name Diyas in grade 8');
+  // bind to the LAST namesake — the name path would have picked the FIRST
+  const bound = diyas[diyas.length - 1];
+  await pool.query(`UPDATE app.students SET user_id=$2 WHERE tenant_id=$1 AND id=$3`, [tenant, stu.id, bound.id]);
+  const mk = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '8', subject: 'Mathematics', title: 'F-16 structural submit', due_at: future(2) } });
+  assert.equal(mk.statusCode, 200, mk.body);
+  const hw = mk.json().homeworkId;
+  const r = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/homework/${hw}/submit`, headers: H(student.token),
+    payload: { content_type: 'text', content: 'bound submission' } });
+  assert.equal(r.statusCode, 200, r.body);
+  const sub = await pool.query(`SELECT student_id FROM teacher.submission WHERE id=$1`, [r.json().submissionId]);
+  assert.equal(sub.rows[0].student_id, bound.id, 'submission filed against the bound row, not the lowest-admission_no namesake');
+  // a bound pupil submitting to another grade's homework is refused as different-class
+  const mk6 = await app.inject({ method: 'POST', url: '/plugins/teacher.classroom/homework', headers: H(teacher.token),
+    payload: { class_grade: '6', subject: 'Mathematics', title: 'F-16 wrong grade', due_at: future(2) } });
+  assert.equal(mk6.statusCode, 200, mk6.body);
+  const wrong = await app.inject({ method: 'POST', url: `/plugins/teacher.classroom/homework/${mk6.json().homeworkId}/submit`, headers: H(student.token),
+    payload: { content_type: 'text', content: 'should not file' } });
+  assert.equal(wrong.statusCode, 400, wrong.body);
+  assert.equal(wrong.json().error, 'This homework is for a different class');
+});
